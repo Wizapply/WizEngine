@@ -1,0 +1,376 @@
+/* WizEngine web UI styles. Served from web/style.css; edit + reload,
+   no rebuild needed (the build copies web/ next to the executable). */
+  body { font-family: system-ui, sans-serif; background:#20242c; color:#e8e8e8;
+         margin:0; padding:0; }
+  /* One scrollbar look for the whole app: the OS default is a bright slab on
+     this dark page. Firefox reads the two scrollbar-* properties, Chromium and
+     Safari the ::-webkit- rules. */
+  html { scrollbar-width: thin; scrollbar-color: #3a3d45 #20242c; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: #20242c; }
+  ::-webkit-scrollbar-thumb {
+    background: #3a3d45; border-radius: 5px; border: 2px solid #20242c;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: #4a4e58; }
+  ::-webkit-scrollbar-corner { background: #20242c; }
+  h2 { margin:0 0 12px; }
+  #stage { position:relative; width:100%; }
+  /* Chrome auto-hides the pointer over a fullscreened <video> and CSS cannot
+     override that. This transparent layer sits on top, so the cursor is never
+     actually over the video element and stays visible. It also receives the
+     camera drag/wheel events. */
+  /* Shown over the video until the first frames actually render, so the black
+     rectangle at startup reads as "loading" rather than "broken". */
+  #loading {
+    position:absolute; inset:0; z-index:3; display:flex; gap:12px;
+    align-items:center; justify-content:center; pointer-events:none;
+    color:#8b8f99; font-size:14px; background:#15171b; border-radius:10px;
+  }
+  #loading.done { display:none; }
+  #loading .spin {
+    width:18px; height:18px; border-radius:50%;
+    border:2px solid #303239; border-top-color:#7c828e;
+    animation:spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  #hit { position:absolute; inset:0; z-index:1;
+         /* The stage owns its gestures: no page scroll, pinch-zoom or long
+            press callout while dragging objects or the camera. */
+         touch-action:none; -webkit-user-select:none; user-select:none;
+         -webkit-touch-callout:none; }
+  /* The browser force-hides the OS pointer over (fullscreen) video and
+     fighting that is unreliable. So over the stage we always hide the OS
+     pointer on purpose and draw our own arrow that follows the mouse -
+     windowed and fullscreen behave identically. */
+  #stage, #stage * { cursor:none; }
+  /* Coarse pointer (touch): no software cursor, so leave the OS alone. */
+  @media (pointer: coarse) { #stage, #stage * { cursor:auto; } }
+  #cursor { position:fixed; left:0; top:0; z-index:2147483647;
+            pointer-events:none; display:none; width:22px; height:22px; }
+  #cursor.show { display:block; }
+  /* Ctrl held = camera mode (orbit/pan/zoom): show a crosshair instead of
+     the arrow. The arrow's hotspot is its top-left tip; the crosshair's is
+     its centre, hence the negative margins (half the 22px box). */
+  #cursor .curCross { display:none; }
+  #cursor.cross .curArrow { display:none; }
+  #cursor.cross .curCross { display:block; }
+  #cursor.cross { margin-left:-11px; margin-top:-11px; }
+  /* The stream is 720p; the browser upscales it to the window width. */
+  #video { width:100%; aspect-ratio:16/9; border-radius:8px;
+           background:#000; display:block; object-fit:contain;
+           image-rendering:auto; }
+  /* Fullscreen: fill the screen, drop the rounded corners, keep 16:9. */
+  #stage:fullscreen { background:#000; }
+  #stage:fullscreen #video { height:100vh; aspect-ratio:auto; border-radius:0; }
+  #stage:fullscreen #error { height:100vh; aspect-ratio:auto; border-radius:0; }
+  #fsBtn { position:absolute; right:10px; bottom:10px; z-index:2; font-size:13px;
+           padding:6px 12px; margin:0; background:rgba(30,34,42,.72);
+           opacity:0; transition:opacity .15s ease; }
+  #stage:hover #fsBtn { opacity:1; }
+  #fsBtn:hover:enabled { background:rgba(58,69,83,.9); }
+  /* In fullscreen the button is pointless (Esc or F leaves); hide it. */
+  #stage:fullscreen #fsBtn { display:none; }
+  #error { display:none; width:100%; aspect-ratio:16/9;
+           border-radius:8px; background:#2a1c1c; border:1px solid #7a3b3b;
+           box-sizing:border-box; padding:24px; text-align:center;
+           flex-direction:column; align-items:center; justify-content:center;
+           gap:10px; }
+  #error.show { display:flex; }
+  #error .title { color:#ff8a8a; font-size:20px; font-weight:600; }
+  #error .body { color:#e0bcbc; font-size:14px; max-width:46ch; line-height:1.6; }
+  .controls { margin-top:14px; }
+  button { font-size:16px; padding:10px 18px; margin:0 8px 8px 0; border:0;
+           border-radius:6px; background:#e0762e; color:#fff; cursor:pointer; }
+  button:hover:enabled { background:#f08a45; }
+  button:disabled { background:#4a4f59; color:#98a0ab; cursor:not-allowed; }
+  .hint { opacity:.6; font-size:13px; margin-top:6px; }
+  .tune { margin-top:10px; display:flex; flex-wrap:wrap; align-items:center;
+          gap:8px; font-family: ui-monospace, Consolas, monospace; font-size:13px;
+          color:#a9b4c2; }
+  .tune button { font-size:13px; padding:6px 12px; margin:0; background:#3a4553; }
+  .tune button:hover:enabled { background:#4a5666; }
+  .tune .val { color:#e8e8e8; min-width:3.5em; display:inline-block; }
+  #status { opacity:.6; font-size:13px; }
+  #perf { font-family: ui-monospace, Consolas, monospace; font-size:12.5px;
+          color:#a9b4c2; background:#191d24; border:1px solid #323b48;
+          border-radius:6px; padding:8px 12px; margin-top:12px;
+          box-sizing:border-box; display:flex; flex-wrap:wrap;
+          gap:6px 22px; }
+  #perf b { color:#e8e8e8; font-weight:600; }
+  #perf .warn { color:#ffb38a; }
+
+  /* ---- Sidebar (Unity-ish docked panel) ---------------------------------- */
+  /* The page's global button style is big and orange; everything inside the
+     sidebar opts out of it, otherwise the panel is unusable. */
+  #app { display: flex; align-items: stretch; min-height: 100vh; }
+  #main { flex: 1 1 auto; min-width: 0; padding: 12px 16px 20px; }
+  /* Sizes the user can drag. Kept as variables so the handles only ever set a
+     single property, and both are restored on the next visit. */
+  :root {
+    --sb-width: 250px;
+    /* Height of each scrollable section body. The sections keep their natural
+       height until the user drags a grip, so these are just the starting
+       points. */
+    --cameras-height: 96px;
+    --objects-height: 260px;
+    --events-height: 132px;
+    --inspector-height: 96px;
+  }
+  #sidebar {
+    flex: 0 0 var(--sb-width); width: var(--sb-width); box-sizing: border-box;
+    background: #17181c; border-right: 1px solid #303239;
+    padding: 10px 10px 14px;
+    display: flex; flex-direction: column; gap: 12px;
+    position: sticky; top: 0; align-self: flex-start;
+    height: 100vh; overflow: hidden;
+  }
+  #sidebar.hidden { display: none; }
+  /* Vertical splitter between the panel and the view. It is wider than it
+     looks so it stays easy to hit with a mouse or a finger. */
+  #sbResize {
+    flex: 0 0 10px; margin-left: -5px; margin-right: -4px; z-index: 41;
+    cursor: col-resize; touch-action: none; align-self: stretch;
+    background: transparent; position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #sbResize::before {
+    content: ''; position: absolute; top: 0; bottom: 0; left: 50%;
+    width: 1px; background: #303239;
+  }
+  #sbResize::after {
+    content: ''; position: relative; width: 4px; height: 42px;
+    border-radius: 2px; background: #4a4e58;
+    box-shadow: 0 0 0 3px #20242c;
+  }
+  #sbResize:hover::after, #sbResize.dragging::after { background: #7c828e; }
+  #sidebar.hidden + #sbResize { display: none; }
+  /* Horizontal splitter inside the panel, under the hierarchy list. Drawn as a
+     visible grip rather than an invisible strip: a handle nobody can find is
+     the same as no handle at all. */
+  .rowResize {
+    flex: 0 0 14px; cursor: row-resize; touch-action: none;
+    position: relative; display: flex; align-items: center;
+    justify-content: center;
+  }
+  /* A full-width rule marks the boundary... */
+  .rowResize::before {
+    content: ''; position: absolute; left: 0; right: 0; top: 50%;
+    height: 1px; background: #303239;
+  }
+  /* ...with a short pill sitting on top of it, so the line reads as a border
+     and the pill as something you can pull. */
+  .rowResize::after {
+    content: ''; position: relative; height: 4px; width: 42px;
+    border-radius: 2px; background: #4a4e58;
+    box-shadow: 0 0 0 3px #17181c;  /* punch a gap in the rule behind it */
+  }
+  .rowResize:hover::after, .rowResize.dragging::after { background: #7c828e; }
+  /* While dragging, keep the pointer's cursor everywhere and stop text from
+     being selected across the page. */
+  body.resizing-col, body.resizing-col * { cursor: col-resize !important; }
+  body.resizing-row, body.resizing-row * { cursor: row-resize !important; }
+  body.resizing-col, body.resizing-row { user-select: none; }
+  #sbOpen {
+    position: fixed; left: 8px; top: 8px; z-index: 30;
+    font-size: 15px; padding: 5px 10px; margin: 0;
+    background: #24262c; color: #ddd; border: 1px solid #3a3d45;
+    border-radius: 5px;
+  }
+  #sidebar:not(.hidden) ~ #sbOpen { display: none; }
+  #sbOpen:hover { background: #30333a; }
+
+  .sbHead { display: flex; align-items: center; gap: 8px; }
+  .sbTitle { font-weight: 600; font-size: 15px; }
+  .sbSub { opacity: .55; font-size: 11px; }
+  #sbClose {
+    margin: 0 0 0 auto; padding: 2px 8px; font-size: 14px; line-height: 1.2;
+    background: #24262c; color: #aeb2ba; border: 1px solid #3a3d45;
+    border-radius: 4px;
+  }
+  #sbClose:hover:enabled { background: #30333a; }
+
+  /* Tabs: Scene (what is in the world) and Physics (how it is simulated). */
+  .sbTabs { display: flex; gap: 4px; flex: 0 0 auto; }
+  .sbTab {
+    flex: 1 1 0; margin: 0; padding: 6px 8px; font-size: 12px;
+    background: #212329; color: #9aa0aa; border: 1px solid #2c2f36;
+    border-radius: 4px;
+  }
+  .sbTab:hover:enabled { background: #282b32; }
+  .sbTab.active { background: #2b3442; color: #dfe2e7; border-color: #3f5772; }
+  /* A pane fills the panel and, like the sidebar itself, only lets the
+     hierarchy shrink - see .sbSec.grow. */
+  .sbPane {
+    display: flex; flex-direction: column; gap: 12px;
+    flex: 1 1 auto; min-height: 0;
+  }
+  .sbPane[hidden] { display: none; }
+  .tuneRow {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; font-size: 12px; color: #b8bcc4;
+  }
+  .tuneRow .val { color: #e8e8e8; }
+  .tuneRow .btns { display: flex; gap: 4px; }
+  .tuneRow button {
+    margin: 0; padding: 4px 8px; font-size: 11px; min-width: 30px;
+    background: #2a2d34; color: #dfe2e7; border: 1px solid #3a3d45;
+    border-radius: 4px;
+  }
+  .tuneRow button:hover:enabled { background: #343841; }
+  #link { margin-top: 8px; font-size: 12px; color: #8b8f99;
+          font-family: ui-monospace, Menlo, Consolas, monospace; }
+  #link b { color: #c8ccd4; font-weight: 600; }
+
+  .sbHead, .sbSec { flex: 0 0 auto; }
+  .sbSec { display: flex; flex-direction: column; gap: 6px; }
+  /* Only the hierarchy absorbs leftover space - and it scrolls instead of
+     squashing its rows. Everything else keeps its natural height. */
+  /* A sized section owns exactly the height its variable says; its body
+     scrolls when the content is taller. */
+  .sbSec[data-sec="cameras"]   { flex: 0 0 var(--cameras-height); }
+  .sbSec[data-sec="objects"]   { flex: 0 0 var(--objects-height); }
+  .sbSec[data-sec="events"]    { flex: 0 0 var(--events-height); }
+  .sbSec[data-sec="inspector"] { flex: 0 0 var(--inspector-height); }
+  .sbSec[data-sec] { min-height: 44px; overflow: hidden; }
+  .sbSec[data-sec].collapsed { flex: 0 0 auto; min-height: 0; }
+  .sbSecHead, .sbRow, .filter, .inspector, #sidebar button.wide,
+  .list > .item { flex: 0 0 auto; }
+  .sbSecHead {
+    font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+    color: #8b8f99; border-bottom: 1px solid #303239; padding-bottom: 4px;
+    display: flex; justify-content: space-between; align-items: baseline;
+    cursor: pointer; user-select: none;
+  }
+  .sbSecHead:hover { color: #b8bcc4; }
+  /* Collapsible sections: the caret rotates and the body is hidden. A
+     collapsed section must not keep its flex-grow either, or it would still
+     reserve the space it is no longer using. */
+  .caret {
+    display: inline-block; width: 0; height: 0; margin-right: 6px;
+    border-left: 4px solid currentColor;
+    border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+    transform: rotate(90deg); transition: transform .12s ease;
+    vertical-align: middle;
+  }
+  .sbSec.collapsed .caret { transform: rotate(0deg); }
+  .sbSec.collapsed .secBody { display: none; }
+  /* A collapsed section leaves nothing to drag. */
+  .sbSec.collapsed + .rowResize { display: none; }
+  .secBody { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+  .secBody.grow { flex: 1 1 auto; }
+  .playRow { flex: 0 0 auto; }
+  #evtClear { cursor: pointer; }
+  #evtClear:hover { color: #b8bcc4; }
+  .evtList {
+    font-size: 11px; line-height: 1.45;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .evtList .evt { display: flex; gap: 6px; padding: 1px 2px; }
+  .evtList .evt .t { color: #6b6f78; flex: 0 0 auto; }
+  .evtList .evt .m { color: #b8bcc4; overflow: hidden;
+                     text-overflow: ellipsis; white-space: nowrap; }
+  .sbCount { color: #6b6f78; letter-spacing: 0; text-transform: none; }
+  .sbRow { display: flex; flex-direction: column; gap: 5px; }
+  #sidebar button.wide {
+    width: 100%; text-align: left; margin: 0;
+    font-size: 13px; padding: 7px 10px; border-radius: 4px;
+    background: #2a2d34; color: #dfe2e7; border: 1px solid #3a3d45;
+  }
+  #sidebar button.wide:hover:enabled { background: #343841; }
+  #sidebar button.wide:disabled {
+    background: #212329; color: #6b6f78; border-color: #2c2f36;
+  }
+  .filter {
+    background: #101114; border: 1px solid #303239; border-radius: 4px;
+    color: #ddd; padding: 4px 6px; font-size: 12px; font-family: inherit;
+    width: 100%; box-sizing: border-box;
+  }
+  .list { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+  #camList { overflow-y: auto; min-height: 0; }
+  .list.scroll {
+    flex: 1 1 auto; overflow-y: auto; min-height: 0;
+    /* Match the panel instead of the OS: the default bar is a bright slab
+       against this dark sidebar. Firefox uses the two-value form, Chromium
+       the ::-webkit- rules below; both end up the same colours. */
+    scrollbar-width: thin;
+    scrollbar-color: #3a3d45 transparent;
+    overscroll-behavior: contain;  /* don't scroll the page at the ends */
+  }
+  .list.scroll::-webkit-scrollbar { width: 8px; }
+  .list.scroll::-webkit-scrollbar-track { background: transparent; }
+  .list.scroll::-webkit-scrollbar-thumb {
+    background: #3a3d45; border-radius: 4px;
+    border: 2px solid #17181c;  /* inset look against the sidebar */
+  }
+  .list.scroll:hover::-webkit-scrollbar-thumb { background: #4a4e58; }
+  .list.scroll::-webkit-scrollbar-thumb:active { background: #5a5f6b; }
+  .item {
+    display: flex; align-items: center; gap: 7px; line-height: 1.5;
+    padding: 3px 6px; border-radius: 4px; cursor: pointer;
+    border: 1px solid transparent; white-space: nowrap; overflow: hidden;
+  }
+  .item:hover { background: #202228; }
+  .item.sel { background: #2b3442; border-color: #3f5772; }
+  .item .dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px;
+    background: #4a4d55;
+  }
+  .item .sub { margin-left: auto; color: #7b7f88; font-size: 11px; }
+  .item .sub.busy { color: #d08a4a; }  /* taken by someone else */
+  /* The section has a fixed height (--inspector-height) and clips overflow,
+     so the body and the inspector itself must stretch to fill it - only then
+     does the inspector's own scrollbar take over instead of the section
+     cutting a line in half. */
+  .sbSec[data-sec="inspector"] .secBody { flex: 1 1 auto; }
+  .inspector {
+    flex: 1 1 auto; overflow-y: auto; min-height: 38px;
+    font-size: 12px; color: #b8bcc4; background: #101114;
+    border: 1px solid #262930; border-radius: 4px; padding: 7px 8px;
+    line-height: 1.5;
+    scrollbar-width: thin;
+    scrollbar-color: #3a3d45 transparent;
+    overscroll-behavior: contain;
+  }
+  .inspector .k { color: #7b7f88; }
+  /* Phones and narrow windows: the video gets the whole width and the sidebar
+     slides over it when opened, instead of squeezing the layout. */
+  @media (max-width: 900px) {
+    #sidebar {
+      position: fixed; left: 0; top: 0; bottom: 0; z-index: 40;
+      box-shadow: 0 0 24px rgba(0,0,0,.6);
+    }
+    #sidebar.hidden { display: none; }
+  /* Vertical splitter between the panel and the view. It is wider than it
+     looks so it stays easy to hit with a mouse or a finger. */
+  #sbResize {
+    flex: 0 0 10px; margin-left: -5px; margin-right: -4px; z-index: 41;
+    cursor: col-resize; touch-action: none; align-self: stretch;
+    background: transparent; position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #sbResize::before {
+    content: ''; position: absolute; top: 0; bottom: 0; left: 50%;
+    width: 1px; background: #303239;
+  }
+  #sbResize::after {
+    content: ''; position: relative; width: 4px; height: 42px;
+    border-radius: 2px; background: #4a4e58;
+    box-shadow: 0 0 0 3px #20242c;
+  }
+  #sbResize:hover::after, #sbResize.dragging::after { background: #7c828e; }
+  #sidebar.hidden + #sbResize { display: none; }
+  /* While dragging, keep the pointer's cursor everywhere and stop text from
+     being selected across the page. */
+  body.resizing-col, body.resizing-col * { cursor: col-resize !important; }
+  body.resizing-row, body.resizing-row * { cursor: row-resize !important; }
+  body.resizing-col, body.resizing-row { user-select: none; }
+    #main { padding: 8px 8px 16px; }
+    #sbOpen { padding: 8px 13px; font-size: 17px; }  /* thumb-sized */
+    .item { padding: 6px 6px; }                       /* easier to tap */
+    #sidebar button.wide { padding: 10px 12px; }
+    /* The video is the point of the page on a phone; the tuning panel and the
+       help text are desktop conveniences and only get in the way here. They
+       stay in the DOM so the sidebar and stats keep working. */
+    .tune, .hint { display: none; }
+    #perf { font-size: 11px; line-height: 1.5; }
+  }

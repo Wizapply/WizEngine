@@ -89,7 +89,7 @@ PhysicsWorld.step(dt)
   箱・床とも lit（`shaded.mat`＝箱用 lit / `ground_lit.mat`＝床用）。箱は影を落とし
   受けもする（以前は unlit＋頂点カラーで焼き込み陰影だったため、転がると陰影が
   向きに追従せず不自然だった）。箱の色は Scene の `setBoxColor`。床テクスチャは
-  `textures/ground.png`（stb_image で読み込み。sRGB、ミップマップは自前生成＝
+  `assets/textures/ground.png`（stb_image で読み込み。sRGB、ミップマップは自前生成＝
   `generateMipmaps` はこの版で usage フラグ必須のため不可）。画像が無ければ
   コード生成の市松模様にフォールバック。`baseColor` は乗算する色味。
   UV は「1リピート＝`kGroundTile` メートル」でタイリング。readPixels で RGBA 取得。
@@ -177,7 +177,7 @@ PhysicsWorld.step(dt)
   描画＝main：入力・カメラ・`scene.applyToRenderer`・`renderFrame`）。共有は Scene の
   ポーズ・スナップショット（`poseMutex_`）のみ。reset/pause は atomic で物理へ。
   カメラは方位角・仰角オービットで、矢印キーで回す。
-- `materials/unlit.mat` — matc でビルド時に `unlit.filamat` へコンパイル。
+- `assets/materials/*.mat` — matc でビルド時に `unlit.filamat` へコンパイル。
 - `CMakeLists.txt` — Filament / Chrono / GStreamer のリンク。
 
 ## ビルドと実行

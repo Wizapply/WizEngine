@@ -9,8 +9,8 @@
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
-        "Chrono_DIR": "C:/Users/smily/Documents/WizEngine/chrono-install/cmake",
-        "FILAMENT_ROOT": "C:/Users/smily/Documents/WizEngine/filament-v1.74.0-windows"
+        "CHRONO_ROOT": "${sourceDir}/third_parties/chrono-install",
+        "FILAMENT_ROOT": "${sourceDir}/third_parties/filament-v1.74.0-windows"
       },
       "environment": {
         "PKG_CONFIG_PATH": "C:/gstreamer/1.0/msvc_x86_64/lib/pkgconfig",

@@ -19,3 +19,14 @@ Files the scene loads at runtime, copied next to the executable by the build.
   not reach.
 
 - `*.glb` / `*.gltf` — models, named by `kBoxModelPath` or `kModelPath`.
+
+## Layout
+
+- `materials/*.mat` — material sources, compiled by matc at build time into
+  `.filamat` next to the executable.
+- `textures/ground.png` — the floor texture; replace the file (same name) to
+  change the floor, referenced as `textures/ground.png` in SceneConfig.h.
+- `*.hdr`, `*.glb` (this folder's root) — environment maps and models named
+  by SceneConfig.h. Not committed to git (see .gitignore); fetch your own.
+
+Everything under this folder is copied next to the executable at build time.

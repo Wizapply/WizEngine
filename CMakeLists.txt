@@ -19,6 +19,16 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(FILAMENT_VERSION "1.74.0" CACHE STRING "Filament prebuilt release to fetch")
 set(FILAMENT_ROOT "" CACHE PATH "Use a local Filament release instead of fetching")
 
+# The presets point FILAMENT_ROOT into third_parties/ so a local copy is used
+# when present - but a fresh clone has no third_parties/, and that must not
+# break the build: fall back to fetching instead.
+if(FILAMENT_ROOT AND NOT EXISTS "${FILAMENT_ROOT}")
+    message(STATUS
+        "WizEngine: FILAMENT_ROOT=${FILAMENT_ROOT} does not exist - "
+        "fetching the prebuilt release instead")
+    set(FILAMENT_ROOT "")
+endif()
+
 if(NOT FILAMENT_ROOT)
     include(FetchContent)
     if(WIN32)
@@ -112,7 +122,7 @@ pkg_check_modules(GST REQUIRED IMPORTED_TARGET
 # ---------------------------------------------------------------------------
 # Compile the material with matc -> shaded.filamat (next to the executable)
 # ---------------------------------------------------------------------------
-set(MAT_SRC ${CMAKE_CURRENT_SOURCE_DIR}/materials/shaded.mat)
+set(MAT_SRC ${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/shaded.mat)
 # Everything the program loads at runtime is gathered under one folder, so the
 # executable has a single place to look and the whole set can be copied around
 # together.
@@ -126,7 +136,7 @@ add_custom_command(
     DEPENDS ${MAT_SRC}
     COMMENT "Compiling Filament material (matc, all shader languages)")
 
-set(MAT_SRC2 ${CMAKE_CURRENT_SOURCE_DIR}/materials/ground_lit.mat)
+set(MAT_SRC2 ${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/ground_lit.mat)
 set(MAT_OUT2 ${ASSET_DIR}/ground_lit.filamat)
 add_custom_command(
     OUTPUT ${MAT_OUT2}
@@ -134,7 +144,7 @@ add_custom_command(
     DEPENDS ${MAT_SRC2}
     COMMENT "Compiling Filament ground material (matc)")
 
-set(MAT_SRC3 ${CMAKE_CURRENT_SOURCE_DIR}/materials/line.mat)
+set(MAT_SRC3 ${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/line.mat)
 set(MAT_OUT3 ${ASSET_DIR}/line.filamat)
 add_custom_command(
     OUTPUT ${MAT_OUT3}
@@ -144,17 +154,10 @@ add_custom_command(
 
 add_custom_target(materials ALL DEPENDS ${MAT_OUT} ${MAT_OUT2} ${MAT_OUT3})
 
-# Ground texture: copied next to the .filamat files so the app finds it at
-# runtime. Drop your own PNG in textures/ (same name) to change the floor.
+# The ground texture lives in assets/textures/ and is carried to the runtime
+# dir by the wholesale assets/ copy below (sceneassets). Drop your own PNG
+# there (same name) to change the floor.
 # Any .hdr in assets/ is used as-is at runtime; nothing to convert.
-set(TEX_SRC ${CMAKE_CURRENT_SOURCE_DIR}/textures/ground.png)
-set(TEX_OUT ${ASSET_DIR}/ground.png)
-add_custom_command(
-    OUTPUT ${TEX_OUT}
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TEX_SRC} ${TEX_OUT}
-    DEPENDS ${TEX_SRC}
-    COMMENT "Copying ground texture")
-add_custom_target(textures ALL DEPENDS ${TEX_OUT})
 
 # Environment maps and any other model/texture the scene names: copied as they
 # are, since the conversion to a cubemap now happens at load time on the GPU.

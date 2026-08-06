@@ -57,7 +57,10 @@ src/
   Log                      構造化コンソールログ
   main.cpp                 引数解析・スレッド起動・物理/描画ループ
 web/index.html             ブラウザ UI（ビルド時にコピー、リロードで反映）
-materials/ , textures/ , assets/   マテリアル・地面テクスチャ・HDR/モデル
+assets/
+  materials/*.mat          matc でビルド時に .filamat へコンパイル
+  textures/ground.png      地面テクスチャ（差し替え可）
+  *.hdr / *.glb            環境マップ・モデル（各自配置、git 管理外）
 ```
 
 ## 必要なもの
@@ -86,10 +89,17 @@ git clone https://github.com/projectchrono/chrono.git
 git -C chrono switch --detach 9.0.0
 cmake -S chrono -B chrono_build -G "Visual Studio 17 2022" -A x64 ^
   -DEIGEN3_INCLUDE_DIR=C:/dev/eigen-3.4.0 ^
-  -DCMAKE_INSTALL_PREFIX=C:/dev/chrono-install
+  -DCMAKE_INSTALL_PREFIX=C:/path/to/WizEngine/third_parties/chrono-install
 cmake --build chrono_build --config Release -j
 cmake --install chrono_build --config Release
 ```
+
+`third_parties/` はローカル依存の置き場です（git 管理外）。
+`CMakePresets.json` の windows プリセットは
+`third_parties/chrono-install`（と、あれば
+`third_parties/filament-v1.74.0-windows`）を自動で参照するので、この場所に
+インストールすればプリセットの編集は不要です。Filament のローカルコピーが
+無ければ自動ダウンロードにフォールバックします。
 
 Multicore バックエンドを使う場合は Chrono を MULTICORE モジュール付きでビルドし、
 本プロジェクトを `-DWIZ_USE_MULTICORE=ON` で構成してください（無ければ自動で
@@ -103,7 +113,8 @@ cmake --build build -j
 ```
 
 Visual Studio は「フォルダーを開く」で `CMakePresets.json` を読み込めます。
-プリセット内の `Chrono_DIR` と GStreamer のパスを環境に合わせて編集してください。
+Chrono を `third_parties/chrono-install` に入れていればプリセットはそのまま動きます
+（別の場所なら `CHRONO_ROOT` を、GStreamer が既定以外なら `PKG_CONFIG_PATH` を編集）。
 
 > **重要**: Chrono を Release でインストールした場合、本体も **Release** で
 > ビルドしてください。Debug/Release 混在は C ランタイム不整合により
