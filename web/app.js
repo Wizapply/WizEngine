@@ -514,6 +514,15 @@
         camLinksDone = true;
       }
       curIter = s.iterations;
+      if (s.simTime !== undefined) {
+        const t = s.simTime;
+        const label = t >= 60
+          ? Math.floor(t / 60) + ':' +
+            String(Math.floor(t % 60)).padStart(2, '0') + '.' +
+            String(Math.floor((t % 1) * 10))
+          : t.toFixed(2) + ' s';
+        document.getElementById('simTime').textContent = 't = ' + label;
+      }
       document.getElementById('iterVal').textContent = s.iterations;
       document.getElementById('subVal').textContent = s.substeps;
       document.getElementById('hzVal').textContent = s.physicsTarget;

@@ -70,9 +70,9 @@ constexpr float kBoxR = 0.80f, kBoxG = 0.36f, kBoxB = 0.18f;
 
 constexpr double kGroundSize = 20.0;  // physics ground box (X and Z)
 constexpr float kGroundHalf = 8.0f;   // visible ground half-extent (16 x 16)
-// Ground texture: image file loaded at startup (looked up next to the .filamat
-// files, i.e. the build dir). Set to "" to use the generated checkerboard.
-constexpr const char* kGroundTexture = "ground.png";
+// Ground texture: image under assets/ (copied next to the executable by the
+// build). Set to "" to use the generated checkerboard.
+constexpr const char* kGroundTexture = "textures/ground.png";
 constexpr float kGroundTile = 2.0f;   // metres covered by one texture repeat
 // Tint multiplied onto the texture (white = image colours as-is).
 constexpr float kGroundTintR = 1.0f, kGroundTintG = 1.0f, kGroundTintB = 1.0f;

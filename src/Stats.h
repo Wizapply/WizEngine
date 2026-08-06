@@ -17,6 +17,7 @@ struct PerfStats {
     std::atomic<double> solverMs{0.0};     // solver time inside one update
     std::atomic<double> collisionMs{0.0};  // collision detection inside one update
     std::atomic<double> realtime{1.0};     // simulated seconds per wall second
+    std::atomic<double> simTime{0.0};      // simulated seconds since start/reset
 
     // Render thread.
     std::atomic<double> renderFps{0.0};    // frames per second actually produced

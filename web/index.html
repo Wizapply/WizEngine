@@ -23,9 +23,10 @@
 
     <div id="paneScene" class="sbPane">
     <div class="sbRow playRow">
-      <button class="wide" onclick="send('pause')">⏯ Pause / Resume</button>
+      <button class="wide" onclick="send('pause')">⏯ Play / Pause</button>
       <button class="wide" onclick="send('reset')">⟲ Reset</button>
     </div>
+    <div id="simTime" title="Simulated time (resets with ⟲)">t = 0.00 s</div>
 
     <section class="sbSec" data-sec="cameras">
       <div class="sbSecHead" onclick="toggleSection('cameras')">

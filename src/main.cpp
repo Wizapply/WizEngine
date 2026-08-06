@@ -379,6 +379,7 @@ static int run(int argc, char** argv) {
                 j["envelope"] = tuning.envelope.load();
                 j["recovery"] = tuning.recovery.load();
                 j["realtime"] = stats.realtime.load();
+                j["simTime"] = stats.simTime.load();
                 j["engine"] = physics.backendName();
                 j["codec"] = endpoints[camIndex]->webrtc->codecName();
                 j["camera"] = int(camIndex);
@@ -460,6 +461,7 @@ static int run(int argc, char** argv) {
         double solverMs = 0.0;
         double collisionMs = 0.0;
         double simAdvanced = 0.0;  // simulated seconds in this window
+        double simTotal = 0.0;     // simulated seconds since start (see PerfStats)
 
         while (g_run) {
             if (!gActive.load()) {
@@ -501,7 +503,11 @@ static int run(int argc, char** argv) {
             const double subDt = stepDt / substeps;
             stats.substeps.store(substeps);
 
-            if (tuning.reset.exchange(false)) scene.reset();
+            if (tuning.reset.exchange(false)) {
+                scene.reset();
+                simTotal = 0.0;  // the sim clock restarts with the scene
+                stats.simTime.store(0.0);
+            }
 
             const auto t0 = std::chrono::steady_clock::now();
             int stepped = 0;
@@ -514,6 +520,7 @@ static int run(int argc, char** argv) {
                 }
                 accumulator -= stepDt;
                 simAdvanced += stepDt;
+                simTotal += stepDt;
                 ++stepped;
             }
             if (accumulator >= stepDt) {
@@ -522,6 +529,7 @@ static int run(int argc, char** argv) {
             const auto t1 = std::chrono::steady_clock::now();
 
             if (stepped > 0) {
+                stats.simTime.store(simTotal);
                 busyMs += std::chrono::duration<double, std::milli>(t1 - t0).count() / stepped;
                 updates += stepped;
             }
