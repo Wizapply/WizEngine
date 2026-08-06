@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-vs2022",
+      "displayName": "Windows (Visual Studio 2022, x64)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "Chrono_DIR": "C:/Users/smily/Documents/WizEngine/chrono-install/cmake",
+        "FILAMENT_ROOT": "C:/Users/smily/Documents/WizEngine/filament-v1.74.0-windows"
+      },
+      "environment": {
+        "PKG_CONFIG_PATH": "C:/gstreamer/1.0/msvc_x86_64/lib/pkgconfig",
+        "PATH": "C:/gstreamer/1.0/msvc_x86_64/bin;$penv{PATH}"
+      }
+    },
+    {
+      "name": "linux-default",
+      "displayName": "Linux (Ninja, Release)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "Chrono_DIR": "/opt/chrono/lib/cmake/Chrono"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-release", "configurePreset": "windows-vs2022", "configuration": "Release" },
+    { "name": "windows-debug", "configurePreset": "windows-vs2022", "configuration": "Debug" },
+    { "name": "linux-release", "configurePreset": "linux-default" }
+  ]
+}

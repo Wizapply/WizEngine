@@ -1,0 +1,19 @@
+// Unlit material for the grab line. Unlit because the line is a UI element
+// that happens to live in 3D - shading it would make it fade in shadow, which
+// is exactly when the user needs to see it.
+material {
+    name : line,
+    shadingModel : unlit,
+    blending : transparent,
+    depthWrite : false,
+    parameters : [
+        { type : float4, name : baseColor }
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = materialParams.baseColor;
+    }
+}

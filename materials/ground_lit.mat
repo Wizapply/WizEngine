@@ -1,0 +1,27 @@
+// Lit material for the ground plane, so it responds to the directional light
+// and shows shadows cast by the boxes. (Unlit materials ignore lights and
+// cannot receive shadows.)
+//
+// The checker sampler holds a 2 x 2 checkerboard used as a linear multiplier on
+// baseColor, so baseColor still tints the whole floor. UVs are tiled by the
+// renderer so one square is a fixed size in metres.
+material {
+    name : ground_lit,
+    shadingModel : lit,
+    doubleSided : true,
+    requires : [ uv0 ],
+    parameters : [
+        { type : float3, name : baseColor },
+        { type : sampler2d, name : checker }
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        vec3 checker = texture(materialParams_checker, getUV0()).rgb;
+        material.baseColor.rgb = materialParams.baseColor * checker;
+        material.roughness = 0.9;
+        material.metallic = 0.0;
+    }
+}

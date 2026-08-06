@@ -1,0 +1,20 @@
+// Lit material for the boxes. Shading now comes from the scene lights, so a
+// tumbling box darkens and brightens correctly as it turns - the previous
+// unlit version baked a fixed brightness per face, which looked wrong once the
+// boxes rolled onto their sides.
+material {
+    name : box_lit,
+    shadingModel : lit,
+    parameters : [
+        { type : float3, name : baseColor }
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor.rgb = materialParams.baseColor;
+        material.roughness = 0.75;
+        material.metallic = 0.0;
+    }
+}

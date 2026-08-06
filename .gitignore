@@ -1,0 +1,20 @@
+# Build trees (any name starting with build, plus VS "Open Folder" output)
+/build*/
+/out/
+CMakeUserPresets.json
+
+# IDE / editor state
+.vs/
+.vscode/
+.idea/
+*.user
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Large runtime assets - fetch your own (see assets/README.md).
+# Remove these lines (or use Git LFS) if you want to version them.
+assets/*.hdr
+assets/*.glb
+assets/*.gltf
