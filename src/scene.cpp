@@ -1,5 +1,6 @@
 #include "Scene.h"
 #include "SceneConfig.h"
+#include "MeshCollision.h"
 #include "Log.h"
 
 #include "scene_math.h"
@@ -521,6 +522,30 @@ void Scene::build() {
                                                  std::sin(yaw * 0.5f), 0.0f);
             renderer_.setModelTransform(model, position, rotation, kModelScale);
         }
+        if (kModelCollision) {
+            // Static collision mesh at the model's pose. A low-poly proxy
+            // (kModelCollisionPath) is preferred when configured; otherwise
+            // the drawn model itself is used.
+            const char* collisionSrc = kModelCollisionPath[0] != '\0'
+                                           ? kModelCollisionPath
+                                           : kModelPath;
+            auto mesh =
+                chrono_types::make_shared<chrono::ChTriangleMeshConnected>();
+            if (wizengine::loadCollisionMesh(collisionSrc, kModelScale,
+                                             *mesh)) {
+                const double yaw = scenemath::radians(kModelYawDegrees);
+                physics_.addStaticMesh(
+                    mesh, ChVector3d(kModelX, kModelY, kModelZ),
+                    ChQuaternion<>(std::cos(yaw * 0.5), 0.0,
+                                   std::sin(yaw * 0.5), 0.0));
+                LOGI("scene", "model '%s': static mesh collision enabled",
+                     collisionSrc);
+            } else {
+                LOGW("scene",
+                     "model '%s': collision mesh unavailable - decoration only",
+                     collisionSrc);
+            }
+        }
     }
 
     // Optionally draw the dynamic objects as a model instead of the built-in
@@ -565,16 +590,40 @@ void Scene::build() {
              kBoxModelPath);
     }
 
+    // ConvexHull bodies collide as the drawn model's hull: load the point
+    // cloud once here, shared by every body. Empty = unavailable, and the
+    // loop below falls back to boxes so the scene still runs.
+    std::vector<ChVector3d> hullPoints;
+    if (kBodyShape == BodyShape::ConvexHull) {
+        if (useModel_) {
+            hullPoints =
+                wizengine::loadCollisionPoints(kBoxModelPath, kBoxModelScale);
+        }
+        if (hullPoints.empty()) {
+            LOGW("scene",
+                 "convex hull unavailable (kBoxModelPath=\"%s\") - bodies "
+                 "fall back to boxes",
+                 kBoxModelPath);
+        }
+    }
+
     // Grid of dynamic boxes: one physics body + one renderable each.
     for (std::size_t k = 0; k < boxTotal(); ++k) {
-        const std::size_t physId =
-            (kBodyShape == BodyShape::Sphere)
-                ? physics_.addSphere(kBoxSize * 0.5, kDensity,
+        std::size_t physId;
+        if (kBodyShape == BodyShape::Sphere) {
+            physId = physics_.addSphere(kBoxSize * 0.5, kDensity,
+                                        gridPos(k) + jitter(), dropTilt(k),
+                                        /*fixed*/ false);
+        } else if (kBodyShape == BodyShape::ConvexHull &&
+                   !hullPoints.empty()) {
+            physId = physics_.addConvexHull(hullPoints, kDensity,
+                                            gridPos(k) + jitter(),
+                                            dropTilt(k));
+        } else {
+            physId = physics_.addBox(kBoxSize, kBoxSize, kBoxSize, kDensity,
                                      gridPos(k) + jitter(), dropTilt(k),
-                                     /*fixed*/ false)
-                : physics_.addBox(kBoxSize, kBoxSize, kBoxSize, kDensity,
-                                  gridPos(k) + jitter(), dropTilt(k),
-                                  /*fixed*/ false);
+                                     /*fixed*/ false);
+        }
         // With a model, the renderable id is just the instance index.
         const std::size_t renderId = useModel_ ? k : renderer_.addBox();
         boxes_.push_back({physId, renderId});

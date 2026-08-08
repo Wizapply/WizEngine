@@ -380,6 +380,7 @@ static int run(int argc, char** argv) {
                 j["recovery"] = tuning.recovery.load();
                 j["realtime"] = stats.realtime.load();
                 j["simTime"] = stats.simTime.load();
+                j["paused"] = tuning.paused.load();
                 j["engine"] = physics.backendName();
                 j["codec"] = endpoints[camIndex]->webrtc->codecName();
                 j["camera"] = int(camIndex);

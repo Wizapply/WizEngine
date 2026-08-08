@@ -27,8 +27,13 @@ constexpr int kNy = 8;                // boxes along Y (stacked height)
 constexpr int kNz = 8;                // boxes along Z   -> 8*8*8 = 512
 // Collision shape of the dynamic objects. Sphere suits round models (an
 // apple); Box suits crates. kBoxSize is the box edge OR the sphere diameter,
-// so the object occupies the same space either way.
-enum class BodyShape { Box, Sphere };
+// so the object occupies the same space either way. ConvexHull collides as
+// the convex hull of kBoxModelPath's mesh (kBoxModelScale applied), so the
+// physics silhouette matches the drawn model - requires kBoxModelPath, and
+// falls back to Box (with a warning) when the mesh cannot be read. Author
+// hull models with the origin near their centre: Chrono re-centres the hull
+// on its barycentre, and a far-off origin renders offset from the collision.
+enum class BodyShape { Box, Sphere, ConvexHull };
 constexpr BodyShape kBodyShape = BodyShape::Sphere;
 // Rolling/spinning resistance - only meaningful for spheres, which otherwise
 // roll across a flat floor forever. Raise if the fruit never settles.
@@ -58,6 +63,9 @@ constexpr double kBaseY = 1.0;        // height of the lowest layer
 // kBoxSize has a bit over half the volume of the cube it fits in, so the same
 // density would give a much lighter fruit.
 constexpr double kMassPerBody = 1.0;  // kg
+// (ConvexHull uses the box volume as its estimate here; the actual mass is
+// density x the real hull volume, so it lands near kMassPerBody for a model
+// that roughly fills its kBoxSize cube.)
 constexpr double kBodyVolume =
     (kBodyShape == BodyShape::Sphere)
         ? (4.0 / 3.0) * scenemath::kPi * (kBoxSize * 0.5) * (kBoxSize * 0.5) *
@@ -176,6 +184,19 @@ constexpr float kSelectedWhiten = 0.7f;
 constexpr float kModelX = 0.0f, kModelY = 0.0f, kModelZ = 0.0f;
 constexpr float kModelYawDegrees = 0.0f;
 constexpr float kModelScale = 1.0f;
+// Give the model above a static triangle-mesh collision at the same pose, so
+// dynamic objects pile against it instead of passing through. Exact but for
+// FIXED geometry only. Read failures degrade to "decoration only" with a
+// warning rather than aborting the run.
+constexpr bool kModelCollision = false;
+// Collision proxy: a separate low-poly mesh used ONLY for collision, while
+// kModelPath stays the pretty one on screen. Empty = collide with kModelPath
+// itself. Strongly recommended for dense models: the multicore collision
+// system treats every triangle as its own shape, so a high-poly collision
+// mesh stalls the physics thread (hundreds of ms per step reads as a freeze).
+// A few hundred to a few thousand triangles is the healthy range - in
+// Blender: duplicate, Decimate modifier, export. Same pose/scale is applied.
+constexpr const char* kModelCollisionPath = "";  // e.g. "model_collision.glb"
 
 // ---- Grab control --------------------------------------------------------
 // Grab an object with the left mouse button and drag to push it in the

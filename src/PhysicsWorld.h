@@ -7,6 +7,10 @@
 #include <memory>
 #include <vector>
 
+namespace chrono {
+class ChTriangleMeshConnected;
+}
+
 // Where the time went inside the last physics step (seconds), straight from
 // Chrono's own timers. Useful for deciding what to optimise: a solver-dominated
 // step wants fewer iterations, a collision-dominated one wants a smaller
@@ -118,6 +122,21 @@ public:
     std::size_t addBox(double sx, double sy, double sz, double density,
                        const chrono::ChVector3d& pos,
                        const chrono::ChQuaternion<>& rot, bool fixed);
+
+    // Dynamic body colliding as the convex hull of `points` (metres, already
+    // scaled; see MeshCollision::loadCollisionPoints). Mass = density x hull
+    // volume. NOTE: Chrono re-centres the hull on its barycentre, so a model
+    // whose origin sits far from its centre will render offset from where it
+    // collides - author models with the origin near the middle.
+    std::size_t addConvexHull(const std::vector<chrono::ChVector3d>& points,
+                              double density, const chrono::ChVector3d& pos,
+                              const chrono::ChQuaternion<>& rot);
+
+    // Fixed body colliding as an exact triangle mesh - for terrain and
+    // obstacles only; dynamic mesh-vs-mesh contact is slow and fragile.
+    std::size_t addStaticMesh(
+        std::shared_ptr<chrono::ChTriangleMeshConnected> mesh,
+        const chrono::ChVector3d& pos, const chrono::ChQuaternion<>& rot);
 
     std::size_t bodyCount() const;
     BodyTransform bodyTransform(std::size_t id) const;

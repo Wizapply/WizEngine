@@ -149,7 +149,12 @@ web モードではカメラごとに 8080 / 8081 / 8082 のページが開き�
 
 `src/SceneConfig.h` がすべての入口です。例:
 
-- 剛体の数・形状: `kNx/kNy/kNz`, `kBodyShape`, `kBoxSize`
+- 剛体の数・形状: `kNx/kNy/kNz`, `kBodyShape`(Box / Sphere / **ConvexHull** =
+  `kBoxModelPath` のメッシュ凸包で衝突), `kBoxSize`
+- 静的メッシュ衝突: `kModelCollision = true` で `kModelPath` のモデルが
+  トライアングルメッシュの障害物になります（固定ジオメトリ専用）。
+  高ポリモデルは物理が固まるので、`kModelCollisionPath` に
+  Decimate した衝突専用の低ポリ版（数百〜数千三角形）を指定してください
 - ライト: `lightConfigs()`（Directional / Point / Spot、色・強度・影）。
   実行時にも `scene.light(i).setDirection(...)` などで動かせます
 - 環境光: `kEnvironmentHdr = "studio.hdr"` — `assets/` に Radiance .hdr を

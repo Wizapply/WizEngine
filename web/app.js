@@ -36,6 +36,12 @@
   function setBlocked(blocked) {
     errorEl.classList.toggle('show', blocked);
     videoEl.style.display = blocked ? 'none' : 'block';
+    // The loading overlay ("connecting..." + spinner) is an opaque layer over
+    // the whole stage, normally dismissed by the first decoded video frame -
+    // which a blocked viewer never gets. Without this line the error box
+    // renders UNDER the overlay and is invisible (latent since the
+    // single-viewer UI was added).
+    if (blocked) loadingEl.classList.add('done');
   }
 
   // Only the browser that owns the session may drive the scene; the others
@@ -46,6 +52,21 @@
   }
   setControlsEnabled(false);
 
+  // The button always names the action it will perform: "Pause" while the
+  // sim runs, "Play" while it is paused. Clicking flips the label at once
+  // (the server round-trip is invisible), and the 500 ms stats poll then
+  // keeps it truthful - e.g. when someone on another camera page pauses.
+  function setPlayLabel(paused) {
+    const b = document.getElementById('btnPlay');
+    // \ufe0e forces text (not emoji) presentation: the emoji font has
+    // taller glyph metrics and made the button grow on "Pause".
+    b.textContent = paused ? '\u25b6\ufe0e Play' : '\u23f8\ufe0e Pause';
+  }
+  function togglePause() {
+    send('pause');
+    setPlayLabel(document.getElementById('btnPlay')
+                     .textContent.indexOf('Play') >= 0 ? false : true);
+  }
   function send(cmd, args) {
     if (!owner) return;
     const msg = Object.assign({ cmd: cmd }, args || {});
@@ -436,8 +457,12 @@
         // like a dead stream to the user.
         const painting = videoEl.videoWidth > 0 && !videoEl.paused;
         // The overlay clears on the first painted frame and comes back if the
-        // picture is lost, so it doubles as the reconnecting indicator.
-        loadingEl.classList.toggle('done', painting && decoded > 0);
+        // picture is lost, so it doubles as the reconnecting indicator - but
+        // it must stay hidden while the blocked-viewer error box is up, or it
+        // covers the box again (a blocked viewer never decodes a frame).
+        loadingEl.classList.toggle(
+            'done',
+            (painting && decoded > 0) || errorEl.classList.contains('show'));
         loadingMsg.textContent = sawVideo
           ? (decoded > 0 ? 'starting video…' : 'waiting for the first frame…')
           : 'connecting…';
@@ -514,6 +539,7 @@
         camLinksDone = true;
       }
       curIter = s.iterations;
+      if (s.paused !== undefined) setPlayLabel(s.paused);
       if (s.simTime !== undefined) {
         const t = s.simTime;
         const label = t >= 60

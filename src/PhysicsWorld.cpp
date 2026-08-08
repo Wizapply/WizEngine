@@ -4,6 +4,7 @@
 #include <chrono/collision/ChCollisionModel.h>
 #include <chrono/collision/ChCollisionSystem.h>
 #include <chrono/physics/ChBodyEasy.h>
+#include <chrono/geometry/ChTriangleMeshConnected.h>
 #include <chrono/physics/ChSystemNSC.h>
 #include <chrono/solver/ChIterativeSolverVI.h>
 #include <chrono/solver/ChSolver.h>
@@ -438,6 +439,51 @@ std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density
         b->SetSleepTime(sleepSeconds_);
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
+    sys_->AddBody(b);
+    bodies_.push_back(b);
+    return bodies_.size() - 1;
+}
+
+std::size_t PhysicsWorld::addConvexHull(
+    const std::vector<ChVector3d>& points, double density,
+    const ChVector3d& pos, const ChQuaternion<>& rot) {
+    // visualize=false: our renderer draws the glTF model itself; Chrono's
+    // visual assets are unused here.
+    //
+    // Chrono's constructor takes the points by NON-const reference and
+    // translates them in place (it moves the barycentre onto the centre of
+    // mass) - hence the local copy: the caller's point cloud is shared by
+    // every body and must not be mutated.
+    std::vector<ChVector3d> local = points;
+    auto b = chrono_types::make_shared<ChBodyEasyConvexHull>(
+        local, density, /*visualize*/ false, /*collide*/ true, mat_);
+    b->SetPos(pos);
+    b->SetRot(rot);
+    b->SetFixed(false);
+    b->EnableCollision(true);
+    allowSleeping(b.get(), sleepingEnabled_, 0);
+    if (sleepingEnabled_) {
+        b->SetSleepTime(sleepSeconds_);
+        setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
+    }
+    sys_->AddBody(b);
+    bodies_.push_back(b);
+    return bodies_.size() - 1;
+}
+
+std::size_t PhysicsWorld::addStaticMesh(
+    std::shared_ptr<chrono::ChTriangleMeshConnected> mesh,
+    const ChVector3d& pos, const ChQuaternion<>& rot) {
+    // compute_mass=false: the body is fixed, its mass is irrelevant. The
+    // small sphere-swept thickness rounds each triangle slightly, which is
+    // what makes NSC contacts against a raw mesh behave.
+    auto b = chrono_types::make_shared<ChBodyEasyMesh>(
+        mesh, 1000.0, /*compute_mass*/ false, /*visualize*/ false,
+        /*collide*/ true, mat_, /*sphere_swept*/ 0.002);
+    b->SetPos(pos);
+    b->SetRot(rot);
+    b->SetFixed(true);
+    b->EnableCollision(true);
     sys_->AddBody(b);
     bodies_.push_back(b);
     return bodies_.size() - 1;

@@ -214,6 +214,12 @@ wiz_download_header(
 wiz_download_header(
     "https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp"
     "${DEPS_INC}/nlohmann/json.hpp")
+# cgltf: parses glTF/GLB on the CPU for collision geometry (the renderer's
+# gltfio streams vertices straight to the GPU, so physics reads the file
+# itself - with the same parser gltfio uses internally).
+wiz_download_header(
+    "https://raw.githubusercontent.com/jkuhlmann/cgltf/v1.14/cgltf.h"
+    "${DEPS_INC}/cgltf.h")
 # stb_image: decodes PNG/JPEG/TGA/BMP for the ground texture.
 wiz_download_header(
     "https://raw.githubusercontent.com/nothings/stb/master/stb_image.h"
@@ -225,6 +231,7 @@ wiz_download_header(
 add_executable(wizengine
     src/main.cpp
     src/PhysicsWorld.cpp
+    src/MeshCollision.cpp
     src/Renderer.cpp
     src/EnvironmentLoader.cpp
     src/scene.cpp

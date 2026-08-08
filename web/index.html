@@ -23,7 +23,7 @@
 
     <div id="paneScene" class="sbPane">
     <div class="sbRow playRow">
-      <button class="wide" onclick="send('pause')">⏯ Play / Pause</button>
+      <button id="btnPlay" class="wide" onclick="togglePause()">⏸&#xFE0E; Pause</button>
       <button class="wide" onclick="send('reset')">⟲ Reset</button>
     </div>
     <div id="simTime" title="Simulated time (resets with ⟲)">t = 0.00 s</div>
