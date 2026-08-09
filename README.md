@@ -124,16 +124,19 @@ Chrono を `third_parties/chrono-install` に入れていればプリセット�
 
 ```bash
 cd build
-./wizengine                 # web モード（既定）: http://127.0.0.1:8080/
-./wizengine web 9000        # ポート指定（カメラ N はポート +N）
+./wizengine                 # web モード（既定）: http://127.0.0.1:8080/cam0/
+./wizengine web 9000        # ポート指定（全カメラが1ポート、パスで分岐）
 ./wizengine window          # ローカルウィンドウ表示
 ./wizengine stream 192.168.1.10 5000   # RTP/UDP 配信
 ./wizengine rtsp rtsp://...            # RTSP 配信
+./wizengine --codec av1                   # コーデック指定(h264/h265/av1/vp9)
+./wizengine --encoder amfh264device1enc   # エンコーダ要素(=GPU)を指定
 ./wizengine --help          # CPU 固定などのオプション一覧
 ```
 
-web モードではカメラごとに 8080 / 8081 / 8082 のページが開き、各ページは
-同時に 1 人が操作できます（サイドバーの Cameras から空きカメラへ移動）。
+web モードでは単一ポート上の `/cam0/` `/cam1/` `/cam2/` に各カメラのページが
+あり（`/` は `/cam0/` へリダイレクト）、各ページは同時に 1 人が操作できます
+（サイドバーの Cameras から空きカメラへ移動）。
 
 ### ブラウザ操作
 
@@ -161,9 +164,14 @@ web モードではカメラごとに 8080 / 8081 / 8082 のページが開き�
   置くだけ（<https://polyhaven.com/hdris> の 2k で十分）。リポジトリには
   同梱していないので各自取得してください
 - glTF モデル: `kModelPath`（置物）/ `kBoxModelPath`（剛体の見た目差し替え）
-- 配信: `kVideoCodec`（H264 / VP8 / VP9）, `kVideoBitrate`
+- 配信コーデック等（H264 / H265 / AV1 / VP9、ビットレート、GPU色変換）は
+  シーンではなくエンジン設定として `main.cpp` 冒頭で定義。起動時は
+  `--codec` / `--encoder`、実行中はブラウザの System > Stream から変更可
 - ソルバー: `kSolverIterations`, `kPhysicsHz`, `kSubsteps` ほか
-  （実行中はブラウザの Physics パネルからも変更可）
+  （実行中はブラウザの System タブからも変更可）
+- 配信フォーマットはブラウザからカメラごとに変更可: サイドバー System タブの
+  **Stream** セクションで解像度 / FPS / ビットレートを選び「Apply & reconnect」
+  （再接続で反映。起動時の既定は `kWidth/kHeight/kFps/kVideoBitrate`）
 
 `web/index.html` は実行フォルダの `assets/web/` に直接コピー + リロードで
 再ビルドなしに試せます。

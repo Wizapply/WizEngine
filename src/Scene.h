@@ -14,7 +14,6 @@
 #include "GameObject.h"
 #include "SceneComponent.h"
 #include "PhysicsWorld.h"  // for BodyTransform
-#include "WebRtcStreamer.h"  // for VideoCodec
 
 namespace wizengine {
 class Renderer;
@@ -32,8 +31,6 @@ class Renderer;
 PhysicsBackend scenePhysicsBackend();
 
 // Streaming settings (defined in scene.cpp with the rest of the config).
-VideoCodec sceneVideoCodec();
-int sceneVideoBitrate();
 
 class Scene {
 public:

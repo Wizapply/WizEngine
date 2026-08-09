@@ -142,6 +142,12 @@ public:
     std::size_t addView();
     std::size_t viewCount() const { return views_.size(); }
 
+    // Requests a new output size for one view. RENDER thread only. Applied
+    // inside renderFrame() once that view has no readbacks in flight - the
+    // GPU may still be copying into the old-size buffers, so the swap chain
+    // and capture buffers cannot be replaced immediately.
+    void requestViewResize(std::size_t viewIndex, int width, int height);
+
     void setCamera(const filament::math::double3& eye,
                    const filament::math::double3& target);
     void setCamera(std::size_t viewIndex, const filament::math::double3& eye,
@@ -178,6 +184,9 @@ private:
         filament::Camera* camera = nullptr;
         filament::SwapChain* swapChain = nullptr;
         utils::Entity cameraEntity;
+
+        int width = 0, height = 0;          // this view's output size
+        int pendingW = 0, pendingH = 0;     // 0 = no resize requested
 
         // Two capture buffers per view, used alternately: the GPU fills one
         // while the previous one is handed to the encoder. A single buffer

@@ -67,10 +67,33 @@
     setPlayLabel(document.getElementById('btnPlay')
                      .textContent.indexOf('Play') >= 0 ? false : true);
   }
+  // ---- Stream format (resolution / fps / bitrate) --------------------------
+  // The server stores the requested format and applies it to the NEXT WebRTC
+  // session, so apply = send the command, then reload: the reload releases
+  // this session (beacon) and negotiates a fresh one in the new format.
+  let streamUiReady = false;
+  let versionsShown = false;
+  function strKbpsLabel() {
+    const kb = document.getElementById('strKbps');
+    document.getElementById('strKbpsVal').textContent =
+      (kb.value / 1000).toFixed(1) + ' Mbps';
+  }
+  function applyStream() {
+    const [w, h] = document.getElementById('strRes').value.split('x')
+      .map(Number);
+    send('stream', {
+      w: w, h: h,
+      fps: parseInt(document.getElementById('strFps').value, 10),
+      kbps: parseInt(document.getElementById('strKbps').value, 10),
+    });
+    // Give the command a moment to land, then restart cleanly.
+    setTimeout(() => location.reload(), 400);
+  }
+
   function send(cmd, args) {
     if (!owner) return;
     const msg = Object.assign({ cmd: cmd }, args || {});
-    fetch('/input', {
+    fetch('input', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(msg)
@@ -320,7 +343,7 @@
   function startHeartbeat() {
     if (heartbeat) return;
     heartbeat = setInterval(() => {
-      fetch('/viewer/ping', { method: 'POST', body: token })
+      fetch('viewer/ping', { method: 'POST', body: token })
         .then((r) => { if (r.status === 409) loseSession(); })
         .catch(() => {});
     }, 2000);
@@ -356,7 +379,7 @@
     try {
       const caps = RTCRtpReceiver.getCapabilities('video');
       if (caps && tx.setCodecPreferences) {
-        const want = 'video/' + (window.WIZ_CODEC || 'VP8');
+        const want = 'video/' + (window.WIZ_CODEC || 'H264');
         let picked = caps.codecs.filter(
           (c) => c.mimeType.toUpperCase() === want.toUpperCase());
         // H264 appears in several variants; the server answers the
@@ -393,7 +416,7 @@
     });
 
     try {
-      const resp = await fetch('/whep', {
+      const resp = await fetch('whep', {
         method: 'POST',
         headers: { 'Content-Type': 'application/sdp', 'X-Viewer-Token': token },
         body: pc.localDescription.sdp
@@ -532,7 +555,7 @@
   // Performance overlay: physics thread rate vs render thread rate.
   function fmt(v, digits) { return (v || 0).toFixed(digits === undefined ? 1 : digits); }
   setInterval(() => {
-    fetch('/stats').then((r) => r.json()).then((s) => {
+    fetch('stats').then((r) => r.json()).then((s) => {
       if (s.cameraCount !== undefined && !camLinksDone) {
         document.getElementById('camLabel').textContent =
           'camera ' + s.camera + ' of ' + s.cameraCount;
@@ -540,6 +563,35 @@
       }
       curIter = s.iterations;
       if (s.paused !== undefined) setPlayLabel(s.paused);
+      if (s.versions && !versionsShown) {
+        versionsShown = true;
+        const v = s.versions;
+        let html = '<div class="vTitle">WizEngine ' + (v['WizEngine'] || '') +
+                   '</div>';
+        for (const name of Object.keys(v)) {
+          if (name === 'WizEngine') continue;
+          html += '<div class="vLib"><span>' + name + '</span><span>' +
+                  v[name] + '</span></div>';
+        }
+        document.getElementById('versions').innerHTML = html;
+      }
+      if (s.streamW !== undefined && !streamUiReady) {
+        streamUiReady = true;
+        const res = document.getElementById('strRes');
+        const wanted = s.streamW + 'x' + s.streamH;
+        // Add the server's current format as an option if the presets miss it.
+        if (![...res.options].some((o) => o.value === wanted)) {
+          const o = document.createElement('option');
+          o.value = wanted;
+          o.textContent = s.streamW + ' \u00d7 ' + s.streamH;
+          res.insertBefore(o, res.firstChild);
+        }
+        res.value = wanted;
+        document.getElementById('strFps').value = String(s.streamFps);
+        const kb = document.getElementById('strKbps');
+        kb.value = Math.min(Math.max(s.streamKbps, kb.min), kb.max);
+        strKbpsLabel();
+      }
       if (s.simTime !== undefined) {
         const t = s.simTime;
         const label = t >= 60
@@ -577,11 +629,11 @@
   // Release the session immediately on reload/close so the next page (or the
   // same one after F5) can take over without waiting for the timeout.
   window.addEventListener('pagehide', () => {
-    if (owner) navigator.sendBeacon('/viewer/leave', token);
+    if (owner) navigator.sendBeacon('viewer/leave', token);
   });
 
   // Ask the server which codec it encodes, then negotiate for exactly that.
-  fetch('/stats')
+  fetch('stats')
     .then((r) => r.json())
     .then((s) => { window.WIZ_CODEC = s.codec; })
     .catch(() => {})
@@ -781,12 +833,11 @@
   function renderCameras() {
     if (!sceneData || !sceneData.cameras) return;
     const el = document.getElementById('camList');
-    // The server sends the real ports: busy ones are skipped at startup, so
-    // they are not necessarily consecutive.
-    const base = location.port ? parseInt(location.port, 10) : 80;
-    const portOf = (i) => (sceneData.ports && sceneData.ports[i] !== undefined)
-      ? sceneData.ports[i]
-      : (base - sceneData.camera + i);   // older server: assume consecutive
+    // Every camera lives on the SAME port under its own path ("/cam0/",
+    // "/cam1/", ...); the server sends the list.
+    const pathOf = (i) => (sceneData.paths && sceneData.paths[i])
+      ? sceneData.paths[i]
+      : ('/cam' + i + '/');
     el.innerHTML = '';
     for (const c of sceneData.cameras) {
       const isMe = c.index === sceneData.camera;
@@ -805,10 +856,7 @@
         row.title = 'Switch to this camera';
         // Same tab: leaving this page also releases the viewer session, so the
         // camera we came from frees up immediately.
-        row.onclick = () => {
-          location.href =
-            'http://' + location.hostname + ':' + portOf(c.index) + '/';
-        };
+        row.onclick = () => { location.href = pathOf(c.index); };
       }
       el.appendChild(row);
     }
@@ -890,7 +938,7 @@
 
   async function pollScene() {
     try {
-      const r = await fetch('/scene');
+      const r = await fetch('scene');
       sceneData = await r.json();
       noteSceneChanges(sceneData);
       renderCameras();

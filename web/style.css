@@ -228,6 +228,18 @@
     padding-right: 2px;  /* breathing room so the bar doesn't cover content */
   }
   .sbPane[hidden] { display: none; }
+  .versions {
+    font: 11px/1.7 ui-monospace, Consolas, monospace;
+    color: #8b919c; background: #101114;
+    border: 1px solid #262930; border-radius: 4px; padding: 7px 9px;
+  }
+  .versions .vTitle { color: #c8cdd6; font-size: 12px; }
+  .versions .vLib { display: flex; justify-content: space-between; gap: 8px; }
+  .strSel {
+    background: #212329; color: #dfe2e7; border: 1px solid #3a3d45;
+    border-radius: 4px; font-size: 12px; padding: 3px 6px; max-width: 55%;
+  }
+  #strKbps { width: 55%; accent-color: #5b8dd9; }
   .tuneRow {
     display: flex; align-items: center; justify-content: space-between;
     gap: 8px; font-size: 12px; color: #b8bcc4;

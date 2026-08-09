@@ -18,12 +18,11 @@
 #include "CameraObject.h"
 #include "LightObject.h"
 #include "PhysicsWorld.h"    // PhysicsBackend
-#include "WebRtcStreamer.h"  // VideoCodec
 #include "scene_math.h"      // kPi, used by the volume calculation
 
 // ---- Scene parameters (everything lives here) ---------------------------
 constexpr int kNx = 8;                // boxes along X
-constexpr int kNy = 8;                // boxes along Y (stacked height)
+constexpr int kNy = 6;                // boxes along Y (stacked height)
 constexpr int kNz = 8;                // boxes along Z   -> 8*8*8 = 512
 // Collision shape of the dynamic objects. Sphere suits round models (an
 // apple); Box suits crates. kBoxSize is the box edge OR the sphere diameter,
@@ -39,8 +38,8 @@ constexpr BodyShape kBodyShape = BodyShape::Sphere;
 // roll across a flat floor forever. Raise if the fruit never settles.
 // (Chrono only solves these when the solver runs in spinning mode, which
 // PhysicsWorld enables for the multicore backend.)
-constexpr float kRollingFriction = 0.05f;
-constexpr float kSpinningFriction = 0.05f;
+constexpr float kRollingFriction = 0.005f;
+constexpr float kSpinningFriction = 0.005f;
 
 // Contact surface. Friction is the main dial for HOW MUCH SPIN appears: it is
 // what turns sliding into rolling, so a higher value spins objects up faster
@@ -55,14 +54,14 @@ constexpr float kRestitution = 0.0f;
 constexpr double kLinearDamping = 0.15;   // 1/s
 constexpr double kAngularDamping = 0.60;  // 1/s
 
-constexpr double kBoxSize = 0.3;      // box edge length / sphere diameter
-constexpr double kSpacing = 0.36;     // centre-to-centre gap (> kBoxSize)
+constexpr double kBoxSize = 0.1;      // box edge length / sphere diameter
+constexpr double kSpacing = 0.15;     // centre-to-centre gap (> kBoxSize)
 constexpr double kBaseY = 1.0;        // height of the lowest layer
 // Mass per object, converted to the density Chrono wants. Doing it this way
 // keeps the mass fixed when the shape or size changes: a sphere of diameter
 // kBoxSize has a bit over half the volume of the cube it fits in, so the same
 // density would give a much lighter fruit.
-constexpr double kMassPerBody = 1.0;  // kg
+constexpr double kMassPerBody = 0.2;  // kg
 // (ConvexHull uses the box volume as its estimate here; the actual mass is
 // density x the real hull volume, so it lands near kMassPerBody for a model
 // that roughly fills its kBoxSize cube.)
@@ -98,7 +97,7 @@ constexpr float kGroundTintR = 1.0f, kGroundTintG = 1.0f, kGroundTintB = 1.0f;
 // Worth setting whenever glTF models are used: glTF defaults metallicFactor to
 // 1.0, and metal has no diffuse colour - with nothing to reflect it renders
 // black in shadow. An environment gives it something to reflect.
-constexpr const char* kEnvironmentHdr = "";  // e.g. "studio.hdr"
+constexpr const char* kEnvironmentHdr = "studio.hdr";  // e.g. "studio.hdr"
 constexpr float kEnvironmentIntensity = 30000.0f;  // as the flat ambient was
 
 // ---- Cameras -------------------------------------------------------------
@@ -173,7 +172,7 @@ constexpr const char* kModelPath = "";  // e.g. "model.glb"
 // Use a glTF/GLB model for the dynamic objects instead of the built-in cube.
 // Empty = plain boxes. The physics shape stays a kBoxSize cube either way.
 // If the file cannot be loaded the scene falls back to boxes.
-constexpr const char* kBoxModelPath = "";  // e.g. "crate.glb"
+constexpr const char* kBoxModelPath = "apple2.glb";  // e.g. "crate.glb"
 // Straight multiplier applied to the model's own units. The console prints the
 // model's measured size at startup, so pick a value from that: to make a model
 // that measures 0.01 span 0.3 m, use 30. Nothing is fitted automatically.
@@ -222,14 +221,10 @@ inline const std::vector<filament::math::float3>& cameraColors() {
 }
 
 // ---- Streaming ----------------------------------------------------------
-// VP8:  CPU encode, the safe baseline.
-// VP9:  CPU encode, ~half the bitrate of VP8 for the same picture but clearly
-//       more CPU per frame.
-// H264: GPU encode when available (AMF -> Media Foundation -> software
-//       fallback; the console prints which one was picked). Frees the CPU for
-//       physics; bitrate efficiency sits between VP8 and VP9.
-constexpr VideoCodec kVideoCodec = VideoCodec::H264;
-constexpr int kVideoBitrate = 4000000;  // bits per second
+// Codec, bitrate and GPU colour conversion are ENGINE settings, not scene
+// content: they live in main.cpp (kDefaultCodec & friends) and can be
+// overridden at launch with --codec / --encoder, and per camera from the
+// browser's System > Stream section.
 
 // Physics backend. Multicore parallelises the solver and collision detection
 // (much faster with thousands of bodies) but does not support sleeping. It
@@ -244,9 +239,9 @@ constexpr bool kIdleWhenUnwatched = true;
 
 // Physics rate, independent of the 60 fps render loop. 30 Hz halves the
 // physics cost; the renderer simply draws the latest pose twice.
-constexpr int kPhysicsHz = 60;
+constexpr int kPhysicsHz = 30;
 
-constexpr int kSubsteps = 1;
+constexpr int kSubsteps = 2;
 constexpr int kSolverIterations = 60;
 
 // Contact tolerances. Chrono's default envelope (0.03 m) is huge next to a

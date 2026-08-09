@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>WizEngine</title>
-<link rel="icon" href="/favicon.ico">
+<link rel="icon" href="favicon.ico">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -18,7 +18,7 @@
 
     <div class="sbTabs">
       <button id="tabScene" class="sbTab active" onclick="showTab('scene')">Scene</button>
-      <button id="tabPhysics" class="sbTab" onclick="showTab('physics')">Physics</button>
+      <button id="tabPhysics" class="sbTab" onclick="showTab('physics')">System</button>
     </div>
 
     <div id="paneScene" class="sbPane">
@@ -127,6 +127,41 @@
             <button onclick="send('recovery', {v:3.0})">3.0</button>
           </span>
         </div>
+      </section>
+
+      <section class="sbSec">
+        <div class="sbSecHead">Stream (this camera)</div>
+        <div class="tuneRow">
+          <span>resolution</span>
+          <select id="strRes" class="strSel">
+            <option value="1920x1080">1920 × 1080</option>
+            <option value="1600x900">1600 × 900</option>
+            <option value="1280x720">1280 × 720</option>
+            <option value="960x540">960 × 540</option>
+          </select>
+        </div>
+        <div class="tuneRow">
+          <span>fps</span>
+          <select id="strFps" class="strSel">
+            <option value="60">60</option>
+            <option value="30">30</option>
+            <option value="15">15</option>
+          </select>
+        </div>
+        <div class="tuneRow">
+          <span>bitrate <b class="val" id="strKbpsVal">-</b></span>
+          <input id="strKbps" type="range" min="1000" max="12000" step="500"
+                 oninput="strKbpsLabel()">
+        </div>
+        <button class="wide" onclick="applyStream()"
+                title="Applies the format and reconnects this stream">
+          ⟳ Apply &amp; reconnect
+        </button>
+      </section>
+
+      <section class="sbSec">
+        <div class="sbSecHead">About</div>
+        <div id="versions" class="versions">WizEngine</div>
       </section>
     </div><!-- /panePhysics -->
   </aside>

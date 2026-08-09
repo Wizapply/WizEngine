@@ -460,14 +460,6 @@ PhysicsBackend scenePhysicsBackend() {
     return kBackend;
 }
 
-VideoCodec sceneVideoCodec() {
-    return kVideoCodec;
-}
-
-int sceneVideoBitrate() {
-    return kVideoBitrate;
-}
-
 int Scene::substeps() const {
     return kSubsteps;
 }

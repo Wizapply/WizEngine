@@ -17,21 +17,52 @@ typedef struct _GMainLoop GMainLoop;
 // The WebRTC pipeline is rebuilt on every offer, so reloading the browser (or a
 // new viewer) starts a fresh session. One viewer at a time.
 // Video codec used for the WebRTC stream.
-// - VP8:  CPU encode; the safe baseline, works everywhere.
-// - VP9:  CPU encode; ~half the bitrate of VP8 for the same quality, but
-//         noticeably more CPU per frame.
+// - VP9:  CPU (software) encode; the fallback when no hardware exists.
 // - H264: hardware encode when available (AMD AMF -> Media Foundation ->
-//         software fallback). Frees the CPU almost entirely; bitrate
-//         efficiency sits between VP8 and VP9.
-enum class VideoCodec { VP8, VP9, H264 };
+//         software fallback). Frees the CPU almost entirely; every browser
+//         and device decodes it - the compatibility baseline.
+// - H265: hardware encode; better quality per bit than H264, but viewers are
+//         Chrome 136+ / Safari 18+ only (Edge and Firefox never offer it).
+//         Falls back to H264 at startup when no encoder exists.
+// - AV1:  hardware encode (RDNA3+/RTX40+/Arc); best compression, royalty
+//         free, Chrome/Edge/Firefox viewers. Needs rtpav1pay
+//         (gst-plugins-rs); missing pieces fall back to H264 at startup.
+enum class VideoCodec { VP9, H264, H265, AV1 };
 
 class WebRtcStreamer {
 public:
     WebRtcStreamer(int width, int height, int fps,
-                   VideoCodec codec = VideoCodec::VP8, int bitrateBps = 6000000);
+                   VideoCodec codec = VideoCodec::H264, int bitrateBps = 6000000);
 
     const char* codecName() const;
     int bitrateBps() const { return bitrate_; }
+    int width() const { return width_; }
+    int height() const { return height_; }
+    int fps() const { return fps_; }
+
+    // Changes the stream format for the NEXT negotiation (the pipeline is
+    // rebuilt on every offer, so a reconnect picks this up). Frames of the
+    // old size that are still in flight are dropped, not pushed into a
+    // mismatched pipeline. Any thread.
+    void setStreamFormat(int width, int height, int fps, int bitrateBps);
+
+    // Forces a specific H.264 encoder element instead of the automatic
+    // hardware-first pick - set once at startup (from --encoder) before any
+    // streamer negotiates. The point is GPU selection: GStreamer registers
+    // one element per GPU (amfh264enc = primary adapter, amfh264device1enc =
+    // the next one, nvh264device0enc, ...), so choosing the element chooses
+    // the GPU. An element that is not installed logs a warning and falls
+    // back to the automatic pick. Applies to the H264, H265 and AV1 pickers
+    // (whichever codec is active); VP9 is software and unaffected.
+    static void setEncoderOverride(const std::string& name);
+
+    // Colour conversion (RGBA -> NV12) on the GPU via d3d11convert instead of
+    // CPU videoconvert - saves roughly one core per camera at 1080p60. Only
+    // taken when the encoder is a D3D11-capable hardware family (amf/mf/
+    // nvd3d11) and the d3d11 elements exist; otherwise the CPU path is used
+    // regardless of this setting. Set from main (kGpuConvert) before
+    // the endpoints are created.
+    static void setPreferGpuConvert(bool prefer);
     ~WebRtcStreamer();
 
     WebRtcStreamer(const WebRtcStreamer&) = delete;

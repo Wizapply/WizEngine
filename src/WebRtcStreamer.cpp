@@ -101,7 +101,7 @@ std::string fmtpLine(const std::string& sdp, int pt) {
     return line;
 }
 
-// The RTP payload number the browser's offer assigned to `codec` ("VP8",
+// The RTP payload number the browser's offer assigned to `codec` ("H264",
 // "VP9" or "H264"), picking the variant we can actually produce:
 // - VP9: profile-id 0 (browsers offer profile 0 and 2 under different PTs)
 // - H264: packetization-mode=1 (rtph264pay's default framing)
@@ -148,18 +148,26 @@ PayloadChoice payloadFromOffer(const std::string& sdp, const std::string& codec)
             }
             return c;
         }
-        return {pt, {}};  // VP8: first entry is fine
+        return {pt, {}};  // non-H264 codecs: first entry is fine
     }
     return fallback;
 }
 
 }  // namespace
 
+// Forward declarations: the constructor's codec-availability checks run
+// before these helpers are defined further down (next to the pipeline code).
+static bool encoderExists(const char* name);
+static const char* pickH264Encoder();
+static const char* pickH265Encoder();
+static const char* pickAV1Encoder();
+
 const char* WebRtcStreamer::codecName() const {
     switch (codec_) {
-        case VideoCodec::VP9: return "VP9";
         case VideoCodec::H264: return "H264";
-        default: return "VP8";
+        case VideoCodec::H265: return "H265";
+        case VideoCodec::AV1: return "AV1";
+        default: return "VP9";
     }
 }
 
@@ -175,6 +183,31 @@ WebRtcStreamer::WebRtcStreamer(int width, int height, int fps, VideoCodec codec,
     // them through the logger so GStreamer's own output keeps the format.
     g_set_print_handler([](const gchar* text) { LOGI("gst", "%s", text); });
     g_set_printerr_handler([](const gchar* text) { LOGW("gst", "%s", text); });
+
+    // AV1 needs two things that may be absent: an AV1 encoder and the RTP
+    // payloader from gst-plugins-rs. Deciding here (not at negotiation time)
+    // keeps /stats and the browser's codec preference consistent from the
+    // first connection.
+    if (codec_ == VideoCodec::H265) {
+        if (!pickH265Encoder() || !encoderExists("rtph265pay")) {
+            LOGW("webrtc",
+                 "H265 unavailable (no encoder element or rtph265pay) - "
+                 "falling back to H264");
+            codec_ = VideoCodec::H264;
+        }
+    }
+    if (codec_ == VideoCodec::AV1) {
+        const bool haveEnc = pickAV1Encoder() != nullptr;
+        const bool havePay = encoderExists("rtpav1pay");
+        if (!haveEnc || !havePay) {
+            LOGW("webrtc",
+                 "AV1 unavailable (%s%s%s) - falling back to H264",
+                 haveEnc ? "" : "no AV1 encoder element",
+                 (!haveEnc && !havePay) ? ", " : "",
+                 havePay ? "" : "rtpav1pay missing (gst-plugins-rs)");
+            codec_ = VideoCodec::H264;
+        }
+    }
     // The media pipeline is built fresh on each offer (see handleOffer). A GLib
     // main loop runs for webrtcbin/libnice callbacks.
     loop_ = g_main_loop_new(nullptr, FALSE);
@@ -191,9 +224,41 @@ WebRtcStreamer::~WebRtcStreamer() {
     if (loop_) g_main_loop_unref(loop_);
 }
 
-// First H.264 encoder element installed on this machine, hardware first.
+// Set once at startup, read from the pipeline builder - no locking needed.
+static std::string s_encoderOverride;
+
+void WebRtcStreamer::setEncoderOverride(const std::string& name) {
+    s_encoderOverride = name;
+}
+
+static bool s_preferGpuConvert = true;
+
+void WebRtcStreamer::setPreferGpuConvert(bool prefer) {
+    s_preferGpuConvert = prefer;
+}
+
+static bool encoderExists(const char* name) {
+    if (GstElementFactory* f = gst_element_factory_find(name)) {
+        gst_object_unref(f);
+        return true;
+    }
+    return false;
+}
+
+// The H.264 encoder element to use: the --encoder override when it is
+// installed, otherwise the first of the candidates below (hardware first).
 // Returns nullptr if none exist.
 static const char* pickH264Encoder() {
+    if (!s_encoderOverride.empty()) {
+        if (encoderExists(s_encoderOverride.c_str())) {
+            return s_encoderOverride.c_str();
+        }
+        LOGW("webrtc",
+             "--encoder %s is not an installed GStreamer element "
+             "(gst-inspect-1.0 amfcodec lists the per-GPU names) - falling "
+             "back to the automatic pick",
+             s_encoderOverride.c_str());
+    }
     static const char* const candidates[] = {
         "amfh264enc",   // AMD hardware (AMF)
         "mfh264enc",    // Windows Media Foundation (may also be hardware)
@@ -201,10 +266,52 @@ static const char* pickH264Encoder() {
         "openh264enc",  // software fallback
     };
     for (const char* name : candidates) {
-        if (GstElementFactory* f = gst_element_factory_find(name)) {
-            gst_object_unref(f);
-            return name;
-        }
+        if (encoderExists(name)) return name;
+    }
+    return nullptr;
+}
+
+// The H.265 encoder element: --encoder override first, then hardware
+// candidates. x265enc software encode is heavy - realtime 60 fps needs a
+// strong CPU - hence last. Returns nullptr if none exist.
+static const char* pickH265Encoder() {
+    if (!s_encoderOverride.empty() &&
+        encoderExists(s_encoderOverride.c_str())) {
+        return s_encoderOverride.c_str();
+    }
+    static const char* const candidates[] = {
+        "amfh265enc",    // AMD hardware (AMF)
+        "mfh265enc",     // Windows Media Foundation (may also be hardware)
+        "nvh265enc",     // NVIDIA NVENC
+        "nvd3d11h265enc",
+        "qsvh265enc",    // Intel Quick Sync
+        "vah265enc",     // Linux VA-API
+        "x265enc",       // software fallback (heavy)
+    };
+    for (const char* name : candidates) {
+        if (encoderExists(name)) return name;
+    }
+    return nullptr;
+}
+
+// The AV1 encoder element: --encoder override first, then hardware
+// candidates. svtav1enc is the only software encoder with a realtime chance,
+// and only on a strong CPU - hence last. Returns nullptr if none exist.
+static const char* pickAV1Encoder() {
+    if (!s_encoderOverride.empty() &&
+        encoderExists(s_encoderOverride.c_str())) {
+        return s_encoderOverride.c_str();
+    }
+    static const char* const candidates[] = {
+        "amfav1enc",     // AMD (RDNA3+ / VCN4+)
+        "nvav1enc",      // NVIDIA (RTX 40+)
+        "nvd3d11av1enc",
+        "qsvav1enc",     // Intel Arc / Xe
+        "vaav1enc",      // Linux VA-API
+        "svtav1enc",     // software (heavy)
+    };
+    for (const char* name : candidates) {
+        if (encoderExists(name)) return name;
     }
     return nullptr;
 }
@@ -217,10 +324,16 @@ void WebRtcStreamer::buildPipeline(int payloadType,
     //
     // target-bitrate drives quality - the encoders default to only 256 kbps,
     // which looks blocky at 720p. deadline=1 (realtime) and lag-in-frames=0
-    // keep latency low; cpu-used trades quality for speed, and VP9 needs a
-    // higher value than VP8 to keep up at 60 fps.
+    // keep latency low; cpu-used trades quality for speed (VP9 needs a high
+    // value to keep up at 60 fps).
     const bool vp9 = (codec_ == VideoCodec::VP9);
     const bool h264 = (codec_ == VideoCodec::H264);
+    const bool h265 = (codec_ == VideoCodec::H265);
+    const bool av1 = (codec_ == VideoCodec::AV1);
+
+    // Name of the hardware/software encoder element actually used (H264/AV1
+    // paths) - it decides whether the colour conversion can stay on the GPU.
+    std::string pickedEnc;
 
     std::string enc264;
     if (h264) {
@@ -232,22 +345,42 @@ void WebRtcStreamer::buildPipeline(int payloadType,
             return;
         }
         LOGI("webrtc", "h264 encoder: %s", encName);
+        pickedEnc = encName;
         const int kbps = bitrate_ / 1000;
-        std::string e = encName;
-        if (e == "amfh264enc") {
+        // Match by family prefix, not exact name: the per-GPU variants
+        // (amfh264device1enc, nvh264device0enc, ...) take the same
+        // properties as their base element.
+        const std::string e = encName;
+        const auto family = [&e](const char* prefix) {
+            return e.rfind(prefix, 0) == 0;
+        };
+        if (family("amfh264")) {
             // AMD AMF: usage=ultra-low-latency keeps the encoder queue at one
             // frame; bitrate is in kbit/s; a 1 s GOP for recovery after loss.
-            enc264 = "amfh264enc usage=ultra-low-latency rate-control=cbr "
-                     "bitrate=" + std::to_string(kbps) + " gop-size=60";
-        } else if (e == "mfh264enc") {
-            enc264 = "mfh264enc low-latency=true bitrate=" + std::to_string(kbps) +
-                     " gop-size=60";
-        } else if (e == "x264enc") {
-            enc264 = "x264enc tune=zerolatency speed-preset=ultrafast "
-                     "bitrate=" + std::to_string(kbps) + " key-int-max=60";
-        } else {  // openh264enc (bitrate is in bit/s)
-            enc264 = "openh264enc bitrate=" + std::to_string(bitrate_) +
-                     " gop-size=60 complexity=low";
+            enc264 = e + " usage=ultra-low-latency rate-control=cbr "
+                     "bitrate=" + std::to_string(kbps) + " gop-size=" + std::to_string(fps_);
+        } else if (family("mfh264")) {
+            enc264 = e + " low-latency=true bitrate=" + std::to_string(kbps) +
+                     " gop-size=" + std::to_string(fps_);
+        } else if (family("nvh264") || family("nvd3d11h264") ||
+                   family("nvcudah264")) {
+            // NVIDIA NVENC (any of its element flavours): bitrate in kbit/s.
+            enc264 = e + " bitrate=" + std::to_string(kbps) + " gop-size=" + std::to_string(fps_);
+        } else if (family("x264")) {
+            enc264 = e + " tune=zerolatency speed-preset=ultrafast "
+                     "bitrate=" + std::to_string(kbps) + " key-int-max=" + std::to_string(fps_);
+        } else if (family("openh264")) {  // bitrate is in bit/s
+            enc264 = e + " bitrate=" + std::to_string(bitrate_) +
+                     " gop-size=" + std::to_string(fps_) +
+                     " complexity=low";
+        } else {
+            // Unknown element (a --encoder from a family without tuned
+            // options here): run it with its defaults and say so - encoder
+            // defaults are often ~256 kbps, so quality may need options.
+            LOGW("webrtc",
+                 "no tuned options for encoder '%s' - using element defaults",
+                 e.c_str());
+            enc264 = e;
         }
         // h264parse + config-interval=-1: re-send SPS/PPS with every keyframe.
         // Browsers cannot decode without in-band parameter sets - leaving this
@@ -270,8 +403,94 @@ void WebRtcStreamer::buildPipeline(int payloadType,
         (void)h264ProfileLevelId;
     }
 
+    std::string enc265;
+    if (h265) {
+        const char* encName = pickH265Encoder();
+        if (!encName) {  // ctor already fell back; belt and braces
+            LOGE("webrtc", "no H.265 encoder element found");
+            return;
+        }
+        LOGI("webrtc", "h265 encoder: %s", encName);
+        pickedEnc = encName;
+        const int kbps = bitrate_ / 1000;
+        const std::string e = encName;
+        const auto family = [&e](const char* prefix) {
+            return e.rfind(prefix, 0) == 0;
+        };
+        if (family("amfh265")) {
+            enc265 = e + " usage=ultra-low-latency rate-control=cbr "
+                     "bitrate=" + std::to_string(kbps) + " gop-size=" + std::to_string(fps_);
+        } else if (family("mfh265")) {
+            enc265 = e + " low-latency=true bitrate=" + std::to_string(kbps) +
+                     " gop-size=" + std::to_string(fps_);
+        } else if (family("nvh265") || family("nvd3d11h265") ||
+                   family("nvcudah265")) {
+            enc265 = e + " bitrate=" + std::to_string(kbps) + " gop-size=" + std::to_string(fps_);
+        } else if (family("qsvh265")) {
+            enc265 = e + " bitrate=" + std::to_string(kbps) + " gop-size=" + std::to_string(fps_);
+        } else if (family("x265")) {
+            enc265 = e + " tune=zerolatency speed-preset=ultrafast "
+                     "bitrate=" + std::to_string(kbps) + " key-int-max=" + std::to_string(fps_);
+        } else {
+            LOGW("webrtc",
+                 "no tuned options for encoder '%s' - using element defaults",
+                 e.c_str());
+            enc265 = e;
+        }
+        // Same in-band parameter-set rule as H.264, with one more set: H.265
+        // needs VPS+SPS+PPS with every keyframe (config-interval=-1), and the
+        // RTP caps stay unpinned on profile for the same reason as H.264.
+        enc265 += " ! h265parse config-interval=-1 ! "
+                  "rtph265pay pt=" + std::to_string(pt) +
+                  " config-interval=-1 aggregate-mode=zero-latency ! "
+                  "application/x-rtp,media=video,encoding-name=H265,payload=" +
+                  std::to_string(pt) + ",clock-rate=90000";
+    }
+
+    std::string encAv1;
+    if (av1) {
+        const char* encName = pickAV1Encoder();
+        if (!encName) {  // ctor already fell back; belt and braces
+            LOGE("webrtc", "no AV1 encoder element found");
+            return;
+        }
+        LOGI("webrtc", "av1 encoder: %s", encName);
+        pickedEnc = encName;
+        const int kbps = bitrate_ / 1000;
+        const std::string e = encName;
+        const auto family = [&e](const char* prefix) {
+            return e.rfind(prefix, 0) == 0;
+        };
+        if (family("amfav1")) {
+            // Same low-latency shape as the AMF H.264 line.
+            encAv1 = e + " usage=ultra-low-latency rate-control=cbr "
+                     "bitrate=" + std::to_string(kbps) + " gop-size=" + std::to_string(fps_);
+        } else if (family("nvav1") || family("nvd3d11av1") ||
+                   family("nvcudaav1")) {
+            encAv1 = e + " bitrate=" + std::to_string(kbps) + " gop-size=" + std::to_string(fps_);
+        } else if (family("qsvav1")) {
+            encAv1 = e + " bitrate=" + std::to_string(kbps) + " gop-size=" + std::to_string(fps_);
+        } else if (family("svtav1")) {
+            // Software: the fastest preset is the only one with a realtime
+            // chance at 60 fps; target-bitrate is in kbit/s.
+            encAv1 = e + " preset=12 target-bitrate=" + std::to_string(kbps);
+        } else {
+            LOGW("webrtc",
+                 "no tuned options for encoder '%s' - using element defaults",
+                 e.c_str());
+            encAv1 = e;
+        }
+        // av1parse gives the payloader clean TU-aligned input. No in-band
+        // parameter-set dance like H.264: the sequence header rides in the
+        // OBU stream.
+        encAv1 += " ! av1parse ! rtpav1pay pt=" + std::to_string(pt) +
+                  " ! application/x-rtp,media=video,encoding-name=AV1,"
+                  "payload=" + std::to_string(pt) + ",clock-rate=90000";
+    }
+
     const std::string enc =
-        // VP9. Kept deliberately close to the VP8 line that is known to work:
+        // VP9 (the software fallback codec). Historical note - this line was
+        // written next to a VP8 pipeline and kept deliberately close to it:
         // extra caps filters on the encoder output turned out to be a good way
         // to get a silently black picture. picture-id-mode is the one addition
         // that matters - browsers expect a picture ID in the VP9 payload.
@@ -279,29 +498,46 @@ void WebRtcStreamer::buildPipeline(int payloadType,
         // it, but rtpvp9pay does not advertise it, and a VP9 stream without it
         // negotiates fine and then decodes to nothing - a silent black picture.
         h264 ? enc264
-        : vp9 ? ("vp9enc deadline=1 cpu-used=8 target-bitrate=" +
+        : h265 ? enc265
+        : av1 ? encAv1
+        : ("vp9enc deadline=1 cpu-used=8 target-bitrate=" +
                std::to_string(bitrate_) +
-               " end-usage=cbr keyframe-max-dist=60 lag-in-frames=0 ! "
+               " end-usage=cbr keyframe-max-dist=" + std::to_string(fps_) +
+               " lag-in-frames=0 ! "
                "rtpvp9pay pt=" + std::to_string(pt) +
                " picture-id-mode=15-bit ! "
                "application/x-rtp,media=video,encoding-name=VP9,payload=" +
                std::to_string(pt) +
-               ",clock-rate=90000,profile-id=(string)0")
-            : ("vp8enc deadline=1 cpu-used=4 target-bitrate=" +
-               std::to_string(bitrate_) +
-               " end-usage=cbr keyframe-max-dist=60 lag-in-frames=0 ! "
-               "rtpvp8pay pt=" + std::to_string(pt) +
-               " ! "
-               "application/x-rtp,media=video,encoding-name=VP8,payload=" +
-               std::to_string(pt) + ",clock-rate=90000");
+               ",clock-rate=90000,profile-id=(string)0");
+
+    // Colour conversion RGBA -> 4:2:0. Two paths:
+    //  - GPU (d3d11upload ! d3d11convert): the frame goes to the GPU once and
+    //    stays there into the encoder - saves ~1 CPU core per camera. Only
+    //    valid when the encoder element accepts D3D11 memory (amf/mf/nvd3d11
+    //    families) and the d3d11 plugin exists (Windows).
+    //  - CPU (videoconvert): everything else - software encoders and the
+    //    VP9 path need system-memory I420/NV12.
+    const auto encFamily = [&pickedEnc](const char* prefix) {
+        return pickedEnc.rfind(prefix, 0) == 0;
+    };
+    const bool d3d11Encoder =
+        encFamily("amf") || encFamily("mf") || encFamily("nvd3d11");
+    std::string convert;
+    if (s_preferGpuConvert && d3d11Encoder && encoderExists("d3d11upload") &&
+        encoderExists("d3d11convert")) {
+        convert =
+            "d3d11upload ! d3d11convert ! "
+            "video/x-raw(memory:D3D11Memory),format=NV12";
+        LOGI("webrtc", "colour conversion: GPU (d3d11convert)");
+    } else {
+        convert = "videoconvert ! video/x-raw,format=" +
+                  std::string(vp9 ? "I420" : "NV12");
+        LOGI("webrtc", "colour conversion: CPU (videoconvert)");
+    }
 
     const std::string desc =
-        "appsrc name=src is-live=true format=time do-timestamp=true ! "
-        // Force 8-bit 4:2:0 before the encoder: RGBA can otherwise be taken to
-        // a format the browser will not decode. Hardware H.264 encoders take
-        // NV12 (same 4:2:0 data, different layout); the VP encoders take I420.
-        "videoconvert ! video/x-raw,format=" +
-        std::string(h264 ? "NV12" : "I420") + " ! " + enc +
+        "appsrc name=src is-live=true format=time do-timestamp=true ! " +
+        convert + " ! " + enc +
         " ! webrtcbin name=wb bundle-policy=max-bundle";
 
     LOGI("webrtc", "pipeline: %s", desc.c_str());
@@ -390,9 +626,23 @@ void WebRtcStreamer::teardownPipeline() {
     pipeline_ = nullptr;
 }
 
+void WebRtcStreamer::setStreamFormat(int width, int height, int fps,
+                                     int bitrateBps) {
+    std::lock_guard<std::mutex> lk(pipelineMutex_);
+    width_ = width;
+    height_ = height;
+    fps_ = fps;
+    bitrate_ = bitrateBps;
+    LOGI("webrtc", "stream format -> %dx%d @ %d fps, %.1f Mbps (next session)",
+         width_, height_, fps_, bitrateBps / 1e6);
+}
+
 void WebRtcStreamer::pushFrame(const uint8_t* rgba, std::size_t size) {
     std::lock_guard<std::mutex> lk(pipelineMutex_);
     if (!appsrc_) return;  // no active session yet
+    // While a resize is settling, frames of the previous size can still
+    // arrive - a mismatched buffer confuses the caps-fixed appsrc, so drop.
+    if (size != std::size_t(width_) * std::size_t(height_) * 4) return;
     GstBuffer* buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
     gst_buffer_fill(buffer, 0, rgba, size);
     gst_app_src_push_buffer(GST_APP_SRC(appsrc_), buffer);
@@ -423,7 +673,7 @@ std::string WebRtcStreamer::handleOffer(const std::string& offerSdp) {
 
     // Answering side: send with the payload number the browser's offer chose
     // for our codec (and, for H264, its exact profile-level-id). Chrome happens
-    // to offer VP8 at 96 but VP9/H264 under other numbers - answering with a
+    // to offer one codec at 96 but others under different numbers - answering with a
     // mismatched PT means every packet is silently dropped: black picture.
     const PayloadChoice pc = payloadFromOffer(offerSdp, codecName());
     LOGI("webrtc", "browser offered %s at payload %d%s%s", codecName(), pc.pt,

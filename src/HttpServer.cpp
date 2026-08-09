@@ -55,16 +55,55 @@ std::string trimmed(const std::string& s) {
 
 constexpr std::chrono::seconds HttpServer::kViewerTimeout;
 
-HttpServer::HttpServer(int port, std::string webRoot)
-    : port_(port),
-      webRoot_(std::move(webRoot)),
-      server_(std::make_unique<httplib::Server>()) {
+HttpListener::HttpListener(int port)
+    : port_(port), server_(std::make_unique<httplib::Server>()) {}
+
+HttpListener::~HttpListener() { stop(); }
+
+void HttpListener::mount(HttpServer& camera, const std::string& prefix) {
+    camera.registerRoutes(*server_, prefix);
+    if (firstPrefix_.empty()) firstPrefix_ = prefix;
+}
+
+void HttpListener::start() {
+    // "/" lands on the first camera - the page itself never links to "/",
+    // so a plain redirect is all the root needs to do.
+    if (!firstPrefix_.empty()) {
+        const std::string target = firstPrefix_ + "/";
+        server_->Get("/", [target](const httplib::Request&,
+                                   httplib::Response& res) {
+            res.status = 302;
+            res.set_header("Location", target);
+        });
+    }
+    thread_ = std::thread([this] { server_->listen("0.0.0.0", port_); });
+}
+
+void HttpListener::stop() {
+    if (server_) server_->stop();
+    if (thread_.joinable()) thread_.join();
+}
+
+HttpServer::HttpServer(std::string webRoot) : webRoot_(std::move(webRoot)) {}
+
+void HttpServer::registerRoutes(httplib::Server& srv,
+                                const std::string& prefix) {
+    // "/cam0" (no trailing slash) redirects to "/cam0/": the page uses
+    // RELATIVE fetch URLs ("whep", "stats", ...), which only resolve inside
+    // the camera's path when the document URL ends with the slash.
+    srv.Get(prefix, [prefix](const httplib::Request&, httplib::Response& res) {
+        res.status = 301;
+        res.set_header("Location", prefix + "/");
+    });
+
     // Static files: "/" -> web/index.html, plus anything else under web/.
     // Read per request so page edits need only a browser reload.
-    auto serveStatic = [this](const httplib::Request& req,
-                              httplib::Response& res) {
+    auto serveStatic = [this, prefix](const httplib::Request& req,
+                                      httplib::Response& res) {
+        // "/cam0/style.css" -> "/style.css" under the web root.
         std::string body, resolved;
-        if (!readWebFile(webRoot_, req.path, body, resolved)) {
+        if (!readWebFile(webRoot_, req.path.substr(prefix.size()), body,
+                         resolved)) {
             res.status = 404;
             res.set_content("not found", "text/plain");
             return;
@@ -72,14 +111,14 @@ HttpServer::HttpServer(int port, std::string webRoot)
         res.set_header("Cache-Control", "no-store, no-cache, must-revalidate");
         res.set_content(body, mimeForPath(resolved).c_str());
     };
-    server_->Get("/", serveStatic);
-    server_->Get(R"(/(favicon\.ico|.*\.(?:html|js|css|png|svg|jpg|jpeg|gif|ico|json)))",
+    srv.Get(prefix + "/", serveStatic);
+    srv.Get(prefix + R"(/(favicon\.ico|.*\.(?:html|js|css|png|svg|jpg|jpeg|gif|ico|json)))",
                  serveStatic);
 
     // WebRTC signaling (WHEP-style): body is the browser's SDP offer, the
     // response is the SDP answer. Rejected with 409 while another browser owns
     // the session.
-    server_->Post("/whep", [this](const httplib::Request& req,
+    srv.Post(prefix + "/whep", [this](const httplib::Request& req,
                                   httplib::Response& res) {
         const std::string token = trimmed(req.get_header_value("X-Viewer-Token"));
         if (token.empty()) {
@@ -130,7 +169,7 @@ HttpServer::HttpServer(int port, std::string webRoot)
     });
 
     // Heartbeat from the active viewer; body is its token.
-    server_->Post("/viewer/ping", [this](const httplib::Request& req,
+    srv.Post(prefix + "/viewer/ping", [this](const httplib::Request& req,
                                          httplib::Response& res) {
         const std::string token = trimmed(req.body);
         std::lock_guard<std::mutex> lock(viewerMutex_);
@@ -144,7 +183,7 @@ HttpServer::HttpServer(int port, std::string webRoot)
     });
 
     // Sent on reload/close (navigator.sendBeacon); body is the token.
-    server_->Post("/viewer/leave", [this](const httplib::Request& req,
+    srv.Post(prefix + "/viewer/leave", [this](const httplib::Request& req,
                                           httplib::Response& res) {
         const std::string token = trimmed(req.body);
         bool released = false;
@@ -169,7 +208,7 @@ HttpServer::HttpServer(int port, std::string webRoot)
     // Scene hierarchy for the sidebar. Copy the provider under the lock, then
     // call it outside - same pattern as /stats, so a slow provider never
     // blocks whoever is swapping it.
-    server_->Get("/scene", [this](const httplib::Request&,
+    srv.Get(prefix + "/scene", [this](const httplib::Request&,
                                   httplib::Response& res) {
         std::function<std::string()> provider;
         {
@@ -180,7 +219,7 @@ HttpServer::HttpServer(int port, std::string webRoot)
     });
 
     // Performance counters for the browser overlay.
-    server_->Get("/stats", [this](const httplib::Request&, httplib::Response& res) {
+    srv.Get(prefix + "/stats", [this](const httplib::Request&, httplib::Response& res) {
         std::function<std::string()> provider;
         {
             std::lock_guard<std::mutex> lock(offerMutex_);
@@ -195,7 +234,7 @@ HttpServer::HttpServer(int port, std::string webRoot)
     });
 
     // Input command (button press / key), JSON body.
-    server_->Post("/input",
+    srv.Post(prefix + "/input",
                   [this](const httplib::Request& req, httplib::Response& res) {
                       {
                           std::lock_guard<std::mutex> lock(cmdMutex_);
@@ -205,9 +244,7 @@ HttpServer::HttpServer(int port, std::string webRoot)
                   });
 }
 
-HttpServer::~HttpServer() {
-    stop();
-}
+HttpServer::~HttpServer() = default;
 
 bool HttpServer::expireViewerLocked() {
     if (viewerToken_.empty()) return false;
@@ -215,15 +252,6 @@ bool HttpServer::expireViewerLocked() {
     if (now - viewerLastSeen_ < kViewerTimeout) return false;
     viewerToken_.clear();
     return true;
-}
-
-void HttpServer::start() {
-    thread_ = std::thread([this] { server_->listen("0.0.0.0", port_); });
-}
-
-void HttpServer::stop() {
-    if (server_) server_->stop();
-    if (thread_.joinable()) thread_.join();
 }
 
 bool HttpServer::hasViewer() {

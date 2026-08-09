@@ -240,12 +240,19 @@ add_executable(wizengine
     src/HttpServer.cpp
     src/ImageLoader.cpp
     src/Log.cpp
+    src/Versions.cpp
     src/CameraObject.cpp
     src/LightObject.cpp
     src/GltfLoader.cpp
     src/PortScan.cpp
     src/AssetError.cpp
     src/CpuAffinity.cpp)
+# Version pins surfaced in the browser's About section (src/Versions.cpp).
+# WIZ_CGLTF_VERSION must match the wiz_download_header URL above.
+target_compile_definitions(wizengine PRIVATE
+    WIZ_FILAMENT_VERSION="${FILAMENT_VERSION}"
+    WIZ_CGLTF_VERSION="1.14")
+
 add_dependencies(wizengine materials)
 
 # Filament's public headers use designated initializers. clang/gcc accept these

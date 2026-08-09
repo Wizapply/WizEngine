@@ -601,30 +601,43 @@ void Renderer::addGround(float halfSize, const filament::math::float3& color,
 
 std::size_t Renderer::addView() {
     ViewSlot slot;
+    slot.width = width_;
+    slot.height = height_;
     // CONFIG_READABLE lets us read the framebuffer back with readPixels().
     // Every view needs its own swap chain because each one is read back and
     // encoded separately.
     slot.swapChain = engine_->createSwapChain(
-        uint32_t(width_), uint32_t(height_), SwapChain::CONFIG_READABLE);
+        uint32_t(slot.width), uint32_t(slot.height), SwapChain::CONFIG_READABLE);
 
     slot.cameraEntity = EntityManager::get().create();
     slot.camera = engine_->createCamera(slot.cameraEntity);
-    const double aspect = double(width_) / double(height_);
+    const double aspect = double(slot.width) / double(slot.height);
     slot.camera->setProjection(45.0, aspect, 0.1, 200.0, Camera::Fov::VERTICAL);
     slot.camera->lookAt({7.0, 5.0, 9.0}, {0.0, 1.0, 0.0}, {0.0, 1.0, 0.0});
 
     slot.view = engine_->createView();
     slot.view->setScene(scene_);   // all views share one scene
     slot.view->setCamera(slot.camera);
-    slot.view->setViewport({0, 0, uint32_t(width_), uint32_t(height_)});
+    slot.view->setViewport({0, 0, uint32_t(slot.width), uint32_t(slot.height)});
 
     for (auto& cap : slot.captures) {
-        cap.pixels.resize(std::size_t(width_) * std::size_t(height_) * 4);
+        cap.pixels.resize(std::size_t(slot.width) * std::size_t(slot.height) * 4);
         cap.ready = std::make_shared<std::atomic<bool>>(false);
     }
 
     views_.push_back(std::move(slot));
     return views_.size() - 1;
+}
+
+void Renderer::requestViewResize(std::size_t viewIndex, int width, int height) {
+    if (viewIndex >= views_.size() || width <= 0 || height <= 0) return;
+    ViewSlot& slot = views_[viewIndex];
+    if (width == slot.width && height == slot.height) {
+        slot.pendingW = slot.pendingH = 0;  // nothing to do (or cancel)
+        return;
+    }
+    slot.pendingW = width;
+    slot.pendingH = height;
 }
 
 void Renderer::setCamera(const filament::math::double3& eye,
@@ -715,6 +728,35 @@ void Renderer::renderFrame(
         slot.pending.pop_front();
     }
 
+    // A requested resize is applied only when no readback is in flight: the
+    // GPU may still be copying into the old-size buffers. Until then no new
+    // capture is started, so the queue drains within a frame or two.
+    const bool resizePending = slot.pendingW != 0;
+    if (resizePending && slot.pending.empty()) {
+        slot.width = slot.pendingW;
+        slot.height = slot.pendingH;
+        slot.pendingW = slot.pendingH = 0;
+        engine_->destroy(slot.swapChain);
+        slot.swapChain = engine_->createSwapChain(
+            uint32_t(slot.width), uint32_t(slot.height),
+            SwapChain::CONFIG_READABLE);
+        slot.view->setViewport(
+            {0, 0, uint32_t(slot.width), uint32_t(slot.height)});
+        // Same fov/near/far as addView - only the aspect follows the size.
+        slot.camera->setProjection(45.0,
+                                   double(slot.width) / double(slot.height),
+                                   0.1, 200.0, Camera::Fov::VERTICAL);
+        for (auto& cap : slot.captures) {
+            cap.pixels.assign(
+                std::size_t(slot.width) * std::size_t(slot.height) * 4, 0);
+            cap.inFlight = false;
+            cap.ready->store(false, std::memory_order_release);
+        }
+        slot.next = 0;
+        LOGI("render", "view %zu resized to %dx%d", viewIndex, slot.width,
+             slot.height);
+    }
+
     if (!renderer_->beginFrame(slot.swapChain)) return;
     renderer_->render(slot.view);
 
@@ -722,7 +764,7 @@ void Renderer::renderFrame(
     // the GPU we skip the capture for this frame rather than blocking - the
     // stream drops a frame, which is far better than stalling the CPU.
     ViewSlot::Capture& cap = slot.captures[slot.next];
-    if (!cap.inFlight) {
+    if (!cap.inFlight && !slot.pendingW) {
         using namespace filament::backend;
         cap.ready->store(false, std::memory_order_release);
         // The flag is shared with the callback so a late completion after the
@@ -740,8 +782,8 @@ void Renderer::renderFrame(
 
         // Reads the framebuffer back to CPU. On the Vulkan backend the data is
         // top-down, so no flip is applied downstream (see VideoStreamer).
-        renderer_->readPixels(0, 0, uint32_t(width_), uint32_t(height_),
-                              std::move(pbd));
+        renderer_->readPixels(0, 0, uint32_t(slot.width),
+                              uint32_t(slot.height), std::move(pbd));
         cap.inFlight = true;
         slot.pending.push_back(slot.next);
         slot.next = (slot.next + 1) % ViewSlot::kCaptureBuffers;

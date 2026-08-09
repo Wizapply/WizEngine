@@ -1,3 +1,5 @@
+#include <cctype>
+#include <optional>
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -26,10 +28,12 @@
 
 #include "HttpServer.h"
 #include "Log.h"
+#include "Versions.h"
 #include "AssetError.h"
 #include "CpuAffinity.h"
 #include "PortScan.h"
 #include "PhysicsControlComponent.h"
+#include "StreamControlComponent.h"
 #include "PhysicsTuning.h"
 #include "PhysicsWorld.h"
 #include "Renderer.h"
@@ -110,7 +114,28 @@ int main(int argc, char** argv) {
     }
 }
 
-static int run(int argc, char** argv) {
+static // ---- Streaming defaults -----------------------------------------------
+// Engine-level output settings (deliberately NOT in SceneConfig.h - they
+// describe how the engine ships pixels, not what is in the world). Codec can
+// be overridden at launch with --codec, the encoder element (and thereby the
+// GPU) with --encoder, and resolution/fps/bitrate per camera from the
+// browser's System > Stream section.
+//
+// Codec guide: H264 = the compatibility baseline (every browser and device,
+// hardware encode). H265 = better quality per bit, viewers Chrome 136+/
+// Safari 18+ only (Edge and Firefox never offer it in WebRTC). AV1 = best
+// compression, royalty free, Chrome/Edge/Firefox viewers, needs an
+// AV1-capable GPU (RDNA3+/RTX40+/Arc) and rtpav1pay. VP9 = the software
+// (CPU-encode) fallback. H265/AV1 fall back to H264 with a warning when
+// their pieces are missing.
+constexpr VideoCodec kDefaultCodec = VideoCodec::H264;
+constexpr int kVideoBitrate = 4000000;  // bits per second
+// Colour conversion (RGBA -> NV12) on the GPU instead of a CPU core per
+// camera. Automatically ignored (CPU path) when the encoder cannot take
+// D3D11 memory - software encoders, VP9, non-Windows.
+constexpr bool kGpuConvert = true;
+
+int run(int argc, char** argv) {
     // Render resolution. The browser scales this up to fill the window, so it
     // stays cheap to render, encode and stream whatever the display size.
     // Raise it if the upscaled picture looks too soft (1920x1080 is ~2.2x the
@@ -141,6 +166,10 @@ static int run(int argc, char** argv) {
     // Options first, so the positional parsing below only sees the rest.
     std::string physicsCoreSpec, renderCoreSpec;
     int physicsThreads = 0;
+    // Codec from --codec; unset = kDefaultCodec above. The codec decides
+    // the compression standard; --encoder then picks the concrete element
+    // (and thereby the GPU) within it.
+    std::optional<VideoCodec> codecOverride;
     std::vector<std::string> positional;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -156,16 +185,41 @@ static int run(int argc, char** argv) {
         } else if (arg == "--physics-threads") {
             const std::string v = next("--physics-threads");
             if (!v.empty()) physicsThreads = std::atoi(v.c_str());
+        } else if (arg == "--encoder") {
+            const std::string v = next("--encoder");
+            if (!v.empty()) WebRtcStreamer::setEncoderOverride(v);
+        } else if (arg == "--codec") {
+            std::string v = next("--codec");
+            for (auto& ch : v)
+                ch = char(std::tolower(static_cast<unsigned char>(ch)));
+            if (v == "h264") codecOverride = VideoCodec::H264;
+            else if (v == "h265" || v == "hevc") codecOverride = VideoCodec::H265;
+            else if (v == "av1") codecOverride = VideoCodec::AV1;
+            else if (v == "vp9") codecOverride = VideoCodec::VP9;
+            else if (!v.empty())
+                LOGW("app",
+                     "--codec %s is not one of h264/h265/av1/vp9 - using the "
+                     "scene default",
+                     v.c_str());
         } else if (arg == "--help" || arg == "-h" || arg == "/?") {
             std::printf(
                 "usage: wizengine [web [httpPort] | window | stream [host] "
                 "[port] | rtsp [url]]\n"
                 "                 [--physics-cores SPEC] [--render-cores SPEC]\n"
-                "                 [--physics-threads N]\n\n"
+                "                 [--physics-threads N] [--codec CODEC]\n"
+                "                 [--encoder ELEMENT]\n\n"
                 "SPEC is a core list: \"0-11\", \"0,2,4\", \"3\" or "
                 "\"0-3,8,12-13\".\n"
                 "Pinning keeps the solver and the video encoder off each "
-                "other's cores.\n");
+                "other's cores.\n"
+                "CODEC is h264 (default; every browser), h265 (Chrome/"
+                "Safari only),\nav1 (needs an AV1-capable GPU) or vp9 "
+                "(software). Unavailable codecs\nfall back to h264.\n"
+                "ELEMENT is a GStreamer encoder element for that codec. "
+                "GStreamer "
+                "registers one\nper GPU (amfh264enc = primary, "
+                "amfh264device1enc = next, ...), so this\npicks the encoding "
+                "GPU. List them with: gst-inspect-1.0 amfcodec\n");
             return 0;
         } else {
             positional.push_back(arg);
@@ -258,6 +312,7 @@ static int run(int argc, char** argv) {
     // Backend (core / multicore) is part of the scene configuration.
     const PhysicsBackend requested = scenePhysicsBackend();
     PhysicsWorld physics(requested);
+    LOGI("app", "WizEngine %s", wizengine::engineVersion());
     LOGI("physics",
          "backend: requested=%s  compiled-in multicore=%s  using=%s",
          requested == PhysicsBackend::Multicore ? "multicore" : "core",
@@ -312,9 +367,19 @@ static int run(int argc, char** argv) {
         std::unique_ptr<WebRtcStreamer> webrtc;
         std::function<void(const uint8_t*, size_t)> pushFrame;
         std::size_t viewIndex = 0;
-        int port = 0;
+        std::string path;  // "/cam0/", "/cam1/", ... on the shared listener
+
+        // Stream format requested from the browser (StreamControlComponent,
+        // INPUT thread) and applied by the render loop at a safe point.
+        std::atomic<bool> formatDirty{false};
+        std::atomic<int> reqW{0}, reqH{0}, reqFps{0}, reqKbps{0};
+        // Per-camera frame pacing: frames are pushed at this rate even though
+        // the loop runs at the global kFps.
+        int fps = 0;
+        std::chrono::steady_clock::time_point nextFrameDue{};
     };
     std::vector<std::unique_ptr<CameraEndpoint>> endpoints;
+    std::unique_ptr<HttpListener> listener;  // the one port they all share
 
     // web mode -> WebRTC to the browser (no GStreamer sink). Other modes -> the
     // GStreamer VideoStreamer, which stays single-camera (camera 0).
@@ -337,20 +402,23 @@ static int run(int argc, char** argv) {
     stats.iterations.store(scene.solverIterations());
 
     if (outputMode == OutputMode::None) {
-        int nextPort = httpPort;
+        // One port for everything: cameras live under path prefixes on a
+        // single shared listener. A port already in use (another instance, an
+        // unrelated program) is skipped instead of failing to bind.
+        listener = std::make_unique<HttpListener>(
+            wizengine::findFreePortRun(httpPort, 1));
         for (std::size_t i = 0; i < scene.cameraCount(); ++i) {
             auto ep = std::make_unique<CameraEndpoint>();
-            // Take the next free port at or after the one this camera would
-            // normally get, so a port already in use (another instance, or an
-            // unrelated program) is skipped instead of failing to bind.
-            ep->port = wizengine::findFreePortRun(nextPort, 1);
-            nextPort = ep->port + 1;
+            ep->path = "/cam" + std::to_string(i) + "/";
             // Camera 0 uses the view the renderer already created.
             ep->viewIndex = (i == 0) ? 0 : renderer.addView();
 
+            WebRtcStreamer::setPreferGpuConvert(kGpuConvert);
             ep->webrtc = std::make_unique<WebRtcStreamer>(
-                kWidth, kHeight, kFps, sceneVideoCodec(), sceneVideoBitrate());
-            ep->http = std::make_unique<HttpServer>(ep->port, "assets/web");
+                kWidth, kHeight, kFps, codecOverride.value_or(kDefaultCodec),
+                kVideoBitrate);
+            ep->http = std::make_unique<HttpServer>("assets/web");
+            listener->mount(*ep->http, "/cam" + std::to_string(i));
 
             WebRtcStreamer* rtc = ep->webrtc.get();
             ep->http->setOfferHandler(
@@ -381,6 +449,12 @@ static int run(int argc, char** argv) {
                 j["realtime"] = stats.realtime.load();
                 j["simTime"] = stats.simTime.load();
                 j["paused"] = tuning.paused.load();
+                j["streamW"] = endpoints[camIndex]->webrtc->width();
+                j["streamH"] = endpoints[camIndex]->webrtc->height();
+                j["streamFps"] = endpoints[camIndex]->webrtc->fps();
+                j["streamKbps"] =
+                    endpoints[camIndex]->webrtc->bitrateBps() / 1000;
+                j["versions"] = wizengine::versionsJson();
                 j["engine"] = physics.backendName();
                 j["codec"] = endpoints[camIndex]->webrtc->codecName();
                 j["camera"] = int(camIndex);
@@ -391,13 +465,13 @@ static int run(int argc, char** argv) {
             // Hierarchy for the sidebar: cameras and objects, with this
             // page's own camera marked so it can show its selection.
             ep->http->setSceneProvider([&, camIndex] {
-                // Ports may not be consecutive (busy ones are skipped), so the
-                // page is told the real list rather than computing it.
+                // The page is told each camera's path on the shared port,
+                // so switching cameras is a plain navigation.
                 nlohmann::json j = nlohmann::json::parse(
                     scene.hierarchyJson(camIndex), nullptr, false);
                 if (j.is_discarded()) return scene.hierarchyJson(camIndex);
                 for (auto& e : endpoints) {
-                    j["ports"].push_back(e->port);
+                    j["paths"].push_back(e->path);
                     // Whether someone is watching that camera right now, so the
                     // sidebar can show which ones are taken - only one browser
                     // at a time can view a given camera.
@@ -408,6 +482,19 @@ static int run(int argc, char** argv) {
 
             endpoints.push_back(std::move(ep));
         }
+        // Browser "stream" commands land here (INPUT thread): store, mark
+        // dirty - the render loop applies at a frame boundary.
+        scene.addComponent(std::make_unique<StreamControlComponent>(
+            [&endpoints](std::size_t cam, int w, int h, int fps, int kbps) {
+                if (cam >= endpoints.size()) return;
+                auto& ep = *endpoints[cam];
+                ep.reqW.store(w);
+                ep.reqH.store(h);
+                ep.reqFps.store(fps);
+                ep.reqKbps.store(kbps);
+                ep.formatDirty.store(true);
+            }));
+
         LOGI("video", "%s @ %.1f Mbps, %zu camera(s)",
              endpoints[0]->webrtc->codecName(),
              endpoints[0]->webrtc->bitrateBps() / 1e6, endpoints.size());
@@ -419,10 +506,10 @@ static int run(int argc, char** argv) {
         pushFrame = [&](const uint8_t* d, size_t sz) { streamer->pushFrame(d, sz); };
     }
 
-    for (auto& ep : endpoints) ep->http->start();
+    if (listener) listener->start();
     for (auto& ep : endpoints) {
-        LOGI("http", "camera %zu: http://127.0.0.1:%d/", ep->viewIndex,
-             ep->port);
+        LOGI("http", "camera %zu: http://127.0.0.1:%d%s", ep->viewIndex,
+             listener->port(), ep->path.c_str());
     }
 
     // ---- Physics thread --------------------------------------------------
@@ -648,8 +735,31 @@ static int run(int argc, char** argv) {
         } else {
             // One render + encode per camera. Only cameras with a viewer are
             // drawn, so idle pages cost nothing.
+            const auto nowTp = std::chrono::steady_clock::now();
             for (auto& ep : endpoints) {
+                if (ep->formatDirty.exchange(false)) {
+                    // Safe point: this thread owns the renderer. The view
+                    // resize completes inside renderFrame once its readbacks
+                    // drain; the streamer format applies on the browser's
+                    // reconnect.
+                    renderer.requestViewResize(ep->viewIndex, ep->reqW.load(),
+                                               ep->reqH.load());
+                    ep->webrtc->setStreamFormat(ep->reqW.load(),
+                                                ep->reqH.load(),
+                                                ep->reqFps.load(),
+                                                ep->reqKbps.load() * 1000);
+                    ep->fps = ep->reqFps.load();
+                    ep->nextFrameDue = nowTp;
+                }
                 if (!ep->http->hasViewer()) continue;
+                // Per-camera rate: skip the whole render+readback for this
+                // view until its next frame is due (a 30 fps camera costs
+                // half of a 60 fps one, not just half the encode).
+                if (ep->fps > 0 && ep->fps < kFps) {
+                    if (nowTp < ep->nextFrameDue) continue;
+                    ep->nextFrameDue =
+                        nowTp + std::chrono::microseconds(1000000 / ep->fps);
+                }
                 renderer.renderFrame(ep->viewIndex,
                                      [&](const uint8_t* data, size_t size) {
                                          ep->pushFrame(data, size);
@@ -686,7 +796,7 @@ static int run(int argc, char** argv) {
     // Readbacks are asynchronous, so let the in-flight ones land before the
     // encoders and their buffers go away.
     renderer.finishPendingReadbacks();
-    for (auto& ep : endpoints) ep->http->stop();
+    if (listener) listener->stop();
     std::puts("\nstopped.");
     return 0;
 }
