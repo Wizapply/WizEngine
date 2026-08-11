@@ -1,0 +1,114 @@
+{
+  "format": "wizengine-scene",
+  "version": 1,
+  "sim": {
+    "gravity": -9.81,
+    "hz": 60,
+    "substeps": 2,
+    "iterations": 60,
+    "envelope": 0.002,
+    "recovery": 0.2,
+    "friction": 0.6,
+    "restitution": 0.0,
+    "linearDamping": 0.05,
+    "angularDamping": 0.1,
+    "sleeping": true
+  },
+  "objects": [
+    {
+      "name": "post",
+      "shape": "box",
+      "collision": "box",
+      "size": { "x": 0.2, "y": 2.0, "z": 0.2 },
+      "position": { "x": 0.0, "y": 1.0, "z": 0.0 },
+      "rotation": { "x": 0.0, "y": 0.0, "z": 0.0 },
+      "mass": 20.0,
+      "fixed": true,
+      "color": "#6b7280"
+    },
+    {
+      "name": "arm",
+      "shape": "box",
+      "collision": "box",
+      "size": { "x": 1.6, "y": 0.14, "z": 0.14 },
+      "position": { "x": 0.8, "y": 1.9, "z": 0.0 },
+      "rotation": { "x": 0.0, "y": 0.0, "z": 0.0 },
+      "mass": 2.0,
+      "fixed": false,
+      "color": "#e0762e"
+    },
+    {
+      "name": "bob",
+      "shape": "sphere",
+      "collision": "sphere",
+      "size": { "x": 0.35, "y": 0.35, "z": 0.35 },
+      "position": { "x": 1.6, "y": 1.45, "z": 0.0 },
+      "rotation": { "x": 0.0, "y": 0.0, "z": 0.0 },
+      "mass": 1.5,
+      "fixed": false,
+      "color": "#4a90d9"
+    },
+    {
+      "name": "plate",
+      "shape": "box",
+      "collision": "box",
+      "size": { "x": 0.6, "y": 0.08, "z": 0.6 },
+      "position": { "x": -0.9, "y": 1.6, "z": 0.0 },
+      "rotation": { "x": 0.0, "y": 0.0, "z": 0.0 },
+      "mass": 1.0,
+      "fixed": false,
+      "color": "#7fd14a"
+    },
+    {
+      "name": "ramp",
+      "shape": "box",
+      "collision": "box",
+      "size": { "x": 2.4, "y": 0.1, "z": 1.2 },
+      "position": { "x": 0.0, "y": 0.35, "z": 2.0 },
+      "rotation": { "x": 0.0, "y": 0.0, "z": -12.0 },
+      "mass": 50.0,
+      "fixed": true,
+      "color": "#9aa0aa"
+    },
+    {
+      "name": "crate",
+      "shape": "box",
+      "collision": "box",
+      "size": { "x": 0.3, "y": 0.3, "z": 0.3 },
+      "position": { "x": -0.8, "y": 1.1, "z": 2.0 },
+      "rotation": { "x": 0.0, "y": 0.0, "z": 0.0 },
+      "mass": 0.5,
+      "fixed": false,
+      "color": "#d9c04a"
+    }
+  ],
+  "joints": [
+    {
+      "name": "hinge",
+      "kind": "revolute",
+      "a": 1,
+      "b": 0,
+      "anchor": { "x": 0.0, "y": 1.9, "z": 0.0 },
+      "axis": { "x": 0.0, "y": 0.0, "z": 1.0 },
+      "distance": 0.0
+    },
+    {
+      "name": "rod",
+      "kind": "distance",
+      "a": 2,
+      "b": 1,
+      "anchor": { "x": 1.6, "y": 1.45, "z": 0.0 },
+      "axis": { "x": 0.0, "y": 1.0, "z": 0.0 },
+      "distance": 0.0
+    },
+    {
+      "name": "ball",
+      "kind": "spherical",
+      "a": 3,
+      "b": 0,
+      "anchor": { "x": -0.15, "y": 1.6, "z": 0.0 },
+      "axis": { "x": 0.0, "y": 1.0, "z": 0.0 },
+      "distance": 0.0
+    }
+  ]
+}

@@ -9,6 +9,7 @@
 
 namespace chrono {
 class ChTriangleMeshConnected;
+class ChLinkBase;
 }
 
 // Where the time went inside the last physics step (seconds), straight from
@@ -40,6 +41,15 @@ struct BodyTransform {
     double px, py, pz;
     double qw, qx, qy, qz;
 };
+
+// 拘束の種類。エディタの editor::JointKind と一対一だが、PhysicsWorld を
+// エディタの型から独立させるため別の enum にしてある（変換は Scene 側）。
+//   Fixed      … 完全固定（溶接）
+//   Revolute   … ちょうつがい。軸まわりの回転だけ許す
+//   Spherical  … ボールジョイント。回転は自由、位置だけ拘束
+//   Prismatic  … 直動。軸方向のスライドだけ許す
+//   Distance   … 2点間の距離を一定に保つ（棒・ロープの芯）
+enum class JointType { Fixed, Revolute, Spherical, Prismatic, Distance };
 
 // Physics engine: owns the Chrono system (gravity, collision, contact material).
 // It holds no scene of its own - bodies are added by the Scene via addBox().
@@ -145,6 +155,38 @@ public:
     void setBodyPose(std::size_t id, const chrono::ChVector3d& pos,
                      const chrono::ChQuaternion<>& rot);
 
+    // ---- エディタ用 ------------------------------------------------------
+    // 重力（-Y 方向の大きさ）。エディタのシミュレート設定から呼ぶ。
+    void setGravityY(double gravityY);
+
+    // エディタで置き直すときの姿勢設定。setBodyPose と違い「起こすための
+    // 落下速度」を与えない（置いた場所にそのまま静止させたいので）。
+    void placeBody(std::size_t id, const chrono::ChVector3d& pos,
+                   const chrono::ChQuaternion<>& rot);
+
+    // 土台にする / 動くようにする。
+    void setBodyFixed(std::size_t id, bool fixed);
+
+    // 「削除」。Chrono からボディを取り除くのではなく、当たり判定を切って
+    // 固定し、地面のはるか下へ退避させる。Multicore バックエンドはボディの
+    // 削除でデータマネージャの配列が崩れることがあるため、ここでは触らない
+    // ほうが安全（番号も動かないので、他のオブジェクトの ID がずれない）。
+    void disableBody(std::size_t id);
+    bool bodyActive(std::size_t id) const;
+
+    // ---- ジョイント -------------------------------------------------------
+    // anchor / axis はワールド座標。axis は Revolute の回転軸、Prismatic の
+    // スライド方向で、それ以外では無視される。distance は Distance 専用で、
+    // 0 なら現在の 2 点間の距離をそのまま保つ。
+    // 戻り値はジョイント番号。作れなかったときは kInvalidJoint。
+    static constexpr std::size_t kInvalidJoint = static_cast<std::size_t>(-1);
+    std::size_t addJoint(JointType type, std::size_t bodyA, std::size_t bodyB,
+                         const chrono::ChVector3d& anchor,
+                         const chrono::ChVector3d& axis, double distance);
+    // シミュレート開始のたびに作り直すので、まとめて捨てる口だけ用意する。
+    void removeAllJoints();
+    std::size_t jointCount() const;
+
 private:
     // Either a ChSystemNSC (serial core) or a ChSystemMulticoreNSC, chosen at
     // build time by WIZ_USE_MULTICORE. Everything above this class is unaware
@@ -152,6 +194,10 @@ private:
     std::shared_ptr<chrono::ChSystem> sys_;
     std::shared_ptr<chrono::ChContactMaterialNSC> mat_;
     std::vector<std::shared_ptr<chrono::ChBody>> bodies_;
+    // disableBody() で退場させたボディは false。番号は詰めない。
+    std::vector<bool> active_;
+    // シミュレート中だけ存在する拘束。エディタへ戻るときに全部外す。
+    std::vector<std::shared_ptr<chrono::ChLinkBase>> joints_;
     PhysicsBackend backend_ = PhysicsBackend::Core;
     double linearDamping_ = 0.0;
     double angularDamping_ = 0.0;

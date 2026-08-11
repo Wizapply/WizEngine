@@ -128,6 +128,9 @@ set(MAT_SRC ${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/shaded.mat)
 # together.
 set(ASSET_DIR ${CMAKE_CURRENT_BINARY_DIR}/assets)
 file(MAKE_DIRECTORY ${ASSET_DIR})
+# エディタが保存するシーン（assets/scenes/*.json）の置き場。実行時にも
+# 作られるが、初回起動前から一覧に見えるように先に用意しておく。
+file(MAKE_DIRECTORY ${ASSET_DIR}/scenes)
 
 set(MAT_OUT ${ASSET_DIR}/shaded.filamat)
 add_custom_command(
@@ -246,6 +249,9 @@ add_executable(wizengine
     src/GltfLoader.cpp
     src/PortScan.cpp
     src/AssetError.cpp
+    src/EditorState.cpp
+    src/EditorComponent.cpp
+    src/GizmoComponent.cpp
     src/CpuAffinity.cpp)
 # Version pins surfaced in the browser's About section (src/Versions.cpp).
 # WIZ_CGLTF_VERSION must match the wiz_download_header URL above.

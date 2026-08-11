@@ -27,6 +27,7 @@
 #include <math/vec3.h>
 #include <math/vec4.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cctype>
@@ -92,6 +93,65 @@ std::vector<uint8_t> readFile(const std::string& path) {
     if (!f) throw std::runtime_error("cannot open material package: " + path);
     return std::vector<uint8_t>(std::istreambuf_iterator<char>(f),
                                 std::istreambuf_iterator<char>());
+}
+
+// UV 球の分割数。エディタで置く球はたいてい小さいので、これで十分に丸い。
+constexpr int kSphereRings = 16;    // 緯度方向
+constexpr int kSphereSectors = 24;  // 経度方向
+// M_PI は MSVC だと _USE_MATH_DEFINES が要るので、自前で持つ。
+constexpr float kPi = 3.14159265358979323846f;
+
+// 太線 1 本ぶんの頂点数と三角形の頂点インデックス数。板 2 枚 = 4 三角形。
+constexpr std::size_t kTubeVertices = 8;
+constexpr std::size_t kTubeIndices = 12;
+
+// 線分 a→b を「直交する 2 枚の板」に展開して out[0..7] へ書く。
+// 板 1 は u 方向、板 2 は v 方向に幅を持つ。どちらか一方は必ずカメラに対して
+// 開くので、ビューごとに作り直さなくても太く見える。
+void buildTube(filament::math::float3* out, const filament::math::float3& a,
+               const filament::math::float3& b, float half) {
+    float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+    const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-9f || half <= 0.0f) {
+        // 長さ 0 の線分（＝バッチの余り）は面積 0 の三角形にして消す。
+        for (std::size_t i = 0; i < kTubeVertices; ++i) out[i] = a;
+        return;
+    }
+    dx /= len;
+    dy /= len;
+    dz /= len;
+
+    // 線と最も平行でない軸を基準に、直交する 2 方向を作る。
+    const bool useY = std::abs(dy) < 0.9f;
+    const float rx = useY ? 0.0f : 1.0f;
+    const float ry = useY ? 1.0f : 0.0f;
+    const float rz = 0.0f;
+
+    float ux = dy * rz - dz * ry;
+    float uy = dz * rx - dx * rz;
+    float uz = dx * ry - dy * rx;
+    const float ul = std::sqrt(ux * ux + uy * uy + uz * uz);
+    if (ul < 1e-9f) {
+        for (std::size_t i = 0; i < kTubeVertices; ++i) out[i] = a;
+        return;
+    }
+    ux = ux / ul * half;
+    uy = uy / ul * half;
+    uz = uz / ul * half;
+
+    // v = dir x u（u と dir が直交かつ単位なので、これも長さ half になる）
+    const float vx = dy * uz - dz * uy;
+    const float vy = dz * ux - dx * uz;
+    const float vz = dx * uy - dy * ux;
+
+    out[0] = {a.x - ux, a.y - uy, a.z - uz};
+    out[1] = {a.x + ux, a.y + uy, a.z + uz};
+    out[2] = {b.x + ux, b.y + uy, b.z + uz};
+    out[3] = {b.x - ux, b.y - uy, b.z - uz};
+    out[4] = {a.x - vx, a.y - vy, a.z - vz};
+    out[5] = {a.x + vx, a.y + vy, a.z + vz};
+    out[6] = {b.x + vx, b.y + vy, b.z + vz};
+    out[7] = {b.x - vx, b.y - vy, b.z - vz};
 }
 
 }  // namespace
@@ -200,22 +260,153 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
 
 }
 
-std::size_t Renderer::addBox() {
-    // A cube renderable sharing the mesh and lit material. It casts shadows
-    // onto the ground and onto other boxes, and receives them too. Its
-    // transform is set each frame by the Scene.
-    utils::Entity e = EntityManager::get().create();
+void Renderer::ensureSphereMesh() {
+    if (sphereVb_) return;
+
+    // 半径 0.5 の単位球。箱と同じく「サイズ 1 で直径 1」になるので、
+    // Scene 側は形が変わってもスケール行列を同じ考え方で組める。
+    constexpr int rings = kSphereRings;
+    constexpr int sectors = kSphereSectors;
+    // 個数は最初から size_t で持つ。int を受け口でキャストすると
+    // `std::vector<float3> normals(std::size_t(vertexCount));` が
+    // 「関数の宣言」に解釈されてしまう（most vexing parse）。
+    const std::size_t vertexCount =
+        std::size_t(rings + 1) * std::size_t(sectors + 1);
+    const std::size_t indexCount = std::size_t(rings) * std::size_t(sectors) * 6;
+
+    auto* positions = new float3[vertexCount];
+    std::vector<float3> normals(vertexCount);
+    for (int r = 0; r <= rings; ++r) {
+        const float theta = kPi * float(r) / float(rings);
+        const float sinT = std::sin(theta);
+        const float cosT = std::cos(theta);
+        for (int s = 0; s <= sectors; ++s) {
+            const float phi = 2.0f * kPi * float(s) / float(sectors);
+            const float3 n{sinT * std::cos(phi), cosT, sinT * std::sin(phi)};
+            const int i = r * (sectors + 1) + s;
+            normals[std::size_t(i)] = n;
+            positions[i] = float3{n.x * 0.5f, n.y * 0.5f, n.z * 0.5f};
+        }
+    }
+
+    // 法線から接空間へ。頂点数が可変なので、立方体のように固定長メンバへは
+    // 置けない（この配列は VertexBuffer へ渡したあと解放コールバックで消す）。
+    auto* tangents = new quatf[vertexCount];
+    auto* orient = filament::geometry::SurfaceOrientation::Builder()
+                       .vertexCount(vertexCount)
+                       .normals(normals.data())
+                       .build();
+    orient->getQuats(tangents, vertexCount);
+    delete orient;
+
+    auto* indices = new uint16_t[indexCount];
+    int k = 0;
+    for (int r = 0; r < rings; ++r) {
+        for (int s = 0; s < sectors; ++s) {
+            const uint16_t a = uint16_t(r * (sectors + 1) + s);
+            const uint16_t b = uint16_t(a + sectors + 1);
+            // 外向きが表になる巻き方（a, a+1, b）／（b, a+1, b+1）。
+            indices[k++] = a;
+            indices[k++] = uint16_t(a + 1);
+            indices[k++] = b;
+            indices[k++] = b;
+            indices[k++] = uint16_t(a + 1);
+            indices[k++] = uint16_t(b + 1);
+        }
+    }
+
+    sphereVb_ = VertexBuffer::Builder()
+                    .vertexCount(uint32_t(vertexCount))
+                    .bufferCount(2)
+                    .attribute(VertexAttribute::POSITION, 0,
+                               VertexBuffer::AttributeType::FLOAT3)
+                    .attribute(VertexAttribute::TANGENTS, 1,
+                               VertexBuffer::AttributeType::FLOAT4)
+                    .build(*engine_);
+    sphereVb_->setBufferAt(
+        *engine_, 0,
+        VertexBuffer::BufferDescriptor(
+            positions, sizeof(float3) * vertexCount,
+            [](void* p, size_t, void*) { delete[] static_cast<float3*>(p); }));
+    sphereVb_->setBufferAt(
+        *engine_, 1,
+        VertexBuffer::BufferDescriptor(
+            tangents, sizeof(quatf) * vertexCount,
+            [](void* p, size_t, void*) { delete[] static_cast<quatf*>(p); }));
+
+    sphereIb_ = IndexBuffer::Builder()
+                    .indexCount(uint32_t(indexCount))
+                    .bufferType(IndexBuffer::IndexType::USHORT)
+                    .build(*engine_);
+    sphereIb_->setBuffer(
+        *engine_,
+        IndexBuffer::BufferDescriptor(
+            indices, sizeof(uint16_t) * indexCount,
+            [](void* p, size_t, void*) { delete[] static_cast<uint16_t*>(p); }));
+    sphereIndexCount_ = uint32_t(indexCount);
+}
+
+std::size_t Renderer::addShape(ShapeMesh mesh) {
+    if (mesh == ShapeMesh::Sphere) ensureSphereMesh();
+
+    // 空きスロットがあれば再利用。エディタで置いては消してを繰り返しても
+    // エンティティ番号が無限に伸びない。
+    std::size_t id;
+    if (!freeShapes_.empty()) {
+        id = freeShapes_.back();
+        freeShapes_.pop_back();
+    } else {
+        shapes_.push_back(ShapeSlot{});
+        id = shapes_.size() - 1;
+    }
+
+    ShapeSlot& slot = shapes_[id];
+    slot.mi = nullptr;      // 色は共有インスタンス（setShapeColor で個別化）
+    slot.highlight = -1;
+    slot.used = true;
+
+    const bool sphere = (mesh == ShapeMesh::Sphere);
+    slot.entity = EntityManager::get().create();
     RenderableManager::Builder(1)
         .boundingBox({{0, 0, 0}, {1, 1, 1}})
         .material(0, matInstance_)
-        .geometry(0, RenderableManager::PrimitiveType::TRIANGLES, vb_, ib_, 0, 36)
+        .geometry(0, RenderableManager::PrimitiveType::TRIANGLES,
+                  sphere ? sphereVb_ : vb_, sphere ? sphereIb_ : ib_, 0,
+                  sphere ? sphereIndexCount_ : 36)
         .culling(true)  // frustum-cull off-screen boxes (matters at high counts)
         .castShadows(true)
         .receiveShadows(true)
-        .build(*engine_, e);
-    scene_->addEntity(e);
-    boxEntities_.push_back(e);
-    return boxEntities_.size() - 1;
+        .build(*engine_, slot.entity);
+    scene_->addEntity(slot.entity);
+    return id;
+}
+
+void Renderer::removeShape(std::size_t id) {
+    if (id >= shapes_.size() || !shapes_[id].used) return;
+    // 番号は空きリストへ戻すので、次の addShape が同じスロットを使う。
+    ShapeSlot& slot = shapes_[id];
+    scene_->remove(slot.entity);
+    engine_->destroy(slot.entity);
+    utils::EntityManager::get().destroy(slot.entity);
+    slot.entity = utils::Entity();
+    if (slot.mi) {
+        engine_->destroy(slot.mi);
+        slot.mi = nullptr;
+    }
+    slot.highlight = -1;
+    slot.used = false;
+    freeShapes_.push_back(id);
+}
+
+void Renderer::setShapeColor(std::size_t id, const float3& color) {
+    if (id >= shapes_.size() || !shapes_[id].used) return;
+    ShapeSlot& slot = shapes_[id];
+    if (!slot.mi) slot.mi = material_->createInstance();
+    slot.mi->setParameter("baseColor", RgbType::LINEAR, color);
+    // ハイライト中なら、掴んでいる色を上書きしない（離したときに戻る）。
+    if (slot.highlight >= 0) return;
+    auto& rm = engine_->getRenderableManager();
+    rm.setMaterialInstanceAt(rm.getInstance(slot.entity), 0, slot.mi);
 }
 
 std::size_t Renderer::addLight(const LightDesc& desc) {
@@ -297,65 +488,57 @@ bool Renderer::loadEnvironment(const std::string& hdrName, float intensity) {
     return true;
 }
 
-void Renderer::configureGrabLines(
-    const std::vector<filament::math::float3>& colors) {
-    if (!lineMaterial_) {
-        const auto pkg = readFile(assetPath("line.filamat"));
-        if (pkg.empty()) {
-            LOGW("render", "grab line: line.filamat not found - lines disabled");
-            return;
-        }
-        lineMaterial_ =
-            Material::Builder().package(pkg.data(), pkg.size()).build(*engine_);
+bool Renderer::ensureLineMaterial() {
+    if (lineMaterial_) return true;
+    const auto pkg = readFile(assetPath("line.filamat"));
+    if (pkg.empty()) {
+        LOGW("render", "line.filamat not found - lines disabled");
+        return false;
     }
-
-    for (std::size_t i = 0; i < colors.size(); ++i) {
-        GrabLine line;
-        // Two vertices, rewritten every frame; the index buffer never changes.
-        line.vb = VertexBuffer::Builder()
-                      .vertexCount(2)
-                      .bufferCount(1)
-                      .attribute(VertexAttribute::POSITION, 0,
-                                 VertexBuffer::AttributeType::FLOAT3, 0,
-                                 sizeof(float) * 3)
-                      .build(*engine_);
-        static const uint16_t kIndices[2] = {0, 1};
-        line.ib = IndexBuffer::Builder()
-                      .indexCount(2)
-                      .bufferType(IndexBuffer::IndexType::USHORT)
-                      .build(*engine_);
-        line.ib->setBuffer(*engine_,
-                           IndexBuffer::BufferDescriptor(kIndices,
-                                                         sizeof(kIndices),
-                                                         nullptr));
-
-        line.mi = lineMaterial_->createInstance();
-        line.mi->setParameter("baseColor", RgbaType::PREMULTIPLIED_LINEAR,
-                              float4{colors[i].x, colors[i].y, colors[i].z,
-                                     1.0f});
-
-        line.entity = EntityManager::get().create();
-        RenderableManager::Builder(1)
-            .boundingBox({{-1000.0f, -1000.0f, -1000.0f},
-                          {1000.0f, 1000.0f, 1000.0f}})  // never culled
-            .geometry(0, RenderableManager::PrimitiveType::LINES, line.vb,
-                      line.ib, 0, 2)
-            .material(0, line.mi)
-            .culling(false)
-            .castShadows(false)
-            .receiveShadows(false)
-            .build(*engine_, line.entity);
-
-        grabLines_.push_back(line);  // added to the scene only while visible
-    }
+    lineMaterial_ =
+        Material::Builder().package(pkg.data(), pkg.size()).build(*engine_);
+    return lineMaterial_ != nullptr;
 }
 
-void Renderer::setGrabLine(std::size_t index,
-                           const filament::math::float3& from,
-                           const filament::math::float3& to, bool visible) {
-    if (index >= grabLines_.size()) return;
-    GrabLine& line = grabLines_[index];
+Renderer::LineEntity Renderer::createLine(const filament::math::float3& color) {
+    LineEntity line;
+    // Two vertices, rewritten every frame; the index buffer never changes.
+    line.vb = VertexBuffer::Builder()
+                  .vertexCount(2)
+                  .bufferCount(1)
+                  .attribute(VertexAttribute::POSITION, 0,
+                             VertexBuffer::AttributeType::FLOAT3, 0,
+                             sizeof(float) * 3)
+                  .build(*engine_);
+    static const uint16_t kIndices[2] = {0, 1};
+    line.ib = IndexBuffer::Builder()
+                  .indexCount(2)
+                  .bufferType(IndexBuffer::IndexType::USHORT)
+                  .build(*engine_);
+    line.ib->setBuffer(
+        *engine_,
+        IndexBuffer::BufferDescriptor(kIndices, sizeof(kIndices), nullptr));
 
+    line.mi = lineMaterial_->createInstance();
+    line.mi->setParameter("baseColor", RgbaType::PREMULTIPLIED_LINEAR,
+                          float4{color.x, color.y, color.z, 1.0f});
+
+    line.entity = EntityManager::get().create();
+    RenderableManager::Builder(1)
+        .boundingBox({{-1000.0f, -1000.0f, -1000.0f},
+                      {1000.0f, 1000.0f, 1000.0f}})  // never culled
+        .geometry(0, RenderableManager::PrimitiveType::LINES, line.vb, line.ib,
+                  0, 2)
+        .material(0, line.mi)
+        .culling(false)
+        .castShadows(false)
+        .receiveShadows(false)
+        .build(*engine_, line.entity);
+    return line;  // added to the scene only while visible
+}
+
+void Renderer::updateLine(LineEntity& line, const filament::math::float3& from,
+                          const filament::math::float3& to, bool visible) {
     if (!visible) {
         if (line.inScene) {
             scene_->remove(line.entity);
@@ -378,6 +561,192 @@ void Renderer::setGrabLine(std::size_t index,
     if (!line.inScene) {
         scene_->addEntity(line.entity);
         line.inScene = true;
+    }
+}
+
+void Renderer::destroyLine(LineEntity& line) {
+    if (line.inScene) scene_->remove(line.entity);
+    engine_->destroy(line.entity);
+    EntityManager::get().destroy(line.entity);
+    engine_->destroy(line.vb);
+    engine_->destroy(line.ib);
+    engine_->destroy(line.mi);
+    line = LineEntity{};
+}
+
+void Renderer::configureGrabLines(
+    const std::vector<filament::math::float3>& colors) {
+    if (!ensureLineMaterial()) return;
+    for (const auto& c : colors) grabLines_.push_back(createLine(c));
+}
+
+void Renderer::setGrabLine(std::size_t index,
+                           const filament::math::float3& from,
+                           const filament::math::float3& to, bool visible) {
+    if (index >= grabLines_.size()) return;
+    updateLine(grabLines_[index], from, to, visible);
+}
+
+void Renderer::setJointLineCount(std::size_t count) {
+    if (count == jointLines_.size()) return;
+    if (count > jointLines_.size()) {
+        if (!ensureLineMaterial()) return;
+        while (jointLines_.size() < count) {
+            // 色は setJointLine で毎回入れ直すので、ここでは白で作る。
+            jointLines_.push_back(createLine({1.0f, 1.0f, 1.0f}));
+        }
+        return;
+    }
+    while (jointLines_.size() > count) {
+        destroyLine(jointLines_.back());
+        jointLines_.pop_back();
+    }
+}
+
+void Renderer::setJointLine(std::size_t index,
+                            const filament::math::float3& from,
+                            const filament::math::float3& to,
+                            const filament::math::float3& color, bool visible) {
+    if (index >= jointLines_.size()) return;
+    LineEntity& line = jointLines_[index];
+    if (visible && line.mi) {
+        line.mi->setParameter("baseColor", RgbaType::PREMULTIPLIED_LINEAR,
+                              float4{color.x, color.y, color.z, 1.0f});
+    }
+    updateLine(line, from, to, visible);
+}
+
+void Renderer::configureLineBatches(
+    const std::vector<filament::math::float3>& colors,
+    std::size_t maxSegments) {
+    if (!ensureLineMaterial() || maxSegments == 0) return;
+    lineBatchCapacity_ = maxSegments;
+
+    // 三角形の並びは固定（線分あたり 8 頂点 / 12 インデックス）。毎フレーム
+    // 書き換えるのは頂点座標だけで、ジオメトリの構成には触らない。
+    const std::size_t vertexCount = maxSegments * kTubeVertices;
+    const std::size_t indexCount = maxSegments * kTubeIndices;
+    for (const auto& c : colors) {
+        LineBatch batch;
+        batch.vb = VertexBuffer::Builder()
+                       .vertexCount(uint32_t(vertexCount))
+                       .bufferCount(1)
+                       .attribute(VertexAttribute::POSITION, 0,
+                                  VertexBuffer::AttributeType::FLOAT3, 0,
+                                  sizeof(float) * 3)
+                       .build(*engine_);
+
+        auto* indices = new uint16_t[indexCount];
+        for (std::size_t s = 0; s < maxSegments; ++s) {
+            const uint16_t base = uint16_t(s * kTubeVertices);
+            uint16_t* out = indices + s * kTubeIndices;
+            // 板 1（u 方向）と板 2（v 方向）で 2 三角形ずつ。
+            const uint16_t quad[2][4] = {
+                {uint16_t(base + 0), uint16_t(base + 1), uint16_t(base + 2),
+                 uint16_t(base + 3)},
+                {uint16_t(base + 4), uint16_t(base + 5), uint16_t(base + 6),
+                 uint16_t(base + 7)}};
+            for (int q = 0; q < 2; ++q) {
+                out[q * 6 + 0] = quad[q][0];
+                out[q * 6 + 1] = quad[q][1];
+                out[q * 6 + 2] = quad[q][2];
+                out[q * 6 + 3] = quad[q][0];
+                out[q * 6 + 4] = quad[q][2];
+                out[q * 6 + 5] = quad[q][3];
+            }
+        }
+        batch.ib = IndexBuffer::Builder()
+                       .indexCount(uint32_t(indexCount))
+                       .bufferType(IndexBuffer::IndexType::USHORT)
+                       .build(*engine_);
+        batch.ib->setBuffer(
+            *engine_,
+            IndexBuffer::BufferDescriptor(
+                indices, sizeof(uint16_t) * indexCount,
+                [](void* p, size_t, void*) {
+                    delete[] static_cast<uint16_t*>(p);
+                }));
+
+        batch.mi = lineMaterial_->createInstance();
+        batch.mi->setParameter("baseColor", RgbaType::PREMULTIPLIED_LINEAR,
+                               float4{c.x, c.y, c.z, 1.0f});
+
+        batch.entity = EntityManager::get().create();
+        RenderableManager::Builder(1)
+            .boundingBox({{-1000.0f, -1000.0f, -1000.0f},
+                          {1000.0f, 1000.0f, 1000.0f}})  // never culled
+            .geometry(0, RenderableManager::PrimitiveType::TRIANGLES, batch.vb,
+                      batch.ib, 0, indexCount)
+            .material(0, batch.mi)
+            .culling(false)
+            .castShadows(false)
+            .receiveShadows(false)
+            .build(*engine_, batch.entity);
+
+        // エディタ専用レイヤへ。これでバッチはシーンに入っていても、
+        // setViewEditorLayerVisible で選んだビューにしか映らない。
+        auto& rm = engine_->getRenderableManager();
+        rm.setLayerMask(rm.getInstance(batch.entity), 0xFF, kLayerEditorOnly);
+
+        lineBatches_.push_back(std::move(batch));
+    }
+}
+
+void Renderer::setLineBatch(std::size_t index,
+                            const std::vector<BatchShape>& shapes) {
+    if (index >= lineBatches_.size()) return;
+    LineBatch& batch = lineBatches_[index];
+
+    if (shapes.empty()) {
+        if (batch.inScene) {
+            scene_->remove(batch.entity);
+            batch.inScene = false;
+        }
+        batch.current.clear();
+        return;
+    }
+
+    // 中身が前回と同じなら転送しない。エディタで手が止まっているあいだ、
+    // 毎フレーム同じ数十 KB を GPU に送り続けても意味がない。
+    if (batch.current == shapes) return;
+    batch.current = shapes;
+
+    // 余りは面積 0 の三角形で埋める。プリミティブ数を変えずに見た目だけ
+    // 消せるので、ジオメトリを組み直す必要がない。
+    const std::size_t vertexCount = lineBatchCapacity_ * kTubeVertices;
+    auto* verts = new float3[vertexCount];
+    const std::size_t used = std::min(shapes.size(), lineBatchCapacity_);
+    for (std::size_t s = 0; s < used; ++s) {
+        const BatchShape& shape = shapes[s];
+        float3* out = verts + s * kTubeVertices;
+        if (shape.width > 0.0f) {
+            buildTube(out, shape.a, shape.b, shape.width * 0.5f);
+            continue;
+        }
+        // 塗りつぶしの四角は前半（頂点 0-3 = 三角形 2 枚）だけを使い、
+        // 後半は 1 点に潰して消す。
+        out[0] = shape.a;
+        out[1] = shape.b;
+        out[2] = shape.c;
+        out[3] = shape.d;
+        for (std::size_t i = 4; i < kTubeVertices; ++i) out[i] = shape.a;
+    }
+    const float3 pad = used > 0 ? shapes[used - 1].a : float3{0.0f};
+    for (std::size_t s = used; s < lineBatchCapacity_; ++s) {
+        for (std::size_t i = 0; i < kTubeVertices; ++i) {
+            verts[s * kTubeVertices + i] = pad;
+        }
+    }
+
+    batch.vb->setBufferAt(
+        *engine_, 0,
+        VertexBuffer::BufferDescriptor(
+            verts, sizeof(float3) * vertexCount,
+            [](void* p, size_t, void*) { delete[] static_cast<float3*>(p); }));
+
+    if (!batch.inScene) {
+        scene_->addEntity(batch.entity);
+        batch.inScene = true;
     }
 }
 
@@ -422,18 +791,18 @@ float Renderer::verticalFovDegrees() const {
 }
 
 void Renderer::setBoxHighlighted(std::size_t id, int styleIndex) {
-    if (id >= boxEntities_.size()) return;
-    if (boxHighlightStyle_.size() != boxEntities_.size()) {
-        boxHighlightStyle_.resize(boxEntities_.size(), -1);
-    }
+    if (id >= shapes_.size() || !shapes_[id].used) return;
+    ShapeSlot& slot = shapes_[id];
     if (styleIndex >= int(highlightInstances_.size())) styleIndex = -1;
-    if (boxHighlightStyle_[id] == styleIndex) return;
-    boxHighlightStyle_[id] = styleIndex;
+    if (slot.highlight == styleIndex) return;
+    slot.highlight = styleIndex;
 
+    // 解除したときは、そのオブジェクト自身の色（無ければ共有色）に戻す。
+    MaterialInstance* mi = (styleIndex < 0)
+                               ? (slot.mi ? slot.mi : matInstance_)
+                               : highlightInstances_[styleIndex];
     auto& rm = engine_->getRenderableManager();
-    rm.setMaterialInstanceAt(
-        rm.getInstance(boxEntities_[id]), 0,
-        styleIndex < 0 ? matInstance_ : highlightInstances_[styleIndex]);
+    rm.setMaterialInstanceAt(rm.getInstance(slot.entity), 0, mi);
 }
 
 void Renderer::addGround(float halfSize, const filament::math::float3& color,
@@ -619,6 +988,9 @@ std::size_t Renderer::addView() {
     slot.view->setScene(scene_);   // all views share one scene
     slot.view->setCamera(slot.camera);
     slot.view->setViewport({0, 0, uint32_t(slot.width), uint32_t(slot.height)});
+    // エディタ専用レイヤ（ギズモ）は既定で見せない。見せるビューは
+    // setViewEditorLayerVisible で明示的に選ぶ。
+    slot.view->setVisibleLayers(kLayerEditorOnly, 0);
 
     for (auto& cap : slot.captures) {
         cap.pixels.resize(std::size_t(slot.width) * std::size_t(slot.height) * 4);
@@ -627,6 +999,12 @@ std::size_t Renderer::addView() {
 
     views_.push_back(std::move(slot));
     return views_.size() - 1;
+}
+
+void Renderer::setViewEditorLayerVisible(std::size_t viewIndex, bool visible) {
+    if (viewIndex >= views_.size()) return;
+    views_[viewIndex].view->setVisibleLayers(kLayerEditorOnly,
+                                             visible ? kLayerEditorOnly : 0);
 }
 
 void Renderer::requestViewResize(std::size_t viewIndex, int width, int height) {
@@ -655,10 +1033,13 @@ void Renderer::setCamera(std::size_t viewIndex,
 Renderer::~Renderer() {
     if (!engine_) return;
     finishPendingReadbacks();  // no buffer may be freed while the GPU has it
-    for (auto e : boxEntities_) {
-        scene_->remove(e);
-        engine_->destroy(e);
+    for (auto& slot : shapes_) {
+        if (!slot.used) continue;
+        scene_->remove(slot.entity);
+        engine_->destroy(slot.entity);
+        if (slot.mi) engine_->destroy(slot.mi);
     }
+    shapes_.clear();
     scene_->remove(groundEntity_);
     engine_->destroy(groundEntity_);
     for (auto e : lightEntities_) {
@@ -670,14 +1051,19 @@ Renderer::~Renderer() {
     if (iblTexture_) engine_->destroy(iblTexture_);
     engine_->destroy(groundTexture_);
     engine_->destroy(matInstance_);
-    for (auto& line : grabLines_) {
-        if (line.inScene) scene_->remove(line.entity);
-        engine_->destroy(line.entity);
-        engine_->destroy(line.vb);
-        engine_->destroy(line.ib);
-        engine_->destroy(line.mi);
-    }
+    for (auto& line : grabLines_) destroyLine(line);
     grabLines_.clear();
+    for (auto& line : jointLines_) destroyLine(line);
+    jointLines_.clear();
+    for (auto& batch : lineBatches_) {
+        if (batch.inScene) scene_->remove(batch.entity);
+        engine_->destroy(batch.entity);
+        EntityManager::get().destroy(batch.entity);
+        engine_->destroy(batch.vb);
+        engine_->destroy(batch.ib);
+        engine_->destroy(batch.mi);
+    }
+    lineBatches_.clear();
     if (lineMaterial_) engine_->destroy(lineMaterial_);
     for (auto* mi : highlightInstances_) engine_->destroy(mi);
     engine_->destroy(material_);
@@ -687,6 +1073,8 @@ Renderer::~Renderer() {
     engine_->destroy(groundVb_);
     engine_->destroy(ib_);
     engine_->destroy(groundIb_);
+    if (sphereVb_) engine_->destroy(sphereVb_);
+    if (sphereIb_) engine_->destroy(sphereIb_);
     for (auto& slot : views_) {
         engine_->destroyCameraComponent(slot.cameraEntity);
         engine_->destroy(slot.cameraEntity);
@@ -700,8 +1088,9 @@ Renderer::~Renderer() {
 }
 
 void Renderer::setBoxTransform(std::size_t i, const filament::math::mat4f& transform) {
+    if (i >= shapes_.size() || !shapes_[i].used) return;
     auto& tcm = engine_->getTransformManager();
-    tcm.setTransform(tcm.getInstance(boxEntities_[i]), transform);
+    tcm.setTransform(tcm.getInstance(shapes_[i].entity), transform);
 }
 
 void Renderer::renderFrame(

@@ -5,6 +5,8 @@
 #include <chrono/collision/ChCollisionSystem.h>
 #include <chrono/physics/ChBodyEasy.h>
 #include <chrono/geometry/ChTriangleMeshConnected.h>
+#include <chrono/physics/ChLinkDistance.h>
+#include <chrono/physics/ChLinkLock.h>
 #include <chrono/physics/ChSystemNSC.h>
 #include <chrono/solver/ChIterativeSolverVI.h>
 #include <chrono/solver/ChSolver.h>
@@ -133,6 +135,62 @@ auto wakeUp(T* obj, long) -> decltype(obj->WakeUp(), void()) {
     obj->WakeUp();
 }
 
+// ChLinkLock 系の Initialize は Chrono 9 で ChCoordsys<> から ChFrame<> に
+// 変わった。どちらでも通るように、コンパイルできるほうを選ぶ（この
+// ファイルで既に使っている sleeping/velocity の書き方と同じ手口）。
+template <typename L, typename B>
+auto initLink(L* link, const B& b1, const B& b2, const chrono::ChVector3d& pos,
+              const chrono::ChQuaternion<>& rot, int)
+    -> decltype(link->Initialize(b1, b2, chrono::ChFrame<>(pos, rot)), void()) {
+    link->Initialize(b1, b2, chrono::ChFrame<>(pos, rot));
+}
+template <typename L, typename B>
+auto initLink(L* link, const B& b1, const B& b2, const chrono::ChVector3d& pos,
+              const chrono::ChQuaternion<>& rot, long)
+    -> decltype(link->Initialize(b1, b2, chrono::ChCoordsys<>(pos, rot)),
+                void()) {
+    link->Initialize(b1, b2, chrono::ChCoordsys<>(pos, rot));
+}
+
+// ChLinkDistance の Initialize は版によって引数が違う。合わなければ
+// 「作らない」で済ませる（アプリを落とすほどの機能ではない）。
+template <typename L, typename B>
+auto initDistance(L* link, const B& b1, const B& b2,
+                  const chrono::ChVector3d& p1, const chrono::ChVector3d& p2,
+                  double distance, int)
+    -> decltype(link->Initialize(b1, b2, false, p1, p2, false, distance),
+                bool()) {
+    link->Initialize(b1, b2, false, p1, p2, false, distance);
+    return true;
+}
+template <typename L, typename B>
+bool initDistance(L*, const B&, const B&, const chrono::ChVector3d&,
+                  const chrono::ChVector3d&, double, ...) {
+    return false;
+}
+
+// +Z をこの向きに合わせる回転。ChLinkLockRevolute はリンク座標系の Z 軸まわり
+// に回り、ChLinkLockPrismatic は Z 軸方向にスライドするので、ユーザーが指定した
+// ワールド軸をリンクの Z に持ってくる必要がある。
+// Chrono のベクトル演算子は版ごとに名前が違うので、成分計算で書いてある。
+chrono::ChQuaternion<> quatFromZAxis(const chrono::ChVector3d& axis) {
+    double ax = axis.x(), ay = axis.y(), az = axis.z();
+    const double n = std::sqrt(ax * ax + ay * ay + az * az);
+    if (n < 1e-9) return chrono::ChQuaternion<>(1, 0, 0, 0);
+    ax /= n;
+    ay /= n;
+    az /= n;
+
+    const double c = az;  // dot((0,0,1), axis)
+    if (c < -0.999999) {  // 真後ろ: X 軸まわりに 180 度
+        return chrono::ChQuaternion<>(0, 1, 0, 0);
+    }
+    // 最短回転。cross((0,0,1), axis) = (-ay, ax, 0)
+    chrono::ChQuaternion<> q(1.0 + c, -ay, ax, 0.0);
+    q.Normalize();
+    return q;
+}
+
 }  // namespace
 
 const char* PhysicsWorld::backendName() const {
@@ -255,8 +313,9 @@ void PhysicsWorld::setSleepingEnabled(bool enabled, float seconds,
 
 std::size_t PhysicsWorld::sleepingCount() const {
     std::size_t n = 0;
-    for (const auto& b : bodies_) {
-        if (b->IsSleeping()) ++n;
+    for (std::size_t i = 0; i < bodies_.size(); ++i) {
+        if (!active_[i]) continue;  // 退場済みは数えない
+        if (bodies_[i]->IsSleeping()) ++n;
     }
     return n;
 }
@@ -405,6 +464,7 @@ std::size_t PhysicsWorld::addSphere(double radius, double density,
     }
     sys_->AddBody(b);
     bodies_.push_back(b);
+    active_.push_back(true);
     return bodies_.size() - 1;
 }
 
@@ -441,6 +501,7 @@ std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density
     }
     sys_->AddBody(b);
     bodies_.push_back(b);
+    active_.push_back(true);
     return bodies_.size() - 1;
 }
 
@@ -468,6 +529,7 @@ std::size_t PhysicsWorld::addConvexHull(
     }
     sys_->AddBody(b);
     bodies_.push_back(b);
+    active_.push_back(true);
     return bodies_.size() - 1;
 }
 
@@ -486,6 +548,7 @@ std::size_t PhysicsWorld::addStaticMesh(
     b->EnableCollision(true);
     sys_->AddBody(b);
     bodies_.push_back(b);
+    active_.push_back(true);
     return bodies_.size() - 1;
 }
 
@@ -515,4 +578,137 @@ void PhysicsWorld::setBodyPose(std::size_t id, const ChVector3d& pos,
     const double wakeSpeed =
         std::max(kWakeSpeed, 3.0 * static_cast<double>(sleepMinLinVel_));
     setLinVel(bodies_[id].get(), ChVector3d(0, -wakeSpeed, 0), 0);
+}
+
+// ---- エディタ用 -----------------------------------------------------------
+
+void PhysicsWorld::setGravityY(double gravityY) {
+    sys_->SetGravitationalAcceleration(ChVector3d(0, gravityY, 0));
+}
+
+void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
+                             const ChQuaternion<>& rot) {
+    if (id >= bodies_.size()) return;
+    auto& b = bodies_[id];
+    b->SetPos(pos);
+    b->SetRot(rot);
+    b->ForceToRest();
+    wakeUp(b.get(), 0);
+    // setBodyPose と違って落下速度は与えない。エディタで置いた物は、
+    // シミュレートを始めるまでその場に止まっていてほしい。
+}
+
+void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
+    if (id >= bodies_.size()) return;
+    bodies_[id]->SetFixed(fixed);
+    if (!fixed) wakeUp(bodies_[id].get(), 0);
+}
+
+void PhysicsWorld::disableBody(std::size_t id) {
+    if (id >= bodies_.size() || !active_[id]) return;
+    auto& b = bodies_[id];
+    b->SetFixed(true);
+    b->EnableCollision(false);
+    b->ForceToRest();
+    // 地面のはるか下へ。当たり判定を切っても衝突系がまだ形状を持っている
+    // 版があるので、位置でも確実に無関係にしておく。
+    b->SetPos(ChVector3d(0, -1000.0, 0));
+    active_[id] = false;
+}
+
+bool PhysicsWorld::bodyActive(std::size_t id) const {
+    return id < active_.size() && active_[id];
+}
+
+// ---- ジョイント -----------------------------------------------------------
+
+std::size_t PhysicsWorld::addJoint(JointType type, std::size_t bodyA,
+                                   std::size_t bodyB, const ChVector3d& anchor,
+                                   const ChVector3d& axis, double distance) {
+    if (bodyA >= bodies_.size() || bodyB >= bodies_.size()) {
+        LOGW("physics", "joint: body id out of range (%zu, %zu)", bodyA, bodyB);
+        return kInvalidJoint;
+    }
+    if (bodyA == bodyB) {
+        LOGW("physics", "joint: both ends are the same body (%zu)", bodyA);
+        return kInvalidJoint;
+    }
+    if (!active_[bodyA] || !active_[bodyB]) {
+        LOGW("physics", "joint: body has been removed (%zu, %zu)", bodyA, bodyB);
+        return kInvalidJoint;
+    }
+
+    auto a = bodies_[bodyA];
+    auto b = bodies_[bodyB];
+    // 眠ったままだと拘束が効かないので、両端とも起こしておく。
+    wakeUp(a.get(), 0);
+    wakeUp(b.get(), 0);
+
+    // リンク座標系。Revolute は Z 軸まわりに回り、Prismatic は Z 軸方向へ
+    // スライドするので、指定されたワールド軸を Z に合わせる。
+    const ChQuaternion<> frameRot = quatFromZAxis(axis);
+
+    std::shared_ptr<chrono::ChLinkBase> link;
+    switch (type) {
+        case JointType::Fixed: {
+            auto l = chrono_types::make_shared<ChLinkLockLock>();
+            initLink(l.get(), a, b, anchor, frameRot, 0);
+            link = l;
+            break;
+        }
+        case JointType::Revolute: {
+            auto l = chrono_types::make_shared<ChLinkLockRevolute>();
+            initLink(l.get(), a, b, anchor, frameRot, 0);
+            link = l;
+            break;
+        }
+        case JointType::Spherical: {
+            auto l = chrono_types::make_shared<ChLinkLockSpherical>();
+            initLink(l.get(), a, b, anchor, frameRot, 0);
+            link = l;
+            break;
+        }
+        case JointType::Prismatic: {
+            auto l = chrono_types::make_shared<ChLinkLockPrismatic>();
+            initLink(l.get(), a, b, anchor, frameRot, 0);
+            link = l;
+            break;
+        }
+        case JointType::Distance: {
+            // 2 点は各ボディの現在位置。distance が 0 なら今の間隔を保つ。
+            const ChVector3d p1 = a->GetPos();
+            const ChVector3d p2 = b->GetPos();
+            double len = distance;
+            if (len <= 0.0) {
+                const ChVector3d d = p2 - p1;
+                len = std::sqrt(d.x() * d.x() + d.y() * d.y() + d.z() * d.z());
+            }
+            auto l = chrono_types::make_shared<ChLinkDistance>();
+            if (!initDistance(l.get(), a, b, p1, p2, len, 0)) {
+                LOGW("physics",
+                     "distance joint: this Chrono version has a different "
+                     "ChLinkDistance::Initialize - skipped");
+                return kInvalidJoint;
+            }
+            link = l;
+            break;
+        }
+    }
+
+    if (!link) return kInvalidJoint;
+    sys_->AddLink(link);
+    joints_.push_back(link);
+    return joints_.size() - 1;
+}
+
+void PhysicsWorld::removeAllJoints() {
+    for (auto& l : joints_) sys_->RemoveLink(l);
+    joints_.clear();
+    // 拘束の増減はソルバの構成を変えるので、Setup で作り直させる
+    // （wakeAll と同じ理由）。
+    sys_->Setup();
+}
+
+std::size_t PhysicsWorld::jointCount() const {
+    return joints_.size();
 }

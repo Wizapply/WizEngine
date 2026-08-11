@@ -45,10 +45,12 @@
   }
 
   // Only the browser that owns the session may drive the scene; the others
-  // show greyed-out controls.
+  // show greyed-out controls. エディタの操作ボタン類も同じ扱い（見ている
+  // だけのブラウザがシーンを書き換えられては困る）。
   function setControlsEnabled(on) {
-    document.querySelectorAll('#sidebar button.wide')
-            .forEach((b) => { b.disabled = !on; });
+    document.querySelectorAll(
+        '#sidebar button.wide, #sidebar .modeBtn, #paneEditor button')
+      .forEach((b) => { b.disabled = !on; });
   }
   setControlsEnabled(false);
 
@@ -217,7 +219,10 @@
       return;
     }
 
-    if (grabbing) { grabNdc = toNdc(e.clientX, e.clientY); return; }
+    // ギズモのハイライト用に、いつでも最新のカーソル位置を控えておく
+    // （送るかどうかは下のタイマーが決める）。
+    hoverNdc = toNdc(e.clientX, e.clientY);
+    if (grabbing) { grabNdc = hoverNdc; return; }
     if (!dragMode) return;
     accX += e.movementX;
     accY += e.movementY;
@@ -276,17 +281,39 @@
     }
   }, 16);  // ~60 Hz - drag latency is very visible on the grabbed object
 
-  // Two shortcuts only. Everything else (reset, pause, camera) is a control in
-  // the sidebar or a mouse gesture, so no bare letter or arrow key can fire an
-  // action by accident while working in the view.
+  // パネルとフルスクリーンは常時。W / E / R / X（ギズモ）はエディタモード中
+  // だけで、入力欄にフォーカスがあるときは無効 - 数値を打っている最中に
+  // モードが変わらないようにするため。それ以外の操作は誤爆を避けて
+  // サイドバーのボタンかマウス操作に寄せてある。
   document.addEventListener('keydown', (e) => {
     if (e.repeat) return;
     if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       toggleSidebar();
-    } else if ((e.key === 'f' || e.key === 'F') && e.altKey) {
+      return;
+    }
+    if ((e.key === 'f' || e.key === 'F') && e.altKey) {
       e.preventDefault();
       toggleFullscreen();
+      return;
+    }
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' ||
+               el.tagName === 'TEXTAREA')) {
+      return;
+    }
+    if (!owner || !sceneData || sceneData.mode !== 'editor') return;
+    if (!isEditorCam()) return;  // ギズモが出ないページで切り替えても意味がない
+    const key = e.key.toLowerCase();
+    if (key === 'w') { e.preventDefault(); setGizmoMode('translate'); }
+    else if (key === 'e') { e.preventDefault(); setGizmoMode('rotate'); }
+    else if (key === 'r') { e.preventDefault(); setGizmoMode('scale'); }
+    else if (key === 'x') {
+      e.preventDefault();
+      const box = document.getElementById('gzSnap');
+      box.checked = !box.checked;
+      applyGizmo();
     }
   });
   // Software cursor over the stage (windowed and fullscreen alike): follows
@@ -322,6 +349,12 @@
   window.addEventListener('blur', () => cursorEl.classList.remove('cross'));
   stageEl.addEventListener('pointerleave', () => {
     if (!document.fullscreenElement) cursorEl.classList.remove('show');
+    // ビューから出たらギズモのハイライトも消す。どのハンドルにも当たらない
+    // 座標を 1 回送るだけでよい（専用のコマンドを増やすほどの話ではない）。
+    if (hoverNdc) {
+      hoverNdc = null;
+      send('hover', { x: 9.0, y: 9.0 });
+    }
   });
 
   document.addEventListener('fullscreenchange', () => {
@@ -558,7 +591,9 @@
     fetch('stats').then((r) => r.json()).then((s) => {
       if (s.cameraCount !== undefined && !camLinksDone) {
         document.getElementById('camLabel').textContent =
-          'camera ' + s.camera + ' of ' + s.cameraCount;
+          (s.editorCam !== undefined && s.camera === s.editorCam)
+            ? 'Editor Camera'
+            : 'camera ' + s.camera + ' of ' + s.cameraCount;
         camLinksDone = true;
       }
       curIter = s.iterations;
@@ -606,9 +641,13 @@
       document.getElementById('hzVal').textContent = s.physicsTarget;
       document.getElementById('envVal').textContent = fmt(s.envelope * 1000, 1) + 'mm';
       document.getElementById('recVal').textContent = fmt(s.recovery, 2);
-      const slowPhysics = s.realtime < 0.95;
+      // エディタ中は物理を回していないので、遅い扱いにしない。
+      const editing = s.mode === 'editor';
+      const slowPhysics = !editing && s.realtime < 0.95;
       const slowRender = s.renderFps < s.targetFps * 0.9;
       document.getElementById('perf').innerHTML =
+        '<span>mode <b>' + (editing ? '✎ editor' : '▶ simulate') + '</b></span>' +
+        '<span>joints <b>' + (s.joints || 0) + '</b></span>' +
         '<span class="' + (slowPhysics ? 'warn' : '') + '">physics <b>' +
           fmt(s.physicsHz) + ' Hz</b> (' + fmt(s.physicsMs, 2) + ' ms, x' +
           s.substeps + ' substeps)</span>' +
@@ -779,7 +818,7 @@
     if (!s || !s.cameras) return;
     const sel = s.cameras.map(c => c.selected);
     const busy = (s.busy || []).slice();
-    const label = (i) => 'camera ' + i + (i === s.camera ? ' (this)' : '');
+    const label = (i) => cameraName(i) + (i === s.camera ? ' (this)' : '');
 
     if (prevSel) {
       for (let i = 0; i < sel.length; i++) {
@@ -799,13 +838,16 @@
     prevBusy = busy;
   }
 
-  // Tabs are just show/hide - both panes stay in the DOM so their controls
+  // Tabs are just show/hide - all panes stay in the DOM so their controls
   // keep updating from the stats poll even while hidden.
+  const TABS = { scene: 'paneScene', editor: 'paneEditor', physics: 'panePhysics' };
+  const TAB_BUTTONS = { scene: 'tabScene', editor: 'tabEditor', physics: 'tabPhysics' };
   function showTab(name) {
-    document.getElementById('paneScene').hidden = (name !== 'scene');
-    document.getElementById('panePhysics').hidden = (name !== 'physics');
-    document.getElementById('tabScene').classList.toggle('active', name === 'scene');
-    document.getElementById('tabPhysics').classList.toggle('active', name === 'physics');
+    for (const key of Object.keys(TABS)) {
+      document.getElementById(TABS[key]).hidden = (key !== name);
+      document.getElementById(TAB_BUTTONS[key])
+              .classList.toggle('active', key === name);
+    }
   }
 
   function toggleSidebar() {
@@ -849,7 +891,7 @@
       row.className = 'item' + (isMe ? ' sel' : '');
       row.innerHTML =
         '<span class="dot" style="background:' + c.color + '"></span>' +
-        '<span>Camera ' + c.index + (isMe ? ' (this)' : '') + '</span>' +
+        '<span>' + cameraName(c.index) + (isMe ? ' (this)' : '') + '</span>' +
         '<span class="sub' + (busy && !isMe ? ' busy' : '') + '">' +
         state + '</span>';
       if (!isMe) {
@@ -879,8 +921,11 @@
     // Cap the DOM: 512+ rows rebuilt twice a second is wasteful, and a list
     // that long is unreadable anyway - filter to narrow it down.
     const shown = rows.slice(0, 200);
-    const kind = sceneData.model ? 'Model' : 
-                 (sceneData.shape === 'sphere' ? 'Sphere' : 'Box');
+    // 形はオブジェクトごとに違う（エディタで箱も球も置けるので）。名前を
+    // 付けた物はその名前、付けていない物は「形 + 番号」で表示する。
+    const KIND = { box: 'Box', sphere: 'Sphere', model: 'Model' };
+    const labelOf = (o) =>
+      o.name ? o.name : ((KIND[o.shape] || 'Object') + ' ' + o.index);
     let html = '';
     // Lights first: part of the scene like everything else, but not
     // selectable - selecting drives the grab controller, which only knows
@@ -905,7 +950,7 @@
         : '<span class="dot"></span>';
       html += '<div class="item' + (isMine ? ' sel' : '') +
               '" onclick="selectObject(' + o.index + ')">' + dot +
-              '<span>' + kind + ' ' + o.index + '</span>' +
+              '<span>' + labelOf(o) + (o.fixed ? ' ⚓' : '') + '</span>' +
               '<span class="sub">' + o.y.toFixed(2) + 'm</span></div>';
     }
     if (rows.length > shown.length) {
@@ -915,25 +960,346 @@
     document.getElementById('objList').innerHTML = html;
   }
 
+  // 選択中のオブジェクトの設計値。サーバが選択ぶんだけ丸ごと送ってくれる
+  // （objects[] は番号が飛ぶことがあるので、配列の位置では引けない）。
   function renderInspector() {
     const el = document.getElementById('inspector');
-    const mine = myCameraSelection();
-    if (!sceneData || mine < 0) {
+    const o = (sceneData && sceneData.selected) ? sceneData.selected : null;
+    if (!o) {
       el.textContent = 'nothing selected';
       return;
     }
-    const o = sceneData.objects[mine];
-    if (!o) { el.textContent = 'nothing selected'; return; }
-    const kind = sceneData.model
-      ? ('Model (' + sceneData.model + ')')
-      : (sceneData.shape === 'sphere' ? 'Sphere' : 'Box');
+    const drawn = o.shape === 'model'
+      ? ('Model (' + (sceneData.model || '') + ')')
+      : (o.shape === 'sphere' ? 'Sphere' : 'Box');
+    const size = o.shape === 'box'
+      ? [o.size.x, o.size.y, o.size.z].map((v) => v.toFixed(2)).join(' × ')
+      : ('⌀ ' + o.size.x.toFixed(2));
+    const px = (o.px !== undefined) ? o.px : o.position.x;
+    const py = (o.py !== undefined) ? o.py : o.position.y;
+    const pz = (o.pz !== undefined) ? o.pz : o.position.z;
     el.innerHTML =
-      '<div><span class="k">object</span> #' + o.index + '</div>' +
-      '<div><span class="k">drawn as</span> ' + kind + '</div>' +
+      '<div><span class="k">object</span> #' + o.index +
+      (o.name ? ' — ' + o.name : '') + '</div>' +
+      '<div><span class="k">drawn as</span> ' + drawn + '</div>' +
       '<div><span class="k">position</span> ' +
-      o.x.toFixed(2) + ', ' + o.y.toFixed(2) + ', ' + o.z.toFixed(2) + '</div>' +
-      '<div><span class="k">collision</span> ' +
-      (sceneData.shape === 'sphere' ? 'sphere' : 'box') + '</div>';
+      px.toFixed(2) + ', ' + py.toFixed(2) + ', ' + pz.toFixed(2) + '</div>' +
+      '<div><span class="k">size</span> ' + size + '</div>' +
+      '<div><span class="k">mass</span> ' + o.mass.toFixed(3) + ' kg' +
+      (o.fixed ? ' (fixed)' : '') + '</div>' +
+      '<div><span class="k">collision</span> ' + o.collision + '</div>';
+  }
+
+  // ---- Editor タブ ---------------------------------------------------------
+  // サーバ（/scene）が唯一の正。ここでは「送る」と「映す」だけをやる。
+  // 入力欄はポーリングのたびに上書きされるが、編集中の欄（フォーカスが
+  // 当たっている欄）だけは触らない - でないと数字を打っている途中で
+  // 消えてしまう。
+  let jointPartner = -1;      // ジョイントの相手 B。-1 = 地面
+  let sceneListFilled = '';   // 保存済みシーン一覧を組み直す判定用
+
+  function setField(id, value) {
+    const el = document.getElementById(id);
+    if (!el || el === document.activeElement) return;
+    if (el.type === 'checkbox') el.checked = !!value;
+    else el.value = value;
+  }
+  function num(id, fallback) {
+    const v = parseFloat(document.getElementById(id).value);
+    return Number.isFinite(v) ? v : fallback;
+  }
+  const round2 = (v) => Math.round((v || 0) * 1000) / 1000;
+
+  function setMode(mode) { send('mode', { mode: mode }); }
+
+  // ---- ギズモ --------------------------------------------------------------
+  // 見た目と当たり判定はサーバー側（3D の線として描かれる）。ここでやるのは
+  // 設定を送ることと、掴んでいないときのカーソル位置を知らせることだけ。
+  function applyGizmo(patch) {
+    const g = (sceneData && sceneData.gizmo) || {};
+    send('edit.gizmo', Object.assign({
+      mode: g.mode || 'translate',
+      space: g.space || 'world',
+      snap: document.getElementById('gzSnap').checked,
+      moveStep: num('gzMoveStep', 0.25),
+      rotateStep: num('gzRotStep', 15),
+      scaleStep: num('gzScaleStep', 0.1),
+      grid: document.getElementById('gzGrid').checked,
+      gridStep: num('gzGridStep', 1)
+    }, patch || {}));
+  }
+  function setGizmoMode(mode) { applyGizmo({ mode: mode }); }
+  function setGizmoSpace(space) { applyGizmo({ space: space }); }
+
+  // どのハンドルを掴めるかは押してみるまで分からない、では使いづらいので、
+  // 選択中はカーソル位置を控えめな間隔で送ってサーバーに光らせてもらう。
+  // ドラッグ中は drag が同じ情報を運ぶので送らない。ギズモはエディタカメラ
+  // にしか出ないので、送るのもそのページだけ。
+  let hoverNdc = null;
+  setInterval(() => {
+    if (!owner || grabbing || dragMode) return;
+    if (!sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
+    if (!sceneData.selected || !hoverNdc) return;
+    send('hover', hoverNdc);
+  }, 70);
+
+  function addObject(shape) {
+    send('edit.add', {
+      shape: shape,
+      size: num('edNewSize', 0.5),
+      color: document.getElementById('edNewColor').value,
+      mass: 1.0
+    });
+  }
+
+  // 触った項目だけを送る（edit.set は部分更新）。全部まとめて送ると、
+  // シミュレート中に質量だけ変えたつもりが「0.5 秒前に表示していた位置」へ
+  // 物体を引き戻してしまう - 位置の欄はポーリングで更新されているため。
+  function applyEdit(patch) {
+    const sel = mySelectedDesc();
+    if (!sel) return;
+    send('edit.set', Object.assign({ index: sel.index }, patch));
+  }
+  function applyPos() {
+    applyEdit({ position: { x: num('edPX', 0), y: num('edPY', 0),
+                            z: num('edPZ', 0) } });
+  }
+  function applyRot() {
+    applyEdit({ rotation: { x: num('edRX', 0), y: num('edRY', 0),
+                            z: num('edRZ', 0) } });
+  }
+  function applySize() {
+    const sel = mySelectedDesc();
+    if (!sel) return;
+    const sx = num('edSX', 0.5);
+    // 球は直径ひとつ。X の欄だけを見て 3 成分に配る。
+    applyEdit({ size: sel.shape === 'box'
+      ? { x: sx, y: num('edSY', 0.5), z: num('edSZ', 0.5) }
+      : { x: sx, y: sx, z: sx } });
+  }
+  function applyMass() { applyEdit({ mass: num('edMass', 1) }); }
+  function applyFixed() {
+    applyEdit({ fixed: document.getElementById('edFixed').checked });
+  }
+  function applyColor() {
+    applyEdit({ color: document.getElementById('edColor').value });
+  }
+  function applyName() {
+    applyEdit({ name: document.getElementById('edName').value });
+  }
+
+  function mySelectedDesc() {
+    return (sceneData && sceneData.selected) ? sceneData.selected : null;
+  }
+
+  function setJointPartner() {
+    const sel = mySelectedDesc();
+    if (!sel) return;
+    jointPartner = sel.index;
+    renderEditor();
+  }
+  function clearJointPartner() { jointPartner = -1; renderEditor(); }
+
+  function createJoint() {
+    const sel = mySelectedDesc();
+    if (!sel) return;
+    const axis = document.getElementById('edJointAxis').value;
+    send('edit.joint.add', {
+      kind: document.getElementById('edJointKind').value,
+      a: sel.index,
+      b: jointPartner,
+      ax: axis === 'x' ? 1 : 0,
+      ay: axis === 'y' ? 1 : 0,
+      az: axis === 'z' ? 1 : 0
+    });
+  }
+  function removeJoint(index) { send('edit.joint.remove', { index: index }); }
+
+  // シミュレート設定（Physics タブ）。物理レートはここでは送らない - Rate
+  // セクション（rate コマンド）が受け持ち、サーバー側で保存値にも映る。
+  function applySim() {
+    send('edit.sim', {
+      gravity: num('edGravity', -9.81),
+      friction: num('edFriction', 0.6),
+      restitution: num('edRestitution', 0),
+      linearDamping: num('edLinDamp', 0.15),
+      angularDamping: num('edAngDamp', 0.6),
+      sleeping: document.getElementById('edSleeping').checked
+    });
+  }
+  function applyCustomRate() {
+    const hz = Math.round(num('hzCustom', 60));
+    if (hz >= 10 && hz <= 240) send('rate', { hz: hz });
+  }
+
+  function saveScene() {
+    const name = document.getElementById('edSceneName').value.trim();
+    if (!name) return;
+    send('edit.save', { name: name });
+  }
+  function loadScene() {
+    const name = document.getElementById('edSceneName').value.trim();
+    if (!name) return;
+    send('edit.load', { name: name });
+  }
+  function pickScene() {
+    const v = document.getElementById('edSceneList').value;
+    if (v) document.getElementById('edSceneName').value = v;
+  }
+  function clearScene() {
+    if (!confirm('シーンのオブジェクトとジョイントを全部消します。よろしいですか？')) return;
+    send('edit.clear');
+  }
+
+  const JOINT_LABEL = {
+    revolute: 'ちょうつがい', spherical: 'ボール', fixed: '固定',
+    prismatic: '直動', distance: '距離'
+  };
+  // ビューに引く線と同じ色。どの線がどの行かを目で追えるようにする。
+  const JOINT_COLOR = {
+    revolute: '#ff8c26', spherical: '#f273d9', fixed: '#f2d933',
+    prismatic: '#59e6e6', distance: '#99f266'
+  };
+
+  // このページのカメラがエディタカメラか。違うページでは Inspector タブを
+  // 隠し、モード切替も無効化する（サーバー側でも同じ判定で弾かれる）。
+  function isEditorCam() {
+    if (!sceneData) return false;
+    const e = (sceneData.editorCam !== undefined) ? sceneData.editorCam : 0;
+    return sceneData.camera === e;
+  }
+
+  // カメラの表示名。エディタカメラは番号ではなく役割で呼ぶ（一覧・イベント・
+  // ラベルの全部で同じ名前になるよう、ここ 1 か所で決める）。
+  function cameraName(i) {
+    const e = (sceneData && sceneData.editorCam !== undefined)
+      ? sceneData.editorCam : 0;
+    return i === e ? 'Editor Camera' : ('Camera ' + i);
+  }
+
+  function renderEditor() {
+    if (!sceneData) return;
+    const editing = sceneData.mode === 'editor';
+    const editorHere = isEditorCam();
+
+    document.getElementById('tabEditor').style.display =
+      editorHere ? '' : 'none';
+    if (!editorHere && !document.getElementById('paneEditor').hidden) {
+      showTab('scene');  // 隠したタブを開いたままにしない
+    }
+
+    const bEdit = document.getElementById('btnModeEdit');
+    const bSim = document.getElementById('btnModeSim');
+    bEdit.classList.toggle('active', editing);
+    bSim.classList.toggle('active', !editing);
+    bEdit.disabled = bSim.disabled = !(owner && editorHere);
+    if (!editorHere) {
+      const eCamIdx =
+        (sceneData.editorCam !== undefined) ? sceneData.editorCam : 0;
+      const tip = 'エディタ操作は Editor Camera（/cam' + eCamIdx +
+        '/）のページから';
+      bEdit.title = tip;
+      bSim.title = tip;
+    }
+
+    // エディタ中は時間が進まないので、一時停止ボタンは意味がない。
+    document.getElementById('btnPlay').disabled = editing || !owner;
+    document.getElementById('edStatus').textContent =
+      (editing ? '✎ エディタ' : '▶ シミュレート') + ' — ' +
+      (sceneData.status || '');
+
+    // ギズモ。今どのモードかはビューの見た目と直結するので、ボタンで示す。
+    const gz = sceneData.gizmo;
+    if (gz) {
+      document.getElementById('gzMove').classList
+              .toggle('on', gz.mode === 'translate');
+      document.getElementById('gzRot').classList
+              .toggle('on', gz.mode === 'rotate');
+      document.getElementById('gzScale').classList
+              .toggle('on', gz.mode === 'scale');
+      document.getElementById('gzWorld').classList
+              .toggle('on', gz.space === 'world');
+      document.getElementById('gzLocal').classList
+              .toggle('on', gz.space === 'local');
+      setField('gzSnap', gz.snap);
+      setField('gzMoveStep', gz.moveStep);
+      setField('gzRotStep', gz.rotateStep);
+      setField('gzScaleStep', gz.scaleStep);
+      setField('gzGrid', gz.grid);
+      setField('gzGridStep', gz.gridStep);
+    }
+
+    // 選択中のオブジェクト。
+    const sel = mySelectedDesc();
+    document.getElementById('edNoSel').hidden = !!sel;
+    document.getElementById('edProps').hidden = !sel;
+    if (sel) {
+      const sphere = sel.shape !== 'box';
+      setField('edName', sel.name || '');
+      // 位置は「置いた場所」ではなく今の実際の位置を出す（シミュレート中に
+      // 見て分かるほうが役に立つ。編集すればその場所が新しい置き場所になる）。
+      setField('edPX', round2(sel.px !== undefined ? sel.px : sel.position.x));
+      setField('edPY', round2(sel.py !== undefined ? sel.py : sel.position.y));
+      setField('edPZ', round2(sel.pz !== undefined ? sel.pz : sel.position.z));
+      setField('edRX', round2(sel.rotation.x));
+      setField('edRY', round2(sel.rotation.y));
+      setField('edRZ', round2(sel.rotation.z));
+      setField('edSX', round2(sel.size.x));
+      setField('edSY', round2(sel.size.y));
+      setField('edSZ', round2(sel.size.z));
+      setField('edMass', round2(sel.mass));
+      setField('edFixed', sel.fixed);
+      setField('edColor', sel.color);
+      document.getElementById('edSizeLabel').textContent =
+        sphere ? '直径 (m) — 左の欄のみ' : '大きさ (m)';
+      document.getElementById('edSY').disabled = sphere;
+      document.getElementById('edSZ').disabled = sphere;
+    }
+
+    document.getElementById('edJointB').textContent =
+      jointPartner < 0 ? '地面' : ('#' + jointPartner);
+
+    // ジョイント一覧。
+    const joints = sceneData.joints || [];
+    document.getElementById('edJointList').innerHTML = joints.length
+      ? joints.map((j) => {
+          const a = j.a < 0 ? '地面' : '#' + j.a;
+          const b = j.b < 0 ? '地面' : '#' + j.b;
+          return '<div class="jointItem">' +
+            '<span class="dot" style="background:' +
+              (JOINT_COLOR[j.kind] || '#888') + '"></span>' +
+            '<span>' + (JOINT_LABEL[j.kind] || j.kind) + ' ' + a + ' ↔ ' + b +
+            '</span>' +
+            '<span class="x" title="削除" onclick="removeJoint(' + j.index +
+            ')">✕</span></div>';
+        }).join('')
+      : '<div class="edHint">まだありません。</div>';
+
+    // シミュレート設定（Physics タブへ移設済み。全カメラで見える・変えられる）。
+    const s = sceneData.sim;
+    if (s) {
+      setField('edGravity', round2(s.gravity));
+      setField('edFriction', round2(s.friction));
+      setField('edRestitution', round2(s.restitution));
+      setField('edLinDamp', round2(s.linearDamping));
+      setField('edAngDamp', round2(s.angularDamping));
+      setField('edSleeping', s.sleeping);
+      setField('hzCustom', s.hz);
+    }
+
+    // 保存済みシーン。中身が変わったときだけ組み直す（選択が飛ぶため）。
+    const files = sceneData.files || [];
+    const key = files.join('');
+    if (key !== sceneListFilled) {
+      sceneListFilled = key;
+      document.getElementById('edSceneList').innerHTML =
+        '<option value="">—</option>' +
+        files.map((f) => '<option value="' + f + '">' + f + '</option>').join('');
+    }
+    if (sceneData.sceneFile &&
+        !document.getElementById('edSceneName').value) {
+      setField('edSceneName', sceneData.sceneFile);
+    }
   }
 
   async function pollScene() {
@@ -944,6 +1310,7 @@
       renderCameras();
       renderHierarchy();
       renderInspector();
+      renderEditor();
     } catch (e) { /* server busy or gone; try again next tick */ }
   }
   setInterval(pollScene, 500);

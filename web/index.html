@@ -16,9 +16,21 @@
       <button id="sbClose" onclick="toggleSidebar()" title="Hide sidebar (Tab)">‹</button>
     </div>
 
+    <!-- エディタ / シミュレートの切り替え。タブより上に置いてあるのは、
+         どのタブを見ていても今どちらのモードかが分かるようにするため。 -->
+    <div class="modeRow">
+      <button id="btnModeEdit" class="modeBtn" onclick="setMode('editor')"
+              title="物理を止めて配置・設計する">✎ エディタ</button>
+      <button id="btnModeSim" class="modeBtn" onclick="setMode('simulate')"
+              title="設計した状態からシミュレートする">▶ シミュレート</button>
+    </div>
+
+    <!-- タブ。Inspector（旧 Editor）はエディタカメラのページにだけ出る
+         （app.js が editorCam を見て隠す）。 -->
     <div class="sbTabs">
       <button id="tabScene" class="sbTab active" onclick="showTab('scene')">Scene</button>
-      <button id="tabPhysics" class="sbTab" onclick="showTab('physics')">System</button>
+      <button id="tabEditor" class="sbTab" onclick="showTab('editor')">Inspector</button>
+      <button id="tabPhysics" class="sbTab" onclick="showTab('physics')">Physics</button>
     </div>
 
     <div id="paneScene" class="sbPane">
@@ -63,9 +75,10 @@
     </section>
     <div class="rowResize" data-resize="events" title="Drag to resize"></div>
 
+    <!-- 選択中オブジェクトの読み取り専用の要約。編集は Inspector タブで。 -->
     <section class="sbSec" data-sec="inspector">
       <div class="sbSecHead" onclick="toggleSection('inspector')">
-        <span><span class="caret"></span>Inspector</span>
+        <span><span class="caret"></span>Selection</span>
       </div>
       <div class="secBody">
         <div id="inspector" class="inspector">nothing selected</div>
@@ -74,7 +87,204 @@
     <div class="rowResize" data-resize="inspector" title="Drag to resize"></div>
     </div><!-- /paneScene -->
 
+    <!-- ================= Editor タブ ================= -->
+    <div id="paneEditor" class="sbPane" hidden>
+      <div id="edStatus" class="edStatus">ready</div>
+
+      <section class="sbSec">
+        <div class="sbSecHead">配置</div>
+        <div class="edRow">
+          <span>サイズ</span>
+          <input id="edNewSize" class="num" type="number" step="0.05" min="0.01"
+                 max="50" value="0.5">
+        </div>
+        <div class="edRow">
+          <span>色</span>
+          <input id="edNewColor" class="col" type="color" value="#cc5c2e">
+        </div>
+        <div class="edRow btnRow">
+          <button onclick="addObject('box')">＋ ボックス</button>
+          <button onclick="addObject('sphere')">＋ 球</button>
+        </div>
+        <div class="edHint">カメラの正面、床の上に置かれます。</div>
+      </section>
+
+      <section class="sbSec">
+        <div class="sbSecHead">ギズモ</div>
+        <div class="edRow btnRow">
+          <button id="gzMove" onclick="setGizmoMode('translate')"
+                  title="移動 (W)">✥ 移動</button>
+          <button id="gzRot" onclick="setGizmoMode('rotate')"
+                  title="回転 (E)">⟳ 回転</button>
+          <button id="gzScale" onclick="setGizmoMode('scale')"
+                  title="拡縮 (R)">⤢ 拡縮</button>
+        </div>
+        <div class="edRow btnRow">
+          <button id="gzWorld" onclick="setGizmoSpace('world')"
+                  title="軸をワールドに合わせる">🌐 World</button>
+          <button id="gzLocal" onclick="setGizmoSpace('local')"
+                  title="軸をオブジェクトの向きに合わせる">📦 Local</button>
+        </div>
+        <div class="edRow">
+          <span>スナップ (X)</span>
+          <input id="gzSnap" type="checkbox" onchange="applyGizmo()">
+        </div>
+        <div class="edGrid">
+          <input id="gzMoveStep" class="num" type="number" step="0.05" min="0.001"
+                 title="移動の刻み (m)" onchange="applyGizmo()">
+          <input id="gzRotStep" class="num" type="number" step="5" min="0.1"
+                 title="回転の刻み (度)" onchange="applyGizmo()">
+          <input id="gzScaleStep" class="num" type="number" step="0.05" min="0.001"
+                 title="寸法の刻み (m)" onchange="applyGizmo()">
+        </div>
+        <div class="edRow">
+          <span>グリッド (Y=0)</span>
+          <input id="gzGrid" type="checkbox" onchange="applyGizmo()">
+        </div>
+        <div class="edRow">
+          <span>グリッド間隔 (m)</span>
+          <input id="gzGridStep" class="num" type="number" step="0.25" min="0.25"
+                 max="10" onchange="applyGizmo()">
+        </div>
+        <div class="edHint">選択中のオブジェクトに出ます。矢印をドラッグで軸に
+          沿って、四角で平面上を、中央の箱で一様に。W / E / R で切り替え。</div>
+      </section>
+
+      <section class="sbSec">
+        <div class="sbSecHead">選択オブジェクト</div>
+        <div id="edNoSel" class="edHint">ビューかリストで選択してください。</div>
+        <div id="edProps" hidden>
+          <div class="edRow">
+            <span>名前</span>
+            <input id="edName" class="txt" type="text" placeholder="(既定)"
+                   onchange="applyName()">
+          </div>
+          <div class="edLabel">位置 (m)</div>
+          <div class="edGrid">
+            <input id="edPX" class="num" type="number" step="0.05" onchange="applyPos()">
+            <input id="edPY" class="num" type="number" step="0.05" onchange="applyPos()">
+            <input id="edPZ" class="num" type="number" step="0.05" onchange="applyPos()">
+          </div>
+          <div class="edLabel">回転 (度)</div>
+          <div class="edGrid">
+            <input id="edRX" class="num" type="number" step="5" onchange="applyRot()">
+            <input id="edRY" class="num" type="number" step="5" onchange="applyRot()">
+            <input id="edRZ" class="num" type="number" step="5" onchange="applyRot()">
+          </div>
+          <div class="edLabel" id="edSizeLabel">大きさ (m)</div>
+          <div class="edGrid">
+            <input id="edSX" class="num" type="number" step="0.05" min="0.01" onchange="applySize()">
+            <input id="edSY" class="num" type="number" step="0.05" min="0.01" onchange="applySize()">
+            <input id="edSZ" class="num" type="number" step="0.05" min="0.01" onchange="applySize()">
+          </div>
+          <div class="edRow">
+            <span>質量 (kg)</span>
+            <input id="edMass" class="num" type="number" step="0.1" min="0.001"
+                   onchange="applyMass()">
+          </div>
+          <div class="edRow">
+            <span>固定（土台）</span>
+            <input id="edFixed" type="checkbox" onchange="applyFixed()">
+          </div>
+          <div class="edRow">
+            <span>色</span>
+            <input id="edColor" class="col" type="color" onchange="applyColor()">
+          </div>
+          <div class="edRow btnRow">
+            <button onclick="send('edit.duplicate')">⧉ 複製</button>
+            <button class="danger" onclick="send('edit.remove')">🗑 削除</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="sbSec">
+        <div class="sbSecHead">ジョイント</div>
+        <div class="edRow">
+          <span>種類</span>
+          <select id="edJointKind" class="strSel">
+            <option value="revolute">ちょうつがい (Revolute)</option>
+            <option value="spherical">ボール (Spherical)</option>
+            <option value="fixed">固定 (Fixed)</option>
+            <option value="prismatic">直動 (Prismatic)</option>
+            <option value="distance">距離 (Distance)</option>
+          </select>
+        </div>
+        <div class="edRow">
+          <span>軸</span>
+          <select id="edJointAxis" class="strSel">
+            <option value="y">Y (上下)</option>
+            <option value="x">X</option>
+            <option value="z">Z</option>
+          </select>
+        </div>
+        <div class="edRow">
+          <span>相手 B</span>
+          <b id="edJointB" class="val">地面</b>
+        </div>
+        <div class="edRow btnRow">
+          <button onclick="setJointPartner()">選択中を B に</button>
+          <button onclick="clearJointPartner()">B = 地面</button>
+        </div>
+        <button class="wide" onclick="createJoint()">＋ 選択中と B を繋ぐ</button>
+        <div class="edHint">A は現在の選択。軸の位置は 2 体の中点（相手が地面
+          なら選択中の位置）になります。</div>
+        <div id="edJointList" class="list scroll jointList"></div>
+      </section>
+
+      <section class="sbSec">
+        <div class="sbSecHead">シーン (assets/scenes)</div>
+        <div class="edRow">
+          <span>名前</span>
+          <input id="edSceneName" class="txt" type="text" placeholder="myscene">
+        </div>
+        <div class="edRow btnRow">
+          <button onclick="saveScene()">💾 保存</button>
+          <button onclick="loadScene()">📂 読込</button>
+        </div>
+        <div class="edRow">
+          <span>保存済み</span>
+          <select id="edSceneList" class="strSel" onchange="pickScene()"></select>
+        </div>
+        <button class="wide danger" onclick="clearScene()">シーンを空にする</button>
+      </section>
+    </div><!-- /paneEditor -->
+
     <div id="panePhysics" class="sbPane" hidden>
+      <!-- シミュレート設定（Inspector タブから移設）。ここの値はシーンと
+           一緒に保存される。どのカメラのページからでも変えられる。 -->
+      <section class="sbSec">
+        <div class="sbSecHead">シミュレート設定（シーンに保存）</div>
+        <div class="edRow">
+          <span>重力 (m/s²)</span>
+          <input id="edGravity" class="num" type="number" step="0.5" min="-100"
+                 max="100" onchange="applySim()">
+        </div>
+        <div class="edRow">
+          <span>摩擦</span>
+          <input id="edFriction" class="num" type="number" step="0.05" min="0"
+                 max="2" onchange="applySim()">
+        </div>
+        <div class="edRow">
+          <span>反発</span>
+          <input id="edRestitution" class="num" type="number" step="0.05" min="0"
+                 max="1" onchange="applySim()">
+        </div>
+        <div class="edRow">
+          <span>減衰 直進</span>
+          <input id="edLinDamp" class="num" type="number" step="0.05" min="0"
+                 max="10" onchange="applySim()">
+        </div>
+        <div class="edRow">
+          <span>減衰 回転</span>
+          <input id="edAngDamp" class="num" type="number" step="0.05" min="0"
+                 max="10" onchange="applySim()">
+        </div>
+        <div class="edRow">
+          <span>スリープ</span>
+          <input id="edSleeping" type="checkbox" onchange="applySim()">
+        </div>
+      </section>
+
       <section class="sbSec">
         <div class="sbSecHead">Solver</div>
         <div class="tuneRow">
@@ -104,6 +314,11 @@
             <button onclick="send('rate', {hz:60})">60</button>
             <button onclick="send('rate', {hz:120})">120</button>
           </span>
+        </div>
+        <div class="edRow">
+          <span>任意 (10-240)</span>
+          <input id="hzCustom" class="num" type="number" step="10" min="10"
+                 max="240" onchange="applyCustomRate()">
         </div>
       </section>
 

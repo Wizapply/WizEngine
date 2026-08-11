@@ -29,6 +29,118 @@ PhysicsWorld.step(dt)
   -> VideoStreamer.pushFrame()  appsrc -> x264enc -> rtph264pay -> udpsink
 ```
 
+## 2つのモード（エディタ / シミュレート）
+
+**エディタ** は物理を止めて、置く・大きさを決める・ジョイントを設計する時間。
+**シミュレート** は今までどおり Chrono を回す時間。切り替えはブラウザ上部の
+2 ボタン、既定は `SceneConfig.h` の `kStartMode`（初期値 Simulate＝従来の挙動）。
+
+- **設計値と実体を分ける**。オブジェクトは `GameObject::desc`（`editor::BodyDesc`＝
+  形・大きさ・置いた姿勢・質量・色）と、実体（`physId` = Chrono、`renderId` =
+  Filament）を両方持つ。シミュレートを止めると desc の姿勢へ全部戻るので、
+  何度走らせても設計は壊れない。`reset()` も同じ意味になった（以前は
+  `gridPos()+jitter()` で置き直していたが、いまは「置いた場所へ戻す」）。
+- **編集は必ずキュー経由**（`src/EditorState.{h,cpp}`）。ブラウザ → INPUT スレッドが
+  `EditorState::Op`（種類 + JSON）を積み、**物理スレッドが drain して実行**する。
+  Chrono を触ってよいのは物理スレッドだけ、という約束をエディタでも崩さないため。
+  Op を増やしても配管（キュー・構造体・分岐）は触らなくてよい。
+- **生成は2スレッドにまたがる**。物理スレッドが剛体を作って `boxes_` に足し
+  （`renderId` は未確定）、描画スレッドが次のフレームで `syncRenderables()` から
+  レンダラブルを作る。削除はその逆順。つまり「置いた次のフレームから見える」。
+- **削除しても番号は詰めない**（`GameObject::alive = false`）。詰めるとブラウザの
+  選択とジョイントの参照が別の物を指す。Chrono 側も本当には消さず
+  `PhysicsWorld::disableBody()`（当たり判定を切って地面の下へ）。Multicore
+  バックエンドはボディ削除でデータマネージャの配列が壊れることがあるため。
+- **形・大きさ・質量の変更は剛体の作り直しが要る**（Chrono は形を後から変えられ
+  ない）。エディタ中は `physDirty` を立てるだけで、**シミュレート開始時に
+  まとめて作り直す**。スライダーを動かすたびに剛体を捨てないための遅延。
+- **ジョイントはシミュレート開始のたびに作り直す**（`Scene::buildJoints`）。
+  エディタで物を動かしたあとも、拘束が今の位置に合った状態で張られる。
+  停止時は `removeAllJoints()`。種類は `PhysicsWorld::JointType` の 5 種で、
+  Chrono の `ChLinkLockLock` / `...Revolute` / `...Spherical` / `...Prismatic` /
+  `ChLinkDistance`。**Revolute と Prismatic はリンク座標系の Z 軸が基準**なので、
+  ユーザー指定のワールド軸を Z に合わせる四元数を作って渡している。
+- **`objectsMutex_` は「一覧の構造」だけを守る**。書くのは物理スレッドだけなので
+  そのスレッドは読むときにロック不要。他のスレッド（HTTP の階層 JSON、INPUT の
+  選択、RENDER の反映）は `Scene::lockObjects()` を取る。`applyToRenderer()` は
+  丸ごとロックを持つので、その中から呼ばれる `onRender` はロックを取らない
+  （取ると自分自身で詰まる）。ロック順は **objects → editor → poses** の一方向。
+- **保存/読込は `assets/scenes/*.json`**（`documentJson()` / `loadDocument()`）。
+  保存時にオブジェクト番号を詰め、ジョイントの参照も付け替える。名前は英数字と
+  `_ -` だけに正規化（保存先を assets/scenes に固定するため）。
+- **エディタ操作はエディタカメラ（`kEditorCamera`、既定 0）のページ専用**。
+  mode / edit.*（sim を除く）は EditorComponent が、ギズモの pick / drag /
+  hover は GizmoComponent が、他のカメラからのぶんを弾く。UI 側もそのページ
+  以外では Inspector タブを隠しモード切替を無効化するが、**判定はサーバーが
+  持つ**（リクエストは誰でも作れるため）。例外は `edit.sim`（シミュレート
+  設定）: Physics タブは全ページにあり、隣に並ぶ Solver / Rate は誰でも
+  触れるので、これだけ弾くと分かりにくい。
+- **System タブで変えた値も保存に映る**。PhysicsControlComponent は
+  rate / substeps / solver / envelope / recovery を PhysicsTuning に書くとき、
+  同じ値を EditorState の SimSettings にもミラーする。シーン保存はそちらを
+  書き出すので、怠ると「見ている物理」と「保存される物理」が食い違う。
+- ブラウザ側のタブは **Scene / Inspector / Physics**（`web/index.html` +
+  `app.js` の `renderEditor()`。Inspector の内部 id は `tabEditor` /
+  `paneEditor` のまま）。シミュレート設定（重力・摩擦・反発・減衰・スリープ）
+  は Physics タブに置く。入力欄は 500ms ポーリングで上書きされるが、
+  **フォーカス中の欄だけは触らない**（打っている途中の数字が消えるため）。
+
+## ギズモ（`src/GizmoComponent.{h,cpp}`）
+
+選択中のオブジェクトに出る Unity 風の移動 / 回転 / 拡縮ハンドル。
+**エディタカメラ専用**: 操作はそのページからだけ受け、描画もそのビューに
+だけ出す。バッチを `Renderer::kLayerEditorOnly` レイヤに置き、エディタ
+カメラのビューだけ `setViewEditorLayerVisible` で見せている（シーンは全
+ビュー共有のままなので、レイヤで映る/映らないを切るのが一番安い）。
+
+- **サーバー側で 3D の線として描く**。ブラウザに届くのは映像なので、HTML/SVG で
+  重ねるとカメラを回した瞬間にオーバーレイだけ先に動いて映像が 1〜2 フレーム
+  遅れる。シーンの中の線にしておけば必ず同じフレームに乗り、手前の物に
+  隠れる挙動も勝手に付いてくる（グラブ線と同じ理屈）。
+- **当たり判定は NDC（画面）上**でやる（`scenemath::distanceToSegment2D`）。
+  3D で線との距離を測ると奥の軸ほど掴みにくくなり「見えているとおりに掴めない」。
+- **`pick` を最初に見る**ので、コンポーネントの登録順は
+  Gizmo → Camera → Box。ハンドルに当たったら `pick` をそこで止め、選択の
+  作り直しと自由移動（グラブ）に渡さない。
+- **ドラッグ中は開始時の値しか見ない**（開始姿勢・開始座標系・軸上の開始
+  パラメータ）。現在値から差分を取ると、適用結果が次のフレームの入力に
+  混ざって発散する。
+- 回転は atan2 の折り返しを差分の積み上げで吸収する。ワールド軸の回転は
+  `q_new = AngleAxis(角度, 軸) * q_start`。
+- **オイラー角と四元数の変換は `scene_math.h` に 1 か所だけ**
+  （`quatFromEulerDegrees` / `eulerDegreesFromQuat`、順序は R = Rz*Ry*Rx）。
+  インスペクタの数字・ギズモの回転・Chrono に渡す姿勢がここで揃う。
+- 線は `Renderer::configureLineBatches` / `setLineBatch` で色ごとに 1 個の
+  レンダラブルに詰める（1本1レンダラブルのグラブ線方式では回転リング
+  144 本が重すぎる）。頂点数は固定にして余りは**面積 0 の三角形**で埋める
+  ＝実行中にプリミティブ数を変える API（版によって名前が違う）を使わずに済む。
+  中身が前回と同じフレームは転送を省く。
+- **バッチには太線と塗りつぶしの面を混ぜられる**（`wizengine::BatchShape`）。
+  1 スロットは「四角 2 枚 = 4 三角形」ぶんの席で、太線はそれを丸ごと（板 2 枚）、
+  塗りつぶしの四角は片側だけ使い、残り半分は 1 点に潰す。三角形は `d = c` の
+  四角として渡す。おかげで矢じり（塗った円錐）・平面ハンドル・拡縮のつまみを、
+  インデックスバッファもレンダラブルも作り直さずに同じ入れ物へ入れられる。
+  面の向き（巻き方）は `culling : none` なので気にしなくてよい。
+- **Filament に線の太さは無い**（`PrimitiveType::LINES` はどのバックエンドでも
+  1 ピクセル）。太く見せるため、1 本を**直交する 2 枚の板**＝4 三角形として
+  描く（`Renderer::buildTube`）。カメラを向く 1 枚の板にすると別のビューから
+  真横になって消えるので、向きに依存しないこの形にしてある。両面を出すため
+  `line.mat` に `culling : none` が要る。太さは本ごとに渡す: バッチは全カメラ
+  共有だが、太さはそのギズモを見ているカメラからの距離で決まるため。
+  太さの調整は `GizmoComponent.cpp` の `kThickness` / `kRingThickness`
+  （ギズモ長さに対する割合。0.03 で 720p の約 4 ピクセル）。
+- ハイライトのために、掴んでいないときだけブラウザが `hover` を ~14Hz で送る。
+  押す前にどの軸を掴めるか分からない、では使いづらいため。
+- **Y=0 のグリッドも同じ線分バッチ**（`buildGrid`、バッチ 5）。エディタ中の
+  エディタカメラにだけ映るのはギズモと同じ仕組みのおかげで、追加の配管は無い。
+  原点を通る 2 本だけ軸の色（X=赤 / Z=青）。地面と同じ高さだと Z ファイトする
+  ので `kGridLift`（1cm）だけ浮かせる。広さは `kGridHalf`（50m ＝ 100×100m の
+  ハードコード。SceneConfig.h は scene.cpp 専用のため）。見える地面（16m）や
+  物理の床（20m）より広い作業目安なので、床の外はシミュレートで落ちる。表示の
+  ON/OFF と間隔は GizmoSettings（`grid` / `gridStep`、Inspector タブ）。
+  間隔の下限 0.25m と `kGridHalf` はバッチ容量（kMaxSegments = 1024、
+  0.25m 間隔で 800 本）と対で決まっている - 片方を変えるときは両方見る。
+
 ## ファイル
 
 - **CPU コアの固定**（`src/CpuAffinity.{h,cpp}`、Windows / Linux 両対応）。設定は **exe 引数**（`--physics-cores "0-11"` / `--render-cores "12-15"` /
@@ -47,6 +159,11 @@ PhysicsWorld.step(dt)
   正しさの問題ではない）。
 - `src/PhysicsWorld.{h,cpp}` — 物理エンジン（Chrono）。重力・接触・材質の設定のみ。
   `addBox(...)` で剛体追加、`step` / `bodyTransform(id)` / `setBodyPose(id,...)`。
+  エディタ用に `placeBody`（起こすための落下速度を与えない置き直し）、
+  `setBodyFixed`、`disableBody`（削除相当。当たり判定を切って地面の下へ退避し、
+  番号は残す）、`setGravityY`、そして `addJoint` / `removeAllJoints` を持つ。
+  ジョイントの `Initialize` は Chrono 9 で `ChCoordsys` → `ChFrame` に変わった
+  ので、この版から既にあるスリープ/速度と同じ SFINAE の書き方で両対応にしてある。
   NSC・Bullet・`make_shared` 整列。シーンの中身は持たない。
   スリープ（`setSleepingEnabled`）は Chrono 9 名（`SetSleepingAllowed` /
   `SetSleepTime` / `SetSleepMinLinVel` / `SetSleepMinAngVel`）を使用。旧名
@@ -85,7 +202,7 @@ PhysicsWorld.step(dt)
   持たないため映り込む環境が無いと影部分が真っ黒になる。これが「glb によって真っ黒」の正体。
 - `src/Renderer.{h,cpp}` — 描画エンジン（Filament, headless Vulkan）。下地（デバイス・
   カメラ・ライト2灯＋IBL・共有キューブメッシュ・マテリアル）のみ構築。中身は
-  `addBox()` / `addGround(halfSize,color)` / `setCamera(eye,target)` で追加。
+  `addShape(ShapeMesh)` / `addGround(halfSize,color)` / `setCamera(eye,target)` で追加。
   箱・床とも lit（`shaded.mat`＝箱用 lit / `ground_lit.mat`＝床用）。箱は影を落とし
   受けもする（以前は unlit＋頂点カラーで焼き込み陰影だったため、転がると陰影が
   向きに追従せず不自然だった）。箱の色は Scene の `setBoxColor`。床テクスチャは
@@ -93,6 +210,13 @@ PhysicsWorld.step(dt)
   `generateMipmaps` はこの版で usage フラグ必須のため不可）。画像が無ければ
   コード生成の市松模様にフォールバック。`baseColor` は乗算する色味。
   UV は「1リピート＝`kGroundTile` メートル」でタイリング。readPixels で RGBA 取得。
+  エディタ用に**実行時に増減できる形状スロット**（`addShape` / `removeShape`、
+  箱と UV 球、削除した番号は空きとして再利用）と**オブジェクトごとの色**
+  （`setShapeColor` が初回にそのスロット専用のマテリアルインスタンスを作る。
+  共有インスタンスを書き換えると全部の色が変わってしまうため）、
+  **ジョイント線**（`setJointLineCount` / `setJointLine`、グラブ線と同じ
+  「2頂点1本」の作りを使い回し）を持つ。glTF インスタンスは gltfio に 1 個だけ
+  壊す口が無いので、削除時は**スケール 0 に潰して見えなくする**（番号は返らない）。
 - `src/GltfLoader.{h,cpp}` — glTF/GLB 読み込み（Filament の gltfio）。`Renderer::addModel()`
   / `setModelTransform()` 経由で使い、gltfio は Renderer の外に漏らさない。CMake が
   gltfio のライブラリ（gltfio_core / uberarchive / dracodec / ktxreader / stb）を検出
@@ -173,10 +297,24 @@ PhysicsWorld.step(dt)
   終了**（`line.filamat` と `ground.png` は警告のみ）。exe を別の場所から起動したときに
   Filament の奥で無言終了していた問題への対処。あわせて main 全体を try/catch で包み、
   例外を表示してから Enter 待ち（Explorer 起動でコンソールが消えるため）。
+- `src/EditorTypes.h` — エディタ文書の型だけを集めたヘッダ（`AppMode` /
+  `ShapeKind` / `JointKind` / `BodyDesc` / `JointDesc` / `SimSettings` と、その
+  JSON 変換・範囲クランプ）。Chrono も Filament も出てこないので、どのスレッド
+  からでもコピーできる。保存フォーマットとブラウザ API のキーはここが唯一の定義。
+- `src/EditorState.{h,cpp}` — モード（atomic）、編集操作のキュー、ジョイント一覧、
+  シミュレート設定、`assets/scenes` の読み書きと一覧キャッシュ。オブジェクト
+  そのものは持たない（実体と並べて Scene が持つ。番号がずれると黙って別の物を
+  動かしてしまうため）。
+- `src/EditorComponent.{h,cpp}` — ブラウザの `mode` / `edit.*` コマンドを受ける
+  SceneComponent。やるのは値の正規化と検証だけで、実体の操作は EditorState の
+  キューに積む。ただし物理レート系（Hz・サブステップ・反復・エンベロープ・
+  リカバリ）だけは `PhysicsTuning` の atomic に直接書く（System タブと同じ口）。
 - `src/main.cpp` — 起動・出力モード選択・**2スレッド**（物理＝`scene.stepPhysics`、
   描画＝main：入力・カメラ・`scene.applyToRenderer`・`renderFrame`）。共有は Scene の
-  ポーズ・スナップショット（`poseMutex_`）のみ。reset/pause は atomic で物理へ。
-  カメラは方位角・仰角オービットで、矢印キーで回す。
+  ポーズ・スナップショット（`poseMutex_`）とオブジェクト一覧（`objectsMutex_`）。
+  reset/pause は atomic で物理へ。物理スレッドは毎パス `scene.applyPendingEdits()`
+  を呼んでから**モードで分岐**し、エディタなら積分せず `scene.stepEditor()` だけ
+  回す。カメラは方位角・仰角オービットで、矢印キーで回す。
 - `assets/materials/*.mat` — matc でビルド時に `unlit.filamat` へコンパイル。
 - `CMakeLists.txt` — Filament / Chrono / GStreamer のリンク。
 
@@ -268,6 +406,8 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
 
 ## 実装済み / 未実装
 
+- 済: エディタモード（配置・プロパティ編集・ジョイント設計・シーンの保存/読込）と
+  シミュレートモードの分割。
 - 済: ステップ3（姿勢反映）〜6（UDP配信）。
 - 未: ステップ7（クライアント→サーバーの入力・制御チャネル。カメラ操作を
   UDP/TCP で受けて `Renderer` にカメラ更新 API を追加）。

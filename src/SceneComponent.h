@@ -14,6 +14,7 @@ class Scene;
 //
 // THREADING CONTRACT - the hook name says which thread calls it:
 //   onPhysicsStep : PHYSICS thread, every step, before integration.
+//   onEditorStep  : PHYSICS thread, every pass while in EDITOR mode.
 //   onRender      : RENDER thread, once per frame, before poses are drawn.
 //   onCommand     : INPUT thread, for each browser JSON command.
 // A component that keeps state shared between hooks must make that state
@@ -23,6 +24,14 @@ public:
     virtual ~SceneComponent() = default;
 
     virtual void onPhysicsStep(Scene& scene, double dt) {
+        (void)scene;
+        (void)dt;
+    }
+
+    // エディタモードのあいだ、物理を進めない代わりに毎パス呼ばれる。物理
+    // スレッドから来るので PhysicsWorld を触ってよい（掴んだ物を「押す」
+    // のではなく「置き直す」のがここ）。シミュレート中は呼ばれない。
+    virtual void onEditorStep(Scene& scene, double dt) {
         (void)scene;
         (void)dt;
     }

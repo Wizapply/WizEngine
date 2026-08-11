@@ -31,6 +31,8 @@
 #include "Versions.h"
 #include "AssetError.h"
 #include "CpuAffinity.h"
+#include "EditorComponent.h"
+#include "EditorTypes.h"
 #include "PortScan.h"
 #include "PhysicsControlComponent.h"
 #include "StreamControlComponent.h"
@@ -319,8 +321,6 @@ int run(int argc, char** argv) {
          multicoreAvailable() ? "yes" : "no", physics.backendName());
     wizengine::Renderer renderer(kWidth, kHeight, materialPath);
     Scene scene(physics, renderer);
-    LOGI("physics", "rate: %d Hz (scene default), substeps %d",
-         scene.physicsHz(), scene.substeps());
     // ---- CPU cores -------------------------------------------------------
     // Pin before anything starts: Chrono sizes its worker pool at build time,
     // and those workers inherit the affinity of the thread that creates them.
@@ -346,6 +346,12 @@ int run(int argc, char** argv) {
     }
 
     scene.build();
+    // build() の中でシーン設定がエディタ文書の初期値になるので、レートや
+    // モードを読むのはここから。
+    LOGI("physics", "rate: %d Hz (scene default), substeps %d",
+         scene.physicsHz(), scene.substeps());
+    LOGI("app", "start mode: %s (ブラウザの Editor タブで切り替え)",
+         wizengine::editor::modeName(scene.mode()));
 
     // This thread runs the render loop; keep it off the physics cores.
     if (!renderCores.empty() && !wizengine::pinCurrentThread(renderCores)) {
@@ -396,6 +402,9 @@ int run(int argc, char** argv) {
     tuning.envelope.store(scene.collisionEnvelope());
     tuning.recovery.store(scene.contactRecovery());
     scene.addComponent(std::make_unique<PhysicsControlComponent>(tuning));
+    // エディタモードの操作（配置・ジョイント・シーンの保存/読込）。物理の
+    // レート系だけは PhysicsTuning を共有するので、それを渡しておく。
+    scene.addComponent(std::make_unique<EditorComponent>(tuning));
 
     PerfStats stats;
     stats.substeps.store(scene.substeps());
@@ -449,6 +458,10 @@ int run(int argc, char** argv) {
                 j["realtime"] = stats.realtime.load();
                 j["simTime"] = stats.simTime.load();
                 j["paused"] = tuning.paused.load();
+                // エディタ / シミュレートのどちらで動いているか。ブラウザの
+                // 再生ボタンとタブの見た目がこれで決まる。
+                j["mode"] = wizengine::editor::modeName(scene.mode());
+                j["joints"] = int(scene.editor().jointCount());
                 j["streamW"] = endpoints[camIndex]->webrtc->width();
                 j["streamH"] = endpoints[camIndex]->webrtc->height();
                 j["streamFps"] = endpoints[camIndex]->webrtc->fps();
@@ -459,6 +472,8 @@ int run(int argc, char** argv) {
                 j["codec"] = endpoints[camIndex]->webrtc->codecName();
                 j["camera"] = int(camIndex);
                 j["cameraCount"] = int(scene.cameraCount());
+                // どのカメラがエディタか（ヘッダのラベルが名前で呼ぶため）。
+                j["editorCam"] = int(scene.editorCamera());
                 return j.dump();
             });
 
@@ -495,6 +510,11 @@ int run(int argc, char** argv) {
                 ep.formatDirty.store(true);
             }));
 
+        // ギズモ（エディタ専用レイヤ）はエディタカメラのビューにだけ映す。
+        // 他のビューは addView が「見せない」で作っている。
+        renderer.setViewEditorLayerVisible(
+            endpoints[scene.editorCamera()]->viewIndex, true);
+
         LOGI("video", "%s @ %.1f Mbps, %zu camera(s)",
              endpoints[0]->webrtc->codecName(),
              endpoints[0]->webrtc->bitrateBps() / 1e6, endpoints.size());
@@ -507,9 +527,10 @@ int run(int argc, char** argv) {
     }
 
     if (listener) listener->start();
-    for (auto& ep : endpoints) {
-        LOGI("http", "camera %zu: http://127.0.0.1:%d%s", ep->viewIndex,
-             listener->port(), ep->path.c_str());
+    for (std::size_t i = 0; i < endpoints.size(); ++i) {
+        LOGI("http", "camera %zu%s: http://127.0.0.1:%d%s", i,
+             i == scene.editorCamera() ? " (editor)" : "", listener->port(),
+             endpoints[i]->path.c_str());
     }
 
     // ---- Physics thread --------------------------------------------------
@@ -558,6 +579,25 @@ int run(int argc, char** argv) {
                 accumulator = 0.0;
                 prev = std::chrono::steady_clock::now();
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                continue;
+            }
+
+            // 編集操作とモード切替はどちらのモードでも処理する（シミュレート
+            // 中に設定を変えたり、物を足したりできるように）。Chrono を触る
+            // のはこのスレッドだけ、という約束はここで守られる。
+            scene.applyPendingEdits();
+
+            if (scene.mode() == wizengine::editor::AppMode::Editor) {
+                // エディタモード: 物理は進めない。掴んだ物の置き直しと姿勢の
+                // 更新だけを、描画と同じくらいの間隔で回す。
+                accumulator = 0.0;
+                prev = std::chrono::steady_clock::now();
+                scene.stepEditor(1.0 / 60.0);
+                stats.physicsHz.store(0.0);
+                stats.physicsMs.store(0.0);
+                stats.realtime.store(1.0);
+                stats.bodies.store(int(physics.bodyCount()));
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));
                 continue;
             }
 
@@ -635,6 +675,7 @@ int run(int argc, char** argv) {
                     tuning.paused.load() ? 1.0 : simAdvanced / windowSec);
                 // Same thread that steps Chrono, so this read is safe.
                 stats.asleep.store(static_cast<int>(physics.sleepingCount()));
+                stats.bodies.store(static_cast<int>(physics.bodyCount()));
                 window = t1;
                 updates = 0;
                 busyMs = 0.0;

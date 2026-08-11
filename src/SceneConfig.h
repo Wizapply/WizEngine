@@ -16,6 +16,7 @@
 
 #include "BoxController.h"
 #include "CameraObject.h"
+#include "EditorTypes.h"     // AppMode
 #include "LightObject.h"
 #include "PhysicsWorld.h"    // PhysicsBackend
 #include "scene_math.h"      // kPi, used by the volume calculation
@@ -125,6 +126,14 @@ inline std::vector<CameraObject::Config> cameraConfigs() {
 
     return {a, b, c};
 }
+
+// ---- エディタカメラ --------------------------------------------------------
+// エディタ操作（モード切替・配置・ギズモ・ジョイント設計・シーンの保存/読込）
+// を受け付けるカメラ番号。ギズモが出るのもこのカメラの選択だけ。他のカメラは
+// エディタ中も今までどおり見る・選ぶはできるが、シーンは書き換えられない。
+// 「複数人で同じシーンを見ながら、編集するのは 1 人」という使い方の前提。
+// 範囲外の番号を書いた場合は 0 に丸められる。
+constexpr std::size_t kEditorCamera = 0;
 
 // ---- Lights --------------------------------------------------------------
 // One entry per light; add or remove entries freely. These are the direct
@@ -236,6 +245,17 @@ constexpr PhysicsBackend kBackend = PhysicsBackend::Multicore;
 // no physics steps, no rendering, no encoding. Set false to keep simulating in
 // the background.
 constexpr bool kIdleWhenUnwatched = true;
+
+// ---- モード --------------------------------------------------------------
+// 起動時にどちらのモードで立ち上げるか。Simulate は従来どおり、置いてある
+// 物がいきなり落ちてくる状態。Editor は物理を止めた状態で始まるので、
+// 配置やジョイントの設計から入りたいときはこちら（ブラウザからいつでも
+// 切り替えられるので、好みの問題）。
+constexpr wizengine::editor::AppMode kStartMode =
+    wizengine::editor::AppMode::Simulate;
+
+// 重力（-Y 方向、m/s^2）。エディタのシミュレート設定の初期値でもある。
+constexpr double kGravityY = -9.81;
 
 // Physics rate, independent of the 60 fps render loop. 30 Hz halves the
 // physics cost; the renderer simply draws the latest pose twice.

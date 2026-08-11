@@ -385,6 +385,85 @@
     overscroll-behavior: contain;
   }
   .inspector .k { color: #7b7f88; }
+
+  /* ---- モード切替 --------------------------------------------------------
+     タブより上に置いた 2 択。今どちらのモードかは操作の意味そのものが変わる
+     （ドラッグが「押す」か「置く」か）ので、常に見える位置に出す。 */
+  .modeRow { display: flex; gap: 4px; flex: 0 0 auto; }
+  .modeBtn {
+    flex: 1 1 0; min-width: 0; margin: 0; padding: 7px 6px; font-size: 12px;
+    background: #24262c; color: #9aa0aa;
+    border: 1px solid #3a3d45; border-radius: 5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .modeBtn:hover:enabled { background: #30333a; color: #c8ccd4; }
+  /* 走っているほうを目立たせる: エディタは落ち着いた青、シミュレートは緑。 */
+  #btnModeEdit.active {
+    background: #2f4a72; border-color: #4a70ad; color: #eaf1fb;
+  }
+  #btnModeSim.active {
+    background: #2c5b3a; border-color: #47935c; color: #eafbee;
+  }
+
+  /* ---- Editor タブ ------------------------------------------------------- */
+  .edStatus {
+    font-size: 11.5px; color: #a9b4c2; background: #101114;
+    border: 1px solid #262930; border-radius: 4px; padding: 5px 8px;
+    min-height: 1.4em; word-break: break-all;
+  }
+  .edRow {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; font-size: 12px; color: #b8bcc4;
+  }
+  .edRow.btnRow { justify-content: stretch; }
+  .edRow.btnRow button { flex: 1 1 0; min-width: 0; }
+  .edRow button, #paneEditor .sbSec > button {
+    margin: 0; padding: 5px 8px; font-size: 11.5px;
+    background: #2a2d34; color: #dfe2e7; border: 1px solid #3a3d45;
+    border-radius: 4px;
+  }
+  .edRow button:hover:enabled,
+  #paneEditor .sbSec > button:hover:enabled { background: #343841; }
+  #paneEditor button.danger { border-color: #6b3535; color: #e7b4b4; }
+  #paneEditor button.danger:hover:enabled { background: #4a2a2a; }
+  /* 選ばれているギズモモード / 座標系。押しっぱなしのトグルに見せる。 */
+  #paneEditor button.on {
+    background: #2f4a72; border-color: #4a70ad; color: #eaf1fb;
+  }
+  #paneEditor button.on:hover:enabled { background: #375791; }
+  .edLabel {
+    font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    color: #7b7f88; margin-top: 2px;
+  }
+  /* 位置・回転・大きさは 3 列。ラベルを付けずに X/Y/Z の順で並べる
+     （幅の狭いパネルで一番読みやすい形）。 */
+  .edGrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
+  .num, .txt {
+    background: #212329; color: #dfe2e7; border: 1px solid #3a3d45;
+    border-radius: 4px; font-size: 11.5px; padding: 3px 5px;
+    min-width: 0; width: 100%; box-sizing: border-box;
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  .edRow .num, .edRow .txt { max-width: 55%; }
+  .col {
+    width: 42px; height: 22px; padding: 0; border: 1px solid #3a3d45;
+    border-radius: 4px; background: #212329;
+  }
+  .edHint { font-size: 11px; color: #7b7f88; line-height: 1.5; }
+  .jointList { max-height: 140px; }
+  .jointItem {
+    display: flex; align-items: center; gap: 6px; font-size: 11.5px;
+    padding: 4px 6px; border-radius: 3px; color: #c3c8d0;
+  }
+  .jointItem:hover { background: #21242b; }
+  .jointItem .dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+  }
+  .jointItem .x {
+    margin-left: auto; color: #8b8f99; cursor: pointer; padding: 0 4px;
+  }
+  .jointItem .x:hover { color: #e7b4b4; }
+
   /* Phones and narrow windows: the video gets the whole width and the sidebar
      slides over it when opened, instead of squeezing the layout. */
   @media (max-width: 900px) {
