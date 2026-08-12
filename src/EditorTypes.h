@@ -367,8 +367,8 @@ inline GizmoSettings gizmoFromJson(const nlohmann::json& j,
     if (g.moveStep < 1e-4) g.moveStep = 0.25;
     if (g.rotateStep < 1e-4) g.rotateStep = 15.0;
     if (g.scaleStep < 1e-4) g.scaleStep = 0.1;
-    // グリッドは細かすぎると線分バッチの容量を超える（100m 幅の 0.25m 間隔で
-    // 800 本 = kMaxSegments 1024 のほぼ上限）。
+    // グリッドの間隔。下限は使い勝手（100m 幅で 0.25m だと 800 本 =
+    // これ以上細かくしてもモアレで見えない）。
     if (g.gridStep < 0.25) g.gridStep = 0.25;
     if (g.gridStep > 10.0) g.gridStep = 10.0;
     return g;

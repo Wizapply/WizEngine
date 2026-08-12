@@ -408,6 +408,19 @@
       先に接続しているブラウザを閉じると、この画面は自動的に再接続します。</div>
     </div>
   </div>
+  <!-- 下部のアセットパネル（Unity の Project ビュー相当）。見出しはサイド
+       バーの流儀（クリックで折りたたみ）、高さは textarea と同じ右下の
+       つまみ（CSS の resize:vertical、つまみはブラウザが描く）。どちらも
+       localStorage に記憶。入りきらないタイルは縦スクロール。エディタ
+       モード中、Editor Camera のページにだけ出る。中身は renderAssets()。 -->
+  <div id="assets" hidden>
+    <div class="asHead" onclick="toggleAssets()">
+      <span><span class="caret"></span>Assets</span>
+      <span class="asHint">クリック: プリミティブを配置 ／
+        ダブルクリック: シーンを読込 ／ 右下で高さ変更</span>
+    </div>
+    <div id="assetList" class="asList"></div>
+  </div>
   <div id="perf">measuring...</div>
   <div id="link">connecting...</div>
   </main>

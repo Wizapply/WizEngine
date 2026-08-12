@@ -464,6 +464,52 @@
   }
   .jointItem .x:hover { color: #e7b4b4; }
 
+  /* ---- 下部アセットパネル（Unity の Project ビュー相当）------------------ */
+  /* 背景・境界・見出しはサイドバーと同じ見た目。高さは textarea と同じ
+     「右下のつまみ」で変える（resize:vertical、つまみはブラウザが描く）。 */
+  #assets {
+    margin-top: 6px; background: #17181c; border: 1px solid #303239;
+    border-radius: 8px; padding: 6px 10px 8px;
+    display: flex; flex-direction: column;
+  }
+  #assets[hidden] { display: none; }
+  /* 見出しはサイドバーのセクション見出しと同じ体裁（キャレット付き、
+     クリックで折りたたみ）。 */
+  .asHead {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+    color: #8b8f99; border-bottom: 1px solid #303239; padding-bottom: 4px;
+    cursor: pointer; user-select: none;
+  }
+  .asHead:hover { color: #b8bcc4; }
+  .asHint { font-size: 11px; color: #7b7f88; text-transform: none; }
+  #assets.collapsed .asList { display: none; }
+  #assets.collapsed .caret { transform: rotate(0deg); }
+  /* タイルは折り返して並べ、入りきらなければ縦スクロール。resize は
+     overflow が visible 以外の要素で効き、ドラッグ結果はブラウザが
+     inline style に書く（app.js が ResizeObserver で拾って記憶する）。 */
+  .asList {
+    height: 132px; min-height: 56px; max-height: 60vh;
+    resize: vertical;
+    display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;
+    overflow-y: auto; padding: 8px 2px 2px;
+    scrollbar-width: thin; scrollbar-color: #3a3d45 transparent;
+    overscroll-behavior: contain;
+  }
+  .asItem {
+    flex: 0 0 auto; width: 78px; padding: 8px 4px 6px; text-align: center;
+    background: #1c1e24; border: 1px solid #2a2d34; border-radius: 6px;
+    cursor: pointer; user-select: none;
+  }
+  .asItem:hover { background: #23262e; border-color: #3a3d45; }
+  .asItem.sel { border-color: #4a70ad; background: #232b3a; }
+  .asItem .ico { font-size: 24px; line-height: 1.35; display: block; }
+  .asItem .name {
+    display: block; font-size: 11px; color: #c3c8d0; margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .asItem .kind { display: block; font-size: 9.5px; color: #7b7f88; }
+
   /* Phones and narrow windows: the video gets the whole width and the sidebar
      slides over it when opened, instead of squeezing the layout. */
   @media (max-width: 900px) {
@@ -503,6 +549,6 @@
     /* The video is the point of the page on a phone; the tuning panel and the
        help text are desktop conveniences and only get in the way here. They
        stay in the DOM so the sidebar and stats keep working. */
-    .tune, .hint { display: none; }
+    .tune, .hint, #assets { display: none; }
     #perf { font-size: 11px; line-height: 1.5; }
   }

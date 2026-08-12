@@ -192,6 +192,21 @@ public:
     // 1 個の値だとどれか 1 台にしか合わせられないため。空にすると非表示。
     void setLineBatch(std::size_t index, const std::vector<BatchShape>& shapes);
 
+    // ---- 細線セット（グリッド用の軽量パス）-------------------------------
+    // 1 ピクセルの LINES をひとつのレンダラブルに詰める。太線バッチは 1 本を
+    // 板 2 枚（8 頂点・4 三角形）に展開するが、こちらは 1 本 2 頂点で塗りも
+    // 無い。グリッドのように本数が多く「見えれば十分」な作業目安はこちら。
+    // エディタ専用レイヤに乗るので、映るビューは太線バッチと同じ扱い。
+    //
+    // addLineSet は起動時（Scene::build）。setLineSet は中身が変わったとき
+    // だけ呼ぶ約束（グリッドなら間隔の変更時のみ）。本数が変わったら
+    // レンダラブルごと作り直す - 実行中にプリミティブ数を変える API は版に
+    // よって名前が違うので使わない。RENDER スレッド。
+    std::size_t addLineSet(const filament::math::float3& color);
+    // points は 2 個で 1 本。空にすると非表示。
+    void setLineSet(std::size_t id,
+                    const std::vector<filament::math::float3>& points);
+
     // ---- レイヤ ----------------------------------------------------------
     // ギズモのように「エディタカメラのビューにだけ」見せたい物のための
     // レイヤ分け。シーンは全ビュー共有のままなので、レンダラブルの
@@ -332,6 +347,18 @@ private:
     };
     std::vector<LineBatch> lineBatches_;
     std::size_t lineBatchCapacity_ = 0;  // 1バッチあたりの線分数
+
+    // 細線セット（グリッド用）。バッファは今の本数ぶんだけ確保し、本数が
+    // 変わったら作り直す（変わるのは設定変更のときだけ）。
+    struct LineSet {
+        utils::Entity entity;
+        filament::VertexBuffer* vb = nullptr;
+        filament::IndexBuffer* ib = nullptr;
+        filament::MaterialInstance* mi = nullptr;
+        std::size_t lineCount = 0;  // 確保済みの本数（0 = 実体なし）
+        bool inScene = false;
+    };
+    std::vector<LineSet> lineSets_;
 
     filament::Material* lineMaterial_ = nullptr;
     // line.filamat の読み込み（初回のみ）。読めなければ false = 線は無効。

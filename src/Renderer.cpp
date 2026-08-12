@@ -1001,6 +1001,99 @@ std::size_t Renderer::addView() {
     return views_.size() - 1;
 }
 
+std::size_t Renderer::addLineSet(const filament::math::float3& color) {
+    LineSet set;
+    if (ensureLineMaterial()) {
+        set.mi = lineMaterial_->createInstance();
+        set.mi->setParameter("baseColor", RgbaType::PREMULTIPLIED_LINEAR,
+                             float4{color.x, color.y, color.z, 1.0f});
+    }
+    // エンティティとバッファは最初の setLineSet で本数が決まってから作る。
+    lineSets_.push_back(set);
+    return lineSets_.size() - 1;
+}
+
+void Renderer::setLineSet(std::size_t id,
+                          const std::vector<filament::math::float3>& points) {
+    if (id >= lineSets_.size()) return;
+    LineSet& set = lineSets_[id];
+    if (!set.mi) return;  // line.filamat が無い環境では線は無効
+
+    const std::size_t lines = points.size() / 2;
+    if (lines == 0) {
+        if (set.inScene) {
+            scene_->remove(set.entity);
+            set.inScene = false;
+        }
+        return;
+    }
+
+    // 本数が変わったらレンダラブルごと作り直す。頂点はぴったりの数だけ
+    // 確保するので、余りを埋める工夫（面積 0 の三角形）も要らない。
+    if (lines != set.lineCount) {
+        if (set.lineCount > 0) {
+            if (set.inScene) scene_->remove(set.entity);
+            engine_->destroy(set.entity);
+            EntityManager::get().destroy(set.entity);
+            engine_->destroy(set.vb);
+            engine_->destroy(set.ib);
+            set.inScene = false;
+        }
+        set.lineCount = lines;
+        const std::size_t vertexCount = lines * 2;
+
+        set.vb = VertexBuffer::Builder()
+                     .vertexCount(uint32_t(vertexCount))
+                     .bufferCount(1)
+                     .attribute(VertexAttribute::POSITION, 0,
+                                VertexBuffer::AttributeType::FLOAT3, 0,
+                                sizeof(float) * 3)
+                     .build(*engine_);
+
+        auto* indices = new uint16_t[vertexCount];
+        for (std::size_t i = 0; i < vertexCount; ++i) indices[i] = uint16_t(i);
+        set.ib = IndexBuffer::Builder()
+                     .indexCount(uint32_t(vertexCount))
+                     .bufferType(IndexBuffer::IndexType::USHORT)
+                     .build(*engine_);
+        set.ib->setBuffer(
+            *engine_,
+            IndexBuffer::BufferDescriptor(
+                indices, sizeof(uint16_t) * vertexCount,
+                [](void* p, size_t, void*) {
+                    delete[] static_cast<uint16_t*>(p);
+                }));
+
+        set.entity = EntityManager::get().create();
+        RenderableManager::Builder(1)
+            .boundingBox({{-1000.0f, -1000.0f, -1000.0f},
+                          {1000.0f, 1000.0f, 1000.0f}})  // never culled
+            .geometry(0, RenderableManager::PrimitiveType::LINES, set.vb,
+                      set.ib, 0, vertexCount)
+            .material(0, set.mi)
+            .culling(false)
+            .castShadows(false)
+            .receiveShadows(false)
+            .build(*engine_, set.entity);
+        auto& rm = engine_->getRenderableManager();
+        rm.setLayerMask(rm.getInstance(set.entity), 0xFF, kLayerEditorOnly);
+    }
+
+    const std::size_t vertexCount = lines * 2;
+    auto* verts = new float3[vertexCount];
+    std::memcpy(verts, points.data(), sizeof(float3) * vertexCount);
+    set.vb->setBufferAt(
+        *engine_, 0,
+        VertexBuffer::BufferDescriptor(
+            verts, sizeof(float3) * vertexCount,
+            [](void* p, size_t, void*) { delete[] static_cast<float3*>(p); }));
+
+    if (!set.inScene) {
+        scene_->addEntity(set.entity);
+        set.inScene = true;
+    }
+}
+
 void Renderer::setViewEditorLayerVisible(std::size_t viewIndex, bool visible) {
     if (viewIndex >= views_.size()) return;
     views_[viewIndex].view->setVisibleLayers(kLayerEditorOnly,
@@ -1064,6 +1157,17 @@ Renderer::~Renderer() {
         engine_->destroy(batch.mi);
     }
     lineBatches_.clear();
+    for (auto& set : lineSets_) {
+        if (set.lineCount > 0) {
+            if (set.inScene) scene_->remove(set.entity);
+            engine_->destroy(set.entity);
+            EntityManager::get().destroy(set.entity);
+            engine_->destroy(set.vb);
+            engine_->destroy(set.ib);
+        }
+        if (set.mi) engine_->destroy(set.mi);
+    }
+    lineSets_.clear();
     if (lineMaterial_) engine_->destroy(lineMaterial_);
     for (auto* mi : highlightInstances_) engine_->destroy(mi);
     engine_->destroy(material_);

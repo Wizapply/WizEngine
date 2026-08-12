@@ -27,7 +27,7 @@ int planeNormalAxis(int handle) { return handle - kPlaneYZ; }
 
 // バッチ番号（色）。gizmo::batchColors() の並びと一致させること。
 constexpr std::size_t kBatchX = 0, kBatchY = 1, kBatchZ = 2;
-constexpr std::size_t kBatchNeutral = 3, kBatchActive = 4, kBatchGrid = 5;
+constexpr std::size_t kBatchNeutral = 3, kBatchActive = 4;
 
 // ---- 見た目の定数 -----------------------------------------------------------
 // 画面上でだいたい一定の大きさに見せるため、ギズモの長さはカメラからの距離に
@@ -235,41 +235,39 @@ void buildScale(const Sink& out, const Frame& f, int active) {
              L * 0.075);
 }
 
-// out は値渡し（ポインタ 2 本と float だけ）。太さをここで決めて配るため。
 // ---- グリッド ---------------------------------------------------------------
 // Y=0 に敷く格子。エディタで物を置くときの目印（Unity のシーングリッド相当）。
-// ギズモと同じ線分バッチ（エディタ専用レイヤ）なので、エディタモード中の
-// エディタカメラにしか映らない。原点を通る 2 本だけは軸の色（X=赤 / Z=青）で
-// 描き、どちらを向いているかが一目で分かるようにする。
+// 作業の目安なのでポリゴン（太線）にはせず、1 ピクセルの LINES で描く
+// （Renderer::setLineSet の細線セット）。頂点は 1 本 2 個 = 太線の 1/4 で、
+// 塗りのコストも無い。原点を通る 2 本だけは軸の色（X=赤 / Z=青）。
 //
 // グリッドの広さ（半分）: 100×100 m。見える地面（16×16 m）や物理の床
-// （20×20 m）より広い、純粋な作業目安。ここを変えるときは kMaxSegments
-// （GizmoComponent.h）の容量計算も見ること。SceneConfig.h は scene.cpp 専用
-// という約束なので、ここから直接は読まない。
+// （20×20 m）より広い、純粋な作業目安。SceneConfig.h は scene.cpp 専用と
+// いう約束なので、ここから直接は読まない。
 constexpr double kGridHalf = 50.0;
-constexpr double kGridLift = 0.01;    // 地面と同じ高さだと Z ファイトする
-constexpr float kGridWidth = 0.012f;  // 細線 (m)。遠くは自然に細く見える
-constexpr float kGridAxisWidth = 0.024f;
+constexpr double kGridLift = 0.01;  // 地面と同じ高さだと Z ファイトする
 
-void buildGrid(const Sink& base, double step) {
-    Sink out = base;
-    out.width = kGridWidth;
+void buildGridPoints(std::vector<filament::math::float3>& gray,
+                     std::vector<filament::math::float3>& xAxis,
+                     std::vector<filament::math::float3>& zAxis, double step) {
     const int n = int(kGridHalf / step + 0.5);
+    auto f3 = [](double x, double y, double z) {
+        return filament::math::float3{float(x), float(y), float(z)};
+    };
+    gray.reserve(std::size_t(n) * 8);
     for (int i = -n; i <= n; ++i) {
-        if (i == 0) continue;  // 軸線は下で色付きで引く
+        if (i == 0) continue;  // 軸線は色付きで別のセットに
         const double p = i * step;
-        out.line(kBatchGrid, Vec3(p, kGridLift, -kGridHalf),
-                 Vec3(p, kGridLift, kGridHalf));
-        out.line(kBatchGrid, Vec3(-kGridHalf, kGridLift, p),
-                 Vec3(kGridHalf, kGridLift, p));
+        gray.push_back(f3(p, kGridLift, -kGridHalf));
+        gray.push_back(f3(p, kGridLift, kGridHalf));
+        gray.push_back(f3(-kGridHalf, kGridLift, p));
+        gray.push_back(f3(kGridHalf, kGridLift, p));
     }
-    out.width = kGridAxisWidth;
-    out.line(kBatchX, Vec3(-kGridHalf, kGridLift, 0.0),
-             Vec3(kGridHalf, kGridLift, 0.0));
-    out.line(kBatchZ, Vec3(0.0, kGridLift, -kGridHalf),
-             Vec3(0.0, kGridLift, kGridHalf));
+    xAxis = {f3(-kGridHalf, kGridLift, 0.0), f3(kGridHalf, kGridLift, 0.0)};
+    zAxis = {f3(0.0, kGridLift, -kGridHalf), f3(0.0, kGridLift, kGridHalf)};
 }
 
+// out は値渡し（ポインタ 1 本と float だけ）。太さをここで決めて配るため。
 void buildGizmo(Sink out, const Frame& f, ed::GizmoMode mode, int active) {
     out.width = float(f.length * kThickness);
     switch (mode) {
@@ -387,7 +385,15 @@ const std::vector<filament::math::float3>& batchColors() {
         {0.05f, 0.20f, 1.00f},  // Z: 青
         {0.80f, 0.83f, 0.90f},  // 中立: 灰（暗い床に埋もれないよう明るめ）
         {1.00f, 0.66f, 0.00f},  // 掴んでいるハンドル: 山吹
-        {0.42f, 0.45f, 0.52f},  // グリッド: 控えめな灰（主役は物のほう）
+    };
+    return colors;
+}
+
+const std::vector<filament::math::float3>& gridColors() {
+    static const std::vector<filament::math::float3> colors = {
+        {0.42f, 0.45f, 0.52f},  // kGridSetGray: 控えめな灰（主役は物のほう）
+        {0.95f, 0.03f, 0.04f},  // kGridSetX: 軸バッチと同じ赤
+        {0.05f, 0.20f, 1.00f},  // kGridSetZ: 軸バッチと同じ青
     };
     return colors;
 }
@@ -703,6 +709,23 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
 
 void GizmoComponent::onRender(Scene& scene) {
     ensure(scene);
+    const ed::GizmoSettings g = scene.editor().gizmo();
+    const bool editing = scene.editor().isEditor();
+
+    // ---- グリッド（細線セット）------------------------------------------
+    // 頂点を作り直すのは表示状態か間隔が変わったときだけ。静止している
+    // フレームでは何も送らない（作業目安にフレーム毎のコストを払わない）。
+    const bool showGrid = editing && g.grid;
+    if (showGrid != gridShown_ || (showGrid && gridStep_ != g.gridStep)) {
+        gridShown_ = showGrid;
+        gridStep_ = g.gridStep;
+        std::vector<filament::math::float3> gray, xAxis, zAxis;
+        if (showGrid) buildGridPoints(gray, xAxis, zAxis, g.gridStep);
+        scene.renderer().setLineSet(gizmo::kGridSetGray, gray);
+        scene.renderer().setLineSet(gizmo::kGridSetX, xAxis);
+        scene.renderer().setLineSet(gizmo::kGridSetZ, zAxis);
+    }
+
     const std::size_t batchCount = gizmo::batchColors().size();
     if (batches_.size() != batchCount) batches_.assign(batchCount, {});
     for (auto& b : batches_) b.clear();
@@ -710,11 +733,7 @@ void GizmoComponent::onRender(Scene& scene) {
     sink.out = &batches_;
 
     // シミュレート中は出さない（物が動いているのでハンドルを掴めない）。
-    if (scene.editor().isEditor()) {
-        const ed::GizmoSettings g = scene.editor().gizmo();
-        // グリッドを先に積む。同じバッチではあとから積んだ図形が上に
-        // 乗るので、軸線や矢じりがグリッドに沈まない。
-        if (g.grid) buildGrid(sink, g.gridStep);
+    if (editing) {
         Projector pr;
         pr.fov = scene.renderer().verticalFovDegrees();
         pr.aspect = scene.renderer().aspect();

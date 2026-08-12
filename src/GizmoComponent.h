@@ -44,16 +44,28 @@ private:
     // 描画のたびに組み直す図形の列（色バッチごと）。太線と塗りつぶしの面が
     // 混ざる。メンバに持つのは、毎フレーム vector を確保し直さないため。
     std::vector<std::vector<wizengine::BatchShape>> batches_;
+
+    // グリッドの直近の表示状態。細線セットの頂点を作り直すのは、表示の
+    // ON/OFF か間隔が変わったときだけ（RENDER スレッドのみが触る）。
+    bool gridShown_ = false;
+    double gridStep_ = 0.0;
 };
 
 namespace gizmo {
 
-// 線分バッチの色。0-2 が X/Y/Z 軸、3 が中立（灰）、4 が掴んでいるハンドル、
-// 5 が Y=0 のグリッド。Renderer::configureLineBatches に渡す（Scene::build）。
+// 線分バッチ（太線・塗りつぶし）の色。0-2 が X/Y/Z 軸、3 が中立（灰）、
+// 4 が掴んでいるハンドル。Renderer::configureLineBatches に渡す（Scene::build）。
 const std::vector<filament::math::float3>& batchColors();
-// 1 バッチに詰められる図形の数。いちばん食うのはグリッド（100m 幅・最小間隔
-// 0.25m で 800 本）。1 図形 = 8 頂点なので 1024 でも頂点は 8192 個 —
-// USHORT インデックスの上限 65536 にはまだ遠い。
-inline constexpr std::size_t kMaxSegments = 1024;
+// 1 バッチに詰められる図形の数。いちばん食うのは回転リング（48 本）と
+// 矢じりの円錐（24 面 ×3 軸）。グリッドはポリゴンではなく細線セットで
+// 描くので、ここの容量には入らない。
+inline constexpr std::size_t kMaxSegments = 256;
+
+// Y=0 グリッド用の細線セット。番号は Scene::build が gridColors() の順に
+// Renderer::addLineSet した並びと一致する。
+inline constexpr std::size_t kGridSetGray = 0;  // 格子（灰）
+inline constexpr std::size_t kGridSetX = 1;     // 原点を通る X 軸（赤）
+inline constexpr std::size_t kGridSetZ = 2;     // 原点を通る Z 軸（青）
+const std::vector<filament::math::float3>& gridColors();
 
 }  // namespace gizmo

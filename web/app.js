@@ -785,6 +785,40 @@
     } catch (e) { /* ignore */ }
   }
 
+  // 下部アセットパネルの折りたたみ。サイドバーのセクションと同じ流儀で、
+  // 状態は localStorage に記憶する（キーも sec: に揃える）。
+  function toggleAssets(force) {
+    const panel = document.getElementById('assets');
+    const collapsed = (force === undefined)
+      ? !panel.classList.contains('collapsed')
+      : force;
+    panel.classList.toggle('collapsed', collapsed);
+    try { localStorage.setItem('sec:assets', collapsed ? '1' : '0'); }
+    catch (e) { /* private mode: just don't persist */ }
+  }
+  try {
+    if (localStorage.getItem('sec:assets') === '1') toggleAssets(true);
+  } catch (e) { /* ignore */ }
+
+  // アセットパネルの高さは textarea と同じ右下のつまみ（CSS の
+  // resize:vertical）。ドラッグの結果はブラウザが inline style に書くだけ
+  // なので、ResizeObserver で拾って localStorage に覚え、次回復元する。
+  {
+    const list = document.getElementById('assetList');
+    try {
+      const h = parseFloat(localStorage.getItem('assets-height'));
+      if (Number.isFinite(h) && h >= 56) list.style.height = h + 'px';
+    } catch (e) { /* ignore */ }
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => {
+        const h = Math.round(list.getBoundingClientRect().height);
+        if (h < 56) return;  // 非表示（0px）や折りたたみ中は覚えない
+        try { localStorage.setItem('assets-height', String(h)); }
+        catch (e) { /* private mode: sizes just won't persist */ }
+      }).observe(list);
+    }
+  }
+
   // ---- Events ------------------------------------------------------------
   // A short log of what happened in the scene: who grabbed or released what,
   // and cameras being taken or freed. Derived from the /scene poll rather than
@@ -1302,6 +1336,55 @@
     }
   }
 
+  // ---- 下部アセットリスト ---------------------------------------------------
+  // Unity の Project ビュー相当。プリミティブ（Box / 球）はクリックでカメラ
+  // 正面に配置、保存済みシーンはダブルクリックで読込（現在の配置が置き換わる
+  // ので confirm を挟む）。エディタモード中の Editor Camera ページ専用。
+  let assetListKey = '';
+  function renderAssets() {
+    const panel = document.getElementById('assets');
+    const show = !!sceneData && sceneData.mode === 'editor' && isEditorCam();
+    panel.hidden = !show;
+    if (!show) { assetListKey = ''; return; }
+
+    const files = sceneData.files || [];
+    const key = files.join('|') + '@' + (sceneData.sceneFile || '');
+    if (key === assetListKey) return;  // 変化が無ければ DOM を組み直さない
+    assetListKey = key;
+
+    // シーン名はサーバー側で英数字と _ - に正規化済みなので、そのまま
+    // 属性へ埋め込んで安全。
+    let html =
+      '<div class="asItem" title="クリックでカメラ正面に配置" ' +
+      'onclick="addObject(\'box\')"><span class="ico">📦</span>' +
+      '<span class="name">Box</span><span class="kind">primitive</span></div>' +
+      '<div class="asItem" title="クリックでカメラ正面に配置" ' +
+      'onclick="addObject(\'sphere\')"><span class="ico">⚪</span>' +
+      '<span class="name">Sphere</span><span class="kind">primitive</span></div>';
+    for (const f of files) {
+      const cur = f === sceneData.sceneFile;
+      html += '<div class="asItem' + (cur ? ' sel' : '') +
+        '" title="ダブルクリックで読込" onclick="assetPick(\'' + f + '\')"' +
+        ' ondblclick="assetLoad(\'' + f + '\')">' +
+        '<span class="ico">🗂&#xFE0E;</span><span class="name">' + f +
+        '</span><span class="kind">scene</span></div>';
+    }
+    document.getElementById('assetList').innerHTML = html;
+  }
+  function assetPick(name) {
+    // シングルクリックは選択だけ: Inspector のシーン名に入れておく
+    // （そのまま 💾 保存すれば上書き、ダブルクリックで読込）。
+    const box = document.getElementById('edSceneName');
+    if (box) box.value = name;
+  }
+  function assetLoad(name) {
+    if (!confirm('シーン「' + name +
+                 '」を読み込みます。現在の配置は置き換わります。')) {
+      return;
+    }
+    send('edit.load', { name: name });
+  }
+
   async function pollScene() {
     try {
       const r = await fetch('scene');
@@ -1311,6 +1394,7 @@
       renderHierarchy();
       renderInspector();
       renderEditor();
+      renderAssets();
     } catch (e) { /* server busy or gone; try again next tick */ }
   }
   setInterval(pollScene, 500);

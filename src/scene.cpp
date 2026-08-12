@@ -781,6 +781,9 @@ void Scene::build() {
     }
     // ギズモの線。色ごとに 1 レンダラブルで、中身は毎フレーム書き換える。
     renderer_.configureLineBatches(gizmo::batchColors(), gizmo::kMaxSegments);
+    // Y=0 グリッド用の細線セット（作成順 = gizmo::kGridSet* の番号）。
+    // 中身は GizmoComponent が表示状態や間隔の変わったときに入れる。
+    for (const auto& c : gizmo::gridColors()) renderer_.addLineSet(c);
 
     if (useModel_) {
         modelScale_ = kBoxModelScale;
