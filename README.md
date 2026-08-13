@@ -95,8 +95,16 @@ assets/
     plugins-base / good / ugly（H.264 の `x264enc` は ugly）
   - H.264 エンコーダは AMD AMF → Media Foundation → x264 → openh264 の順で
     自動選択されます（起動ログに採用されたものが出ます）
-- cpp-httplib / nlohmann-json / stb_image はビルド時に単一ヘッダとして
-  自動ダウンロードされます（クローン不要）
+- cpp-httplib / nlohmann-json / cgltf / stb_image は `third_parties/` の
+  **git サブモジュール**として取り込みます:
+
+  ```bash
+  git clone --recursive <このリポジトリ>       # 最初から一緒に取得
+  git submodule update --init                  # 既存クローンに後から取得
+  ```
+
+  サブモジュール未取得でもビルドは可能です（configure 時に従来どおり
+  単一ヘッダを自動ダウンロードするフォールバックが働きます）
 
 ### Chrono のビルド例（Windows）
 
@@ -110,7 +118,10 @@ cmake --build chrono_build --config Release -j
 cmake --install chrono_build --config Release
 ```
 
-`third_parties/` はローカル依存の置き場です（git 管理外）。
+`third_parties/` はサードパーティ依存の置き場です。ヘッダ系ライブラリ
+（cpp-httplib / json / cgltf / stb）は git サブモジュールとして管理し、
+Chrono や Filament のローカルインストール品（`chrono-install` /
+`filament-*`）は git 管理外です。
 `CMakePresets.json` の windows プリセットは
 `third_parties/chrono-install`（と、あれば
 `third_parties/filament-v1.74.0-windows`）を自動で参照するので、この場所に

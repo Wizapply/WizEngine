@@ -1,0 +1,16 @@
+[submodule "third_parties/cpp-httplib"]
+	path = third_parties/cpp-httplib
+	url = https://github.com/yhirose/cpp-httplib.git
+	shallow = true
+[submodule "third_parties/json"]
+	path = third_parties/json
+	url = https://github.com/nlohmann/json.git
+	shallow = true
+[submodule "third_parties/cgltf"]
+	path = third_parties/cgltf
+	url = https://github.com/jkuhlmann/cgltf.git
+	shallow = true
+[submodule "third_parties/stb"]
+	path = third_parties/stb
+	url = https://github.com/nothings/stb.git
+	shallow = true
