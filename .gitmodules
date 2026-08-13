@@ -14,3 +14,19 @@
 	path = third_parties/stb
 	url = https://github.com/nothings/stb.git
 	shallow = true
+[submodule "third_parties/chrono"]
+	path = third_parties/chrono
+	url = https://github.com/projectchrono/chrono.git
+	shallow = true
+[submodule "third_parties/eigen"]
+	path = third_parties/eigen
+	url = https://gitlab.com/libeigen/eigen.git
+	shallow = true
+[submodule "third_parties/thrust"]
+	path = third_parties/thrust
+	url = https://github.com/NVIDIA/thrust.git
+	shallow = true
+[submodule "third_parties/blaze"]
+	path = third_parties/blaze
+	url = https://bitbucket.org/blaze-lib/blaze.git
+	shallow = true

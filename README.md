@@ -84,9 +84,11 @@ assets/
 - C++17 コンパイラ、CMake ≥ 3.21
 - **Filament**: CMake が公式プレビルドを自動ダウンロードします（既定 1.74.0、
   `-DFILAMENT_VERSION=` で変更、`-DFILAMENT_ROOT=` でローカル展開品を使用）
-- **Project Chrono** ≥ 9.0: ソースからビルドしてインストール（下記）
+- **Project Chrono** ≥ 9.0: ソースからビルドしてインストール（下記。
+  ソースは `third_parties/chrono` サブモジュール＝9.0.0 を利用可能）
 - **Eigen**（Chrono の必須依存・ヘッダのみ）:
-  Windows は展開するだけ、Linux は `sudo apt install libeigen3-dev`
+  `third_parties/eigen` サブモジュール（3.4.0）をそのまま指定できる
+  （Linux は `sudo apt install libeigen3-dev` でも可）
 - **GStreamer** runtime + development:
   - Windows: <https://gstreamer.freedesktop.org/download/> の MSVC 64-bit 両 MSI
     （Complete 推奨）。pkg-config（例 `choco install pkgconfiglite`）と
@@ -108,19 +110,34 @@ assets/
 
 ### Chrono のビルド例（Windows）
 
+Chrono 本体（9.0.0）と Eigen（3.4.0）はサブモジュールで取得済みなので、
+WizEngine のルートから次のとおり（`git submodule update --init` 済みが前提）:
+
 ```
-git clone https://github.com/projectchrono/chrono.git
-git -C chrono switch --detach 9.0.0
-cmake -S chrono -B chrono_build -G "Visual Studio 17 2022" -A x64 ^
-  -DEIGEN3_INCLUDE_DIR=C:/dev/eigen-3.4.0 ^
-  -DCMAKE_INSTALL_PREFIX=C:/path/to/WizEngine/third_parties/chrono-install
+cmake -S third_parties/chrono -B chrono_build -G "Visual Studio 17 2022" -A x64 ^
+  -DEIGEN3_INCLUDE_DIR=%CD%/third_parties/eigen ^
+  -DCMAKE_INSTALL_PREFIX=%CD%/third_parties/chrono-install
 cmake --build chrono_build --config Release -j
 cmake --install chrono_build --config Release
 ```
 
-`third_parties/` はサードパーティ依存の置き場です。ヘッダ系ライブラリ
-（cpp-httplib / json / cgltf / stb）は git サブモジュールとして管理し、
-Chrono や Filament のローカルインストール品（`chrono-install` /
+Multicore モジュール付きでビルドする場合は Blaze / Thrust もサブモジュール
+（`third_parties/blaze` = v3.8.2、`third_parties/thrust` = 1.17.2。Thrust は
+入れ子サブモジュール cub を含むため `git submodule update --init --recursive`
+で取得）を指定する:
+
+```
+cmake -S third_parties/chrono -B chrono_build -G "Visual Studio 17 2022" -A x64 ^
+  -DEIGEN3_INCLUDE_DIR=%CD%/third_parties/eigen ^
+  -DCH_ENABLE_MODULE_MULTICORE=ON ^
+  -DBlaze_ROOT_DIR=%CD%/third_parties/blaze ^
+  -DThrust_DIR=%CD%/third_parties/thrust/thrust/cmake ^
+  -DCMAKE_INSTALL_PREFIX=%CD%/third_parties/chrono-install
+```
+
+`third_parties/` はサードパーティ依存の置き場です。ライブラリのソース
+（cpp-httplib / json / cgltf / stb / chrono / eigen / thrust / blaze）は
+git サブモジュールとして管理し、ビルド成果物の置き場（`chrono-install` /
 `filament-*`）は git 管理外です。
 `CMakePresets.json` の windows プリセットは
 `third_parties/chrono-install`（と、あれば
