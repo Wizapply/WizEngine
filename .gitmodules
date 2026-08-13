@@ -1,0 +1,32 @@
+[submodule "third_parties/cpp-httplib"]
+	path = third_parties/cpp-httplib
+	url = https://github.com/yhirose/cpp-httplib.git
+	shallow = true
+[submodule "third_parties/json"]
+	path = third_parties/json
+	url = https://github.com/nlohmann/json.git
+	shallow = true
+[submodule "third_parties/cgltf"]
+	path = third_parties/cgltf
+	url = https://github.com/jkuhlmann/cgltf.git
+	shallow = true
+[submodule "third_parties/stb"]
+	path = third_parties/stb
+	url = https://github.com/nothings/stb.git
+	shallow = true
+[submodule "third_parties/chrono"]
+	path = third_parties/chrono
+	url = https://github.com/projectchrono/chrono.git
+	shallow = true
+[submodule "third_parties/eigen"]
+	path = third_parties/eigen
+	url = https://gitlab.com/libeigen/eigen.git
+	shallow = true
+[submodule "third_parties/thrust"]
+	path = third_parties/thrust
+	url = https://github.com/NVIDIA/thrust.git
+	shallow = true
+[submodule "third_parties/blaze"]
+	path = third_parties/blaze
+	url = https://bitbucket.org/blaze-lib/blaze.git
+	shallow = true

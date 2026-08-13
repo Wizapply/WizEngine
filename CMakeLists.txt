@@ -189,11 +189,21 @@ add_custom_target(webui ALL
     COMMENT "Copying web UI")
 
 # ---------------------------------------------------------------------------
-# Header-only dependencies: cpp-httplib (control server) and nlohmann/json
-# (browser input). Downloaded as single headers into the build dir - a few
-# hundred KB each, no git clone. (Cloning nlohmann/json pulls a huge repo and
-# can stall configure for many minutes, so we avoid it.)
+# Header-only dependencies: cpp-httplib (control server), nlohmann/json
+# (browser input), cgltf (glTF parsing for collision geometry) and stb_image
+# (texture decoding).
+#
+# These live as git submodules under third_parties/ - fetch them with
+#   git clone --recursive ...        (or)
+#   git submodule update --init
+# The submodules are pinned to the same versions the downloads used, and
+# .gitmodules marks them shallow (nlohmann/json's full history is huge).
+#
+# A clone without --recursive must still build (same policy as FILAMENT_ROOT
+# above), so any submodule that is missing falls back to downloading the
+# single header into the build dir, exactly as before.
 # ---------------------------------------------------------------------------
+set(THIRD_PARTIES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_parties")
 set(DEPS_INC "${CMAKE_BINARY_DIR}/_deps/single-include")
 file(MAKE_DIRECTORY "${DEPS_INC}/nlohmann")
 
@@ -211,22 +221,50 @@ function(wiz_download_header url dest)
     endif()
 endfunction()
 
-wiz_download_header(
-    "https://raw.githubusercontent.com/yhirose/cpp-httplib/v0.15.3/httplib.h"
-    "${DEPS_INC}/httplib.h")
-wiz_download_header(
-    "https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp"
-    "${DEPS_INC}/nlohmann/json.hpp")
+# Use the submodule when its header is present; otherwise download the single
+# header. Submodule include dirs are collected in WIZ_DEP_INCLUDE_DIRS and go
+# in front of DEPS_INC, so a stale downloaded header can never shadow them.
+set(WIZ_DEP_INCLUDE_DIRS "")
+
+if(EXISTS "${THIRD_PARTIES_DIR}/cpp-httplib/httplib.h")
+    list(APPEND WIZ_DEP_INCLUDE_DIRS "${THIRD_PARTIES_DIR}/cpp-httplib")
+    message(STATUS "WizEngine: cpp-httplib -> submodule")
+else()
+    wiz_download_header(
+        "https://raw.githubusercontent.com/yhirose/cpp-httplib/v0.15.3/httplib.h"
+        "${DEPS_INC}/httplib.h")
+endif()
+
+if(EXISTS "${THIRD_PARTIES_DIR}/json/single_include/nlohmann/json.hpp")
+    list(APPEND WIZ_DEP_INCLUDE_DIRS "${THIRD_PARTIES_DIR}/json/single_include")
+    message(STATUS "WizEngine: nlohmann/json -> submodule")
+else()
+    wiz_download_header(
+        "https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp"
+        "${DEPS_INC}/nlohmann/json.hpp")
+endif()
+
 # cgltf: parses glTF/GLB on the CPU for collision geometry (the renderer's
 # gltfio streams vertices straight to the GPU, so physics reads the file
 # itself - with the same parser gltfio uses internally).
-wiz_download_header(
-    "https://raw.githubusercontent.com/jkuhlmann/cgltf/v1.14/cgltf.h"
-    "${DEPS_INC}/cgltf.h")
+if(EXISTS "${THIRD_PARTIES_DIR}/cgltf/cgltf.h")
+    list(APPEND WIZ_DEP_INCLUDE_DIRS "${THIRD_PARTIES_DIR}/cgltf")
+    message(STATUS "WizEngine: cgltf -> submodule")
+else()
+    wiz_download_header(
+        "https://raw.githubusercontent.com/jkuhlmann/cgltf/v1.14/cgltf.h"
+        "${DEPS_INC}/cgltf.h")
+endif()
+
 # stb_image: decodes PNG/JPEG/TGA/BMP for the ground texture.
-wiz_download_header(
-    "https://raw.githubusercontent.com/nothings/stb/master/stb_image.h"
-    "${DEPS_INC}/stb_image.h")
+if(EXISTS "${THIRD_PARTIES_DIR}/stb/stb_image.h")
+    list(APPEND WIZ_DEP_INCLUDE_DIRS "${THIRD_PARTIES_DIR}/stb")
+    message(STATUS "WizEngine: stb_image -> submodule")
+else()
+    wiz_download_header(
+        "https://raw.githubusercontent.com/nothings/stb/master/stb_image.h"
+        "${DEPS_INC}/stb_image.h")
+endif()
 
 # ---------------------------------------------------------------------------
 # Executable
@@ -254,7 +292,8 @@ add_executable(wizengine
     src/GizmoComponent.cpp
     src/CpuAffinity.cpp)
 # Version pins surfaced in the browser's About section (src/Versions.cpp).
-# WIZ_CGLTF_VERSION must match the wiz_download_header URL above.
+# WIZ_CGLTF_VERSION must match the third_parties/cgltf submodule pin (and the
+# wiz_download_header fallback URL above).
 target_compile_definitions(wizengine PRIVATE
     WIZ_FILAMENT_VERSION="${FILAMENT_VERSION}"
     WIZ_CGLTF_VERSION="1.14")
@@ -284,6 +323,7 @@ endif()
 target_include_directories(wizengine PRIVATE
     ${FILAMENT_ROOT}/include
     ${CHRONO_INCLUDE_DIRS}
+    ${WIZ_DEP_INCLUDE_DIRS}
     ${DEPS_INC}
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

@@ -409,14 +409,21 @@ CMake が OFF のまま `kBackend = Multicore` にした場合は、起動時に
 
 Chrono::Multicore（大量剛体の並列化）を使う場合の Chrono 側設定:
 `CH_ENABLE_MODULE_MULTICORE=ON` ＋ `Blaze_ROOT_DIR` ＋ `Thrust_DIR`。Thrust は OpenMP
-バックエンドで使うので GPU 不要。単体取得は
-`git clone --recursive -b 1.17.2 https://github.com/NVIDIA/thrust.git` で、
-`Thrust_DIR` は `<clone>/thrust/cmake`（`thrust-config.cmake` があるフォルダ）。
+バックエンドで使うので GPU 不要。Chrono 本体（`third_parties/chrono` = 9.0.0）・
+Eigen（`third_parties/eigen` = 3.4.0）・Blaze（`third_parties/blaze` = v3.8.2）・
+Thrust（`third_parties/thrust` = 1.17.2）はサブモジュールで取得できる
+（Thrust は入れ子の cub を含むので `git submodule update --init --recursive`）。
+`Thrust_DIR` は `third_parties/thrust/thrust/cmake`（`thrust-config.cmake` が
+あるフォルダ）、`EIGEN3_INCLUDE_DIR` / `Blaze_ROOT_DIR` は各サブモジュールの
+ルートを指す。
 
-cpp-httplib と nlohmann/json は **単一ヘッダを configure 時に直接ダウンロード**して
-`build/_deps/single-include/` に置く（git clone しない。nlohmann/json のリポジトリは
-巨大で clone が数分〜十数分かかるため）。オフライン環境ではこの2ファイルを手動配置
-すればよい（`httplib.h` と `nlohmann/json.hpp`）。
+cpp-httplib / nlohmann/json / cgltf / stb は **`third_parties/` の git サブモジュール**
+（`git clone --recursive` または `git submodule update --init` で取得。
+`.gitmodules` は shallow 指定＝nlohmann/json の巨大な履歴を引かない）。
+サブモジュール未取得のクローンでもビルドが止まらないよう、無いものは従来どおり
+**単一ヘッダを configure 時にダウンロード**して `build/_deps/single-include/` に置く
+フォールバックが残る。オフライン環境ではサブモジュールを取得しておくか、
+ヘッダを手動配置すればよい。
 
 受信側:
 ```bash

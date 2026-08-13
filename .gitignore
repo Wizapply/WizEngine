@@ -20,4 +20,7 @@ assets/*.glb
 assets/*.gltf
 
 # Local dependency installs (Chrono, a local Filament copy, ...)
-/third_parties/
+# third_parties/ そのものは Git サブモジュール（cpp-httplib 等）を含むので
+# 無視しない。手動で置くローカルインストール品だけを個別に除外する。
+/third_parties/chrono-install/
+/third_parties/filament-*/
