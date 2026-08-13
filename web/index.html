@@ -43,6 +43,13 @@
     <section class="sbSec" data-sec="cameras">
       <div class="sbSecHead" onclick="toggleSection('cameras')">
         <span><span class="caret"></span>Cameras</span>
+        <!-- カメラの追加（＋）。削除は一覧の各行の 🗑。エディタモード中の
+             Editor Camera ページにだけ出る（renderCameras() が制御）。見出し
+             クリックの折りたたみと同居するので stopPropagation が要る。 -->
+        <span id="camAddDel" class="secBtns" hidden>
+          <button id="camAdd" title="カメラを追加"
+                  onclick="event.stopPropagation(); addCamera()">＋</button>
+        </span>
       </div>
       <div class="secBody">
         <div id="camList" class="list"></div>
@@ -87,44 +94,15 @@
     <div class="rowResize" data-resize="inspector" title="Drag to resize"></div>
     </div><!-- /paneScene -->
 
-    <!-- ================= Editor タブ ================= -->
+    <!-- ================= Inspector タブ =================
+         Unity と同じく「選択しているオブジェクトの内容」が主役。配置と
+         シーンの保存/全消しは下部のアセットパネル、ギズモ設定は映像左上
+         ツールバーの ⚙ で開く（下の secGizmo を出し入れするだけ）。 -->
     <div id="paneEditor" class="sbPane" hidden>
       <div id="edStatus" class="edStatus">ready</div>
 
-      <section class="sbSec">
-        <div class="sbSecHead">配置</div>
-        <div class="edRow">
-          <span>サイズ</span>
-          <input id="edNewSize" class="num" type="number" step="0.05" min="0.01"
-                 max="50" value="0.5">
-        </div>
-        <div class="edRow">
-          <span>色</span>
-          <input id="edNewColor" class="col" type="color" value="#cc5c2e">
-        </div>
-        <div class="edRow btnRow">
-          <button onclick="addObject('box')">＋ ボックス</button>
-          <button onclick="addObject('sphere')">＋ 球</button>
-        </div>
-        <div class="edHint">カメラの正面、床の上に置かれます。</div>
-      </section>
-
-      <section class="sbSec">
-        <div class="sbSecHead">ギズモ</div>
-        <div class="edRow btnRow">
-          <button id="gzMove" onclick="setGizmoMode('translate')"
-                  title="移動 (W)">✥ 移動</button>
-          <button id="gzRot" onclick="setGizmoMode('rotate')"
-                  title="回転 (E)">⟳ 回転</button>
-          <button id="gzScale" onclick="setGizmoMode('scale')"
-                  title="拡縮 (R)">⤢ 拡縮</button>
-        </div>
-        <div class="edRow btnRow">
-          <button id="gzWorld" onclick="setGizmoSpace('world')"
-                  title="軸をワールドに合わせる">🌐 World</button>
-          <button id="gzLocal" onclick="setGizmoSpace('local')"
-                  title="軸をオブジェクトの向きに合わせる">📦 Local</button>
-        </div>
+      <section class="sbSec" id="secGizmo" hidden>
+        <div class="sbSecHead">ギズモ設定</div>
         <div class="edRow">
           <span>スナップ (X)</span>
           <input id="gzSnap" type="checkbox" onchange="applyGizmo()">
@@ -146,11 +124,12 @@
           <input id="gzGridStep" class="num" type="number" step="0.25" min="0.25"
                  max="10" onchange="applyGizmo()">
         </div>
-        <div class="edHint">選択中のオブジェクトに出ます。矢印をドラッグで軸に
-          沿って、四角で平面上を、中央の箱で一様に。W / E / R で切り替え。</div>
+        <div class="edHint">ギズモは選択中のオブジェクトに出ます。移動 / 回転 /
+          拡縮の切り替えは映像左上のボタンか W / E / R、スナップは X。矢印を
+          ドラッグで軸に沿って、四角で平面上を、中央の箱で一様に。</div>
       </section>
 
-      <section class="sbSec">
+      <section class="sbSec" id="secObj">
         <div class="sbSecHead">選択オブジェクト</div>
         <div id="edNoSel" class="edHint">ビューかリストで選択してください。</div>
         <div id="edProps" hidden>
@@ -159,23 +138,35 @@
             <input id="edName" class="txt" type="text" placeholder="(既定)"
                    onchange="applyName()">
           </div>
-          <div class="edLabel">位置 (m)</div>
-          <div class="edGrid">
-            <input id="edPX" class="num" type="number" step="0.05" onchange="applyPos()">
-            <input id="edPY" class="num" type="number" step="0.05" onchange="applyPos()">
-            <input id="edPZ" class="num" type="number" step="0.05" onchange="applyPos()">
+          <!-- Unity の Transform 相当。行ラベル + X/Y/Z タグ付きの 3 欄。
+               スケールは倍率ではなく実寸 (m) - 物理形状の大きさそのもの。 -->
+          <div class="edLabel">Transform</div>
+          <div class="trRow" title="位置 (m)">
+            <span class="trName">位置</span>
+            <label class="trCell"><span class="axis axX">X</span>
+              <input id="edPX" class="num" type="number" step="0.05" onchange="applyPos()"></label>
+            <label class="trCell"><span class="axis axY">Y</span>
+              <input id="edPY" class="num" type="number" step="0.05" onchange="applyPos()"></label>
+            <label class="trCell"><span class="axis axZ">Z</span>
+              <input id="edPZ" class="num" type="number" step="0.05" onchange="applyPos()"></label>
           </div>
-          <div class="edLabel">回転 (度)</div>
-          <div class="edGrid">
-            <input id="edRX" class="num" type="number" step="5" onchange="applyRot()">
-            <input id="edRY" class="num" type="number" step="5" onchange="applyRot()">
-            <input id="edRZ" class="num" type="number" step="5" onchange="applyRot()">
+          <div class="trRow" title="回転 (度)">
+            <span class="trName">回転</span>
+            <label class="trCell"><span class="axis axX">X</span>
+              <input id="edRX" class="num" type="number" step="5" onchange="applyRot()"></label>
+            <label class="trCell"><span class="axis axY">Y</span>
+              <input id="edRY" class="num" type="number" step="5" onchange="applyRot()"></label>
+            <label class="trCell"><span class="axis axZ">Z</span>
+              <input id="edRZ" class="num" type="number" step="5" onchange="applyRot()"></label>
           </div>
-          <div class="edLabel" id="edSizeLabel">大きさ (m)</div>
-          <div class="edGrid">
-            <input id="edSX" class="num" type="number" step="0.05" min="0.01" onchange="applySize()">
-            <input id="edSY" class="num" type="number" step="0.05" min="0.01" onchange="applySize()">
-            <input id="edSZ" class="num" type="number" step="0.05" min="0.01" onchange="applySize()">
+          <div class="trRow" id="edSizeRow" title="大きさ (m)。倍率ではなく実寸">
+            <span class="trName" id="edSizeLabel">スケール</span>
+            <label class="trCell"><span class="axis axX">X</span>
+              <input id="edSX" class="num" type="number" step="0.05" min="0.01" onchange="applySize()"></label>
+            <label class="trCell"><span class="axis axY">Y</span>
+              <input id="edSY" class="num" type="number" step="0.05" min="0.01" onchange="applySize()"></label>
+            <label class="trCell"><span class="axis axZ">Z</span>
+              <input id="edSZ" class="num" type="number" step="0.05" min="0.01" onchange="applySize()"></label>
           </div>
           <div class="edRow">
             <span>質量 (kg)</span>
@@ -197,7 +188,102 @@
         </div>
       </section>
 
-      <section class="sbSec">
+      <!-- 選択中のライト（エディタモード×Editor Camera 専用）。ビューの
+           アイコンか Objects 一覧のライト行のクリックで選ばれる。種類と影は
+           作成時に固定（Filament のライト実体を決めるため。変えるときは
+           削除して置き直し）。 -->
+      <section class="sbSec" id="secLight" hidden>
+        <div class="sbSecHead">ライト</div>
+        <div id="ltKind" class="edStatus">light</div>
+        <div class="edRow">
+          <span>名前</span>
+          <input id="ltName" class="txt" type="text" placeholder="(既定)"
+                 onchange="applyLightName()">
+        </div>
+        <div class="edLabel">Transform</div>
+        <div class="trRow" title="位置 (m)。Sun では光に影響しません">
+          <span class="trName">位置</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="ltPX" class="num" type="number" step="0.25" onchange="applyLightPos()"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="ltPY" class="num" type="number" step="0.25" onchange="applyLightPos()"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="ltPZ" class="num" type="number" step="0.25" onchange="applyLightPos()"></label>
+        </div>
+        <div class="trRow" id="ltRotRow" title="向き (度)。ゼロで真下向き">
+          <span class="trName">回転</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="ltRX" class="num" type="number" step="5" onchange="applyLightRot()"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="ltRY" class="num" type="number" step="5" onchange="applyLightRot()"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="ltRZ" class="num" type="number" step="5" onchange="applyLightRot()"></label>
+        </div>
+        <div class="edRow">
+          <span>色</span>
+          <input id="ltColor" class="col" type="color" onchange="applyLightColor()">
+        </div>
+        <div class="edRow">
+          <span id="ltIntLabel">強さ (lm)</span>
+          <input id="ltIntensity" class="num" type="number" step="10000"
+                 min="0" onchange="applyLightIntensity()">
+        </div>
+        <div class="edRow" id="ltFalloffRow">
+          <span>届く距離 (m)</span>
+          <input id="ltFalloff" class="num" type="number" step="1" min="0.1"
+                 max="500" onchange="applyLightFalloff()">
+        </div>
+        <div class="edRow" id="ltConeRow" title="スポットの円錐（半頂角）">
+          <span>円錐 内 / 外 (度)</span>
+          <input id="ltInner" class="num coneNum" type="number" step="1"
+                 min="1" max="88" onchange="applyLightCone()">
+          <input id="ltOuter" class="num coneNum" type="number" step="1"
+                 min="1" max="89" onchange="applyLightCone()">
+        </div>
+        <div class="edRow btnRow">
+          <button class="danger" onclick="removeLight()">🗑 ライトを削除</button>
+        </div>
+        <div class="edHint">Sun はルクス（太陽 ~10万）、Point / Spot は
+          ルーメン（電球 ~800 lm。屋外シーンでは数十万必要）。</div>
+      </section>
+
+      <!-- 選択中のカメラ（エディタモード×Editor Camera 専用）。ビューの
+           アイコンか Cameras 一覧の ✎ で選ばれる。Editor Camera 自身は
+           選べない（自分の目はオービット操作で動かす）。 -->
+      <section class="sbSec" id="secCam" hidden>
+        <div class="sbSecHead">カメラ</div>
+        <div id="cmLabel" class="edStatus">camera</div>
+        <div class="edLabel">Transform</div>
+        <div class="trRow" title="位置 (m) — 視点の位置">
+          <span class="trName">位置</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="cmPX" class="num" type="number" step="0.25" onchange="applyCamPos()"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="cmPY" class="num" type="number" step="0.25" onchange="applyCamPos()"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="cmPZ" class="num" type="number" step="0.25" onchange="applyCamPos()"></label>
+        </div>
+        <div class="trRow" title="向き (度)。X=ピッチ Y=ヨー。ロールはありません">
+          <span class="trName">回転</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="cmRX" class="num" type="number" step="5" onchange="applyCamRot()"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="cmRY" class="num" type="number" step="5" onchange="applyCamRot()"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="cmRZ" class="num" type="number" value="0" disabled></label>
+        </div>
+        <div class="edRow btnRow">
+          <button onclick="openCamPage()">▶ このカメラを見る</button>
+          <button class="danger" onclick="removeCamera()">🗑 削除</button>
+        </div>
+        <div class="edHint">削除しても一覧から消えるだけで、ページの URL 自体は
+          生きています（追加すると同じ番号から再利用）。視聴中のページの
+          カメラ操作と編集は、後から動かしたほうが勝ちます。</div>
+      </section>
+
+      <!-- ジョイントも「選択しているオブジェクトの内容」として扱う:
+           選択が無いときは節ごと隠し、一覧も選択が関わるものだけ。 -->
+      <section class="sbSec" id="secJoint" hidden>
         <div class="sbSecHead">ジョイント</div>
         <div class="edRow">
           <span>種類</span>
@@ -227,25 +313,9 @@
         </div>
         <button class="wide" onclick="createJoint()">＋ 選択中と B を繋ぐ</button>
         <div class="edHint">A は現在の選択。軸の位置は 2 体の中点（相手が地面
-          なら選択中の位置）になります。</div>
+          なら選択中の位置）になります。一覧は選択中のオブジェクトが関わる
+          ジョイントだけを表示します。</div>
         <div id="edJointList" class="list scroll jointList"></div>
-      </section>
-
-      <section class="sbSec">
-        <div class="sbSecHead">シーン (assets/scenes)</div>
-        <div class="edRow">
-          <span>名前</span>
-          <input id="edSceneName" class="txt" type="text" placeholder="myscene">
-        </div>
-        <div class="edRow btnRow">
-          <button onclick="saveScene()">💾 保存</button>
-          <button onclick="loadScene()">📂 読込</button>
-        </div>
-        <div class="edRow">
-          <span>保存済み</span>
-          <select id="edSceneList" class="strSel" onchange="pickScene()"></select>
-        </div>
-        <button class="wide danger" onclick="clearScene()">シーンを空にする</button>
       </section>
     </div><!-- /paneEditor -->
 
@@ -390,6 +460,24 @@
     <video id="video" autoplay playsinline muted></video>
     <div id="loading"><div class="spin"></div><span>connecting…</span></div>
     <div id="hit"></div>
+    <!-- ギズモのツールバー（Unity のシーンビュー左上と同じ場所）。映像への
+         オーバーレイで、エディタモード中の Editor Camera ページにだけ出す
+         （表示切替は app.js の renderEditor()）。実体は Inspector にあった
+         モード切替と同じコマンドを送るだけ。 -->
+    <div id="gizmoBar" hidden>
+      <button id="gzMove" onclick="setGizmoMode('translate')"
+              title="移動 (W)">✥</button>
+      <button id="gzRot" onclick="setGizmoMode('rotate')"
+              title="回転 (E)">⟳</button>
+      <button id="gzScale" onclick="setGizmoMode('scale')"
+              title="拡縮 (R)">⤢</button>
+      <span class="gzSep"></span>
+      <button id="gzSpace" onclick="toggleGizmoSpace()"
+              title="ギズモの座標系を切り替え（World ⇄ Local）">🌐 World</button>
+      <span class="gzSep"></span>
+      <button id="gzSettings" onclick="toggleGizmoSettings()"
+              title="ギズモ設定（スナップ・刻み・グリッド）を Inspector に開く">⚙&#xFE0E;</button>
+    </div>
     <svg id="cursor" viewBox="0 0 24 24" aria-hidden="true">
       <path class="curArrow"
             d="M5 2 L5 19 L9.5 15.2 L12.2 21.5 L15 20.3 L12.3 14.2 L18 14 Z"
@@ -418,6 +506,25 @@
       <span><span class="caret"></span>Assets</span>
       <span class="asHint">クリック: プリミティブを配置 ／
         ダブルクリック: シーンを読込 ／ 右下で高さ変更</span>
+    </div>
+    <!-- 操作列。Inspector を「選択オブジェクトの内容」だけに絞ったので、
+         新規オブジェクトの初期値とシーンの保存/全消しはここが受け持つ
+         （配置も読込もこのパネルの仕事なので、道具も同じ場所に置く）。 -->
+    <div class="asBar">
+      <span class="asGroup" title="新しく置くオブジェクトの初期値">新規
+        <input id="edNewSize" class="num" type="number" step="0.05" min="0.01"
+               max="50" value="0.5" title="大きさ (m)">
+        <input id="edNewColor" class="col" type="color" value="#cc5c2e"
+               title="色">
+      </span>
+      <span class="asGroup">シーン
+        <input id="edSceneName" class="txt" type="text" placeholder="myscene"
+               title="保存名（英数字と _ - のみ）。タイルのクリックでも入る">
+        <button onclick="saveScene()"
+                title="assets/scenes/&lt;名前&gt;.json へ保存">💾 保存</button>
+        <button class="danger" onclick="clearScene()"
+                title="オブジェクトとジョイントを全部消す">🗑 全消し</button>
+      </span>
     </div>
     <div id="assetList" class="asList"></div>
   </div>

@@ -54,11 +54,12 @@ private:
 namespace gizmo {
 
 // 線分バッチ（太線・塗りつぶし）の色。0-2 が X/Y/Z 軸、3 が中立（灰）、
-// 4 が掴んでいるハンドル。Renderer::configureLineBatches に渡す（Scene::build）。
+// 4 が掴んでいるハンドル、5 がライトのアイコン（黄）、6 がカメラのアイコン
+// （水色）。Renderer::configureLineBatches に渡す（Scene::build）。
 const std::vector<filament::math::float3>& batchColors();
 // 1 バッチに詰められる図形の数。いちばん食うのは回転リング（48 本）と
-// 矢じりの円錐（24 面 ×3 軸）。グリッドはポリゴンではなく細線セットで
-// 描くので、ここの容量には入らない。
+// 矢じりの円錐（24 面 ×3 軸）。アイコンは 1 個 20 前後 × 最大 6 個で
+// 余裕がある。グリッドはポリゴンではなく細線セットで描くので入らない。
 inline constexpr std::size_t kMaxSegments = 256;
 
 // Y=0 グリッド用の細線セット。番号は Scene::build が gridColors() の順に

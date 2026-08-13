@@ -58,6 +58,29 @@ void CameraObject::zoom(double wheelDelta) {
     radius_.store(r);
 }
 
+void CameraObject::setPose(double azimuthRad, double elevationRad,
+                           double radiusMetres) {
+    azim_.store(azimuthRad);
+    // 既存の操作（orbit / zoom）と同じ制限を通す。エディタの数値入力や
+    // ギズモから来た値でも、真上を跨いで裏返ったりはしない。
+    double e = elevationRad;
+    if (e > cfg_.maxElevation) e = cfg_.maxElevation;
+    if (e < cfg_.minElevation) e = cfg_.minElevation;
+    elev_.store(e);
+    double r = radiusMetres;
+    if (r < cfg_.minRadius) r = cfg_.minRadius;
+    if (r > cfg_.maxRadius) r = cfg_.maxRadius;
+    radius_.store(r);
+}
+
+void CameraObject::setTarget(double x, double y, double z) {
+    // pan() と違い y をクランプしない: エディタの「位置をそのまま動かす」は
+    // 平行移動なので、成分だけ丸めると向きまで変わってしまう。
+    tx_.store(x);
+    ty_.store(y);
+    tz_.store(z);
+}
+
 filament::math::double3 CameraObject::target() const {
     return {tx_.load(), ty_.load(), tz_.load()};
 }

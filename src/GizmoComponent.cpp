@@ -28,6 +28,7 @@ int planeNormalAxis(int handle) { return handle - kPlaneYZ; }
 // バッチ番号（色）。gizmo::batchColors() の並びと一致させること。
 constexpr std::size_t kBatchX = 0, kBatchY = 1, kBatchZ = 2;
 constexpr std::size_t kBatchNeutral = 3, kBatchActive = 4;
+constexpr std::size_t kBatchLight = 5, kBatchCam = 6;
 
 // ---- 見た目の定数 -----------------------------------------------------------
 // 画面上でだいたい一定の大きさに見せるため、ギズモの長さはカメラからの距離に
@@ -267,6 +268,218 @@ void buildGridPoints(std::vector<filament::math::float3>& gray,
     zAxis = {f3(0.0, kGridLift, -kGridHalf), f3(0.0, kGridLift, kGridHalf)};
 }
 
+// ---- ライト・カメラのアイコン ------------------------------------------------
+// Unity のシーンビューに出るアイコン相当。ギズモと同じ太線バッチに描くので
+// エディタ専用レイヤに乗り、エディタカメラのビューにだけ映る。大きさは
+// カメラからの距離に比例（画面上でほぼ一定の見かけ）。
+constexpr double kIconScreenSize = 0.035;  // 画面の高さに対する見かけの半径
+constexpr double kIconPick = 0.06;         // アイコン中心の当たり判定（NDC）
+
+double iconSize(const Vec3& p, const scenemath::Basis& basis) {
+    const double d = (p - basis.eye).norm();
+    return std::max(0.02, std::min(5.0, d * kIconScreenSize));
+}
+
+// ビルボードの円（見ているカメラに正対する円）。どの向きから見ても同じ形に
+// 見えるのが、目印としては一番分かりやすい。
+void billboardCircle(const Sink& out, std::size_t batch, const Vec3& center,
+                     const scenemath::Basis& basis, double r, int segments) {
+    Vec3 prev = center + basis.right * r;
+    for (int s = 1; s <= segments; ++s) {
+        const double t = 2.0 * scenemath::kPi * double(s) / segments;
+        const Vec3 p = center + basis.right * (r * std::cos(t)) +
+                       basis.up * (r * std::sin(t));
+        out.line(batch, prev, p);
+        prev = p;
+    }
+}
+
+// dir に直交する 2 方向。円錐の底面や矢じりを張るのに使う。
+void orthoPair(const Vec3& dir, Vec3& u, Vec3& v) {
+    u = dir.cross(Vec3::UnitY());
+    if (u.norm() < 1e-6) u = dir.cross(Vec3::UnitX());
+    u = u.normalized();
+    v = dir.cross(u).normalized();
+}
+
+void buildLightIcon(Sink out, std::size_t batch, const ed::LightDesc& d,
+                    const scenemath::Basis& basis) {
+    const Vec3 p(d.position.x, d.position.y, d.position.z);
+    const double s = iconSize(p, basis);
+    out.width = float(s * 0.10);
+    const Vec3 dir =
+        scenemath::lightDirection(d.rotation.x, d.rotation.y, d.rotation.z);
+
+    if (d.kind == ed::LightKind::Point) {
+        // 電球: 円 + 全方向の短い光線（ビルボード面内）。向きは無い。
+        billboardCircle(out, batch, p, basis, s * 0.45, 12);
+        for (int k = 0; k < 8; ++k) {
+            const double t = 2.0 * scenemath::kPi * double(k) / 8.0;
+            const Vec3 r = basis.right * std::cos(t) + basis.up * std::sin(t);
+            out.line(batch, p + r * (s * 0.6), p + r * (s * 0.95));
+        }
+        return;
+    }
+    if (d.kind == ed::LightKind::Spot) {
+        // 懐中電灯: 小さな丸 + 向いた先へ開く円錐。
+        billboardCircle(out, batch, p, basis, s * 0.3, 10);
+        Vec3 u, v;
+        orthoPair(dir, u, v);
+        const Vec3 base = p + dir * (s * 2.2);
+        const double r = s * 0.9;
+        Vec3 prev = base + u * r;
+        for (int k = 1; k <= 12; ++k) {
+            const double t = 2.0 * scenemath::kPi * double(k) / 12.0;
+            const Vec3 q =
+                base + u * (r * std::cos(t)) + v * (r * std::sin(t));
+            out.line(batch, prev, q);
+            prev = q;
+        }
+        for (int k = 0; k < 4; ++k) {
+            const double t = 2.0 * scenemath::kPi * double(k) / 4.0;
+            const Vec3 q =
+                base + u * (r * std::cos(t)) + v * (r * std::sin(t));
+            out.line(batch, p, q);
+        }
+        return;
+    }
+    // Sun（平行光）: 円 + 周囲の光線 + 向きを示す長めの矢印。
+    billboardCircle(out, batch, p, basis, s * 0.45, 12);
+    for (int k = 0; k < 8; ++k) {
+        const double t = 2.0 * scenemath::kPi * double(k) / 8.0;
+        const Vec3 r = basis.right * std::cos(t) + basis.up * std::sin(t);
+        out.line(batch, p + r * (s * 0.6), p + r * (s * 0.9));
+    }
+    const Vec3 tip = p + dir * (s * 2.4);
+    out.line(batch, p, tip);
+    Vec3 u, v;
+    orthoPair(dir, u, v);
+    out.line(batch, tip, tip - dir * (s * 0.5) + u * (s * 0.25));
+    out.line(batch, tip, tip - dir * (s * 0.5) - u * (s * 0.25));
+}
+
+void buildCameraIcon(Sink out, std::size_t batch, const CameraObject& cam,
+                     const scenemath::Basis& viewBasis) {
+    const auto e = cam.eye();
+    const Vec3 p(e.x, e.y, e.z);
+    const double s = iconSize(p, viewBasis);
+    out.width = float(s * 0.10);
+
+    // アイコンの向きは「そのカメラ」の向き（見ているカメラではなく）。
+    const scenemath::Basis own = scenemath::cameraBasis(cam);
+    if (!own.valid) return;
+    const Vec3& f = own.forward;
+    const Vec3& r = own.right;
+    const Vec3& u = own.up;
+
+    // 胴体（ワイヤーフレームの箱）。
+    const double a = s * 0.55, b = s * 0.40, c = s * 0.70;
+    Vec3 corner[8];
+    for (int i = 0; i < 8; ++i) {
+        const double sx = (i & 1) ? 1.0 : -1.0;
+        const double sy = (i & 2) ? 1.0 : -1.0;
+        const double sz = (i & 4) ? 1.0 : -1.0;
+        corner[i] = p + r * (a * sx) + u * (b * sy) + f * (c * sz);
+    }
+    static const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7},
+                                     {0, 2}, {1, 3}, {4, 6}, {5, 7},
+                                     {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    for (const auto& eg : edges) {
+        out.line(batch, corner[eg[0]], corner[eg[1]]);
+    }
+
+    // レンズ（前方に開く角錐）= どちらを向いているかの目印。
+    const Vec3 front = p + f * c;
+    const Vec3 far = p + f * (s * 1.7);
+    const double lw = s * 0.5, lh = s * 0.35;
+    const Vec3 q0 = far + r * lw + u * lh;
+    const Vec3 q1 = far - r * lw + u * lh;
+    const Vec3 q2 = far - r * lw - u * lh;
+    const Vec3 q3 = far + r * lw - u * lh;
+    out.line(batch, front, q0);
+    out.line(batch, front, q1);
+    out.line(batch, front, q2);
+    out.line(batch, front, q3);
+    out.line(batch, q0, q1);
+    out.line(batch, q1, q2);
+    out.line(batch, q2, q3);
+    out.line(batch, q3, q0);
+
+    // 上向きの三角（Unity のカメラアイコンと同じ「上」の目印）。
+    const Vec3 t0 = p + u * b + r * (s * 0.3);
+    const Vec3 t1 = p + u * b - r * (s * 0.3);
+    const Vec3 t2 = p + u * (s * 0.8);
+    out.line(batch, t0, t1);
+    out.line(batch, t1, t2);
+    out.line(batch, t2, t0);
+}
+
+// ---- ギズモの対象 -----------------------------------------------------------
+// 選択がオブジェクトかライトかカメラかを 1 つの形に吸収する。姿勢の読み書きの
+// 相手が違うだけで、ハンドルの見た目・当たり判定・ドラッグの計算は共通。
+struct Target {
+    bool valid = false;
+    int type = 0;  // 0=オブジェクト 1=ライト 2=カメラ
+    std::size_t index = 0;
+    ed::Vec3d pos, rot, size;
+    bool isObject() const { return type == 0; }
+};
+
+// ライト・カメラはスケールを持たないので、拡縮モードは移動として扱う
+// （Unity も非対応の対象ではツールが効かないが、何も出ないより移動できる
+// ほうが手が止まらない）。
+ed::GizmoMode effectiveMode(const Target& t, ed::GizmoMode mode) {
+    if (!t.isObject() && mode == ed::GizmoMode::Scale) {
+        return ed::GizmoMode::Translate;
+    }
+    return mode;
+}
+
+// 現在の対象の設計値を読む。lockLists は INPUT スレッドからだけ true
+// （PHYSICS は唯一の書き手、RENDER は applyToRenderer がロック済み）。
+Target currentTarget(Scene& scene, std::size_t camIndex, bool lockLists) {
+    Target t;
+    std::unique_lock<std::mutex> lk;
+    if (lockLists) lk = scene.lockObjects();
+
+    const auto selKind = scene.editor().selKind();
+    const int selIndex = scene.editor().selIndex();
+    if (selKind == EditorState::SelKind::Light) {
+        if (selIndex >= 0 && std::size_t(selIndex) < scene.lightCount() &&
+            scene.lightAlive(std::size_t(selIndex))) {
+            const ed::LightDesc& d =
+                scene.lightItem(std::size_t(selIndex)).desc;
+            t.valid = true;
+            t.type = 1;
+            t.index = std::size_t(selIndex);
+            t.pos = d.position;
+            t.rot = d.rotation;
+        }
+        return t;
+    }
+    if (selKind == EditorState::SelKind::Camera) {
+        if (selIndex >= 0 && std::size_t(selIndex) < scene.cameraCount() &&
+            scene.cameraActive(std::size_t(selIndex))) {
+            t.valid = true;
+            t.type = 2;
+            t.index = std::size_t(selIndex);
+            scene.cameraEditPose(t.index, t.pos, t.rot);
+        }
+        return t;
+    }
+
+    const std::size_t sel = scene.boxController(camIndex).selected();
+    if (sel >= scene.objectCount() || !scene.objectAlive(sel)) return t;
+    const ed::BodyDesc& d = scene.object(sel).desc;
+    t.valid = true;
+    t.type = 0;
+    t.index = sel;
+    t.pos = d.position;
+    t.rot = d.rotation;
+    t.size = d.size;
+    return t;
+}
+
 // out は値渡し（ポインタ 1 本と float だけ）。太さをここで決めて配るため。
 void buildGizmo(Sink out, const Frame& f, ed::GizmoMode mode, int active) {
     out.width = float(f.length * kThickness);
@@ -368,6 +581,38 @@ double snapTo(double value, double step) {
     return std::round(value / step) * step;
 }
 
+// アイコンの中心を NDC に投影して一番近いものを拾う。INPUT スレッド専用
+// （中でオブジェクト一覧のロックを取る）。
+struct IconHit {
+    int type = 0;  // 1=ライト 2=カメラ
+    int index = -1;
+};
+IconHit pickIcon(Scene& scene, const Projector& pr, double px, double py) {
+    IconHit best;
+    double bestDistance = kIconPick;
+    auto lk = scene.lockObjects();
+    for (std::size_t i = 0; i < scene.lightCount(); ++i) {
+        if (!scene.lightAlive(i)) continue;
+        const ed::Vec3d& p = scene.lightItem(i).desc.position;
+        const double d = pointDistance(pr, Vec3(p.x, p.y, p.z), px, py);
+        if (d < bestDistance) {
+            bestDistance = d;
+            best = {1, int(i)};
+        }
+    }
+    for (std::size_t c = 0; c < scene.cameraCount(); ++c) {
+        // エディタカメラ自身は選べない（自分の目の位置。アイコンも出ない）。
+        if (!scene.cameraActive(c) || c == scene.editorCamera()) continue;
+        const auto e = scene.camera(c).eye();
+        const double d = pointDistance(pr, Vec3(e.x, e.y, e.z), px, py);
+        if (d < bestDistance) {
+            bestDistance = d;
+            best = {2, int(c)};
+        }
+    }
+    return best;
+}
+
 }  // namespace
 
 namespace gizmo {
@@ -385,6 +630,8 @@ const std::vector<filament::math::float3>& batchColors() {
         {0.05f, 0.20f, 1.00f},  // Z: 青
         {0.80f, 0.83f, 0.90f},  // 中立: 灰（暗い床に埋もれないよう明るめ）
         {1.00f, 0.66f, 0.00f},  // 掴んでいるハンドル: 山吹
+        {0.92f, 0.86f, 0.20f},  // ライトのアイコン: 黄（Unity の電球風）
+        {0.55f, 0.68f, 0.90f},  // カメラのアイコン: 水色がかった灰
     };
     return colors;
 }
@@ -413,7 +660,8 @@ struct GizmoComponent::Cam {
 
     // PHYSICS スレッドだけが使うドラッグ状態。
     int active = kNone;             // 今処理しているハンドル
-    std::size_t object = 0;
+    int targetType = 0;             // 0=オブジェクト 1=ライト 2=カメラ
+    std::size_t object = 0;         // 対象の番号（type に応じた一覧の中で）
     ed::Vec3d startPos, startRot, startSize;
     Frame frame;                    // 開始時の座標系（途中で動かさない）
     double startParam = 0.0;        // 軸上の位置 / 半径
@@ -458,36 +706,46 @@ bool GizmoComponent::onCommand(Scene& scene, std::size_t camIndex,
     }
 
     if (cmd == "pick") {
-        // 掴んでいるオブジェクトのギズモに当たったか。当たっていれば
-        // このコマンドはここで止める（選択し直しをさせない）。
-        const std::size_t sel = scene.boxController(camIndex).selected();
-        if (sel == BoxController::kNone) return false;
-
-        Frame f;
-        {
-            auto lk = scene.lockObjects();
-            if (!scene.objectAlive(sel)) return false;
-            const ed::BodyDesc& d = scene.object(sel).desc;
-            f = makeFrame(d.position, d.rotation, scene.editor().gizmo().space,
-                          scenemath::cameraBasis(scene.camera(camIndex)));
-        }
         Projector pr;
         pr.basis = scenemath::cameraBasis(scene.camera(camIndex));
         pr.fov = scene.renderer().verticalFovDegrees();
         pr.aspect = scene.renderer().aspect();
+        const double px = msg.value("x", 0.0);
+        const double py = msg.value("y", 0.0);
 
-        const int handle = hitTest(f, pr, scene.editor().gizmo().mode,
-                                   msg.value("x", 0.0), msg.value("y", 0.0));
-        if (handle == kNone) return false;  // ギズモ外: 通常の選択へ
-        cam.handle.store(handle);
-        cam.ndcX.store(msg.value("x", 0.0));
-        cam.ndcY.store(msg.value("y", 0.0));
-        cam.pointer.store(true);
-        // 自由移動（グラブ）が同じフレームで動かないよう、カーソルを外して
-        // おく。以降 drag はこちらが受け取るので二重には動かないが、直前の
-        // 掴みが残っていると 1 フレームだけ引っぱられる。
-        scene.boxController(camIndex).clearPointer();
-        return true;
+        // 1) 選択中の対象（オブジェクト / ライト / カメラ）のギズモハンドル。
+        //    当たっていればこのコマンドはここで止める（選択し直しをさせない）。
+        const Target t = currentTarget(scene, camIndex, /*lockLists=*/true);
+        if (t.valid) {
+            const Frame f = makeFrame(t.pos, t.rot,
+                                      scene.editor().gizmo().space, pr.basis);
+            const int handle = hitTest(
+                f, pr, effectiveMode(t, scene.editor().gizmo().mode), px, py);
+            if (handle != kNone) {
+                cam.handle.store(handle);
+                cam.ndcX.store(px);
+                cam.ndcY.store(py);
+                cam.pointer.store(true);
+                // 自由移動（グラブ）が同じフレームで動かないよう、カーソルを
+                // 外しておく。以降 drag はこちらが受け取るので二重には動かない
+                // が、直前の掴みが残っていると 1 フレームだけ引っぱられる。
+                scene.boxController(camIndex).clearPointer();
+                return true;
+            }
+        }
+
+        // 2) ライト / カメラのアイコン。当たれば選択を切り替えて消費する
+        //    （オブジェクトの選択は外す - ギズモの対象は常に 1 つ）。
+        const IconHit hit = pickIcon(scene, pr, px, py);
+        if (hit.index >= 0) {
+            scene.boxController(camIndex).setSelected(BoxController::kNone);
+            scene.editor().setSel(hit.type == 1 ? EditorState::SelKind::Light
+                                                : EditorState::SelKind::Camera,
+                                  hit.index);
+            scene.boxController(camIndex).clearPointer();
+            return true;
+        }
+        return false;  // 3) 通常のオブジェクト選択（pickBoxAt）へ
     }
 
     if (cmd == "drag" && cam.handle.load() != kNone) {
@@ -526,8 +784,11 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
         }
         if (!cam.pointer.load()) continue;
 
-        const std::size_t sel = scene.boxController(c).selected();
-        if (sel >= scene.objectCount() || !scene.objectAlive(sel)) continue;
+        // 対象（オブジェクト / ライト / カメラ）を統一の形で読む。物理
+        // スレッドは一覧の唯一の書き手なのでロックは取らない。
+        const Target t = currentTarget(scene, c, /*lockLists=*/false);
+        if (!t.valid) continue;
+        const ed::GizmoMode mode = effectiveMode(t, g.mode);
 
         const auto basis = scenemath::cameraBasis(scene.camera(c));
         if (!basis.valid) continue;
@@ -537,20 +798,21 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
 
         // ドラッグ開始: 基準値を撮る。以後この値からの差分だけを見るので、
         // 適用結果が入力に混ざって暴走することがない。
-        if (cam.active != handle || cam.object != sel) {
-            const ed::BodyDesc& d = scene.object(sel).desc;
+        if (cam.active != handle || cam.targetType != t.type ||
+            cam.object != t.index) {
             cam.active = handle;
-            cam.object = sel;
-            cam.startPos = d.position;
-            cam.startRot = d.rotation;
-            cam.startSize = d.size;
-            cam.frame = makeFrame(d.position, d.rotation, g.space, basis);
+            cam.targetType = t.type;
+            cam.object = t.index;
+            cam.startPos = t.pos;
+            cam.startRot = t.rot;
+            cam.startSize = t.size;
+            cam.frame = makeFrame(t.pos, t.rot, g.space, basis);
             cam.prevAngle = 0.0;
             cam.totalAngle = 0.0;
             if (!cam.frame.valid) continue;
 
             if (handle >= kAxisX && handle <= kAxisZ) {
-                if (g.mode == ed::GizmoMode::Rotate) {
+                if (mode == ed::GizmoMode::Rotate) {
                     const Vec3& a = cam.frame.axis[handle];
                     const double t =
                         scenemath::rayHitsPlane(basis.eye, dir, cam.frame.origin, a);
@@ -595,7 +857,7 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
         const Frame& f = cam.frame;
 
         // ---- 移動 ---------------------------------------------------------
-        if (g.mode == ed::GizmoMode::Translate) {
+        if (mode == ed::GizmoMode::Translate) {
             Vec3 delta(0, 0, 0);
             if (handle >= kAxisX && handle <= kAxisZ) {
                 double s = 0.0;
@@ -608,9 +870,10 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
                 delta = f.axis[handle] * along;
             } else if (handle >= kPlaneYZ && handle <= kPlaneXY) {
                 const Vec3& n = f.axis[planeNormalAxis(handle)];
-                const double t = scenemath::rayHitsPlane(basis.eye, dir, f.origin, n);
-                if (t < 0.0) continue;
-                delta = basis.eye + dir * t - cam.startPoint;
+                const double hit = scenemath::rayHitsPlane(basis.eye, dir,
+                                                           f.origin, n);
+                if (hit < 0.0) continue;
+                delta = basis.eye + dir * hit - cam.startPoint;
                 if (g.snap) {
                     delta = Vec3(snapTo(delta.x(), g.moveStep),
                                  snapTo(delta.y(), g.moveStep),
@@ -619,19 +882,27 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
             } else {
                 continue;
             }
-            scene.moveObject(sel, cam.startPos.x + delta.x(),
-                             cam.startPos.y + delta.y(),
-                             cam.startPos.z + delta.z());
+            const double nx = cam.startPos.x + delta.x();
+            const double ny = cam.startPos.y + delta.y();
+            const double nz = cam.startPos.z + delta.z();
+            if (t.type == 1) {
+                scene.moveLight(t.index, nx, ny, nz);
+            } else if (t.type == 2) {
+                scene.moveCamera(t.index, nx, ny, nz);
+            } else {
+                scene.moveObject(t.index, nx, ny, nz);
+            }
             continue;
         }
 
         // ---- 回転 ---------------------------------------------------------
-        if (g.mode == ed::GizmoMode::Rotate) {
+        if (mode == ed::GizmoMode::Rotate) {
             if (handle < kAxisX || handle > kAxisZ) continue;
             const Vec3& a = f.axis[handle];
-            const double t = scenemath::rayHitsPlane(basis.eye, dir, f.origin, a);
-            if (t < 0.0) continue;
-            const Vec3 p = basis.eye + dir * t - f.origin;
+            const double hit = scenemath::rayHitsPlane(basis.eye, dir,
+                                                       f.origin, a);
+            if (hit < 0.0) continue;
+            const Vec3 p = basis.eye + dir * hit - f.origin;
             const Vec3& u = f.axis[(handle + 1) % 3];
             const Vec3 v = a.cross(u);
             const double angle = std::atan2(p.dot(v), p.dot(u));
@@ -652,11 +923,19 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
                 cam.startRot.x, cam.startRot.y, cam.startRot.z);
             const scenemath::Quat turn(Eigen::AngleAxisd(applied, a));
             const Vec3 euler = scenemath::eulerDegreesFromQuat(turn * start);
-            scene.rotateObject(sel, euler.x(), euler.y(), euler.z());
+            if (t.type == 1) {
+                scene.rotateLight(t.index, euler.x(), euler.y(), euler.z());
+            } else if (t.type == 2) {
+                // カメラはロールを持たない（オービット）。pitch/yaw だけ渡す。
+                scene.rotateCamera(t.index, euler.x(), euler.y());
+            } else {
+                scene.rotateObject(t.index, euler.x(), euler.y(), euler.z());
+            }
             continue;
         }
 
-        // ---- 拡縮 ---------------------------------------------------------
+        // ---- 拡縮（オブジェクトのみ。ライト / カメラでは移動に丸めてある）--
+        if (!t.isObject()) continue;
         double factor = 1.0;
         int axis = -1;
         if (handle >= kAxisX && handle <= kAxisZ) {
@@ -686,7 +965,8 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
         // 球とモデルは 1 つの寸法しか持たないので、軸を掴んでも一様に効かせる。
         ed::Vec3d size = cam.startSize;
         const bool uniform =
-            (axis < 0) || scene.object(sel).desc.shape != ed::ShapeKind::Box;
+            (axis < 0) ||
+            scene.object(t.index).desc.shape != ed::ShapeKind::Box;
         if (uniform) {
             size.x = cam.startSize.x * factor;
             size.y = cam.startSize.y * factor;
@@ -703,7 +983,7 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
             size.y = std::max(g.scaleStep, snapTo(size.y, g.scaleStep));
             size.z = std::max(g.scaleStep, snapTo(size.z, g.scaleStep));
         }
-        scene.resizeObject(sel, size.x, size.y, size.z);
+        scene.resizeObject(t.index, size.x, size.y, size.z);
     }
 }
 
@@ -732,35 +1012,64 @@ void GizmoComponent::onRender(Scene& scene) {
     Sink sink;
     sink.out = &batches_;
 
-    // シミュレート中は出さない（物が動いているのでハンドルを掴めない）。
+    // シミュレート中は出さない（物が動いているのでハンドルを掴めない。
+    // ライト / カメラのアイコンも編集できないモードで見せない）。
     if (editing) {
         Projector pr;
         pr.fov = scene.renderer().verticalFovDegrees();
         pr.aspect = scene.renderer().aspect();
 
-        // ギズモはエディタカメラの選択にだけ組み立てる。バッチはエディタ専用
-        // レイヤに居るので、映るのもエディタカメラのビューだけ（Renderer::
-        // setViewEditorLayerVisible）。他のカメラには一切出ない。
+        // ギズモとアイコンはエディタカメラのぶんだけ組み立てる。バッチは
+        // エディタ専用レイヤに居るので、映るのもエディタカメラのビューだけ
+        // （Renderer::setViewEditorLayerVisible）。他のカメラには一切出ない。
         const std::size_t c = scene.editorCamera();
         if (c < cams_.size()) {
             Cam& cam = *cams_[c];
-            const std::size_t sel = scene.boxController(c).selected();
-            if (sel < scene.objectCount() && scene.objectAlive(sel)) {
-                const ed::BodyDesc& d = scene.object(sel).desc;
-                pr.basis = scenemath::cameraBasis(scene.camera(c));
-                const Frame f =
-                    makeFrame(d.position, d.rotation, g.space, pr.basis);
+            pr.basis = scenemath::cameraBasis(scene.camera(c));
+
+            // ---- ライト・カメラのアイコン ---------------------------------
+            // エディタ中は常に出す（クリックで選べることが見えるように）。
+            // 選択中のものはハイライト色。エディタカメラ自身のアイコンは
+            // 出さない（自分の目の位置なので、映るとしても画面の縁）。
+            // RENDER スレッド: applyToRenderer が objectsMutex_ を握ったまま
+            // 呼ぶので、一覧はロック無しで読める。
+            if (pr.basis.valid) {
+                const auto selKind = scene.editor().selKind();
+                const int selIndex = scene.editor().selIndex();
+                Sink icons;
+                icons.out = &batches_;
+                for (std::size_t i = 0; i < scene.lightCount(); ++i) {
+                    if (!scene.lightAlive(i)) continue;
+                    const bool on = selKind == EditorState::SelKind::Light &&
+                                    selIndex == int(i);
+                    buildLightIcon(icons, on ? kBatchActive : kBatchLight,
+                                   scene.lightItem(i).desc, pr.basis);
+                }
+                for (std::size_t k = 0; k < scene.cameraCount(); ++k) {
+                    if (!scene.cameraActive(k) || k == c) continue;
+                    const bool on = selKind == EditorState::SelKind::Camera &&
+                                    selIndex == int(k);
+                    buildCameraIcon(icons, on ? kBatchActive : kBatchCam,
+                                    scene.camera(k), pr.basis);
+                }
+            }
+
+            // ---- 選択中の対象のギズモ -------------------------------------
+            const Target t = currentTarget(scene, c, /*lockLists=*/false);
+            if (t.valid && pr.basis.valid) {
+                const ed::GizmoMode mode = effectiveMode(t, g.mode);
+                const Frame f = makeFrame(t.pos, t.rot, g.space, pr.basis);
                 if (f.valid) {
                     // 掴んでいるあいだはそのハンドル、掴んでいなければ
                     // カーソルの下のハンドルを光らせる。押す前にどこを
                     // 掴めるか分かるようにするため。
                     int active = cam.handle.load();
                     if (active == kNone && cam.hasHover.load()) {
-                        cam.hovered = hitTest(f, pr, g.mode, cam.hoverX.load(),
+                        cam.hovered = hitTest(f, pr, mode, cam.hoverX.load(),
                                               cam.hoverY.load());
                         active = cam.hovered;
                     }
-                    buildGizmo(sink, f, g.mode, active);
+                    buildGizmo(sink, f, mode, active);
                 }
             } else {
                 cam.hovered = kNone;

@@ -99,12 +99,15 @@ public:
     // インスタンスを作る（共有インスタンスを書き換えると全部の色が変わる）。
     void setShapeColor(std::size_t id, const filament::math::float3& color);
     // ---- Lights ----------------------------------------------------------
-    // Lights are owned by the scene as LightObjects (see scene.cpp,
-    // lightConfigs()); the renderer only holds the Filament entities.
-    // addLight() during Scene::build (single-threaded), updateLight() from
-    // the render thread. Type and castShadows are fixed at creation; the
-    // mutable properties go through updateLight.
+    // ライトの設計値はシーン側（Scene のライト一覧、保存文書に入る）。ここが
+    // 持つのは Filament のエンティティだけ。addLight / removeLight / updateLight
+    // とも RENDER スレッドから呼ぶ（build 中の初期分は単一スレッドなので同じ）。
+    // 種類・影・減衰・円錐角は生成時に決まる - 変えるときは作り直す
+    // （removeLight + addLight。Scene::syncLights の rebuild がそれ）。
+    // removeLight で空いた番号は次の addLight が再利用する（形状スロットと
+    // 同じ流儀。番号を詰めると Scene の対応付けがずれるため）。
     std::size_t addLight(const LightDesc& desc);
+    void removeLight(std::size_t index);
     void updateLight(std::size_t index, const filament::math::float3& color,
                      float intensity, const filament::math::float3& direction,
                      const filament::math::float3& position);

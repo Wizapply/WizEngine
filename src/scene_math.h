@@ -202,4 +202,17 @@ inline Vec3 eulerDegreesFromQuat(const Quat& q) {
     return Vec3(x * toDeg, y * toDeg, z * toDeg);
 }
 
+// ---- ライトの向き -----------------------------------------------------------
+// ライトは「回転ゼロ = 真下 (0,-1,0)」。rotation（オイラー角・度）から方向
+// ベクトルへ、また既存設定の方向ベクトルから rotation へ（初期値の取り込み用）。
+inline Vec3 lightDirection(double xDeg, double yDeg, double zDeg) {
+    return quatFromEulerDegrees(xDeg, yDeg, zDeg) * Vec3(0.0, -1.0, 0.0);
+}
+inline Vec3 eulerDegreesFromDirection(const Vec3& dir) {
+    const double len = dir.norm();
+    if (len < 1e-9) return Vec3(0.0, 0.0, 0.0);
+    const Quat q = Quat::FromTwoVectors(Vec3(0.0, -1.0, 0.0), dir / len);
+    return eulerDegreesFromQuat(q);
+}
+
 }  // namespace scenemath

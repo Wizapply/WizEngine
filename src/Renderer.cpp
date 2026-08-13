@@ -440,14 +440,32 @@ std::size_t Renderer::addLight(const LightDesc& desc) {
     }
     builder.build(*engine_, e);
     scene_->addEntity(e);
+    // removeLight で空いた席があれば再利用（番号を詰めない）。
+    for (std::size_t i = 0; i < lightEntities_.size(); ++i) {
+        if (lightEntities_[i].isNull()) {
+            lightEntities_[i] = e;
+            return i;
+        }
+    }
     lightEntities_.push_back(e);
     return lightEntities_.size() - 1;
+}
+
+void Renderer::removeLight(std::size_t index) {
+    if (index >= lightEntities_.size()) return;
+    utils::Entity& e = lightEntities_[index];
+    if (e.isNull()) return;
+    // removeShape と同じ後始末（engine_->destroy がコンポーネントも壊す）。
+    scene_->remove(e);
+    engine_->destroy(e);
+    EntityManager::get().destroy(e);
+    e = utils::Entity();  // 空席の印。addLight が再利用する
 }
 
 void Renderer::updateLight(std::size_t index, const float3& color,
                            float intensity, const float3& direction,
                            const float3& position) {
-    if (index >= lightEntities_.size()) return;
+    if (index >= lightEntities_.size() || lightEntities_[index].isNull()) return;
     auto& lm = engine_->getLightManager();
     const auto li = lm.getInstance(lightEntities_[index]);
     if (!li) return;

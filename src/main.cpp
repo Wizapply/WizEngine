@@ -164,10 +164,13 @@ int run(int argc, char** argv) {
     //   --physics-cores <spec>   cores the solver may use ("0-11", "0,2,4", "3")
     //   --render-cores  <spec>   cores for rendering and encoding
     //   --physics-threads <n>    solver worker threads (default: one per core)
+    //   --max-cameras <n>        camera slots /cam0/../camN-1/ (1-16, default:
+    //                            SceneConfig.h の kMaxCameras)
     //   --help                   print this list
     // Options first, so the positional parsing below only sees the rest.
     std::string physicsCoreSpec, renderCoreSpec;
     int physicsThreads = 0;
+    int maxCameras = 0;  // 0 = SceneConfig.h の既定（kMaxCameras）
     // Codec from --codec; unset = kDefaultCodec above. The codec decides
     // the compression standard; --encoder then picks the concrete element
     // (and thereby the GPU) within it.
@@ -187,6 +190,18 @@ int run(int argc, char** argv) {
         } else if (arg == "--physics-threads") {
             const std::string v = next("--physics-threads");
             if (!v.empty()) physicsThreads = std::atoi(v.c_str());
+        } else if (arg == "--max-cameras") {
+            const std::string v = next("--max-cameras");
+            if (!v.empty()) {
+                maxCameras = std::atoi(v.c_str());
+                if (maxCameras < 1 || maxCameras > 16) {
+                    LOGW("app",
+                         "--max-cameras %s is out of range (1-16) - using the "
+                         "scene default",
+                         v.c_str());
+                    maxCameras = 0;
+                }
+            }
         } else if (arg == "--encoder") {
             const std::string v = next("--encoder");
             if (!v.empty()) WebRtcStreamer::setEncoderOverride(v);
@@ -208,12 +223,15 @@ int run(int argc, char** argv) {
                 "usage: wizengine [web [httpPort] | window | stream [host] "
                 "[port] | rtsp [url]]\n"
                 "                 [--physics-cores SPEC] [--render-cores SPEC]\n"
-                "                 [--physics-threads N] [--codec CODEC]\n"
-                "                 [--encoder ELEMENT]\n\n"
+                "                 [--physics-threads N] [--max-cameras N]\n"
+                "                 [--codec CODEC] [--encoder ELEMENT]\n\n"
                 "SPEC is a core list: \"0-11\", \"0,2,4\", \"3\" or "
                 "\"0-3,8,12-13\".\n"
                 "Pinning keeps the solver and the video encoder off each "
                 "other's cores.\n"
+                "--max-cameras N sets the camera slots (pages /cam0/ .. "
+                "/camN-1/, 1-16;\ndefault from SceneConfig.h). Video views "
+                "are created when a camera is added.\n"
                 "CODEC is h264 (default; every browser), h265 (Chrome/"
                 "Safari only),\nav1 (needs an AV1-capable GPU) or vp9 "
                 "(software). Unavailable codecs\nfall back to h264.\n"
@@ -320,7 +338,8 @@ int run(int argc, char** argv) {
          requested == PhysicsBackend::Multicore ? "multicore" : "core",
          multicoreAvailable() ? "yes" : "no", physics.backendName());
     wizengine::Renderer renderer(kWidth, kHeight, materialPath);
-    Scene scene(physics, renderer);
+    // カメラスロット数は --max-cameras（未指定 = 0 なら SceneConfig の既定）。
+    Scene scene(physics, renderer, std::size_t(maxCameras));
     // ---- CPU cores -------------------------------------------------------
     // Pin before anything starts: Chrono sizes its worker pool at build time,
     // and those workers inherit the affinity of the thread that creates them.
@@ -367,6 +386,11 @@ int run(int argc, char** argv) {
     // One endpoint per camera: camera i is served on httpPort + i, with its
     // own page, its own WebRTC stream and its own viewer session. They all
     // drive the same scene, so anyone can grab and push objects.
+
+    // 「まだ動画ビューが無い」印。予備スロットのビュー（スワップチェーン +
+    // 読み戻しバッファ）は起動時には作らず、エディタで「カメラを追加」した
+    // 時点（またはページに視聴者が来た時点）で描画スレッドが生成する。
+    constexpr std::size_t kNoView = std::size_t(-1);
 
     struct CameraEndpoint {
         std::unique_ptr<HttpServer> http;
@@ -419,8 +443,19 @@ int run(int argc, char** argv) {
         for (std::size_t i = 0; i < scene.cameraCount(); ++i) {
             auto ep = std::make_unique<CameraEndpoint>();
             ep->path = "/cam" + std::to_string(i) + "/";
-            // Camera 0 uses the view the renderer already created.
-            ep->viewIndex = (i == 0) ? 0 : renderer.addView();
+            // Camera 0 uses the view the renderer already created. 他の有効な
+            // カメラはここで作り、無効（予備）スロットは kNoView のまま =
+            // エディタで追加されるかページが訪問された時点で、描画ループが
+            // フレーム境界で生成する（下の「動画ビューの遅延生成」）。
+            // まだスレッドは動いていないので cameraActive はロック無しで
+            // 読んでよい。
+            if (i == 0) {
+                ep->viewIndex = 0;
+            } else if (scene.cameraActive(i)) {
+                ep->viewIndex = renderer.addView();
+            } else {
+                ep->viewIndex = kNoView;
+            }
 
             WebRtcStreamer::setPreferGpuConvert(kGpuConvert);
             ep->webrtc = std::make_unique<WebRtcStreamer>(
@@ -528,9 +563,13 @@ int run(int argc, char** argv) {
 
     if (listener) listener->start();
     for (std::size_t i = 0; i < endpoints.size(); ++i) {
+        // standby = エディタの「カメラを追加」用の予備スロット。ページは
+        // あるが、動画ビューは追加（または初訪問）の時点で作られる。
         LOGI("http", "camera %zu%s: http://127.0.0.1:%d%s", i,
-             i == scene.editorCamera() ? " (editor)" : "", listener->port(),
-             endpoints[i]->path.c_str());
+             i == scene.editorCamera()
+                 ? " (editor)"
+                 : (scene.cameraActive(i) ? "" : " (standby)"),
+             listener->port(), endpoints[i]->path.c_str());
     }
 
     // ---- Physics thread --------------------------------------------------
@@ -760,8 +799,33 @@ int run(int argc, char** argv) {
 
         const auto loopStart = std::chrono::steady_clock::now();
 
+        // ---- 動画ビューの遅延生成 -----------------------------------------
+        // 予備スロットのビューは、エディタで「カメラを追加」されたか、その
+        // ページに視聴者が来た時点で作る。Filament を触ってよいのはこの
+        // スレッドだけなので、フレーム境界のここが安全な作成ポイント。
+        // 一度作ったビューは返さない（カメラの削除は一覧から消すだけ。
+        // 次の追加で同じスロットとビューを再利用する）。
+        if (!endpoints.empty()) {
+            std::vector<char> camActive(endpoints.size(), 0);
+            {
+                auto lk = scene.lockObjects();  // camerasActive_ は構造ロック下
+                for (std::size_t i = 0; i < endpoints.size(); ++i) {
+                    camActive[i] = scene.cameraActive(i) ? 1 : 0;
+                }
+            }
+            for (std::size_t i = 0; i < endpoints.size(); ++i) {
+                auto& ep = *endpoints[i];
+                if (ep.viewIndex != kNoView) continue;
+                if (!camActive[i] && !ep.http->hasViewer()) continue;
+                ep.viewIndex = renderer.addView();
+                LOGI("video", "camera %zu: video view created (%s)", i,
+                     camActive[i] ? "added in editor" : "viewer arrived");
+            }
+        }
+
         // Each camera turns its state into eye/target for its own view.
         for (std::size_t i = 0; i < endpoints.size(); ++i) {
+            if (endpoints[i]->viewIndex == kNoView) continue;  // ビュー未生成
             scene.camera(i).applyTo(renderer, endpoints[i]->viewIndex);
         }
         if (endpoints.empty()) scene.camera(0).applyTo(renderer);
@@ -778,6 +842,9 @@ int run(int argc, char** argv) {
             // drawn, so idle pages cost nothing.
             const auto nowTp = std::chrono::steady_clock::now();
             for (auto& ep : endpoints) {
+                // ビュー未生成のスロットは描画も配信も無い。formatDirty は
+                // 消さずに残す（ビューができた最初のフレームで適用される）。
+                if (ep->viewIndex == kNoView) continue;
                 if (ep->formatDirty.exchange(false)) {
                     // Safe point: this thread owns the renderer. The view
                     // resize completes inside renderFrame once its readbacks

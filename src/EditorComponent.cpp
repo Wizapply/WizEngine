@@ -36,14 +36,18 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
                                 const nlohmann::json& msg) {
     const std::string cmd = msg.value("cmd", "");
     EditorState& state = scene.editor();
-    // シーンを書き換える操作はエディタカメラのページ専用。UI 側もタブと
-    // ボタンを隠す/無効化しているが、判定はサーバーが持つ（リクエストは
-    // 誰でも作れるため）。受け取って捨てる = true を返してコマンドは消費する。
+    // シーンを書き換える操作（edit.*、sim を除く）はエディタカメラのページ
+    // 専用。UI 側も Inspector タブを隠しているが、判定はサーバーが持つ
+    // （リクエストは誰でも作れるため）。受け取って捨てる = true を返して
+    // コマンドは消費する。
     const bool isEditorCam = camIndex == scene.editorCamera();
 
     // ---- モード切替 -------------------------------------------------------
+    // モード切替だけは**どのカメラのページからでも**受ける。シーンの中身を
+    // 書き換える操作ではないし、Camera 1/2 で観察しながら回す・止めるのは
+    // 普通の使い方のため。エディタカメラはあくまで「編集できる」カメラで
+    // あって、「モードを握る」カメラではない。
     if (cmd == "mode") {
-        if (!isEditorCam) return true;
         const ed::AppMode target =
             ed::modeFromName(msg.value("mode", ""), state.mode());
         // シミュレートに入るときは一時停止を解除する。前回止めた状態が
@@ -53,12 +57,48 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         return true;
     }
 
+    // ---- ライト / カメラの選択（サイドバーのクリック）----------------------
+    // シーンは書き換えないが、エディタ選択はエディタモード×エディタカメラ
+    // 専用の状態なので同じ縛りにする。選択の実体は EditorState の atomic。
+    if (cmd == "select.light" || cmd == "select.camera") {
+        if (!isEditorCam || !state.isEditor()) return true;
+        const int index = msg.value("index", -1);
+        if (index < 0) {
+            state.clearSel();
+            return true;
+        }
+        auto lk = scene.lockObjects();
+        if (cmd == "select.light") {
+            if (std::size_t(index) < scene.lightCount() &&
+                scene.lightAlive(std::size_t(index))) {
+                scene.boxController(camIndex).setSelected(BoxController::kNone);
+                state.setSel(EditorState::SelKind::Light, index);
+            }
+        } else {
+            // エディタカメラ自身は選ばせない（自分の目は動かせない）。
+            if (std::size_t(index) < scene.cameraCount() &&
+                scene.cameraActive(std::size_t(index)) &&
+                std::size_t(index) != scene.editorCamera()) {
+                scene.boxController(camIndex).setSelected(BoxController::kNone);
+                state.setSel(EditorState::SelKind::Camera, index);
+            }
+        }
+        return true;
+    }
+
     if (cmd.rfind("edit.", 0) != 0) return false;  // not ours
     const std::string what = cmd.substr(5);
     // シミュレート設定（edit.sim）だけは全カメラから変えられる。Physics タブ
     // は全ページにあり、隣に並ぶ Solver や Rate は誰でも触れるのに、これだけ
     // 効かないのは分かりにくいため。シーンの中身を書き換える操作ではない。
     if (what != "sim" && !isEditorCam) return true;
+    // ライトとカメラの編集は**エディタモード専用**。オブジェクトの edit.set
+    // などはシミュレート中の物性いじりに使えるが、照明と視点の設計は
+    // エディタの仕事、という整理（ユーザー指定）。
+    if ((what.rfind("light.", 0) == 0 || what.rfind("camera.", 0) == 0) &&
+        !state.isEditor()) {
+        return true;
+    }
 
     // ---- 追加 -------------------------------------------------------------
     if (what == "add") {
@@ -164,6 +204,87 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         EditorState::Op op;
         op.kind = "joint.remove";
         op.args = {{"index", msg.value("index", -1)}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- ライト -------------------------------------------------------------
+    if (what == "light.add") {
+        ed::LightDesc d;
+        d.kind = ed::lightKindFromName(msg.value("kind", "point"), d.kind);
+        if (d.kind == ed::LightKind::Sun) {
+            // 平行光: 位置は光に影響しない（アイコンの置き場）。既定の太陽と
+            // 喧嘩しない控えめな強さで、斜め下向きに。
+            d.intensity = 50000.0;  // lux
+            d.position = {0.0, 4.0, 0.0};
+            d.rotation = {35.0, 30.0, 0.0};
+        } else {
+            // Point / Spot: カメラの正面、少し上に置く。真下向き（回転ゼロ）
+            // なので、Spot はそのまま床を照らすスポットになる。
+            const ed::Vec3d p = placeInFrontOf(scene, camIndex, 0.0);
+            d.position = {p.x, p.y + 2.5, p.z};
+            d.intensity = 300000.0;  // lm
+        }
+        EditorState::Op op;
+        op.kind = "light.add";
+        op.args = ed::toJson(ed::clampLight(d));
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    if (what == "light.set") {
+        const int index = msg.value("index", -1);
+        if (index < 0) return true;
+        // 送られてきたキーだけを積む（lightFromJson が「無いキーは今の値」）。
+        nlohmann::json args;
+        args["index"] = index;
+        for (const char* key : {"name", "kind", "position", "rotation", "color",
+                                "intensity", "falloff", "spotInnerDeg",
+                                "spotOuterDeg", "shadows"}) {
+            if (msg.contains(key)) args[key] = msg[key];
+        }
+        EditorState::Op op;
+        op.kind = "light.set";
+        op.args = std::move(args);
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    if (what == "light.remove") {
+        EditorState::Op op;
+        op.kind = "light.remove";
+        op.args = {{"index", msg.value("index", -1)}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- カメラ -------------------------------------------------------------
+    if (what == "camera.add" || what == "camera.remove") {
+        EditorState::Op op;
+        op.kind = what;
+        if (what == "camera.remove") {
+            op.args = {{"index", msg.value("index", -1)}};
+        }
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    if (what == "camera.set") {
+        const int index = msg.value("index", -1);
+        if (index < 0) return true;
+        nlohmann::json args;
+        args["index"] = index;
+        for (const char* key : {"position", "rotation"}) {
+            if (msg.contains(key)) args[key] = msg[key];
+        }
+        EditorState::Op op;
+        op.kind = "camera.set";
+        op.args = std::move(args);
         op.camera = camIndex;
         state.push(std::move(op));
         return true;

@@ -68,23 +68,71 @@ PhysicsWorld.step(dt)
 - **保存/読込は `assets/scenes/*.json`**（`documentJson()` / `loadDocument()`）。
   保存時にオブジェクト番号を詰め、ジョイントの参照も付け替える。名前は英数字と
   `_ -` だけに正規化（保存先を assets/scenes に固定するため）。
-- **エディタ操作はエディタカメラ（`kEditorCamera`、既定 0）のページ専用**。
-  mode / edit.*（sim を除く）は EditorComponent が、ギズモの pick / drag /
-  hover は GizmoComponent が、他のカメラからのぶんを弾く。UI 側もそのページ
-  以外では Inspector タブを隠しモード切替を無効化するが、**判定はサーバーが
-  持つ**（リクエストは誰でも作れるため）。例外は `edit.sim`（シミュレート
-  設定）: Physics タブは全ページにあり、隣に並ぶ Solver / Rate は誰でも
-  触れるので、これだけ弾くと分かりにくい。
+- **シーンを書き換えるエディタ操作はエディタカメラ（`kEditorCamera`、既定 0）
+  のページ専用**。edit.*（sim を除く）は EditorComponent が、ギズモの pick /
+  drag / hover は GizmoComponent が、他のカメラからのぶんを弾く。UI 側もその
+  ページ以外では Inspector タブを隠すが、**判定はサーバーが持つ**（リクエスト
+  は誰でも作れるため）。例外は 2 つ。`mode`（エディタ⇄シミュレート）は
+  **どのカメラからでも切り替え可** - シーンの中身を書き換える操作ではなく、
+  Camera 1/2 で観察しながら回す・止めるのは普通の使い方のため（エディタ
+  カメラは「編集できる」カメラなだけで、モードを握ってはいない）。
+  `edit.sim`（シミュレート設定）も全カメラ可: Physics タブは全ページにあり、
+  隣に並ぶ Solver / Rate は誰でも触れるので、これだけ弾くと分かりにくい。
+- **ライトとカメラもエディタで編集できる**（追加・削除・位置・向き。
+  **エディタモード×エディタカメラ限定** - edit.light.* / edit.camera.* と
+  select.light / select.camera は EditorComponent が両方の条件で弾く）。
+  ライトは GameObject と同じ「設計値 + 実体番号」（`Scene::LightItem`、
+  `ed::LightDesc`）で Scene が持ち、実体（Filament のライト）の生成・破棄・
+  反映は RENDER スレッドの `syncLights()`。**向きはオイラー角で「ゼロ = 真下
+  (0,-1,0)」**（`scenemath::lightDirection`）。種類・影・減衰・円錐角は
+  Filament のライト実体を決めるので、変更 = 実体の作り直し（`rebuild`）。
+  初期 2 灯は `lightConfigs()`（方向ベクトル表記）を取り込んで編集可能に
+  している。カメラは **`kMaxCameras`（既定 5、exe 引数 `--max-cameras N` で
+  1〜16 に上書き可 - スロット数は実行環境の割り当てなので CPU コア指定と
+  同じく起動引数。main が Scene のコンストラクタへ渡す）個の固定スロット**。
+  ページと
+  WebRTC の受け口は起動時に全部できているが、**動画ビュー（スワップチェーン +
+  読み戻しバッファ）は予備スロットぶんを作り置きせず、「カメラを追加」
+  （またはページ初訪問）の時点で描画スレッドがフレーム境界で生成**する
+  （main.cpp の「動画ビューの遅延生成」。Filament を触れるのはそのスレッド
+  だけなので、生成場所もそこに固定）。一度作ったビューは返さない。
+  「追加 / 削除」は active フラグの上げ下げ（削除したページの URL は
+  生きたまま、一覧から消える）。位置・向きの編集はオービット表現との変換
+  （位置 = 視点ごと平行移動、回転 = pitch/yaw ⇄ elevation/azimuth。
+  `Scene::cameraEditPose` が唯一の定義で、UI の数字・ギズモ・camera.set が
+  揃う。ロールは無い）。**選択は EditorState の editorSel（atomic）**で、
+  オブジェクト選択（BoxController）とは排他 - 立てる側が必ず反対を消す。
+  エディタカメラのビューには**ライト（黄）/ カメラ（水色）の線画アイコン**
+  （GizmoComponent がバッチ 5/6 に毎フレーム構築、エディタ専用レイヤ）が
+  出て、クリックで選択、ギズモで移動 / 回転できる（拡縮は移動に丸める。
+  エディタカメラ自身は選べない）。保存文書は **version 2**（lights /
+  cameras 節が加わった。無い v1 文書は読み込み時に初期構成へリセット）。
 - **System タブで変えた値も保存に映る**。PhysicsControlComponent は
   rate / substeps / solver / envelope / recovery を PhysicsTuning に書くとき、
   同じ値を EditorState の SimSettings にもミラーする。シーン保存はそちらを
   書き出すので、怠ると「見ている物理」と「保存される物理」が食い違う。
 - ブラウザ側のタブは **Scene / Inspector / Physics**（`web/index.html` +
   `app.js` の `renderEditor()`。Inspector の内部 id は `tabEditor` /
-  `paneEditor` のまま）。ビューの下には**アセットパネル**（`#assets`、
+  `paneEditor` のまま）。Inspector の選択オブジェクトは **Unity 風の
+  Transform 行**（`.trRow`、位置 / 回転 / スケールに X/Y/Z の色タグ。id は
+  edPX〜edSZ のまま、スケールは倍率ではなく実寸 m）。**ギズモのモード切替
+  （✥/⟳/⤢ と World⇄Local）と設定の ⚙ は映像左上のツールバー**（`#gizmoBar`、
+  Unity のシーンビュー左上相当）に重ねて出す: `#hit`(z=1) より上の z=2 に
+  置いてクリックを受け、エディタモード×Editor Camera のページでだけ
+  `renderEditor()` が表示する。**Inspector は「選択しているオブジェクトの
+  内容」だけ**: Transform・質量・固定・色に加え、ジョイント節も選択時のみ
+  表示し、一覧は選択が関わるものに絞る（どのジョイントにも地面でない体が
+  必ずあるので、どれかを選べば必ず一覧に届く）。ギズモの数値設定（スナップ・
+  刻み・グリッド）は普段隠れた `secGizmo` 節で、ツールバー右端の ⚙
+  （`gzSettings` → `toggleGizmoSettings()`）が開閉する。ブラウザ内の表示
+  状態だけの話なのでサーバーには送らない。
+  ビューの下には**アセットパネル**（`#assets`、
   `renderAssets()`）: プリミティブ（Box/球）はクリックで配置、保存済み
   シーンはダブルクリックで読込（confirm 付き。読込は現在の配置を置き換える
-  ため）。エディタモード中の Editor Camera ページにだけ出る。見た目と見出しはサイド
+  ため）。見出し下の操作列（`.asBar`）に、新規オブジェクトの初期値
+  （edNewSize / edNewColor）とシーン名・💾保存・🗑全消し（旧 Inspector の
+  配置・シーン節の移設先。読込ボタンと保存済み select は廃止＝タイルが
+  受け持つ）。エディタモード中の Editor Camera ページにだけ出る。見た目と見出しはサイド
   バーの流儀（見出しクリックで折りたたみ）。高さは textarea と同じ右下の
   つまみ（CSS の `resize: vertical`。ドラッグ結果はブラウザが inline style に
   書くだけなので、ResizeObserver で拾って localStorage に記憶・復元する）。

@@ -63,6 +63,21 @@ public:
     // 積み残しの有無（物理スレッドが毎パス見る）。
     bool hasPending() const { return pendingCount_.load() > 0; }
 
+    // ---- エディタ選択（ライト / カメラ）-----------------------------------
+    // オブジェクトの選択は従来どおり BoxController（カメラ毎）が持つ。ここに
+    // 持つのは「エディタカメラがライトかカメラを選んでいる」状態だけ。
+    // オブジェクト選択と同時には立たないよう、立てる側（EditorComponent /
+    // Scene）が反対側を必ず消す。kind と index は別々の atomic なので瞬間的に
+    // 食い違いうるが、読む側は必ず alive / active を確かめるので実害はない。
+    enum class SelKind : int { None = 0, Light = 1, Camera = 2 };
+    void setSel(SelKind kind, int index) {
+        selIndex_.store(index);
+        selKind_.store(int(kind));
+    }
+    void clearSel() { setSel(SelKind::None, -1); }
+    SelKind selKind() const { return SelKind(selKind_.load()); }
+    int selIndex() const { return selIndex_.load(); }
+
     // ---- ジョイント -----------------------------------------------------
     std::vector<wizengine::editor::JointDesc> joints() const;
     void setJoints(std::vector<wizengine::editor::JointDesc> joints);
@@ -111,6 +126,9 @@ public:
 private:
     std::atomic<wizengine::editor::AppMode> mode_{wizengine::editor::AppMode::Simulate};
     std::atomic<int> request_{0};  // 0=なし 1=Editor 2=Simulate
+
+    std::atomic<int> selKind_{0};    // SelKind
+    std::atomic<int> selIndex_{-1};
 
     mutable std::mutex mutex_;
     std::vector<Op> pending_;

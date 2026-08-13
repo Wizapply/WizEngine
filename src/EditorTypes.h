@@ -172,6 +172,58 @@ struct JointDesc {
     double distance = 0.0;  // Distance のみ。0 = 現在の間隔を維持
 };
 
+// ---- ライト -----------------------------------------------------------------
+// Sun は平行光（位置は届く光に影響せず、アイコンの置き場でしかない）、Point は
+// 全方向、Spot は向いた先への円錐。向きは rotation（オイラー角・度）で持ち、
+// 実際の方向ベクトルは「回転ゼロ = 真下 (0,-1,0)」を回したもの
+// （scenemath::lightDirection）。kind / shadows / falloff / 円錐角は Filament の
+// ライト実体を決めるので、変更は実体の作り直し（rebuild）として扱う。
+enum class LightKind { Sun, Point, Spot };
+
+inline const char* lightKindName(LightKind k) {
+    switch (k) {
+        case LightKind::Sun: return "sun";
+        case LightKind::Spot: return "spot";
+        case LightKind::Point: break;
+    }
+    return "point";
+}
+inline LightKind lightKindFromName(const std::string& s, LightKind fallback) {
+    if (s == "sun" || s == "directional") return LightKind::Sun;
+    if (s == "point") return LightKind::Point;
+    if (s == "spot") return LightKind::Spot;
+    return fallback;
+}
+
+// 1 灯の設計値。intensity の単位は Sun がルクス（太陽 ~10万）、Point / Spot が
+// ルーメン（60W 電球 ~800 lm。太陽下のシーンでは驚くほど大きな値が要る）。
+struct LightDesc {
+    std::string name;
+    LightKind kind = LightKind::Point;
+    Vec3d position{0.0, 3.0, 0.0};
+    Vec3d rotation{0.0, 0.0, 0.0};  // オイラー角（度）。ゼロ = 真下を向く
+    Color3 color{1.0f, 1.0f, 1.0f};
+    double intensity = 300000.0;
+    double falloff = 25.0;          // Point/Spot の届く距離 (m)
+    double spotInnerDeg = 25.0;     // Spot: 全力の円錐（半頂角・度）
+    double spotOuterDeg = 35.0;     // Spot: 減衰しきる円錐（半頂角・度）
+    bool shadows = false;
+};
+
+// ---- カメラ -----------------------------------------------------------------
+// 1 台ぶんの姿勢。実体（CameraObject）と同じオービット表現のまま保存する。
+// UI が見せる「位置・向き」へは scene.cpp が変換する（eye = target + radius *
+// 軌道ベクトル、pitch/yaw ⇄ elevation/azimuth）。active=false のスロットは
+// 「削除された」カメラ: エンドポイントは起動時に kMaxCameras ぶん作られるので、
+// 実行中の追加・削除はこのフラグの上げ下げになる。
+struct CameraPose {
+    double azimuth = 0.66;    // ラジアン（Y 軸まわり）
+    double elevation = 0.34;  // ラジアン（水平から上向き）
+    double radius = 12.0;     // 注視点までの距離 (m)
+    Vec3d target{0.0, 1.0, 0.0};
+    bool active = true;
+};
+
 // シミュレート側の設定。ここの値はエディタで編集し、シミュレート開始時に
 // PhysicsWorld へ流し込む（実行中の変更も反映される）。
 struct SimSettings {
@@ -301,6 +353,63 @@ inline JointDesc jointFromJson(const nlohmann::json& j, const JointDesc& base) {
     return jt;
 }
 
+inline nlohmann::json toJson(const LightDesc& l) {
+    nlohmann::json j;
+    j["name"] = l.name;
+    j["kind"] = lightKindName(l.kind);
+    j["position"] = toJson(l.position);
+    j["rotation"] = toJson(l.rotation);
+    j["color"] = colorToHex(l.color);
+    j["intensity"] = l.intensity;
+    j["falloff"] = l.falloff;
+    j["spotInnerDeg"] = l.spotInnerDeg;
+    j["spotOuterDeg"] = l.spotOuterDeg;
+    j["shadows"] = l.shadows;
+    return j;
+}
+
+inline LightDesc lightFromJson(const nlohmann::json& j, const LightDesc& base) {
+    LightDesc l = base;
+    if (!j.is_object()) return l;
+    if (j.contains("name") && j["name"].is_string()) l.name = j["name"];
+    if (j.contains("kind") && j["kind"].is_string()) {
+        l.kind = lightKindFromName(j["kind"], l.kind);
+    }
+    l.position = vec3FromJson(j.value("position", nlohmann::json()), l.position);
+    l.rotation = vec3FromJson(j.value("rotation", nlohmann::json()), l.rotation);
+    if (j.contains("color") && j["color"].is_string()) {
+        l.color = colorFromHex(j["color"], l.color);
+    }
+    l.intensity = j.value("intensity", l.intensity);
+    l.falloff = j.value("falloff", l.falloff);
+    l.spotInnerDeg = j.value("spotInnerDeg", l.spotInnerDeg);
+    l.spotOuterDeg = j.value("spotOuterDeg", l.spotOuterDeg);
+    l.shadows = j.value("shadows", l.shadows);
+    return l;
+}
+
+inline nlohmann::json toJson(const CameraPose& c) {
+    nlohmann::json j;
+    j["azimuth"] = c.azimuth;
+    j["elevation"] = c.elevation;
+    j["radius"] = c.radius;
+    j["target"] = toJson(c.target);
+    j["active"] = c.active;
+    return j;
+}
+
+inline CameraPose cameraPoseFromJson(const nlohmann::json& j,
+                                     const CameraPose& base) {
+    CameraPose c = base;
+    if (!j.is_object()) return c;
+    c.azimuth = j.value("azimuth", c.azimuth);
+    c.elevation = j.value("elevation", c.elevation);
+    c.radius = j.value("radius", c.radius);
+    c.target = vec3FromJson(j.value("target", nlohmann::json()), c.target);
+    c.active = j.value("active", c.active);
+    return c;
+}
+
 inline nlohmann::json toJson(const SimSettings& s) {
     nlohmann::json j;
     j["gravity"] = s.gravity;
@@ -404,6 +513,21 @@ inline BodyDesc clampBody(BodyDesc b) {
     b.position.y = cl(b.position.y, -500.0, 500.0);
     b.position.z = cl(b.position.z, -500.0, 500.0);
     return b;
+}
+
+// ライトの常識的な範囲。0 やマイナスの強さ・範囲は Filament 側で意味を持たない。
+inline LightDesc clampLight(LightDesc l) {
+    auto cl = [](double v, double lo, double hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
+    };
+    l.position.x = cl(l.position.x, -500.0, 500.0);
+    l.position.y = cl(l.position.y, -500.0, 500.0);
+    l.position.z = cl(l.position.z, -500.0, 500.0);
+    l.intensity = cl(l.intensity, 0.0, 10000000.0);
+    l.falloff = cl(l.falloff, 0.1, 500.0);
+    l.spotInnerDeg = cl(l.spotInnerDeg, 1.0, 88.0);
+    l.spotOuterDeg = cl(l.spotOuterDeg, l.spotInnerDeg, 89.0);
+    return l;
 }
 
 }  // namespace editor

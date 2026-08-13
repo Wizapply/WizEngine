@@ -97,6 +97,80 @@ ChVector3d jitter() {
     return ChVector3d(d(rng), d(rng), d(rng));
 }
 
+// ---- ライト -----------------------------------------------------------------
+constexpr double kRadToDeg = 180.0 / scenemath::kPi;
+constexpr double kDegToRad = scenemath::kPi / 180.0;
+
+// SceneConfig.h の LightObject::Config（方向ベクトルで書く従来の設定）を
+// エディタの設計値（向きはオイラー角）へ。初期ライトの取り込みに使う。
+ed::LightDesc lightDescFromConfig(const LightObject::Config& c) {
+    ed::LightDesc d;
+    switch (c.type) {
+        case LightObject::Type::Directional: d.kind = ed::LightKind::Sun; break;
+        case LightObject::Type::Spot: d.kind = ed::LightKind::Spot; break;
+        case LightObject::Type::Point: d.kind = ed::LightKind::Point; break;
+    }
+    d.color = {c.color.x, c.color.y, c.color.z};
+    d.intensity = c.intensity;
+    d.position = {c.position.x, c.position.y, c.position.z};
+    const scenemath::Vec3 e = scenemath::eulerDegreesFromDirection(
+        scenemath::Vec3(c.direction.x, c.direction.y, c.direction.z));
+    d.rotation = {e.x(), e.y(), e.z()};
+    d.falloff = c.falloffRadius;
+    d.spotInnerDeg = c.spotInnerRadians * kRadToDeg;
+    d.spotOuterDeg = c.spotOuterRadians * kRadToDeg;
+    d.shadows = c.castShadows;
+    return d;
+}
+
+// エディタの設計値をレンダラの語彙へ（向きはここでベクトルに戻す）。
+wizengine::LightDesc toRendererLight(const ed::LightDesc& d) {
+    wizengine::LightDesc r;
+    switch (d.kind) {
+        case ed::LightKind::Sun:
+            r.type = wizengine::LightDesc::Type::Directional;
+            break;
+        case ed::LightKind::Spot:
+            r.type = wizengine::LightDesc::Type::Spot;
+            break;
+        case ed::LightKind::Point:
+            r.type = wizengine::LightDesc::Type::Point;
+            break;
+    }
+    r.color = {d.color.r, d.color.g, d.color.b};
+    r.intensity = float(d.intensity);
+    const scenemath::Vec3 dir =
+        scenemath::lightDirection(d.rotation.x, d.rotation.y, d.rotation.z);
+    r.direction = {float(dir.x()), float(dir.y()), float(dir.z())};
+    r.position = {float(d.position.x), float(d.position.y),
+                  float(d.position.z)};
+    r.castShadows = d.shadows;
+    r.falloffRadius = float(d.falloff);
+    r.spotInnerRadians = float(d.spotInnerDeg * kDegToRad);
+    r.spotOuterRadians = float(d.spotOuterDeg * kDegToRad);
+    return r;
+}
+
+// ---- カメラの姿勢表現 -------------------------------------------------------
+// CameraObject はオービット（方位角・仰角・距離・注視点）。UI とギズモは
+// 「位置（視点）と向き（pitch/yaw 度）」で扱うので、ここで相互変換する。
+// 視線 f = target - eye の仰角は -elevation、水平角は azimuth + 180°。
+double cameraPitchDeg(const CameraObject& c) {
+    return -c.elevation() * kRadToDeg;
+}
+double cameraYawDeg(const CameraObject& c) {
+    double yaw = c.azimuth() * kRadToDeg + 180.0;
+    while (yaw > 180.0) yaw -= 360.0;
+    while (yaw < -180.0) yaw += 360.0;
+    return yaw;
+}
+// 方位角・仰角から「注視点 → 視点」の単位ベクトル（eye = target + radius*v）。
+scenemath::Vec3 orbitVector(double azimuthRad, double elevationRad) {
+    return scenemath::Vec3(std::cos(elevationRad) * std::sin(azimuthRad),
+                           std::sin(elevationRad),
+                           std::cos(elevationRad) * std::cos(azimuthRad));
+}
+
 }  // namespace
 
 namespace {
@@ -238,6 +312,9 @@ public:
                             scene.objectAlive(std::size_t(idx));
             scene.boxController(cam).setSelected(ok ? std::size_t(idx)
                                                     : BoxController::kNone);
+            // オブジェクトを選んだら、ライト / カメラのエディタ選択は外す
+            // （両方が同時に立つとギズモの対象が曖昧になる）。
+            if (cam == scene.editorCamera()) scene.editor().clearSel();
             return true;
         }
         return false;
@@ -443,49 +520,70 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     // モデル名だけ（インスペクタが「Model (apple2.glb)」と出すのに使う）。
     j["model"] = useModel_ ? kBoxModelPath : "";
 
-    // Cameras, with what each one currently holds.
+    // ここからライト・カメラ有効フラグ・オブジェクト一覧を読むのでロックする
+    // （物理スレッドが追加・削除している最中かもしれない）。ロック順は
+    // objects → editor → poses の一方向（CLAUDE.md の規約）。
+    std::unique_lock<std::mutex> lk(objectsMutex_);
+
+    // Cameras, with what each one currently holds. 無効（削除済み）スロットも
+    // active=false で送る: ブラウザ側が一覧から隠す判断に使う。
     for (std::size_t c = 0; c < cameras_.size(); ++c) {
         nlohmann::json e;
         e["index"] = int(c);
         e["color"] = hex(cameraColor(c));
+        e["active"] = camerasActive_[c] != 0;
         const std::size_t sel = controllers_[c]->selected();
         e["selected"] = (sel == BoxController::kNone) ? -1 : int(sel);
         j["cameras"].push_back(e);
     }
 
-    // Lights, so the hierarchy shows the scene's lighting alongside the
-    // objects. LightObject's getters are atomics, so reading them from this
-    // (HTTP) thread is safe.
+    // Lights。エディタで選ぶ・編集するので、設計値を番号付きで送る。
+    const auto selKind = editor_.selKind();
+    const int selIndex = editor_.selIndex();
+    j["lights"] = nlohmann::json::array();
     for (std::size_t i = 0; i < lights_.size(); ++i) {
-        const LightObject& l = *lights_[i];
-        nlohmann::json e;
+        if (!lights_[i].alive) continue;  // 削除済みは出さない（番号は空く）
+        nlohmann::json e = ed::toJson(lights_[i].desc);
         e["index"] = int(i);
-        const char* type = "directional";
-        switch (l.config().type) {
-            case LightObject::Type::Directional: type = "directional"; break;
-            case LightObject::Type::Point: type = "point"; break;
-            case LightObject::Type::Spot: type = "spot"; break;
-        }
-        e["type"] = type;
-        e["color"] = hex(l.color());
-        e["intensity"] = l.intensity();
-        const auto d = l.direction();
-        e["dx"] = d.x;
-        e["dy"] = d.y;
-        e["dz"] = d.z;
-        const auto p = l.position();
-        e["x"] = p.x;
-        e["y"] = p.y;
-        e["z"] = p.z;
-        e["shadows"] = l.config().castShadows;
         j["lights"].push_back(e);
+    }
+
+    // ---- エディタ選択（ライト / カメラ）----------------------------------
+    // オブジェクトの選択（下の "selected"）とは別枠。UI はこちらが立っていれば
+    // ライト / カメラのインスペクタを出す。
+    {
+        nlohmann::json s;
+        s["kind"] = selKind == EditorState::SelKind::Light    ? "light"
+                    : selKind == EditorState::SelKind::Camera ? "camera"
+                                                              : "none";
+        s["index"] = selIndex;
+        j["editorSel"] = s;
+        if (selKind == EditorState::SelKind::Light && selIndex >= 0 &&
+            std::size_t(selIndex) < lights_.size() &&
+            lights_[std::size_t(selIndex)].alive) {
+            nlohmann::json d = ed::toJson(lights_[std::size_t(selIndex)].desc);
+            d["index"] = selIndex;
+            j["selectedLight"] = d;
+        }
+        if (selKind == EditorState::SelKind::Camera && selIndex >= 0 &&
+            std::size_t(selIndex) < cameras_.size() &&
+            camerasActive_[std::size_t(selIndex)] != 0) {
+            ed::Vec3d pos, rot;
+            cameraEditPose(std::size_t(selIndex), pos, rot);
+            nlohmann::json d;
+            d["index"] = selIndex;
+            d["position"] = ed::toJson(pos);
+            d["rotation"] = ed::toJson(rot);
+            d["radius"] = cameras_[std::size_t(selIndex)]->radius();
+            j["selectedCamera"] = d;
+        }
     }
 
     // Objects. Positions come from the shared pose snapshot, so this never
     // touches the physics world from the HTTP thread.
     std::vector<BodyTransform> poses;
     {
-        std::lock_guard<std::mutex> lk(poseMutex_);
+        std::lock_guard<std::mutex> pl(poseMutex_);
         poses = latestPoses_;
     }
 
@@ -509,10 +607,6 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             j["joints"].push_back(e);
         }
     }
-
-    // ここから先はオブジェクト一覧を読むのでロックする（物理スレッドが
-    // 追加・削除している最中かもしれない）。
-    std::unique_lock<std::mutex> lk(objectsMutex_);
 
     // Who (if anyone) is holding each object, so the list can colour it.
     std::vector<int> heldBy(boxes_.size(), -1);
@@ -569,17 +663,32 @@ bool Scene::dispatchCommand(std::size_t camIndex, const nlohmann::json& msg) {
     return false;
 }
 
-Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer)
+Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
+             std::size_t maxCameras)
     : physics_(physics), renderer_(renderer) {
-    for (const auto& cfg : cameraConfigs()) {
+    // スロット数: exe 引数（--max-cameras、0 = 未指定）が優先、無ければ
+    // SceneConfig.h の kMaxCameras。カメラ 0（エディタカメラ）は必ず要るので
+    // 1 未満にはしない。極端な値はページ・受け口・スレッドを無駄に増やす
+    // だけなので 16 で止める。
+    std::size_t slots = maxCameras > 0 ? maxCameras : kMaxCameras;
+    if (slots < 1) slots = 1;
+    if (slots > 16) {
+        LOGW("scene", "max cameras %zu is excessive - clamped to 16", slots);
+        slots = 16;
+    }
+    // cameraConfigs() のぶんが最初から有効で（スロット数を超えるぶんは
+    // 落とす）、残りは「カメラを追加」で有効になるまで一覧に出ない予備。
+    const auto cfgs = cameraConfigs();
+    for (std::size_t i = 0; i < slots; ++i) {
+        const CameraObject::Config cfg =
+            (i < cfgs.size()) ? cfgs[i] : cfgs.empty() ? CameraObject::Config{}
+                                                       : cfgs[0];
         cameras_.push_back(std::make_unique<CameraObject>(cfg));
         // One controller per camera; they act on the same bodies but hold
         // separate selections.
         controllers_.push_back(
             std::make_unique<BoxController>(boxControllerConfig()));
-    }
-    for (const auto& cfg : lightConfigs()) {
-        lights_.push_back(std::make_unique<LightObject>(cfg));
+        camerasActive_.push_back(i < cfgs.size() ? 1 : 0);
     }
     // ギズモが最初。pick / drag をカメラやグラブより先に見て、ハンドルに
     // 当たっていればそこで止める（選択し直しや自由移動をさせないため）。
@@ -630,6 +739,10 @@ std::size_t Scene::pickBoxAt(double ndcX, double ndcY,
     }
     lk.unlock();
 
+    // エディタカメラの pick はオブジェクト選択（または空クリック）なので、
+    // ライト / カメラのエディタ選択はここで外れる。アイコンに当たった pick は
+    // GizmoComponent が先に消費していて、ここへは来ない。
+    if (cameraIndex == editorCamera()) editor_.clearSel();
     controllers_[cameraIndex]->setSelected(best);
     return best;
 }
@@ -761,10 +874,13 @@ void Scene::build() {
     // when it cannot read what it was given, so a file added to the scene
     // config later is validated by the same path automatically.
 
-    // Create the scene's lights in the renderer. Single-threaded here, like
-    // the rest of build(); after this the LightObjects are live and their
-    // state is pushed every frame from applyToRenderer().
-    for (auto& l : lights_) l->attachTo(renderer_);
+    // シーンの初期ライトを編集可能な設計値として取り込む。実体（Filament の
+    // ライト）は RENDER スレッドが最初の applyToRenderer（syncLights）で作る。
+    for (const auto& cfg : lightConfigs()) {
+        LightItem item;
+        item.desc = lightDescFromConfig(cfg);
+        lights_.push_back(item);
+    }
 
     if (kEnvironmentHdr[0] != '\0') {
         renderer_.loadEnvironment(kEnvironmentHdr, kEnvironmentIntensity);
@@ -942,6 +1058,9 @@ void Scene::enterMode(ed::AppMode target) {
     }
     snapshot();
     editor_.setMode(target);
+    // ライト / カメラの編集はエディタモード専用なので、シミュレートに入る
+    // ときは選択も畳む（アイコンも消えるため、選択だけ残ると分かりにくい）。
+    if (target == ed::AppMode::Simulate) editor_.clearSel();
     editor_.setStatus(target == ed::AppMode::Simulate ? "シミュレート開始"
                                                       : "エディタに戻りました");
     LOGI("editor", "mode -> %s", ed::modeName(target));
@@ -1092,6 +1211,129 @@ void Scene::rebuildBody(std::size_t index) {
     obj.renderDirty = true;  // メッシュも作り直す（球↔箱が変わりうる）
 }
 
+// ---- ライトの編集（PHYSICS スレッド）---------------------------------------
+
+std::size_t Scene::createLight(const ed::LightDesc& descIn) {
+    LightItem item;
+    item.desc = ed::clampLight(descIn);
+    std::lock_guard<std::mutex> lk(objectsMutex_);
+    lights_.push_back(item);
+    return lights_.size() - 1;
+}
+
+void Scene::destroyLight(std::size_t index) {
+    if (index >= lights_.size() || !lights_[index].alive) return;
+    {
+        std::lock_guard<std::mutex> lk(objectsMutex_);
+        lights_[index].alive = false;
+        // renderId はそのまま。実体の破棄は RENDER スレッド（syncLights）。
+    }
+    if (editor_.selKind() == EditorState::SelKind::Light &&
+        editor_.selIndex() == int(index)) {
+        editor_.clearSel();
+    }
+}
+
+void Scene::moveLight(std::size_t index, double x, double y, double z) {
+    if (index >= lights_.size() || !lights_[index].alive) return;
+    std::lock_guard<std::mutex> lk(objectsMutex_);
+    lights_[index].desc.position = {x, y, z};
+    lights_[index].stateDirty = true;
+}
+
+void Scene::rotateLight(std::size_t index, double rx, double ry, double rz) {
+    if (index >= lights_.size() || !lights_[index].alive) return;
+    std::lock_guard<std::mutex> lk(objectsMutex_);
+    lights_[index].desc.rotation = {rx, ry, rz};
+    lights_[index].stateDirty = true;
+}
+
+// ---- カメラの編集（PHYSICS スレッド。CameraObject は atomic なので即時）----
+
+void Scene::moveCamera(std::size_t index, double x, double y, double z) {
+    if (index >= cameras_.size() || !cameraActive(index)) return;
+    CameraObject& c = *cameras_[index];
+    // 平行移動: 向きと距離は保つ。eye = target + radius*v なので、
+    // 新しい target は新しい eye から同じぶんだけ引いた位置。
+    const scenemath::Vec3 v = orbitVector(c.azimuth(), c.elevation());
+    const double r = c.radius();
+    c.setTarget(x - r * v.x(), y - r * v.y(), z - r * v.z());
+}
+
+void Scene::rotateCamera(std::size_t index, double pitchDeg, double yawDeg) {
+    if (index >= cameras_.size() || !cameraActive(index)) return;
+    CameraObject& c = *cameras_[index];
+    // その場で向きだけ変える: eye を固定し、注視点を回した先へ置き直す。
+    const auto eye = c.eye();
+    c.setPose((yawDeg - 180.0) * kDegToRad, -pitchDeg * kDegToRad, c.radius());
+    // setPose は仰角をクランプするので、実際に入った値で target を計算する。
+    const scenemath::Vec3 v = orbitVector(c.azimuth(), c.elevation());
+    const double r = c.radius();
+    c.setTarget(eye.x - r * v.x(), eye.y - r * v.y(), eye.z - r * v.z());
+}
+
+void Scene::cameraEditPose(std::size_t index, ed::Vec3d& pos,
+                           ed::Vec3d& rot) const {
+    if (index >= cameras_.size()) return;
+    const CameraObject& c = *cameras_[index];
+    const auto eye = c.eye();
+    pos = {eye.x, eye.y, eye.z};
+    rot = {cameraPitchDeg(c), cameraYawDeg(c), 0.0};
+}
+
+// ---- 初期値へのリセット（clear と、古い保存文書の読み込み）------------------
+
+void Scene::resetLightsToDefaults() {
+    std::lock_guard<std::mutex> lk(objectsMutex_);
+    for (auto& l : lights_) l.alive = false;  // 実体の片付けは syncLights
+    for (const auto& cfg : lightConfigs()) {
+        LightItem item;
+        item.desc = lightDescFromConfig(cfg);
+        lights_.push_back(item);
+    }
+}
+
+void Scene::resetCamerasToDefaults() {
+    const auto cfgs = cameraConfigs();
+    std::lock_guard<std::mutex> lk(objectsMutex_);
+    for (std::size_t i = 0; i < cameras_.size(); ++i) {
+        const CameraObject::Config cfg =
+            (i < cfgs.size()) ? cfgs[i] : cfgs.empty() ? CameraObject::Config{}
+                                                       : cfgs[0];
+        cameras_[i]->setPose(cfg.azimuth, cfg.elevation, cfg.radius);
+        cameras_[i]->setTarget(cfg.targetX, cfg.targetY, cfg.targetZ);
+        camerasActive_[i] = (i < cfgs.size()) ? 1 : 0;
+    }
+    camerasActive_[editorCamera()] = 1;  // エディタカメラは常に居る
+}
+
+// RENDER スレッド。実体の無いライトを作り、消されたもの・作り直しが要る
+// ものを片付ける。applyToRenderer からロック済みで呼ばれる。
+void Scene::syncLights() {
+    for (auto& l : lights_) {
+        const bool wantRelease = (!l.alive || l.rebuild) &&
+                                 l.renderId != GameObject::kInvalidId;
+        if (wantRelease) {
+            renderer_.removeLight(l.renderId);
+            l.renderId = GameObject::kInvalidId;
+        }
+        l.rebuild = false;
+        if (!l.alive) continue;
+
+        if (l.renderId == GameObject::kInvalidId) {
+            l.renderId = renderer_.addLight(toRendererLight(l.desc));
+            l.stateDirty = false;
+            continue;
+        }
+        if (l.stateDirty) {
+            const wizengine::LightDesc r = toRendererLight(l.desc);
+            renderer_.updateLight(l.renderId, r.color, r.intensity,
+                                  r.direction, r.position);
+            l.stateDirty = false;
+        }
+    }
+}
+
 void Scene::applyPendingEdits() {
     // モード切替が先。オブジェクトの増減より前に済ませておくと、切替直後の
     // 操作が新しいモードの規則で処理される。
@@ -1111,6 +1353,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         if (op.camera < controllers_.size()) {
             controllers_[op.camera]->setSelected(index);
         }
+        editor_.clearSel();  // ライト / カメラの選択とは排他
         editor_.setStatus("オブジェクトを追加: #" + std::to_string(index));
         snapshot();
         return;
@@ -1137,6 +1380,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         if (op.camera < controllers_.size()) {
             controllers_[op.camera]->setSelected(made);
         }
+        editor_.clearSel();
         editor_.setStatus("複製: #" + std::to_string(index) + " -> #" +
                           std::to_string(made));
         snapshot();
@@ -1239,6 +1483,115 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         return;
     }
 
+    // ---- ライト -----------------------------------------------------------
+    if (op.kind == "light.add") {
+        const std::size_t index = createLight(ed::lightFromJson(a, ed::LightDesc{}));
+        // 追加したライトを選択にして、すぐギズモ / インスペクタで動かせるように。
+        if (op.camera < controllers_.size()) {
+            controllers_[op.camera]->setSelected(BoxController::kNone);
+        }
+        editor_.setSel(EditorState::SelKind::Light, int(index));
+        editor_.setStatus("ライトを追加: #" + std::to_string(index));
+        return;
+    }
+
+    if (op.kind == "light.set") {
+        const int index = a.value("index", -1);
+        if (index < 0 || std::size_t(index) >= lights_.size() ||
+            !lights_[std::size_t(index)].alive) {
+            return;
+        }
+        LightItem& l = lights_[std::size_t(index)];
+        const ed::LightDesc before = l.desc;
+        const ed::LightDesc next = ed::clampLight(ed::lightFromJson(a, before));
+        // 種類・影・減衰・円錐角は Filament のライト実体を決めるので作り直し。
+        // それ以外（色・強さ・位置・向き）は実体を保ったまま流し込める。
+        const bool rebuild = next.kind != before.kind ||
+                             next.shadows != before.shadows ||
+                             next.falloff != before.falloff ||
+                             next.spotInnerDeg != before.spotInnerDeg ||
+                             next.spotOuterDeg != before.spotOuterDeg;
+        std::lock_guard<std::mutex> lk(objectsMutex_);
+        l.desc = next;
+        l.stateDirty = true;
+        if (rebuild) l.rebuild = true;
+        return;
+    }
+
+    if (op.kind == "light.remove") {
+        const int index = a.value("index", -1);
+        if (index < 0 || std::size_t(index) >= lights_.size()) return;
+        destroyLight(std::size_t(index));
+        editor_.setStatus("ライトを削除: #" + std::to_string(index));
+        return;
+    }
+
+    // ---- カメラ -----------------------------------------------------------
+    if (op.kind == "camera.add") {
+        // 空きスロット（削除済み or 予備）を有効化する。エンドポイントは
+        // 起動時に全スロットぶん作ってあるので、ページはもう存在している。
+        std::size_t slot = cameras_.size();
+        for (std::size_t i = 0; i < cameras_.size(); ++i) {
+            if (!cameraActive(i)) { slot = i; break; }
+        }
+        if (slot >= cameras_.size()) {
+            editor_.setStatus("カメラはこれ以上増やせません（最大 " +
+                              std::to_string(cameras_.size()) + "）");
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            camerasActive_[slot] = 1;
+        }
+        // 置き場所: 既定の見下ろし位置を、スロットごとに向きを変えて。
+        cameras_[slot]->setPose(0.66 + 1.1 * double(slot), 0.30, 10.0);
+        cameras_[slot]->setTarget(0.0, 1.0, 0.0);
+        editor_.setSel(EditorState::SelKind::Camera, int(slot));
+        if (op.camera < controllers_.size()) {
+            controllers_[op.camera]->setSelected(BoxController::kNone);
+        }
+        editor_.setStatus("カメラ " + std::to_string(slot) +
+                          " を追加（/cam" + std::to_string(slot) + "/）");
+        return;
+    }
+
+    if (op.kind == "camera.set") {
+        const int index = a.value("index", -1);
+        if (index < 0 || std::size_t(index) >= cameras_.size() ||
+            !cameraActive(std::size_t(index))) {
+            return;
+        }
+        if (a.contains("position")) {
+            const ed::Vec3d p = ed::vec3FromJson(a["position"], ed::Vec3d{});
+            moveCamera(std::size_t(index), p.x, p.y, p.z);
+        }
+        if (a.contains("rotation")) {
+            const ed::Vec3d r = ed::vec3FromJson(a["rotation"], ed::Vec3d{});
+            rotateCamera(std::size_t(index), r.x, r.y);
+        }
+        return;
+    }
+
+    if (op.kind == "camera.remove") {
+        const int index = a.value("index", -1);
+        if (index < 0 || std::size_t(index) >= cameras_.size()) return;
+        if (std::size_t(index) == editorCamera()) {
+            editor_.setStatus("Editor Camera は削除できません");
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            camerasActive_[std::size_t(index)] = 0;
+        }
+        controllers_[std::size_t(index)]->setSelected(BoxController::kNone);
+        if (editor_.selKind() == EditorState::SelKind::Camera &&
+            editor_.selIndex() == index) {
+            editor_.clearSel();
+        }
+        editor_.setStatus("カメラ " + std::to_string(index) + " を削除");
+        return;
+    }
+
     if (op.kind == "sim") {
         editor_.setSim(ed::clampSim(ed::simFromJson(a, editor_.sim())));
         applySimSettings();
@@ -1251,6 +1604,10 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         editor_.setJoints({});
         for (std::size_t i = 0; i < boxes_.size(); ++i) destroyObject(i);
         for (auto& c : controllers_) c->setSelected(BoxController::kNone);
+        // ライトとカメラも初期状態へ（真っ暗なシーンから始めさせない）。
+        resetLightsToDefaults();
+        resetCamerasToDefaults();
+        editor_.clearSel();
         editor_.setSceneFile("");
         editor_.setStatus("シーンを空にしました");
         snapshot();
@@ -1298,8 +1655,30 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
 nlohmann::json Scene::documentJson() const {
     nlohmann::json doc;
     doc["format"] = "wizengine-scene";
-    doc["version"] = 1;
+    // version 2: lights / cameras が加わった。v1（無印）の文書も読める
+    // （欠けている節は初期値へリセットされる。loadDocument を参照）。
+    doc["version"] = 2;
     doc["sim"] = ed::toJson(editor_.sim());
+
+    // ライト（削除済みは詰める。オブジェクトと違い番号参照が無いので安全）。
+    doc["lights"] = nlohmann::json::array();
+    for (const auto& l : lights_) {
+        if (l.alive) doc["lights"].push_back(ed::toJson(l.desc));
+    }
+
+    // カメラ（全スロット、姿勢と有効フラグ。スロット番号 = 配列位置）。
+    doc["cameras"] = nlohmann::json::array();
+    for (std::size_t i = 0; i < cameras_.size(); ++i) {
+        ed::CameraPose p;
+        p.azimuth = cameras_[i]->azimuth();
+        p.elevation = cameras_[i]->elevation();
+        p.radius = cameras_[i]->radius();
+        const auto t = cameras_[i]->target();
+        p.target = {t.x, t.y, t.z};
+        p.active = camerasActive_[i] != 0;
+        doc["cameras"].push_back(ed::toJson(p));
+    }
+
     doc["objects"] = nlohmann::json::array();
     // 保存では番号を詰める。読み込み側は 0 から順に作るので、ジョイントの
     // 参照も詰めた番号に付け替える必要がある。
@@ -1333,6 +1712,38 @@ void Scene::loadDocument(const nlohmann::json& doc) {
     editor_.setJoints({});
     for (std::size_t i = 0; i < boxes_.size(); ++i) destroyObject(i);
     for (auto& c : controllers_) c->setSelected(BoxController::kNone);
+    editor_.clearSel();
+
+    // ライト。文書に無ければ（v1 の保存）初期構成へ戻す - 読み込んだシーンが
+    // 保存時と同じ見た目になるのが原則で、v1 の保存時は必ず初期構成だった。
+    if (doc.contains("lights") && doc["lights"].is_array()) {
+        {
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            for (auto& l : lights_) l.alive = false;
+        }
+        for (const auto& lj : doc["lights"]) {
+            createLight(ed::lightFromJson(lj, ed::LightDesc{}));
+        }
+    } else {
+        resetLightsToDefaults();
+    }
+
+    // カメラ。配列位置 = スロット番号。無い文書は初期構成へ。
+    if (doc.contains("cameras") && doc["cameras"].is_array()) {
+        const auto& arr = doc["cameras"];
+        std::lock_guard<std::mutex> lk(objectsMutex_);
+        for (std::size_t i = 0; i < cameras_.size(); ++i) {
+            if (i >= arr.size()) { camerasActive_[i] = 0; continue; }
+            const ed::CameraPose p =
+                ed::cameraPoseFromJson(arr[i], ed::CameraPose{});
+            cameras_[i]->setPose(p.azimuth, p.elevation, p.radius);
+            cameras_[i]->setTarget(p.target.x, p.target.y, p.target.z);
+            camerasActive_[i] = p.active ? 1 : 0;
+        }
+        camerasActive_[editorCamera()] = 1;  // エディタカメラは常に居る
+    } else {
+        resetCamerasToDefaults();
+    }
 
     if (doc.contains("sim")) {
         editor_.setSim(ed::clampSim(ed::simFromJson(doc["sim"], editor_.sim())));
@@ -1421,9 +1832,9 @@ void Scene::applyToRenderer() {
     // onRender も同じ一覧を読むので、個々のアクセサはロックを取らない。
     std::unique_lock<std::mutex> lk(objectsMutex_);
     syncRenderables();
+    syncLights();
 
     for (auto& c : components_) c->onRender(*this);
-    for (auto& l : lights_) l->applyTo(renderer_);
 
     std::vector<BodyTransform> poses;
     {

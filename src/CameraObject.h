@@ -45,6 +45,17 @@ public:
     void pan(double dxPixels, double dyPixels);          // mouse drag (target)
     void zoom(double wheelDelta);                        // exponential
 
+    // ANY thread（エディタのカメラ編集用）------------------------------------
+    // オービット状態の読み書き。各フィールドは独立した atomic なので、途中で
+    // 別スレッドが読んでも 1 フレーム古い成分が混ざるだけ（カメラには無害）。
+    // setPose は elevation / radius を Config の範囲へクランプする。
+    double azimuth() const { return azim_.load(); }
+    double elevation() const { return elev_.load(); }
+    double radius() const { return radius_.load(); }
+    void setPose(double azimuthRad, double elevationRad, double radiusMetres);
+    void setTarget(double x, double y, double z);
+    const Config& config() const { return cfg_; }
+
     // RENDER thread --------------------------------------------------------
     // Computes eye/target from the current state and sets them on the given
     // renderer view (one view per camera).

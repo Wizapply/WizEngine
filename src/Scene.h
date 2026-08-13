@@ -12,7 +12,6 @@
 #include "CameraObject.h"
 #include "EditorState.h"
 #include "EditorTypes.h"
-#include "LightObject.h"
 #include "GameObject.h"
 #include "SceneComponent.h"
 #include "PhysicsWorld.h"  // for BodyTransform
@@ -52,13 +51,24 @@ PhysicsBackend scenePhysicsBackend();
 
 class Scene {
 public:
-    Scene(PhysicsWorld& physics, wizengine::Renderer& renderer);
+    // maxCameras はカメラスロットの数（0 = SceneConfig.h の kMaxCameras）。
+    // exe 引数 --max-cameras から来る。ページ・受け口はこの数だけ用意され、
+    // エディタの「カメラを追加」もこの数まで（1〜16 に丸める）。
+    Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
+          std::size_t maxCameras = 0);
 
     // The scene's cameras. Each one has its own Filament view and its own
     // browser endpoint; index 0 is the default camera. Input events are routed
     // to one of these (input thread); the render loop draws each in turn.
+    // スロットは kMaxCameras 個の固定プールで、エディタの追加・削除は
+    // cameraActive の上げ下げ（エンドポイントは起動時に全部できている）。
     CameraObject& camera(std::size_t index = 0) { return *cameras_[index]; }
     std::size_t cameraCount() const { return cameras_.size(); }
+    // 「削除」されたスロットは false。書くのは物理スレッド（camera.add/remove
+    // の Op）。他のスレッドから読むときは lockObjects() を先に取る。
+    bool cameraActive(std::size_t index) const {
+        return index < camerasActive_.size() && camerasActive_[index] != 0;
+    }
 
     // One grab/push component per camera, so each viewer holds and drives its
     // own object without fighting over a shared selection.
@@ -66,11 +76,23 @@ public:
         return *controllers_[cameraIndex];
     }
 
-    // The scene's lights, in lightConfigs() order (scene.cpp). Change their
-    // position/direction/colour/intensity from anywhere; the render loop
-    // pushes the state to the renderer once per frame.
-    LightObject& light(std::size_t index = 0) { return *lights_[index]; }
+    // ---- ライト ------------------------------------------------------------
+    // GameObject と同じ「設計値 + 実体番号」の対。書くのは物理スレッド
+    // （light.* の Op とギズモのドラッグ）、実体（Filament のライト）の生成・
+    // 破棄・反映は RENDER スレッド（syncLights）。構造を他スレッドから読む
+    // ときは lockObjects()。ライトに物理は無いので Chrono には触らない。
+    struct LightItem {
+        wizengine::editor::LightDesc desc;
+        std::size_t renderId = GameObject::kInvalidId;
+        bool alive = true;
+        bool stateDirty = true;  // 色・強さ・位置・向きの変更（実体は保つ）
+        bool rebuild = false;    // 種類・影・減衰・円錐角: 実体を作り直す
+    };
     std::size_t lightCount() const { return lights_.size(); }
+    LightItem& lightItem(std::size_t i) { return lights_[i]; }
+    bool lightAlive(std::size_t i) const {
+        return i < lights_.size() && lights_[i].alive;
+    }
 
     // Pick the object under a screen position, given in normalised device
     // coords (x, y in [-1, 1], y up), through the given camera. Selects it (or
@@ -132,7 +154,26 @@ public:
     // physDirty を立てるだけにして、シミュレート開始時にまとめて反映する。
     void rotateObject(std::size_t index, double rx, double ry, double rz);
     void resizeObject(std::size_t index, double sx, double sy, double sz);
-    // 保存用のシーン文書（オブジェクト・ジョイント・設定）。PHYSICS thread。
+
+    // ---- ライト・カメラの編集（PHYSICS thread）----------------------------
+    // ライトは設計値を書き換えるだけ（実体への反映は syncLights）。カメラは
+    // CameraObject の atomic を書くので即座に効く。
+    std::size_t createLight(const wizengine::editor::LightDesc& desc);
+    void destroyLight(std::size_t index);
+    void moveLight(std::size_t index, double x, double y, double z);
+    void rotateLight(std::size_t index, double rx, double ry, double rz);
+    // カメラの平行移動（視点をこの位置へ、向き・距離は保つ）と、その場での
+    // 向き変え（pitch/yaw 度。orbit 表現なのでロールは無い）。
+    void moveCamera(std::size_t index, double x, double y, double z);
+    void rotateCamera(std::size_t index, double pitchDeg, double yawDeg);
+    // カメラの編集用の姿勢表現（位置 = 視点、回転 = pitch/yaw 度、Z は常に 0）。
+    // UI の数字・ギズモ・camera.set がこの 1 つの表現で揃う。CameraObject は
+    // atomic なのでどのスレッドから読んでもよい。
+    void cameraEditPose(std::size_t index, wizengine::editor::Vec3d& pos,
+                        wizengine::editor::Vec3d& rot) const;
+
+    // 保存用のシーン文書（オブジェクト・ジョイント・ライト・カメラ・設定）。
+    // PHYSICS thread。
     nlohmann::json documentJson() const;
 
     void stepPhysics(double dt);
@@ -174,12 +215,20 @@ private:
     // RENDER thread: 実体のできていないオブジェクトのレンダラブルを作り、
     // 削除済みのものを片付ける。applyToRenderer の先頭から呼ぶ。
     void syncRenderables();
+    // RENDER thread: ライトも同じ流儀で（生成・破棄・状態反映）。
+    void syncLights();
+
+    // ライト・カメラを SceneConfig の初期値へ戻す（clear と、ライト/カメラを
+    // 持たない古い保存文書の読み込み）。PHYSICS thread。
+    void resetLightsToDefaults();
+    void resetCamerasToDefaults();
 
     PhysicsWorld& physics_;
     wizengine::Renderer& renderer_;
     std::vector<std::unique_ptr<CameraObject>> cameras_;
     std::vector<std::unique_ptr<BoxController>> controllers_;
-    std::vector<std::unique_ptr<LightObject>> lights_;
+    std::vector<char> camerasActive_;  // 構造は objectsMutex_ が守る
+    std::vector<LightItem> lights_;    // 同上
 
     std::vector<GameObject> boxes_;
     std::vector<std::unique_ptr<SceneComponent>> components_;

@@ -911,30 +911,67 @@
     const el = document.getElementById('camList');
     // Every camera lives on the SAME port under its own path ("/cam0/",
     // "/cam1/", ...); the server sends the list.
-    const pathOf = (i) => (sceneData.paths && sceneData.paths[i])
-      ? sceneData.paths[i]
-      : ('/cam' + i + '/');
+    const editing = sceneData.mode === 'editor' && isEditorCam();
+    const eSel = myEditorSel();
+    const eCam = (sceneData.editorCam !== undefined) ? sceneData.editorCam : 0;
     el.innerHTML = '';
     for (const c of sceneData.cameras) {
+      if (c.active === false) continue;  // 「削除」されたスロットは出さない
       const isMe = c.index === sceneData.camera;
       // Only one viewer per camera, so "in use" tells you whether switching
       // there would be refused.
       const busy = sceneData.busy && sceneData.busy[c.index];
       const state = isMe ? 'viewing' : (busy ? 'in use' : 'free');
       const row = document.createElement('div');
-      row.className = 'item' + (isMe ? ' sel' : '');
+      const edSel = eSel.kind === 'camera' && eSel.index === c.index;
+      row.className = 'item' + (isMe ? ' sel' : '') + (edSel ? ' edsel' : '');
       row.innerHTML =
         '<span class="dot" style="background:' + c.color + '"></span>' +
         '<span>' + cameraName(c.index) + (isMe ? ' (this)' : '') + '</span>' +
         '<span class="sub' + (busy && !isMe ? ' busy' : '') + '">' +
         state + '</span>';
+      // エディタ中は、行のクリック（ページ移動）とは別に ✎（エディタ選択）
+      // と 🗑（削除）を常に出す。Editor Camera 自身は選べない・消せない。
+      if (owner && editing && c.index !== eCam) {
+        const btn = document.createElement('span');
+        btn.className = 'camEdit' + (edSel ? ' on' : '');
+        btn.textContent = '✎';
+        btn.title = edSel ? '選択中（もう一度で解除）'
+                          : 'エディタで選択（位置・向きを編集）';
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          selectCamera(c.index);
+          // 選択したらインスペクタを開く。編集の続き（数値・削除）が
+          // そこにあるので、タブを探させない。
+          if (!edSel) showTab('editor');
+        };
+        row.appendChild(btn);
+        const del = document.createElement('span');
+        del.className = 'camEdit del';
+        del.textContent = '🗑';
+        del.title = 'このカメラを削除';
+        del.onclick = (e) => { e.stopPropagation(); removeCameraAt(c.index); };
+        row.appendChild(del);
+      }
       if (!isMe) {
         row.title = 'Switch to this camera';
         // Same tab: leaving this page also releases the viewer session, so the
         // camera we came from frees up immediately.
-        row.onclick = () => { location.href = pathOf(c.index); };
+        row.onclick = () => { location.href = camPath(c.index); };
       }
       el.appendChild(row);
+    }
+    // 見出し横の ＋（追加）。エディタモード×Editor Camera のページでだけ
+    // 出す。削除は各行の 🗑（見出しに － は置かない）。
+    const hdr = document.getElementById('camAddDel');
+    hdr.hidden = !(owner && editing);
+    if (!hdr.hidden) {
+      const anyFree = sceneData.cameras.some((c) => c.active === false);
+      const add = document.getElementById('camAdd');
+      add.disabled = !anyFree;
+      add.title = anyFree ? 'カメラを追加'
+                          : 'カメラは上限です（' + sceneData.cameras.length +
+                            ' - 起動引数 --max-cameras で変更）';
     }
   }
 
@@ -961,19 +998,29 @@
     const labelOf = (o) =>
       o.name ? o.name : ((KIND[o.shape] || 'Object') + ' ' + o.index);
     let html = '';
-    // Lights first: part of the scene like everything else, but not
-    // selectable - selecting drives the grab controller, which only knows
-    // physics bodies. The dot shows the light's colour; the sub line its
-    // type and intensity (lux for directional, lumens otherwise).
+    // Lights first: part of the scene like everything else. エディタモード中の
+    // Editor Camera ページではクリックでエディタ選択（Inspector とギズモの
+    // 対象）になる。The dot shows the light's colour; the sub line its
+    // kind and intensity (lux for sun, lumens otherwise).
     if (sceneData.lights && !objFilter) {
-      const typeName = { directional: 'Directional', point: 'Point', spot: 'Spot' };
+      const kindName = { sun: 'Sun', point: 'Point', spot: 'Spot' };
+      const kindIcon = { sun: '☀', point: '💡', spot: '🔦' };
       const fmtI = (v) => v >= 1000 ? Math.round(v / 1000) + 'k' : Math.round(v);
+      const canPick = owner && sceneData.mode === 'editor' && isEditorCam();
+      const eSel = myEditorSel();
       for (const l of sceneData.lights) {
-        const unit = l.type === 'directional' ? 'lx' : 'lm';
-        html += '<div class="item" style="cursor:default">' +
-                '<span class="dot" style="background:' + l.color + '"></span>' +
-                '<span>Light ' + l.index + (l.shadows ? ' ☀' : '') + '</span>' +
-                '<span class="sub">' + (typeName[l.type] || l.type) + ' · ' +
+        const edSel = eSel.kind === 'light' && eSel.index === l.index;
+        const label = l.name ? l.name : ('Light ' + l.index);
+        const unit = l.kind === 'sun' ? 'lx' : 'lm';
+        html += '<div class="item' + (edSel ? ' edsel' : '') + '"' +
+                (canPick
+                  ? ' onclick="selectLight(' + l.index + ')"' +
+                    ' title="クリックで選択（位置・向き・色を編集）"'
+                  : ' style="cursor:default"') +
+                '><span class="dot" style="background:' + l.color + '"></span>' +
+                '<span>' + (kindIcon[l.kind] || '💡') + ' ' + label + '</span>' +
+                '<span class="sub">' + (kindName[l.kind] || l.kind) +
+                (l.shadows ? '·影' : '') + ' · ' +
                 fmtI(l.intensity) + ' ' + unit + '</span></div>';
       }
     }
@@ -1030,7 +1077,6 @@
   // 当たっている欄）だけは触らない - でないと数字を打っている途中で
   // 消えてしまう。
   let jointPartner = -1;      // ジョイントの相手 B。-1 = 地面
-  let sceneListFilled = '';   // 保存済みシーン一覧を組み直す判定用
 
   function setField(id, value) {
     const el = document.getElementById(id);
@@ -1064,6 +1110,19 @@
   }
   function setGizmoMode(mode) { applyGizmo({ mode: mode }); }
   function setGizmoSpace(space) { applyGizmo({ space: space }); }
+  function toggleGizmoSpace() {
+    const g = (sceneData && sceneData.gizmo) || {};
+    setGizmoSpace(g.space === 'local' ? 'world' : 'local');
+  }
+  // ギズモ設定（スナップ・刻み・グリッド）は普段は隠し、ツールバーの ⚙ で
+  // Inspector に開く。Inspector を「選択しているオブジェクトの内容」だけに
+  // しておくため。ブラウザ内の見た目の話なのでサーバーには送らない。
+  let gizmoSettingsOpen = false;
+  function toggleGizmoSettings() {
+    gizmoSettingsOpen = !gizmoSettingsOpen;
+    if (gizmoSettingsOpen) showTab('editor');  // 隠れたタブの中で開いても気づけない
+    renderEditor();
+  }
 
   // どのハンドルを掴めるかは押してみるまで分からない、では使いづらいので、
   // 選択中はカーソル位置を控えめな間隔で送ってサーバーに光らせてもらう。
@@ -1073,7 +1132,10 @@
   setInterval(() => {
     if (!owner || grabbing || dragMode) return;
     if (!sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
-    if (!sceneData.selected || !hoverNdc) return;
+    // ギズモが出ている対象（オブジェクト / ライト / カメラ）があるときだけ。
+    const hasTarget = sceneData.selected ||
+        (sceneData.editorSel && sceneData.editorSel.kind !== 'none');
+    if (!hasTarget || !hoverNdc) return;
     send('hover', hoverNdc);
   }, 70);
 
@@ -1126,6 +1188,91 @@
     return (sceneData && sceneData.selected) ? sceneData.selected : null;
   }
 
+  // ---- ライト / カメラ（エディタモード×Editor Camera 専用）-----------------
+  // 選択はサーバー（EditorState）が持ち、/scene の editorSel・selectedLight・
+  // selectedCamera で返ってくる。ビューのアイコンをクリックしても同じ選択に
+  // なる（あちらは pick がサーバー側で判定）。
+  function camPath(i) {
+    return (sceneData && sceneData.paths && sceneData.paths[i])
+      ? sceneData.paths[i] : ('/cam' + i + '/');
+  }
+  function myEditorSel() {
+    return (sceneData && sceneData.editorSel)
+      ? sceneData.editorSel : { kind: 'none', index: -1 };
+  }
+  function selectLight(index) {
+    const s = myEditorSel();
+    send('select.light',
+         { index: (s.kind === 'light' && s.index === index) ? -1 : index });
+  }
+  function selectCamera(index) {
+    const s = myEditorSel();
+    send('select.camera',
+         { index: (s.kind === 'camera' && s.index === index) ? -1 : index });
+  }
+
+  function addLight(kind) { send('edit.light.add', { kind: kind }); }
+  function applyLightEdit(patch) {
+    const l = sceneData && sceneData.selectedLight;
+    if (!l) return;
+    send('edit.light.set', Object.assign({ index: l.index }, patch));
+  }
+  function applyLightName() {
+    applyLightEdit({ name: document.getElementById('ltName').value });
+  }
+  function applyLightPos() {
+    applyLightEdit({ position: { x: num('ltPX', 0), y: num('ltPY', 3),
+                                 z: num('ltPZ', 0) } });
+  }
+  function applyLightRot() {
+    applyLightEdit({ rotation: { x: num('ltRX', 0), y: num('ltRY', 0),
+                                 z: num('ltRZ', 0) } });
+  }
+  function applyLightColor() {
+    applyLightEdit({ color: document.getElementById('ltColor').value });
+  }
+  function applyLightIntensity() {
+    applyLightEdit({ intensity: num('ltIntensity', 300000) });
+  }
+  function applyLightFalloff() {
+    applyLightEdit({ falloff: num('ltFalloff', 25) });
+  }
+  function applyLightCone() {
+    applyLightEdit({ spotInnerDeg: num('ltInner', 25),
+                     spotOuterDeg: num('ltOuter', 35) });
+  }
+  function removeLight() {
+    const l = sceneData && sceneData.selectedLight;
+    if (l) send('edit.light.remove', { index: l.index });
+  }
+
+  function addCamera() { send('edit.camera.add'); }
+  function applyCamEdit(patch) {
+    const c = sceneData && sceneData.selectedCamera;
+    if (!c) return;
+    send('edit.camera.set', Object.assign({ index: c.index }, patch));
+  }
+  function applyCamPos() {
+    applyCamEdit({ position: { x: num('cmPX', 0), y: num('cmPY', 2),
+                               z: num('cmPZ', 0) } });
+  }
+  function applyCamRot() {
+    applyCamEdit({ rotation: { x: num('cmRX', 0), y: num('cmRY', 0), z: 0 } });
+  }
+  function removeCameraAt(index) {
+    if (!confirm(cameraName(index) +
+                 ' を一覧から削除します。よろしいですか？')) return;
+    send('edit.camera.remove', { index: index });
+  }
+  function removeCamera() {  // Inspector の削除ボタン（選択中のカメラ）
+    const c = sceneData && sceneData.selectedCamera;
+    if (c) removeCameraAt(c.index);
+  }
+  function openCamPage() {
+    const c = sceneData && sceneData.selectedCamera;
+    if (c) location.href = camPath(c.index);
+  }
+
   function setJointPartner() {
     const sel = mySelectedDesc();
     if (!sel) return;
@@ -1171,15 +1318,7 @@
     if (!name) return;
     send('edit.save', { name: name });
   }
-  function loadScene() {
-    const name = document.getElementById('edSceneName').value.trim();
-    if (!name) return;
-    send('edit.load', { name: name });
-  }
-  function pickScene() {
-    const v = document.getElementById('edSceneList').value;
-    if (v) document.getElementById('edSceneName').value = v;
-  }
+  // 読込はアセットパネルのタイルのダブルクリック（assetLoad）が受け持つ。
   function clearScene() {
     if (!confirm('シーンのオブジェクトとジョイントを全部消します。よろしいですか？')) return;
     send('edit.clear');
@@ -1196,7 +1335,8 @@
   };
 
   // このページのカメラがエディタカメラか。違うページでは Inspector タブを
-  // 隠し、モード切替も無効化する（サーバー側でも同じ判定で弾かれる）。
+  // 隠す（シーンを書き換える操作はサーバー側でも同じ判定で弾かれる。
+  // モード切替だけはどのページからでも可）。
   function isEditorCam() {
     if (!sceneData) return false;
     const e = (sceneData.editorCam !== undefined) ? sceneData.editorCam : 0;
@@ -1222,18 +1362,20 @@
       showTab('scene');  // 隠したタブを開いたままにしない
     }
 
+    // モード切替はどのカメラのページからでもできる（サーバー側も同じ扱い）。
+    // Editor Camera は「編集できる」カメラなだけで、モードを握ってはいない。
     const bEdit = document.getElementById('btnModeEdit');
     const bSim = document.getElementById('btnModeSim');
     bEdit.classList.toggle('active', editing);
     bSim.classList.toggle('active', !editing);
-    bEdit.disabled = bSim.disabled = !(owner && editorHere);
+    bEdit.disabled = bSim.disabled = !owner;
     if (!editorHere) {
       const eCamIdx =
         (sceneData.editorCam !== undefined) ? sceneData.editorCam : 0;
-      const tip = 'エディタ操作は Editor Camera（/cam' + eCamIdx +
-        '/）のページから';
-      bEdit.title = tip;
-      bSim.title = tip;
+      bEdit.title = '物理を止めて配置・設計する（編集操作は Editor Camera ' +
+        '= /cam' + eCamIdx + '/ のページから）';
+    } else {
+      bEdit.title = '物理を止めて配置・設計する';
     }
 
     // エディタ中は時間が進まないので、一時停止ボタンは意味がない。
@@ -1242,7 +1384,22 @@
       (editing ? '✎ エディタ' : '▶ シミュレート') + ' — ' +
       (sceneData.status || '');
 
-    // ギズモ。今どのモードかはビューの見た目と直結するので、ボタンで示す。
+    // ギズモ。モード切替は映像左上のツールバー（Unity のシーンビューと同じ
+    // 場所）。ギズモが出るページ = エディタモード中の Editor Camera でだけ
+    // 表示し、現在のモードをボタンの点灯で示す。
+    const bar = document.getElementById('gizmoBar');
+    bar.hidden = !(editing && editorHere);
+    bar.querySelectorAll('button').forEach((b) => { b.disabled = !owner; });
+    // ライト / カメラを選んでいるあいだ、拡縮に意味は無い（サーバー側は
+    // 移動として扱う）。ボタンも無効にして分かるようにしておく。
+    {
+      const eSel = myEditorSel();
+      const nonObject = eSel.kind !== 'none';
+      const scaleBtn = document.getElementById('gzScale');
+      scaleBtn.disabled = !owner || nonObject;
+      scaleBtn.title = nonObject
+        ? 'ライト / カメラは拡縮できません' : '拡縮 (R)';
+    }
     const gz = sceneData.gizmo;
     if (gz) {
       document.getElementById('gzMove').classList
@@ -1251,10 +1408,9 @@
               .toggle('on', gz.mode === 'rotate');
       document.getElementById('gzScale').classList
               .toggle('on', gz.mode === 'scale');
-      document.getElementById('gzWorld').classList
-              .toggle('on', gz.space === 'world');
-      document.getElementById('gzLocal').classList
-              .toggle('on', gz.space === 'local');
+      // World/Local は 1 個のトグルボタン。今の状態を表示し、押すと反対へ。
+      document.getElementById('gzSpace').textContent =
+        gz.space === 'local' ? '📦 Local' : '🌐 World';
       setField('gzSnap', gz.snap);
       setField('gzMoveStep', gz.moveStep);
       setField('gzRotStep', gz.rotateStep);
@@ -1262,9 +1418,58 @@
       setField('gzGrid', gz.grid);
       setField('gzGridStep', gz.gridStep);
     }
+    // ギズモ設定の節はツールバーの ⚙ で開閉（エディタモード中だけ意味がある）。
+    document.getElementById('gzSettings')
+            .classList.toggle('on', gizmoSettingsOpen);
+    document.getElementById('secGizmo').hidden =
+      !(gizmoSettingsOpen && editing);
 
-    // 選択中のオブジェクト。
+    // 選択中のオブジェクト / ライト / カメラ。同時に立つのは 1 つだけ
+    // （サーバー側で排他している）。Inspector は選んでいるものの内容だけを
+    // 出すので、種類ごとに節を丸ごと入れ替える。
     const sel = mySelectedDesc();
+    const lightSel = (editing && sceneData.selectedLight)
+      ? sceneData.selectedLight : null;
+    const camSel = (editing && sceneData.selectedCamera)
+      ? sceneData.selectedCamera : null;
+    document.getElementById('secObj').hidden = !!lightSel || !!camSel;
+    document.getElementById('secLight').hidden = !lightSel;
+    document.getElementById('secCam').hidden = !camSel;
+
+    if (lightSel) {
+      const K = { sun: '☀ Sun（平行光）', point: '💡 Point', spot: '🔦 Spot' };
+      document.getElementById('ltKind').textContent =
+        (K[lightSel.kind] || lightSel.kind) + ' — #' + lightSel.index +
+        (lightSel.shadows ? ' ・影あり' : '');
+      setField('ltName', lightSel.name || '');
+      setField('ltPX', round2(lightSel.position.x));
+      setField('ltPY', round2(lightSel.position.y));
+      setField('ltPZ', round2(lightSel.position.z));
+      setField('ltRX', round2(lightSel.rotation.x));
+      setField('ltRY', round2(lightSel.rotation.y));
+      setField('ltRZ', round2(lightSel.rotation.z));
+      setField('ltColor', lightSel.color);
+      setField('ltIntensity', Math.round(lightSel.intensity));
+      setField('ltFalloff', round2(lightSel.falloff));
+      setField('ltInner', round2(lightSel.spotInnerDeg));
+      setField('ltOuter', round2(lightSel.spotOuterDeg));
+      document.getElementById('ltIntLabel').textContent =
+        lightSel.kind === 'sun' ? '強さ (lx)' : '強さ (lm)';
+      // Sun に減衰は無く、Point に向きは無い。円錐は Spot だけ。
+      document.getElementById('ltFalloffRow').hidden = lightSel.kind === 'sun';
+      document.getElementById('ltRotRow').hidden = lightSel.kind === 'point';
+      document.getElementById('ltConeRow').hidden = lightSel.kind !== 'spot';
+    }
+    if (camSel) {
+      document.getElementById('cmLabel').textContent =
+        cameraName(camSel.index) + ' — ' + camPath(camSel.index);
+      setField('cmPX', round2(camSel.position.x));
+      setField('cmPY', round2(camSel.position.y));
+      setField('cmPZ', round2(camSel.position.z));
+      setField('cmRX', round2(camSel.rotation.x));
+      setField('cmRY', round2(camSel.rotation.y));
+    }
+
     document.getElementById('edNoSel').hidden = !!sel;
     document.getElementById('edProps').hidden = !sel;
     if (sel) {
@@ -1285,7 +1490,9 @@
       setField('edFixed', sel.fixed);
       setField('edColor', sel.color);
       document.getElementById('edSizeLabel').textContent =
-        sphere ? '直径 (m) — 左の欄のみ' : '大きさ (m)';
+        sphere ? '直径' : 'スケール';
+      document.getElementById('edSizeRow').title = sphere
+        ? '直径 (m) — X の欄のみ有効' : '大きさ (m)。倍率ではなく実寸';
       document.getElementById('edSY').disabled = sphere;
       document.getElementById('edSZ').disabled = sphere;
     }
@@ -1293,8 +1500,12 @@
     document.getElementById('edJointB').textContent =
       jointPartner < 0 ? '地面' : ('#' + jointPartner);
 
-    // ジョイント一覧。
-    const joints = sceneData.joints || [];
+    // ジョイントも「選択しているオブジェクトの内容」: 節は選択中だけ出し、
+    // 一覧はその選択が関わるものに絞る（どのジョイントにも地面でない体が
+    // 必ずあるので、どれかを選べば必ず一覧に届く）。
+    document.getElementById('secJoint').hidden = !sel;
+    const joints = (sceneData.joints || []).filter(
+      (j) => sel && (j.a === sel.index || j.b === sel.index));
     document.getElementById('edJointList').innerHTML = joints.length
       ? joints.map((j) => {
           const a = j.a < 0 ? '地面' : '#' + j.a;
@@ -1307,7 +1518,7 @@
             '<span class="x" title="削除" onclick="removeJoint(' + j.index +
             ')">✕</span></div>';
         }).join('')
-      : '<div class="edHint">まだありません。</div>';
+      : '<div class="edHint">このオブジェクトのジョイントはまだありません。</div>';
 
     // シミュレート設定（Physics タブへ移設済み。全カメラで見える・変えられる）。
     const s = sceneData.sim;
@@ -1321,15 +1532,9 @@
       setField('hzCustom', s.hz);
     }
 
-    // 保存済みシーン。中身が変わったときだけ組み直す（選択が飛ぶため）。
-    const files = sceneData.files || [];
-    const key = files.join('');
-    if (key !== sceneListFilled) {
-      sceneListFilled = key;
-      document.getElementById('edSceneList').innerHTML =
-        '<option value="">—</option>' +
-        files.map((f) => '<option value="' + f + '">' + f + '</option>').join('');
-    }
+    // シーン名の欄（アセットパネルの操作列）は、空のときだけ今の
+    // ファイル名を入れる。保存済みの一覧はアセットパネルのタイルが
+    // 受け持つ（ダブルクリックで読込）。
     if (sceneData.sceneFile &&
         !document.getElementById('edSceneName').value) {
       setField('edSceneName', sceneData.sceneFile);
@@ -1360,7 +1565,18 @@
       '<span class="name">Box</span><span class="kind">primitive</span></div>' +
       '<div class="asItem" title="クリックでカメラ正面に配置" ' +
       'onclick="addObject(\'sphere\')"><span class="ico">⚪</span>' +
-      '<span class="name">Sphere</span><span class="kind">primitive</span></div>';
+      '<span class="name">Sphere</span><span class="kind">primitive</span></div>' +
+      // ライト。クリックでカメラ正面（Sun は原点上空）に追加され、そのまま
+      // 選択されるので、置いた直後にギズモ / Inspector で調整できる。
+      '<div class="asItem" title="点光源を追加（全方向に光る）" ' +
+      'onclick="addLight(\'point\')"><span class="ico">💡</span>' +
+      '<span class="name">Point Light</span><span class="kind">light</span></div>' +
+      '<div class="asItem" title="スポットライトを追加（円錐に光る）" ' +
+      'onclick="addLight(\'spot\')"><span class="ico">🔦</span>' +
+      '<span class="name">Spot Light</span><span class="kind">light</span></div>' +
+      '<div class="asItem" title="平行光を追加（太陽。位置は光に影響しない）" ' +
+      'onclick="addLight(\'sun\')"><span class="ico">☀&#xFE0E;</span>' +
+      '<span class="name">Sun</span><span class="kind">light</span></div>';
     for (const f of files) {
       const cur = f === sceneData.sceneFile;
       html += '<div class="asItem' + (cur ? ' sel' : '') +
@@ -1372,7 +1588,7 @@
     document.getElementById('assetList').innerHTML = html;
   }
   function assetPick(name) {
-    // シングルクリックは選択だけ: Inspector のシーン名に入れておく
+    // シングルクリックは選択だけ: パネル上部のシーン名に入れておく
     // （そのまま 💾 保存すれば上書き、ダブルクリックで読込）。
     const box = document.getElementById('edSceneName');
     if (box) box.value = name;

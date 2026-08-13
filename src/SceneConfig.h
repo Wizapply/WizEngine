@@ -127,6 +127,21 @@ inline std::vector<CameraObject::Config> cameraConfigs() {
     return {a, b, c};
 }
 
+// ---- カメラの上限 -----------------------------------------------------------
+// ページ（HTTP のパス）と WebRTC の受け口は起動時にこの数だけ作られる固定
+// プール（どちらも軽い。エンコーダのパイプラインは従来から視聴者が来た
+// 時点で作られる）。**動画ビュー（スワップチェーン + 読み戻しバッファ、
+// 1 枚あたり数 MB）は予備スロットぶんを起動時には作らず**、エディタで
+// 「カメラを追加」した時点（またはそのページに視聴者が来た時点）で描画
+// スレッドが生成する（main.cpp の「動画ビューの遅延生成」）。一度作った
+// ビューは返さない: カメラの「削除」は一覧から消すだけで、次の「追加」が
+// 同じスロットとビューを再利用する。cameraConfigs() のぶんが最初から有効。
+//
+// ここにあるのは**既定値**。スロット数は実行環境の割り当てなので、exe 引数
+// `--max-cameras N`（1〜16）で起動時に上書きできる（main.cpp が解析して
+// Scene のコンストラクタへ渡す。CPU コアの固定と同じ整理）。
+constexpr std::size_t kMaxCameras = 5;
+
 // ---- エディタカメラ --------------------------------------------------------
 // エディタ操作（モード切替・配置・ギズモ・ジョイント設計・シーンの保存/読込）
 // を受け付けるカメラ番号。ギズモが出るのもこのカメラの選択だけ。他のカメラは
@@ -138,9 +153,11 @@ constexpr std::size_t kEditorCamera = 0;
 // ---- Lights --------------------------------------------------------------
 // One entry per light; add or remove entries freely. These are the direct
 // lights of the scene (the ambient/IBL is separate - see kEnvironmentHdr).
-// Each becomes a LightObject reachable as scene.light(i), so position,
-// direction, colour and intensity can also be changed at runtime, e.g. from a
-// SceneComponent:  scene.light(0).setDirection({1, -1, 0});
+// ここにあるのは**初期構成**: Scene::build がエディタの設計値（ed::LightDesc、
+// 向きはオイラー角）へ取り込み、以後はブラウザのエディタで追加・削除・編集
+// できる（シーンの保存/読込にも含まれる。旧い保存やシーンの全消しはこの
+// 初期構成に戻る）。LightObject クラス自体は使われなくなり、この Config が
+// 「方向ベクトルで書ける」初期値の語彙として残っている。
 //
 // Intensity units: lux for Directional (sun ~100k, overcast ~10k), lumens for
 // Point/Spot (a 60W-ish bulb ~800 lm - point lights need surprisingly large
@@ -225,6 +242,9 @@ inline const std::vector<filament::math::float3>& cameraColors() {
         {0.30f, 0.85f, 0.35f},  // camera 1: green
         {0.95f, 0.55f, 0.20f},  // camera 2: orange
         {0.85f, 0.30f, 0.75f},  // camera 3: magenta
+        {0.95f, 0.85f, 0.25f},  // camera 4: yellow
+        {0.35f, 0.85f, 0.85f},  // camera 5: cyan
+        {0.95f, 0.35f, 0.35f},  // camera 6: red
     };
     return colors;
 }

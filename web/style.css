@@ -70,6 +70,25 @@
   #fsBtn:hover:enabled { background:rgba(58,69,83,.9); }
   /* In fullscreen the button is pointless (Esc or F leaves); hide it. */
   #stage:fullscreen #fsBtn { display:none; }
+  /* ギズモのツールバー（Unity のシーンビュー左上と同じ場所）。#hit (z=1) の
+     上に置いてクリックを受ける。フルスクリーンでも出しておく - モードの
+     現在値が見えないとドラッグの結果が予想できないため。 */
+  #gizmoBar {
+    position:absolute; left:10px; top:10px; z-index:2;
+    display:flex; align-items:center; gap:3px; padding:4px;
+    background:rgba(23,24,28,.82); border:1px solid rgba(58,61,69,.85);
+    border-radius:8px;
+  }
+  #gizmoBar[hidden] { display:none; }
+  #gizmoBar button {
+    margin:0; padding:4px 10px; font-size:14px; line-height:1.25;
+    background:transparent; color:#c9ced6;
+    border:1px solid transparent; border-radius:5px;
+  }
+  #gizmoBar button:hover:enabled { background:rgba(58,69,83,.9); }
+  #gizmoBar button.on { background:#2f4a72; border-color:#4a70ad; color:#eaf1fb; }
+  #gizmoBar #gzSpace { font-size:11.5px; }
+  #gizmoBar .gzSep { width:1px; height:16px; background:#3a3d45; margin:0 3px; }
   #error { display:none; width:100%; aspect-ratio:16/9;
            border-radius:8px; background:#2a1c1c; border:1px solid #7a3b3b;
            box-sizing:border-box; padding:24px; text-align:center;
@@ -258,6 +277,11 @@
 
   .sbHead, .sbSec { flex: 0 0 auto; }
   .sbSec { display: flex; flex-direction: column; gap: 6px; }
+  /* hidden 属性を上の display:flex に負けさせない（.sbPane[hidden] や
+     #assets[hidden] と同じ理由）。secGizmo（⚙ で開閉）と secJoint（選択中
+     のみ）は hidden の出し入れで表示を切り替えるため、これが無いと常時
+     表示になる。 */
+  .sbSec[hidden] { display: none; }
   /* Only the hierarchy absorbs leftover space - and it scrolls instead of
      squashing its rows. Everything else keeps its natural height. */
   /* A sized section owns exactly the height its variable says; its body
@@ -435,9 +459,27 @@
     font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
     color: #7b7f88; margin-top: 2px;
   }
-  /* 位置・回転・大きさは 3 列。ラベルを付けずに X/Y/Z の順で並べる
-     （幅の狭いパネルで一番読みやすい形）。 */
+  /* ギズモの刻み値など、ラベル無しで 3 つ並べる欄。 */
   .edGrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
+  /* Unity の Transform 相当: 行ラベル + X/Y/Z のタグ付きフィールド。
+     タグは input の左に貼り付く（角丸を分け合う）。 */
+  .trRow {
+    display: grid; grid-template-columns: 48px repeat(3, 1fr);
+    gap: 4px; align-items: center; font-size: 12px; color: #b8bcc4;
+  }
+  /* 一番長いラベル「スケール」(4文字) が折り返さない幅と字の大きさ。 */
+  .trName { font-size: 11px; white-space: nowrap; }
+  .trCell { display: flex; min-width: 0; }
+  .trCell .axis {
+    flex: 0 0 auto; display: flex; align-items: center; padding: 0 4px;
+    font-size: 9px; font-weight: 700; color: #f2f4f8;
+    border-radius: 4px 0 0 4px; user-select: none;
+  }
+  .axis.axX { background: #8f3a3d; }
+  .axis.axY { background: #3f7a37; }
+  .axis.axZ { background: #33599b; }
+  .trCell .num { border-radius: 0 4px 4px 0; border-left: 0; padding: 3px 4px; }
+  .trCell .num:disabled { opacity: .45; }
   .num, .txt {
     background: #212329; color: #dfe2e7; border: 1px solid #3a3d45;
     border-radius: 4px; font-size: 11.5px; padding: 3px 5px;
@@ -450,6 +492,29 @@
     border-radius: 4px; background: #212329;
   }
   .edHint { font-size: 11px; color: #7b7f88; line-height: 1.5; }
+  /* スポットの円錐（内/外）は 1 行に 2 欄。edRow .num の 55% 制限とは別枠。 */
+  .edRow .coneNum { max-width: 26%; }
+  /* エディタ選択（ライト / カメラ）。視聴中 (.sel) とは別の印。 */
+  .item.edsel { outline: 1px solid #4a70ad; background: #232b3a; }
+  /* カメラ行の ✎（エディタ選択）と 🗑（選択中のみ）。行クリック（ページ
+     移動）とは別の的。 */
+  .item .camEdit {
+    margin-left: 4px; padding: 0 5px; border-radius: 3px;
+    color: #8b8f99; cursor: pointer;
+  }
+  .item .camEdit:hover { background: #2f3542; color: #dfe2e7; }
+  .item .camEdit.on { color: #9fc1f2; }
+  .item .camEdit.del:hover { background: #4a2a2a; color: #e7b4b4; }
+  /* セクション見出しの小さな操作ボタン（Cameras の ＋/－）。 */
+  .secBtns { display: flex; gap: 4px; }
+  .secBtns[hidden] { display: none; }
+  .secBtns button {
+    margin: 0; padding: 0 8px; font-size: 12px; line-height: 1.6;
+    background: #2a2d34; color: #dfe2e7; border: 1px solid #3a3d45;
+    border-radius: 4px;
+  }
+  .secBtns button:hover:enabled { background: #343841; }
+  .secBtns button:disabled { opacity: .4; }
   .jointList { max-height: 140px; }
   .jointItem {
     display: flex; align-items: center; gap: 6px; font-size: 11.5px;
@@ -484,7 +549,25 @@
   .asHead:hover { color: #b8bcc4; }
   .asHint { font-size: 11px; color: #7b7f88; text-transform: none; }
   #assets.collapsed .asList { display: none; }
+  #assets.collapsed .asBar { display: none; }
   #assets.collapsed .caret { transform: rotate(0deg); }
+  /* 見出し下の操作列: 新規オブジェクトの初期値（大きさ・色）とシーンの
+     保存/全消し。.num/.txt の width:100% はここでは邪魔なので固定幅に。 */
+  .asBar {
+    display: flex; flex-wrap: wrap; gap: 6px 20px; align-items: center;
+    padding: 7px 2px 0; font-size: 11.5px; color: #8b8f99;
+  }
+  .asBar .asGroup { display: flex; align-items: center; gap: 6px; }
+  .asBar .num { width: 62px; }
+  .asBar .txt { width: 130px; }
+  .asBar button {
+    margin: 0; padding: 4px 9px; font-size: 11.5px;
+    background: #2a2d34; color: #dfe2e7; border: 1px solid #3a3d45;
+    border-radius: 4px;
+  }
+  .asBar button:hover:enabled { background: #343841; }
+  .asBar button.danger { border-color: #6b3535; color: #e7b4b4; }
+  .asBar button.danger:hover:enabled { background: #4a2a2a; }
   /* タイルは折り返して並べ、入りきらなければ縦スクロール。resize は
      overflow が visible 以外の要素で効き、ドラッグ結果はブラウザが
      inline style に書く（app.js が ResizeObserver で拾って記憶する）。 */
