@@ -13,6 +13,13 @@
   const hitEl = document.getElementById('hit');
   let heartbeat = null;
   let owner = false;
+  // GET パラメータ ?mode=edit（editor でも可）で開いたページは、接続確立後に
+  // 一度だけエディタモードへ切り替える。一度きりなのは、その後ユーザーが
+  // シミュレートへ切り替えたあとの再接続で勝手にエディタへ戻さないため。
+  // （モード切替自体はどのカメラのページからでも許可されている。）
+  const wantEditorOnLoad = ['edit', 'editor'].includes(
+      new URLSearchParams(location.search).get('mode'));
+  let editorModeRequested = false;
   let blockedTries = 0;
   let statsTimer = null;
   let camLinksDone = false;
@@ -476,6 +483,11 @@
       setBlocked(false);
       setControlsEnabled(true);
       startHeartbeat();
+      // ?mode=edit で開かれたページ: 操作権を得た最初の接続でエディタへ。
+      if (wantEditorOnLoad && !editorModeRequested) {
+        editorModeRequested = true;
+        send('mode', { mode: 'editor' });
+      }
 
       // Report what the decoder actually does with the incoming stream. If
       // bytes arrive but framesDecoded stays 0, the browser is dropping the
@@ -1378,11 +1390,11 @@
       bEdit.title = '物理を止めて配置・設計する';
     }
 
-    // エディタ中は時間が進まないので、一時停止ボタンは意味がない。
+    // エディタ中は時間が進まないので、Play / Reset ボタンとタイムスタンプは
+    // 使わない。無効化ではなく行ごと非表示にする。
+    document.querySelector('.playRow').style.display = editing ? 'none' : '';
+    document.getElementById('simTime').style.display = editing ? 'none' : '';
     document.getElementById('btnPlay').disabled = editing || !owner;
-    document.getElementById('edStatus').textContent =
-      (editing ? '✎ エディタ' : '▶ シミュレート') + ' — ' +
-      (sceneData.status || '');
 
     // ギズモ。モード切替は映像左上のツールバー（Unity のシーンビューと同じ
     // 場所）。ギズモが出るページ = エディタモード中の Editor Camera でだけ
