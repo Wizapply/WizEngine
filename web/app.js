@@ -310,6 +310,13 @@
                el.tagName === 'TEXTAREA')) {
       return;
     }
+    // ノードエディタは画面全体を覆うので、✕ のほかに Esc でも閉じられる
+    // ようにしておく（モード不問 - シミュレート中も開けるため）。
+    if (e.key === 'Escape' && nodeEdOpen) {
+      e.preventDefault();
+      closeNodeEditor();
+      return;
+    }
     if (!owner || !sceneData || sceneData.mode !== 'editor') return;
     if (!isEditorCam()) return;  // ギズモが出ないページで切り替えても意味がない
     const key = e.key.toLowerCase();
@@ -334,8 +341,12 @@
       cursorEl.classList.remove('show');
       return;
     }
-    const overStage = document.fullscreenElement ||
-        stageEl.contains(document.elementFromPoint(e.clientX, e.clientY));
+    const under = document.elementFromPoint(e.clientX, e.clientY);
+    // ノードエディタの上は普通のフォーム操作なので OS カーソルに任せる
+    // （style.css 側で cursor:none も外している）。
+    const overNodeEd = under && under.closest && under.closest('#nodeEd');
+    const overStage = !overNodeEd &&
+        (document.fullscreenElement || stageEl.contains(under));
     if (!overStage) {
       cursorEl.classList.remove('show');
       return;
@@ -1435,6 +1446,8 @@
             .classList.toggle('on', gizmoSettingsOpen);
     document.getElementById('secGizmo').hidden =
       !(gizmoSettingsOpen && editing);
+    // ノードエディタの開閉状態をツールバーの ⚡ に映す。
+    document.getElementById('gzNodes').classList.toggle('on', nodeEdOpen);
 
     // 選択中のオブジェクト / ライト / カメラ。同時に立つのは 1 つだけ
     // （サーバー側で排他している）。Inspector は選んでいるものの内容だけを
@@ -1508,6 +1521,11 @@
       document.getElementById('edSY').disabled = sphere;
       document.getElementById('edSZ').disabled = sphere;
     }
+
+    // Inspector のイベント節（選択中の対象が関わるノードの一覧）。
+    if (sel) renderNodesFor('object', sel.index, 'edObjEvents');
+    if (lightSel) renderNodesFor('light', lightSel.index, 'edLightEvents');
+    if (camSel) renderNodesFor('camera', camSel.index, 'edCamEvents');
 
     document.getElementById('edJointB').textContent =
       jointPartner < 0 ? '地面' : ('#' + jointPartner);
@@ -1613,6 +1631,381 @@
     send('edit.load', { name: name });
   }
 
+  // ---- ノードエディタ（Node-RED 風のイベント設計）--------------------------
+  // グラフの実体はサーバー（/scene の graph = {nodes, wires}）。ここでやるのは
+  // 描画と、編集コマンド（edit.node.* / edit.wire.*）の送信だけ。ポーリングが
+  // 0.5 秒ごとに上書きしてくるので、ドラッグ中とノード内の入力にフォーカスが
+  // あるあいだは DOM を組み直さない（setField の「編集中の欄は触らない」と
+  // 同じ発想）。ノードの座標はキャンバス左上原点の px で、サーバーが保存する。
+  const NODE_W = 168;   // ノードの幅。ポート（結線の端点）の X 計算に使う
+  const PORT_Y = 16;    // 見出し行にあるポートの Y（ノード上端から）
+  const NODE_DEF = {
+    onCollision:    { icon: '⚡', label: '衝突したら', trigger: true,  target: 'object' },
+    onStart:        { icon: '▶',  label: '開始したら', trigger: true,  target: 'none' },
+    onTimer:        { icon: '⏱',  label: 'タイマー',   trigger: true,  target: 'none' },
+    setColor:       { icon: '🎨', label: '色を変える', trigger: false, target: 'object' },
+    impulse:        { icon: '🚀', label: '力を加える', trigger: false, target: 'object' },
+    setFixed:       { icon: '📌', label: '固定する',   trigger: false, target: 'object' },
+    lightColor:     { icon: '💡', label: 'ライトの色', trigger: false, target: 'light' },
+    lightIntensity: { icon: '🔆', label: 'ライトの強さ', trigger: false, target: 'light' },
+    cameraLookAt:   { icon: '🎥', label: '注視する',   trigger: false, target: 'camera' },
+  };
+  let nodeEdOpen = false;
+  let ndGraphKey = '';   // 前回組み立てたグラフ+選択肢のキー（変化検知）
+  let ndDrag = null;     // ノード移動中 {id, el, offX, offY, x, y}
+  let ndWireDrag = null; // 結線中 {from, x1, y1, x2, y2}
+
+  // 名前はユーザーの自由入力なので、innerHTML に混ぜる前に必ず通す。
+  const ndEsc = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+
+  function nodeById(id) {
+    const g = sceneData && sceneData.graph;
+    return g ? (g.nodes || []).find((n) => n.id === id) || null : null;
+  }
+
+  function openNodeEditor() { nodeEdOpen = true; renderNodeEditor(true); }
+  function closeNodeEditor() { nodeEdOpen = false; renderNodeEditor(); renderEditor(); }
+  function toggleNodeEditor() {
+    nodeEdOpen = !nodeEdOpen;
+    renderNodeEditor(true);
+    renderEditor();
+  }
+
+  // 新しいノードの置き場所: 既存の数から素朴に格子へ。重ねて置くと同じ場所に
+  // 積もって見つけられないため。
+  function ndNewPos() {
+    const g = (sceneData && sceneData.graph) || { nodes: [] };
+    const i = (g.nodes || []).length;
+    return { x: 40 + (i % 4) * (NODE_W + 40), y: 40 + Math.floor(i / 4) * 130 };
+  }
+  function paletteAdd(kind) {
+    send('edit.node.add', Object.assign({ kind: kind }, ndNewPos()));
+  }
+  // Inspector の「＋」: 対象（target）を送らない = サーバーが「今の選択」を
+  // 対象として補完する（EditorComponent の node.add）。
+  function addInspectorNode(selectId) {
+    const kind = document.getElementById(selectId).value;
+    send('edit.node.add', Object.assign({ kind: kind }, ndNewPos()));
+    openNodeEditor();  // 追加した結果（と配線のしかた）が見える場所へ
+  }
+  function ndPatch(id, patch) { send('edit.node.set', Object.assign({ id: id }, patch)); }
+  function ndRemoveNode(id) { send('edit.node.remove', { id: id }); }
+  function ndRemoveWire(from, to) { send('edit.wire.remove', { from: from, to: to }); }
+  function ndVecChange(id, el) {
+    const row = el.closest('.ndVec');
+    const v = {};
+    for (const ax of ['x', 'y', 'z']) {
+      v[ax] = parseFloat(row.querySelector('[data-vec="' + ax + '"]').value) || 0;
+    }
+    ndPatch(id, { vec: v });
+  }
+
+  // 対象セレクトの選択肢。一覧（objects / lights / cameras）は /scene の
+  // ものをそのまま使う。今の値が一覧に無い（消えた直後など）ときも、勝手に
+  // 別の値へ飛ばないようダミーの選択肢として残す。
+  function ndObjItems() {
+    const KIND = { box: 'Box', sphere: 'Sphere', model: 'Model' };
+    return (sceneData.objects || []).map((o) => ({
+      v: o.index,
+      t: o.name ? o.name : (KIND[o.shape] || 'Obj') + ' ' + o.index
+    }));
+  }
+  function ndLightItems() {
+    return (sceneData.lights || []).map((l) => ({
+      v: l.index, t: l.name ? l.name : 'Light ' + l.index
+    }));
+  }
+  function ndCamItems() {
+    return (sceneData.cameras || []).filter((c) => c.active !== false)
+      .map((c) => ({ v: c.index, t: cameraName(c.index) }));
+  }
+  function ndSelHtml(id, field, items, cur, head) {
+    let found = false;
+    let h = '<select class="strSel" onchange="ndPatch(' + id + ',{' + field +
+            ':parseInt(this.value,10)})">';
+    for (const hv of head || []) {
+      if (hv[0] === cur) found = true;
+      h += '<option value="' + hv[0] + '"' + (cur === hv[0] ? ' selected' : '') +
+           '>' + hv[1] + '</option>';
+    }
+    for (const it of items) {
+      if (it.v === cur) found = true;
+      h += '<option value="' + it.v + '"' + (cur === it.v ? ' selected' : '') +
+           '>' + ndEsc(it.t) + '</option>';
+    }
+    if (!found) h += '<option value="' + cur + '" selected>? #' + cur + '</option>';
+    return h + '</select>';
+  }
+  const ndRow = (label, inner) =>
+    '<div class="ndRow"><span>' + label + '</span>' + inner + '</div>';
+
+  function ndNodeHtml(n, def) {
+    const fired = n.fired
+      ? '<span class="ndFire" title="発火回数">⚡' + n.fired + '</span>' : '';
+    let h = '<div class="ndNode ' + (def.trigger ? 'trig' : 'act') +
+            '" data-id="' + n.id + '" style="left:' + n.x + 'px;top:' + n.y + 'px">';
+    h += '<div class="ndTitleRow" data-drag="' + n.id + '" title="ドラッグで移動">' +
+         '<span>' + def.icon + '</span><span class="ndName">' + def.label + '</span>' +
+         fired +
+         '<span class="ndDel" title="ノードを削除" onclick="ndRemoveNode(' +
+         n.id + ')">✕</span></div>';
+    h += '<div class="ndBody">';
+    if (def.target === 'object') {
+      h += ndRow('対象', ndSelHtml(n.id, 'target', ndObjItems(), n.target,
+                                   def.trigger ? [[-1, '(どれでも)']]
+                                               : [[-1, '(選んでください)']]));
+    } else if (def.target === 'light') {
+      h += ndRow('対象', ndSelHtml(n.id, 'target', ndLightItems(), n.target,
+                                   [[-1, '(選んでください)']]));
+    } else if (def.target === 'camera') {
+      h += ndRow('対象', ndSelHtml(n.id, 'target', ndCamItems(), n.target,
+                                   [[-1, '(選んでください)']]));
+    }
+    if (n.kind === 'onCollision') {
+      h += ndRow('相手', ndSelHtml(n.id, 'other', ndObjItems(), n.other,
+                                   [[-2, '(何でも)'], [-1, '地面']]));
+    }
+    if (n.kind === 'cameraLookAt') {
+      h += ndRow('注視', ndSelHtml(n.id, 'other', ndObjItems(), n.other,
+                                   [[-1, '(選んでください)']]));
+    }
+    if (n.kind === 'onTimer') {
+      h += ndRow('間隔 s', '<input class="num" type="number" step="0.1" min="0.05" value="' +
+                 n.seconds + '" onchange="ndPatch(' + n.id +
+                 ',{seconds:parseFloat(this.value)||1})">');
+    }
+    if (n.kind === 'setColor' || n.kind === 'lightColor') {
+      h += ndRow('色', '<input class="col" type="color" value="' + n.color +
+                 '" onchange="ndPatch(' + n.id + ',{color:this.value})">');
+    }
+    if (n.kind === 'impulse') {
+      const vecIn = (ax, val) =>
+        '<input class="num" type="number" step="0.5" value="' + val +
+        '" title="' + ax.toUpperCase() + ' (m/s)" data-vec="' + ax +
+        '" onchange="ndVecChange(' + n.id + ',this)">';
+      h += ndRow('Δv', '<span class="ndVec">' + vecIn('x', n.vec.x) +
+                 vecIn('y', n.vec.y) + vecIn('z', n.vec.z) + '</span>');
+    }
+    if (n.kind === 'setFixed') {
+      h += ndRow('動作', '<select class="strSel" onchange="ndPatch(' + n.id +
+                 ',{value:parseFloat(this.value)})">' +
+                 '<option value="1"' + (n.value ? ' selected' : '') + '>固定する</option>' +
+                 '<option value="0"' + (!n.value ? ' selected' : '') + '>固定を解除</option>' +
+                 '</select>');
+    }
+    if (n.kind === 'lightIntensity') {
+      h += ndRow('強さ', '<input class="num" type="number" step="10000" min="0" value="' +
+                 n.value + '" onchange="ndPatch(' + n.id +
+                 ',{value:parseFloat(this.value)||0})">');
+    }
+    h += '</div>';
+    // ポート。トリガーは右に出力、アクションは左に入力（Node-RED の向き）。
+    h += def.trigger
+      ? '<span class="ndPort out" data-out="' + n.id +
+        '" title="ここからアクションへドラッグで接続"></span>'
+      : '<span class="ndPort in" data-in="' + n.id + '"></span>';
+    return h + '</div>';
+  }
+
+  function ndWirePath(p1, p2) {
+    const dx = Math.max(30, Math.abs(p2.x - p1.x) * 0.5);
+    return 'M' + p1.x + ',' + p1.y + ' C' + (p1.x + dx) + ',' + p1.y + ' ' +
+           (p2.x - dx) + ',' + p2.y + ' ' + p2.x + ',' + p2.y;
+  }
+
+  // 線を引き直す。posOverride があれば（= ドラッグ中）、サーバー座標では
+  // なく DOM の現在位置で描く - 動かしている最中も線が付いてくるように。
+  function ndDrawWires(posOverride) {
+    const g = (sceneData && sceneData.graph) || { nodes: [], wires: [] };
+    const pt = (id, out) => {
+      const p = posOverride && posOverride[id];
+      const n = nodeById(id);
+      if (!p && !n) return null;
+      const x = p ? p.x : n.x, y = p ? p.y : n.y;
+      return { x: x + (out ? NODE_W : 0), y: y + PORT_Y };
+    };
+    let h = '';
+    for (const w of g.wires || []) {
+      const p1 = pt(w.from, true), p2 = pt(w.to, false);
+      if (!p1 || !p2) continue;
+      const d = ndWirePath(p1, p2);
+      // 見える線 + 太い透明の当たり判定（細線はクリックできない）。
+      h += '<path class="wire" d="' + d + '"/>' +
+           '<path class="wireHit" d="' + d + '" onclick="ndRemoveWire(' +
+           w.from + ',' + w.to + ')"><title>クリックで切断</title></path>';
+    }
+    if (ndWireDrag) {
+      h += '<path class="wire drag" d="' +
+           ndWirePath({ x: ndWireDrag.x1, y: ndWireDrag.y1 },
+                      { x: ndWireDrag.x2, y: ndWireDrag.y2 }) + '"/>';
+    }
+    document.getElementById('ndWires').innerHTML = h;
+  }
+  function ndRedrawLocal() {
+    const pos = {};
+    for (const el of document.querySelectorAll('#ndNodes .ndNode')) {
+      pos[parseInt(el.dataset.id, 10)] =
+        { x: parseFloat(el.style.left), y: parseFloat(el.style.top) };
+    }
+    ndDrawWires(pos);
+  }
+
+  function renderNodeEditor(force) {
+    const panel = document.getElementById('nodeEd');
+    // Editor Camera のページ専用。モードは問わない: シミュレートを回しながら
+    // 発火バッジ（⚡n）で動きを確かめる使い方があるため。編集コマンド自体は
+    // サーバー側でもエディタカメラ限定で弾かれる。
+    const show = nodeEdOpen && !!sceneData && isEditorCam() && owner;
+    panel.hidden = !show;
+    if (!show) { ndGraphKey = ''; return; }
+
+    const g = sceneData.graph || { nodes: [], wires: [] };
+    // グラフか選択肢（名前・数）が変わったときだけ組み直す。操作中
+    // （ドラッグ / ノード内の入力にフォーカス）は据え置き - キーを更新しない
+    // ので、操作が終わった次のポーリングで最新版に揃う。
+    const optKey =
+      (sceneData.objects || []).map((o) => o.index + ':' + (o.name || '')).join(',') +
+      '|' + (sceneData.lights || []).map((l) => l.index + ':' + (l.name || '')).join(',') +
+      '|' + (sceneData.cameras || []).filter((c) => c.active !== false)
+              .map((c) => c.index).join(',');
+    const key = JSON.stringify(g) + '@' + optKey;
+    if (!force && key === ndGraphKey) return;
+    const canvas = document.getElementById('ndCanvas');
+    if (ndDrag || ndWireDrag ||
+        (canvas.contains(document.activeElement) &&
+         document.activeElement !== document.body)) {
+      return;
+    }
+    ndGraphKey = key;
+
+    let h = '';
+    for (const n of g.nodes || []) {
+      const def = NODE_DEF[n.kind];
+      if (!def) continue;
+      h += ndNodeHtml(n, def);
+    }
+    document.getElementById('ndNodes').innerHTML = h ||
+      '<div class="ndEmpty">ノードがありません。上のパレット、または ' +
+      'Inspector の「イベント ＋」から追加してください。</div>';
+    ndDrawWires();
+  }
+
+  // ノードの移動と結線。pointer events を #ndNodes に委譲で付ける。
+  {
+    const canvas = document.getElementById('ndCanvas');
+    const nodesEl = document.getElementById('ndNodes');
+    const canvasPos = (e) => {
+      const r = canvas.getBoundingClientRect();
+      return { x: e.clientX - r.left + canvas.scrollLeft,
+               y: e.clientY - r.top + canvas.scrollTop };
+    };
+    nodesEl.addEventListener('pointerdown', (e) => {
+      if (!owner) return;
+      const out = e.target.closest('[data-out]');
+      if (out) {
+        const id = parseInt(out.dataset.out, 10);
+        const n = nodeById(id);
+        if (!n) return;
+        ndWireDrag = { from: id, x1: n.x + NODE_W, y1: n.y + PORT_Y,
+                       x2: n.x + NODE_W, y2: n.y + PORT_Y };
+        nodesEl.setPointerCapture(e.pointerId);
+        e.preventDefault();
+        ndRedrawLocal();
+        return;
+      }
+      const head = e.target.closest('[data-drag]');
+      if (head) {
+        const el = head.closest('.ndNode');
+        const p = canvasPos(e);
+        ndDrag = { id: parseInt(head.dataset.drag, 10), el: el,
+                   offX: p.x - parseFloat(el.style.left),
+                   offY: p.y - parseFloat(el.style.top) };
+        nodesEl.setPointerCapture(e.pointerId);
+        e.preventDefault();
+      }
+    });
+    nodesEl.addEventListener('pointermove', (e) => {
+      if (ndDrag) {
+        const p = canvasPos(e);
+        ndDrag.x = Math.max(0, Math.round(p.x - ndDrag.offX));
+        ndDrag.y = Math.max(0, Math.round(p.y - ndDrag.offY));
+        ndDrag.el.style.left = ndDrag.x + 'px';
+        ndDrag.el.style.top = ndDrag.y + 'px';
+        ndRedrawLocal();
+        return;
+      }
+      if (ndWireDrag) {
+        const p = canvasPos(e);
+        ndWireDrag.x2 = p.x;
+        ndWireDrag.y2 = p.y;
+        ndRedrawLocal();
+      }
+    });
+    const finish = (e) => {
+      if (ndDrag) {
+        // 動かした結果だけ送る（ドラッグ中はローカルの見た目だけ）。
+        if (ndDrag.x !== undefined) {
+          send('edit.node.set', { id: ndDrag.id, x: ndDrag.x, y: ndDrag.y });
+        }
+        ndDrag = null;
+        ndGraphKey = '';  // 次のポーリングでサーバーの答え合わせ
+        return;
+      }
+      if (ndWireDrag) {
+        // どのアクションノードの上で離してもよい（in ポートちょうどでなくて
+        // 可）。向きの検証はサーバー側にもある。
+        const el = document.elementFromPoint(e.clientX, e.clientY);
+        const nodeEl = el && el.closest ? el.closest('.ndNode') : null;
+        if (nodeEl) {
+          const id = parseInt(nodeEl.dataset.id, 10);
+          const n = nodeById(id);
+          if (n && NODE_DEF[n.kind] && !NODE_DEF[n.kind].trigger &&
+              id !== ndWireDrag.from) {
+            send('edit.wire.add', { from: ndWireDrag.from, to: id });
+          }
+        }
+        ndWireDrag = null;
+        ndGraphKey = '';
+        ndRedrawLocal();
+      }
+    };
+    nodesEl.addEventListener('pointerup', finish);
+    nodesEl.addEventListener('pointercancel', () => {
+      ndDrag = null;
+      ndWireDrag = null;
+      ndGraphKey = '';
+    });
+  }
+
+  // Inspector の「イベント」節: 選択中の対象（オブジェクト / ライト /
+  // カメラ）が関わるノードだけの一覧。対象を持たないトリガー（開始・
+  // タイマー）はノードエディタで全体を見る。
+  function renderNodesFor(targetKind, index, listId) {
+    const el = document.getElementById(listId);
+    if (!el) return;
+    const g = (sceneData && sceneData.graph) || { nodes: [], wires: [] };
+    const rows = (g.nodes || []).filter((n) => {
+      const def = NODE_DEF[n.kind];
+      return def && def.target === targetKind && n.target === index;
+    });
+    el.innerHTML = rows.length
+      ? rows.map((n) => {
+          const def = NODE_DEF[n.kind];
+          const wires = (g.wires || [])
+            .filter((w) => w.from === n.id || w.to === n.id).length;
+          return '<div class="ndItem">' +
+            '<span>' + def.icon + ' ' + def.label + '</span>' +
+            (n.fired ? '<span class="ndFire" title="発火回数">⚡' + n.fired +
+                       '</span>' : '') +
+            '<span class="sub">' + wires + ' 接続</span>' +
+            '<span class="x" title="ノードを削除" onclick="ndRemoveNode(' +
+            n.id + ')">✕</span></div>';
+        }).join('')
+      : '<div class="edHint">この対象のノードはまだありません。</div>';
+  }
+
   async function pollScene() {
     try {
       const r = await fetch('scene');
@@ -1623,6 +2016,7 @@
       renderInspector();
       renderEditor();
       renderAssets();
+      renderNodeEditor();
     } catch (e) { /* server busy or gone; try again next tick */ }
   }
   setInterval(pollScene, 500);

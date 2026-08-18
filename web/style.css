@@ -593,6 +593,142 @@
   }
   .asItem .kind { display: block; font-size: 9.5px; color: #7b7f88; }
 
+  /* ---- ノードエディタ（Node-RED 風のイベント設計）------------------------ */
+  /* 画面中央の大きなウィンドウ（各辺 90%、.ndWin）。外側の全画面レイヤ
+     （.ndBack、position:fixed = ビューポート基準。#stage の子のままなので
+     フルスクリーン中はその画面基準）が後ろの映像とパネルを backdrop-filter
+     でぼかし、クリックで閉じる。サイドバー (z:40) より上。グラフの実体は
+     サーバーで、ここは見た目だけ。 */
+  #nodeEd {
+    position: fixed; inset: 0; z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #nodeEd[hidden] { display: none; }
+  .ndBack {
+    position: absolute; inset: 0;
+    /* ぼかしの効かないブラウザ向けの下地: 濃いめに沈めて主役を渡す。 */
+    background: rgba(13,15,19,.6);
+  }
+  .ndWin {
+    position: relative; width: 90%; height: 90%;
+    display: flex; flex-direction: column; overflow: hidden;
+    background: rgba(21,23,28,.97);
+    border: 1px solid #3a3d45; border-radius: 12px;
+    box-shadow: 0 18px 60px rgba(0,0,0,.55);
+  }
+  @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .ndBack {
+      background: rgba(13,15,19,.3);
+      -webkit-backdrop-filter: blur(10px);
+      backdrop-filter: blur(10px);
+    }
+    /* ぼけた背景がうっすら透けるくらいの下地。 */
+    .ndWin { background: rgba(21,23,28,.9); }
+  }
+  /* ステージは OS カーソルを消して自前の矢印を描くが（#stage * の
+     cursor:none）、ノードエディタは普通のフォーム操作なので OS カーソルに
+     戻す。app.js 側もこの上ではソフトウェアカーソルを出さない。 */
+  #nodeEd, #nodeEd * { cursor: auto; }
+  #nodeEd button, .ndDel, .ndItem .x, #ndWires path.wireHit,
+  .ndBack { cursor: pointer; }
+  #nodeEd .ndTitleRow { cursor: grab; }
+  #nodeEd .ndPort { cursor: crosshair; }
+  .ndHead {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+    flex: 0 0 auto; flex-wrap: wrap;
+    /* ウィンドウの下地より一段濃く（ぼかしは .ndBack が掛けている）。 */
+    background: rgba(23,24,28,.6); border-bottom: 1px solid #303239;
+  }
+  .ndTitle { font-size: 12px; font-weight: 600; color: #c9ced6; }
+  .ndPalette { display: flex; gap: 3px; flex-wrap: wrap; margin-left: auto;
+               align-items: center; }
+  .ndPalette button, #ndClose {
+    margin: 0; padding: 3px 8px; font-size: 11px;
+    background: #2a2d34; color: #dfe2e7; border: 1px solid #3a3d45;
+    border-radius: 4px;
+  }
+  .ndPalette button:hover:enabled, #ndClose:hover:enabled { background: #343841; }
+  .ndHint {
+    flex: 0 0 auto; font-size: 10.5px; color: #7b7f88; line-height: 1.5;
+    padding: 4px 8px; border-top: 1px solid #262930;
+  }
+  /* キャンバス。スクロール領域の広さは #ndNodes / #ndWires の固定サイズが
+     決める（作業机。足りなければ数字を増やすだけ）。 */
+  #ndCanvas {
+    flex: 1 1 auto; position: relative; overflow: auto;
+    scrollbar-width: thin; scrollbar-color: #3a3d45 transparent;
+    overscroll-behavior: contain;
+  }
+  #ndNodes {
+    position: relative; width: 2000px; height: 1400px;
+    /* 半透明の下地でも見える程度のドット（rgba: ぼかした背景に馴染ませる）。 */
+    background-image: radial-gradient(circle, rgba(154,164,181,.22) 1px,
+                                      transparent 1px);
+    background-size: 22px 22px;
+  }
+  /* 線はノードの下のレイヤ。線そのものには当たりを付けず、太い透明の
+     .wireHit だけがクリック（切断）を受ける。 */
+  #ndWires {
+    position: absolute; left: 0; top: 0; width: 2000px; height: 1400px;
+    z-index: 1; pointer-events: none;
+  }
+  #ndWires path.wire { fill: none; stroke: #9aa4b5; stroke-width: 2; }
+  #ndWires path.wire.drag { stroke: #d0913f; stroke-dasharray: 6 4; }
+  #ndWires path.wireHit {
+    fill: none; stroke: transparent; stroke-width: 12;
+    pointer-events: stroke; cursor: pointer;
+  }
+  #ndWires path.wireHit:hover { stroke: rgba(231,180,180,.28); }
+  .ndNode {
+    position: absolute; width: 168px; box-sizing: border-box; z-index: 2;
+    background: #23252c; border: 1px solid #3a3d45; border-left-width: 3px;
+    border-radius: 7px; font-size: 11px; color: #c3c8d0; user-select: none;
+  }
+  /* トリガーは橙、アクションは青。ポートの色（＝繋がる向き）と揃える。 */
+  .ndNode.trig { border-left-color: #d0913f; }
+  .ndNode.act { border-left-color: #4a70ad; }
+  .ndTitleRow {
+    display: flex; align-items: center; gap: 5px; padding: 5px 7px;
+    border-bottom: 1px solid #2c2f36; cursor: grab; touch-action: none;
+  }
+  .ndTitleRow:active { cursor: grabbing; }
+  .ndName { font-weight: 600; color: #dfe2e7; flex: 1 1 auto;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ndFire { font-size: 10px; color: #f2d933; flex: 0 0 auto; }
+  .ndDel { color: #8b8f99; cursor: pointer; padding: 0 2px; flex: 0 0 auto; }
+  .ndDel:hover { color: #e7b4b4; }
+  .ndBody { display: flex; flex-direction: column; gap: 4px; padding: 6px 7px; }
+  .ndRow { display: flex; align-items: center; gap: 5px;
+           justify-content: space-between; }
+  .ndRow > span:first-child { flex: 0 0 auto; color: #8b8f99; font-size: 10.5px; }
+  /* .strSel の max-width:55% はサイドバー用。ノード内では幅いっぱいに。 */
+  .ndRow .strSel { flex: 1 1 auto; min-width: 0; max-width: none;
+                   padding: 2px 4px; font-size: 11px; }
+  .ndRow .num { max-width: 76px; }
+  .ndRow .col { width: 38px; height: 20px; flex: 0 0 auto; }
+  .ndVec { display: flex; gap: 3px; flex: 1 1 auto; min-width: 0; }
+  .ndVec .num { min-width: 0; flex: 1 1 0; max-width: none; }
+  .ndPort {
+    position: absolute; top: 10px; width: 13px; height: 13px;
+    border-radius: 50%; border: 2px solid #17181c; box-sizing: border-box;
+    cursor: crosshair; z-index: 3; touch-action: none;
+  }
+  .ndPort.out { right: -8px; background: #d0913f; }
+  .ndPort.in { left: -8px; background: #4a70ad; }
+  .ndPort:hover { transform: scale(1.3); }
+  .ndEmpty { position: absolute; left: 24px; top: 24px; font-size: 12px;
+             color: #7b7f88; max-width: 40ch; line-height: 1.6; }
+  /* Inspector のイベント節（選択中の対象が関わるノードの一覧）。 */
+  .ndList { display: flex; flex-direction: column; gap: 2px; }
+  .ndItem {
+    display: flex; align-items: center; gap: 6px; font-size: 11.5px;
+    padding: 3px 6px; border-radius: 3px; color: #c3c8d0;
+    background: #101114; border: 1px solid #262930;
+  }
+  .ndItem .sub { margin-left: auto; color: #7b7f88; font-size: 10.5px; }
+  .ndItem .x { color: #8b8f99; cursor: pointer; padding: 0 4px; }
+  .ndItem .x:hover { color: #e7b4b4; }
+
   /* Phones and narrow windows: the video gets the whole width and the sidebar
      slides over it when opened, instead of squeezing the layout. */
   @media (max-width: 900px) {

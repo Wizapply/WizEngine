@@ -608,6 +608,30 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         }
     }
 
+    // イベントグラフ（Inspector のイベント節とノードエディタが描く）。
+    // 発火回数付き: シミュレート中にどのノードが動いたかが見える
+    // （Node-RED のデバッグバッジに相当）。
+    {
+        nlohmann::json g;
+        g["nodes"] = nlohmann::json::array();
+        const auto fires = editor_.nodeFireCounts();
+        for (const auto& n : editor_.graphNodes()) {
+            nlohmann::json e = ed::toJson(n);
+            for (const auto& fc : fires) {
+                if (fc.first == n.id) {
+                    e["fired"] = fc.second;
+                    break;
+                }
+            }
+            g["nodes"].push_back(e);
+        }
+        g["wires"] = nlohmann::json::array();
+        for (const auto& w : editor_.graphWires()) {
+            g["wires"].push_back(ed::toJson(w));
+        }
+        j["graph"] = g;
+    }
+
     // Who (if anyone) is holding each object, so the list can colour it.
     std::vector<int> heldBy(boxes_.size(), -1);
     for (std::size_t c = 0; c < controllers_.size(); ++c) {
@@ -965,6 +989,9 @@ void Scene::stepPhysics(double dt) {
         for (auto& a : obj.actions) a->onPhysicsStep(obj, physics_, dt);
     }
     physics_.step(dt);
+    // イベントグラフは step の後: 衝突トリガーはこのステップが作った接触を
+    // 見る（前に置くと 1 ステップ古い接触に反応する）。
+    runEventGraph(dt);
     snapshot();
 }
 
@@ -978,6 +1005,9 @@ void Scene::stepEditor(double dt) {
 // Put everything back where it was placed. Called from the browser (Reset) and
 // whenever the simulation is stopped.
 void Scene::reset() {
+    // イベントの実行状態と、アクションが加えた上書き（色・ライト・固定）も
+    // やり直しにする - Reset は「シミュレートを最初から」の意味なので。
+    resetGraphRuntime();
     restoreAuthoredPoses();
     physics_.wakeAll();  // last: it also rebuilds the solver layout
     snapshot();
@@ -1037,8 +1067,287 @@ void Scene::buildJoints() {
     }
 }
 
+// ---- イベントグラフの実行 ---------------------------------------------------
+// すべて PHYSICS スレッド。シミュレートの 1 サブステップごとに、トリガーを
+// 判定してワイヤー先のアクションを実行する 1 段だけの評価（アクション →
+// アクションの連鎖は無い）。グラフ本体は EditorState、ここは実行するだけ。
+
+void Scene::runEventGraph(double dt) {
+    // グラフが変わっていたら一覧を取り直す。タイマー等はノード id で引くので、
+    // シミュレート中の追加・削除でも残りのノードの状態は保たれる。
+    const std::uint64_t v = editor_.graphVersion();
+    if (v != graphRt_.version) {
+        graphRt_.version = v;
+        graphRt_.nodes = editor_.graphNodes();
+        graphRt_.wires = editor_.graphWires();
+    }
+    if (graphRt_.nodes.empty()) {
+        graphRt_.startFired = true;  // 後から足した OnSimStart を発火させない
+        return;
+    }
+
+    // 衝突トリガーがあるときだけ接触コンテナを走査する（タダではないので）。
+    bool wantContacts = false;
+    for (const auto& n : graphRt_.nodes) {
+        if (n.kind == ed::NodeKind::OnCollision) {
+            wantContacts = true;
+            break;
+        }
+    }
+
+    // 今ステップの接触をオブジェクト番号のペア（-1 = 地面）に引き直し、
+    // 前ステップに無かったものだけを「新しくぶつかった」として残す。NSC では
+    // 積まれているだけでも毎ステップ接触が立つので、差分を取らないと乗って
+    // いるだけで発火し続ける。
+    std::vector<std::pair<int, int>> newPairs;
+    if (wantContacts) {
+        // physId -> オブジェクト番号。ボディは他にも居る（地面・静的メッシュ・
+        // 作り直しで退場した旧ボディ）ので、生きている物だけを引く。
+        std::map<std::size_t, int> byPhys;
+        for (std::size_t i = 0; i < boxes_.size(); ++i) {
+            if (boxes_[i].alive && boxes_[i].physId != GameObject::kInvalidId) {
+                byPhys[boxes_[i].physId] = int(i);
+            }
+        }
+        std::set<std::pair<int, int>> now;
+        for (const auto& pr : physics_.activeContactPairs()) {
+            int a = 0, b = 0;
+            const auto ia = byPhys.find(pr.first);
+            const auto ib = byPhys.find(pr.second);
+            if (ia != byPhys.end()) a = ia->second;
+            else if (pr.first == groundPhysId_) a = -1;
+            else continue;  // 退場済みボディや静的メッシュは対象外
+            if (ib != byPhys.end()) b = ib->second;
+            else if (pr.second == groundPhysId_) b = -1;
+            else continue;
+            if (a > b) std::swap(a, b);
+            now.insert({a, b});
+        }
+        // 最初のパスは今の接触を覚えるだけで発火させない。シミュレート開始の
+        // 時点で既に触れていたペア（積んである箱・地面の上の箱）まで「新しく
+        // ぶつかった」ことになってしまうため。
+        if (graphRt_.contactsPrimed) {
+            for (const auto& p : now) {
+                if (!graphRt_.prevContacts.count(p)) newPairs.push_back(p);
+            }
+        }
+        graphRt_.contactsPrimed = true;
+        graphRt_.prevContacts.swap(now);
+    }
+
+    // ---- トリガー判定 ----
+    // ペア (a, b) がノードに合うか。target = -1 は「どのオブジェクトでも」。
+    // 相手フィルタ（other）は target でない側に掛かる。
+    auto collisionMatches = [](const ed::NodeDesc& n, int a, int b) {
+        auto pairOk = [&n](int self, int partner) {
+            if (n.target >= 0 && self != n.target) return false;
+            if (n.target < 0 && self < 0) return false;  // 地面は対象ではない
+            if (n.other == -2) return true;
+            return partner == n.other;
+        };
+        return pairOk(a, b) || pairOk(b, a);
+    };
+
+    std::vector<int> fired;
+    for (const auto& n : graphRt_.nodes) {
+        bool fire = false;
+        switch (n.kind) {
+            case ed::NodeKind::OnSimStart:
+                fire = !graphRt_.startFired;
+                break;
+            case ed::NodeKind::OnTimer: {
+                double& t = graphRt_.timers[n.id];
+                t += dt;
+                if (t >= n.seconds) {
+                    fire = true;
+                    // 溜まっていても 1 回だけ（重いフレームの後に連射しない）。
+                    t = std::fmod(t, n.seconds);
+                }
+                break;
+            }
+            case ed::NodeKind::OnCollision:
+                for (const auto& p : newPairs) {
+                    if (collisionMatches(n, p.first, p.second)) {
+                        fire = true;
+                        break;
+                    }
+                }
+                break;
+            default:
+                break;  // アクションは自分からは発火しない
+        }
+        if (fire) fired.push_back(n.id);
+    }
+    graphRt_.startFired = true;
+    if (fired.empty()) return;
+
+    // ---- ワイヤーをたどってアクションへ ----
+    for (const int fromId : fired) {
+        editor_.noteNodeFired(fromId);
+        for (const auto& w : graphRt_.wires) {
+            if (w.from != fromId) continue;
+            for (const auto& n : graphRt_.nodes) {
+                if (n.id != w.to) continue;
+                editor_.noteNodeFired(n.id);
+                runGraphAction(n, dt);
+                break;
+            }
+        }
+    }
+}
+
+void Scene::runGraphAction(const ed::NodeDesc& n, double dt) {
+    switch (n.kind) {
+        case ed::NodeKind::SetColor: {
+            if (n.target < 0 || std::size_t(n.target) >= boxes_.size() ||
+                !boxes_[std::size_t(n.target)].alive) {
+                return;
+            }
+            // 実行時の上書きだけ。desc.color（設計値）は触らない - 停止で
+            // resetGraphRuntime が元の色へ戻す。glTF インスタンス描画の
+            // オブジェクトには効かない（個別のベース色を持てないため）。
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            GameObject& obj = boxes_[std::size_t(n.target)];
+            obj.runtimeColor = n.color;
+            obj.hasRuntimeColor = true;
+            obj.colorDirty = true;
+            return;
+        }
+        case ed::NodeKind::ApplyImpulse: {
+            if (n.target < 0 || std::size_t(n.target) >= boxes_.size() ||
+                !boxes_[std::size_t(n.target)].alive || dt <= 0.0) {
+                return;
+            }
+            const GameObject& obj = boxes_[std::size_t(n.target)];
+            if (obj.physId == GameObject::kInvalidId) return;
+            // applyForce は v += F*dt/m なので、F = m*Δv/dt でちょうど vec
+            // ぶん速度が変わる（レート非依存）。
+            const double m = physics_.bodyMass(obj.physId);
+            if (m <= 0.0) return;
+            physics_.applyForce(
+                obj.physId,
+                chrono::ChVector3d(n.vec.x * m / dt, n.vec.y * m / dt,
+                                   n.vec.z * m / dt),
+                dt);
+            return;
+        }
+        case ed::NodeKind::SetFixed: {
+            if (n.target < 0 || std::size_t(n.target) >= boxes_.size() ||
+                !boxes_[std::size_t(n.target)].alive) {
+                return;
+            }
+            const GameObject& obj = boxes_[std::size_t(n.target)];
+            if (obj.physId == GameObject::kInvalidId) return;
+            physics_.setBodyFixed(obj.physId, n.value != 0.0);
+            // 設計値（desc.fixed）は変えない。停止時に戻す対象として記録。
+            graphRt_.fixedTouched.insert(std::size_t(n.target));
+            return;
+        }
+        case ed::NodeKind::SetLightColor:
+        case ed::NodeKind::SetLightIntensity: {
+            if (n.target < 0 || std::size_t(n.target) >= lights_.size() ||
+                !lights_[std::size_t(n.target)].alive) {
+                return;
+            }
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            LightItem& l = lights_[std::size_t(n.target)];
+            if (n.kind == ed::NodeKind::SetLightColor) {
+                l.runtimeColor = n.color;
+                l.hasRuntimeColor = true;
+            } else {
+                l.runtimeIntensity = n.value;
+                l.hasRuntimeIntensity = true;
+            }
+            l.stateDirty = true;
+            return;
+        }
+        case ed::NodeKind::CameraLookAt: {
+            if (n.target < 0 || std::size_t(n.target) >= cameras_.size() ||
+                !cameraActive(std::size_t(n.target))) {
+                return;
+            }
+            if (n.other < 0 || std::size_t(n.other) >= boxes_.size() ||
+                !boxes_[std::size_t(n.other)].alive) {
+                return;
+            }
+            const GameObject& obj = boxes_[std::size_t(n.other)];
+            if (obj.physId == GameObject::kInvalidId) return;
+            // 注視点だけ動かす（視点は保つ）。CameraObject は atomic なので
+            // 物理スレッドから書いてよい。ユーザーのカメラ操作と同じ口。
+            const BodyTransform tr = physics_.bodyTransform(obj.physId);
+            cameras_[std::size_t(n.target)]->setTarget(tr.px, tr.py, tr.pz);
+            return;
+        }
+        default:
+            return;  // トリガーに in は無い（EditorState が張らせない）
+    }
+}
+
+void Scene::resetGraphRuntime() {
+    graphRt_.version = ~std::uint64_t(0);  // 次のステップで取り込み直す
+    graphRt_.nodes.clear();
+    graphRt_.wires.clear();
+    graphRt_.timers.clear();
+    graphRt_.startFired = false;
+    graphRt_.prevContacts.clear();
+    graphRt_.contactsPrimed = false;
+    editor_.clearNodeFireCounts();
+
+    // SetFixed が触ったオブジェクトだけ設計値の固定状態へ戻す。
+    for (const std::size_t i : graphRt_.fixedTouched) {
+        if (i < boxes_.size() && boxes_[i].alive &&
+            boxes_[i].physId != GameObject::kInvalidId) {
+            physics_.setBodyFixed(boxes_[i].physId, boxes_[i].desc.fixed);
+        }
+    }
+    graphRt_.fixedTouched.clear();
+
+    // 色・ライトの実行時上書きを捨て、dirty で実体へ設計値を再送させる。
+    std::lock_guard<std::mutex> lk(objectsMutex_);
+    for (auto& o : boxes_) {
+        if (o.hasRuntimeColor) {
+            o.hasRuntimeColor = false;
+            o.colorDirty = true;
+        }
+    }
+    for (auto& l : lights_) {
+        if (l.hasRuntimeColor || l.hasRuntimeIntensity) {
+            l.hasRuntimeColor = false;
+            l.hasRuntimeIntensity = false;
+            l.stateDirty = true;
+        }
+    }
+}
+
+void Scene::pruneGraphForRemoved(ed::NodeTargetKind kind, int index) {
+    // 対象そのものが消えたノードは削除（ワイヤーは removeGraphNode が一緒に
+    // 落とす）。OnCollision の相手フィルタだけが消えた場合は「何でも」(-2) に
+    // 戻して生かす。残すと「対象が無い」まま黙って動かないだけになる - 消えた
+    // ことが見えるほうがよい、というジョイントと同じ判断。
+    for (const auto& n : editor_.graphNodes()) {
+        const bool targetGone =
+            ed::nodeTargetKind(n.kind) == kind && n.target == index;
+        const bool otherGone = kind == ed::NodeTargetKind::Object &&
+                               ed::nodeOtherIsObject(n.kind) &&
+                               n.other == index;
+        if (targetGone) {
+            editor_.removeGraphNode(n.id);
+        } else if (otherGone) {
+            if (n.kind == ed::NodeKind::OnCollision) {
+                editor_.updateGraphNode(n.id, {{"other", -2}});
+            } else {
+                editor_.removeGraphNode(n.id);  // 注視先の無い LookAt は無意味
+            }
+        }
+    }
+}
+
 void Scene::enterMode(ed::AppMode target) {
     if (target == editor_.mode()) return;
+    // どちら向きの遷移でもイベントの実行状態は捨てる: 開始はまっさらから
+    // （タイマー・発火カウントのリセット）、停止は実行時の上書き（色・
+    // ライト・固定）を設計値へ戻すため。
+    resetGraphRuntime();
     if (target == ed::AppMode::Simulate) {
         // エディタ中に形や大きさを変えたぶんを、ここでまとめて実体に反映する。
         for (std::size_t i = 0; i < boxes_.size(); ++i) {
@@ -1130,6 +1439,9 @@ void Scene::destroyObject(std::size_t index) {
         editor_.setJoints(std::move(joints));
         if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
     }
+
+    // このオブジェクトを見張る / 動かすイベントノードも一緒に掃除する。
+    pruneGraphForRemoved(ed::NodeTargetKind::Object, int(index));
 
     // 誰かが掴んだままなら離させる。
     for (auto& c : controllers_) {
@@ -1228,6 +1540,8 @@ void Scene::destroyLight(std::size_t index) {
         lights_[index].alive = false;
         // renderId はそのまま。実体の破棄は RENDER スレッド（syncLights）。
     }
+    // このライトを動かすイベントノードも一緒に掃除する。
+    pruneGraphForRemoved(ed::NodeTargetKind::Light, int(index));
     if (editor_.selKind() == EditorState::SelKind::Light &&
         editor_.selIndex() == int(index)) {
         editor_.clearSel();
@@ -1310,6 +1624,17 @@ void Scene::resetCamerasToDefaults() {
 // RENDER スレッド。実体の無いライトを作り、消されたもの・作り直しが要る
 // ものを片付ける。applyToRenderer からロック済みで呼ばれる。
 void Scene::syncLights() {
+    // イベントグラフの実行時上書き（色・強さ）は、実体へ流す直前に desc へ
+    // 重ねる。desc そのものは設計値のままなので、停止時に上書きを落とせば
+    // 元のライトに戻る。
+    auto lightForRender = [](const LightItem& l) {
+        wizengine::LightDesc r = toRendererLight(l.desc);
+        if (l.hasRuntimeColor) {
+            r.color = {l.runtimeColor.r, l.runtimeColor.g, l.runtimeColor.b};
+        }
+        if (l.hasRuntimeIntensity) r.intensity = float(l.runtimeIntensity);
+        return r;
+    };
     for (auto& l : lights_) {
         const bool wantRelease = (!l.alive || l.rebuild) &&
                                  l.renderId != GameObject::kInvalidId;
@@ -1321,12 +1646,12 @@ void Scene::syncLights() {
         if (!l.alive) continue;
 
         if (l.renderId == GameObject::kInvalidId) {
-            l.renderId = renderer_.addLight(toRendererLight(l.desc));
+            l.renderId = renderer_.addLight(lightForRender(l));
             l.stateDirty = false;
             continue;
         }
         if (l.stateDirty) {
-            const wizengine::LightDesc r = toRendererLight(l.desc);
+            const wizengine::LightDesc r = lightForRender(l);
             renderer_.updateLight(l.renderId, r.color, r.intensity,
                                   r.direction, r.position);
             l.stateDirty = false;
@@ -1483,6 +1808,51 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         return;
     }
 
+    // ---- イベントグラフ ----------------------------------------------------
+    if (op.kind == "node.add") {
+        const ed::NodeDesc n = ed::clampNode(ed::nodeFromJson(a, ed::NodeDesc{}));
+        const int id = editor_.addGraphNode(n);
+        editor_.setStatus("ノードを追加: " +
+                          std::string(ed::nodeKindName(n.kind)) + " #" +
+                          std::to_string(id));
+        return;
+    }
+
+    if (op.kind == "node.set") {
+        const int id = ed::jsonInt(a, "id", -1);
+        if (id < 0) return;
+        // ドラッグ（位置）の連投でも来るので、ステータスは出さない。
+        editor_.updateGraphNode(id, a);
+        return;
+    }
+
+    if (op.kind == "node.remove") {
+        const int id = ed::jsonInt(a, "id", -1);
+        if (id < 0 || !editor_.removeGraphNode(id)) return;
+        editor_.setStatus("ノードを削除: #" + std::to_string(id));
+        return;
+    }
+
+    if (op.kind == "wire.add") {
+        const int from = ed::jsonInt(a, "from", -1);
+        const int to = ed::jsonInt(a, "to", -1);
+        if (editor_.addGraphWire(from, to)) {
+            editor_.setStatus("ノードを接続: #" + std::to_string(from) +
+                              " → #" + std::to_string(to));
+        }
+        return;
+    }
+
+    if (op.kind == "wire.remove") {
+        const int from = ed::jsonInt(a, "from", -1);
+        const int to = ed::jsonInt(a, "to", -1);
+        if (editor_.removeGraphWire(from, to)) {
+            editor_.setStatus("接続を解除: #" + std::to_string(from) + " → #" +
+                              std::to_string(to));
+        }
+        return;
+    }
+
     // ---- ライト -----------------------------------------------------------
     if (op.kind == "light.add") {
         const std::size_t index = createLight(ed::lightFromJson(a, ed::LightDesc{}));
@@ -1584,6 +1954,8 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             camerasActive_[std::size_t(index)] = 0;
         }
         controllers_[std::size_t(index)]->setSelected(BoxController::kNone);
+        // このカメラを動かすイベントノードも一緒に掃除する。
+        pruneGraphForRemoved(ed::NodeTargetKind::Camera, index);
         if (editor_.selKind() == EditorState::SelKind::Camera &&
             editor_.selIndex() == index) {
             editor_.clearSel();
@@ -1602,6 +1974,8 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     if (op.kind == "clear") {
         physics_.removeAllJoints();
         editor_.setJoints({});
+        editor_.setGraph({}, {});  // イベントグラフもシーンの一部
+        resetGraphRuntime();
         for (std::size_t i = 0; i < boxes_.size(); ++i) destroyObject(i);
         for (auto& c : controllers_) c->setSelected(BoxController::kNone);
         // ライトとカメラも初期状態へ（真っ暗なシーンから始めさせない）。
@@ -1655,15 +2029,24 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
 nlohmann::json Scene::documentJson() const {
     nlohmann::json doc;
     doc["format"] = "wizengine-scene";
-    // version 2: lights / cameras が加わった。v1（無印）の文書も読める
-    // （欠けている節は初期値へリセットされる。loadDocument を参照）。
-    doc["version"] = 2;
+    // version 3: nodes / wires（イベントグラフ）が加わった。version 2 は
+    // lights / cameras。古い文書も読める（欠けている節は初期値 / 空になる。
+    // loadDocument を参照）。
+    doc["version"] = 3;
     doc["sim"] = ed::toJson(editor_.sim());
 
-    // ライト（削除済みは詰める。オブジェクトと違い番号参照が無いので安全）。
+    // ライト（削除済みは詰める。ジョイントと違い番号参照が無い…のは v2 まで
+    // の話で、いまはイベントノードがライト番号を参照するので、オブジェクトと
+    // 同じく詰めた先への対応表を持つ）。
     doc["lights"] = nlohmann::json::array();
-    for (const auto& l : lights_) {
-        if (l.alive) doc["lights"].push_back(ed::toJson(l.desc));
+    std::vector<int> lightRemap(lights_.size(), -1);
+    {
+        int nextLight = 0;
+        for (std::size_t i = 0; i < lights_.size(); ++i) {
+            if (!lights_[i].alive) continue;
+            lightRemap[i] = nextLight++;
+            doc["lights"].push_back(ed::toJson(lights_[i].desc));
+        }
     }
 
     // カメラ（全スロット、姿勢と有効フラグ。スロット番号 = 配列位置）。
@@ -1702,6 +2085,53 @@ nlohmann::json Scene::documentJson() const {
         if (!fix(copy.bodyA) || !fix(copy.bodyB)) continue;
         doc["joints"].push_back(ed::toJson(copy));
     }
+
+    // ---- イベントグラフ ----------------------------------------------------
+    // ノードの対象番号も詰めた番号へ付け替える（オブジェクト / ライト。
+    // カメラはスロット固定なのでそのまま）。対象が消えているノードは
+    // pruneGraphForRemoved が落としているはずだが、二重の安全でここでも弾き、
+    // 落ちたノードに繋がるワイヤーも書かない。
+    doc["nodes"] = nlohmann::json::array();
+    doc["wires"] = nlohmann::json::array();
+    {
+        std::set<int> kept;
+        auto fixObj = [&remap](int& ref) {
+            if (ref < 0) return true;  // -1 / -2 の意味（どれでも等）は保つ
+            if (std::size_t(ref) >= remap.size() || remap[std::size_t(ref)] < 0)
+                return false;
+            ref = remap[std::size_t(ref)];
+            return true;
+        };
+        for (const auto& nIn : editor_.graphNodes()) {
+            ed::NodeDesc n = nIn;
+            const ed::NodeTargetKind tk = ed::nodeTargetKind(n.kind);
+            bool ok = true;
+            if (tk == ed::NodeTargetKind::Object) ok = fixObj(n.target);
+            if (ok && tk == ed::NodeTargetKind::Light && n.target >= 0) {
+                if (std::size_t(n.target) >= lightRemap.size() ||
+                    lightRemap[std::size_t(n.target)] < 0) {
+                    ok = false;
+                } else {
+                    n.target = lightRemap[std::size_t(n.target)];
+                }
+            }
+            if (ok && ed::nodeOtherIsObject(n.kind)) {
+                if (n.kind == ed::NodeKind::OnCollision) {
+                    if (!fixObj(n.other)) n.other = -2;  // 相手だけ消: 何でも
+                } else {
+                    ok = fixObj(n.other);
+                }
+            }
+            if (!ok) continue;
+            kept.insert(n.id);
+            doc["nodes"].push_back(ed::toJson(n));
+        }
+        for (const auto& w : editor_.graphWires()) {
+            if (kept.count(w.from) && kept.count(w.to)) {
+                doc["wires"].push_back(ed::toJson(w));
+            }
+        }
+    }
     return doc;
 }
 
@@ -1716,6 +2146,10 @@ void Scene::loadDocument(const nlohmann::json& doc) {
 
     // ライト。文書に無ければ（v1 の保存）初期構成へ戻す - 読み込んだシーンが
     // 保存時と同じ見た目になるのが原則で、v1 の保存時は必ず初期構成だった。
+    // 文書のライト番号は 0 起点で、実際にはこの位置から後ろに足されるので、
+    // ライトを参照するイベントノードはこのぶんずらす（オブジェクトの base と
+    // 同じ理屈）。
+    const std::size_t lightBase = lights_.size();
     if (doc.contains("lights") && doc["lights"].is_array()) {
         {
             std::lock_guard<std::mutex> lk(objectsMutex_);
@@ -1769,6 +2203,36 @@ void Scene::loadDocument(const nlohmann::json& doc) {
         }
     }
     editor_.setJoints(std::move(joints));
+
+    // イベントグラフ（version 3）。無い文書は空のグラフになる。対象番号は
+    // ジョイントと同じく、今回足されたぶんの先頭（base / lightBase）だけ
+    // ずらす。カメラはスロット番号なのでそのまま。
+    std::vector<ed::NodeDesc> nodes;
+    std::vector<ed::WireDesc> wires;
+    if (doc.contains("nodes") && doc["nodes"].is_array()) {
+        for (const auto& nj : doc["nodes"]) {
+            ed::NodeDesc n = ed::clampNode(ed::nodeFromJson(nj, ed::NodeDesc{}));
+            const ed::NodeTargetKind tk = ed::nodeTargetKind(n.kind);
+            if (tk == ed::NodeTargetKind::Object && n.target >= 0) {
+                n.target += int(base);
+            }
+            if (tk == ed::NodeTargetKind::Light && n.target >= 0) {
+                n.target += int(lightBase);
+            }
+            if (ed::nodeOtherIsObject(n.kind) && n.other >= 0) {
+                n.other += int(base);
+            }
+            nodes.push_back(n);
+        }
+    }
+    if (doc.contains("wires") && doc["wires"].is_array()) {
+        for (const auto& wj : doc["wires"]) {
+            wires.push_back(ed::wireFromJson(wj, ed::WireDesc{}));
+        }
+    }
+    editor_.setGraph(std::move(nodes), std::move(wires));
+    resetGraphRuntime();
+
     if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
     snapshot();
 }
@@ -1819,9 +2283,11 @@ void Scene::syncRenderables() {
             obj.colorDirty = true;
         }
         if (obj.colorDirty && !obj.modelDraw) {
-            renderer_.setShapeColor(
-                obj.renderId,
-                {obj.desc.color.r, obj.desc.color.g, obj.desc.color.b});
+            // イベントグラフ（SetColor）の実行時上書きがあればそちらを描く。
+            // 設計値は desc.color のままなので、停止時に落とせば元へ戻る。
+            const ed::Color3& c =
+                obj.hasRuntimeColor ? obj.runtimeColor : obj.desc.color;
+            renderer_.setShapeColor(obj.renderId, {c.r, c.g, c.b});
             obj.colorDirty = false;
         }
     }

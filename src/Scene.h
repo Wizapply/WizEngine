@@ -1,9 +1,13 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <map>
 #include <mutex>
 #include <memory>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <math/vec3.h>
@@ -87,6 +91,12 @@ public:
         bool alive = true;
         bool stateDirty = true;  // 色・強さ・位置・向きの変更（実体は保つ）
         bool rebuild = false;    // 種類・影・減衰・円錐角: 実体を作り直す
+        // イベントグラフのアクションが与える実行時の上書き。desc（設計値）は
+        // 書き換えず、シミュレート停止で元へ戻る（オブジェクトの色と同じ）。
+        bool hasRuntimeColor = false;
+        wizengine::editor::Color3 runtimeColor;
+        bool hasRuntimeIntensity = false;
+        double runtimeIntensity = 0.0;
     };
     std::size_t lightCount() const { return lights_.size(); }
     LightItem& lightItem(std::size_t i) { return lights_[i]; }
@@ -204,6 +214,22 @@ private:
     void rebuildBody(std::size_t index);
     // 文書のジョイントを Chrono に作り直す（シミュレート開始時）。
     void buildJoints();
+
+    // ---- イベントグラフの実行（PHYSICS スレッド）--------------------------
+    // シミュレートの 1 サブステップごとに、トリガー（衝突・開始・タイマー）を
+    // 判定し、ワイヤーで繋がったアクションを実行する。stepPhysics から呼ぶ。
+    void runEventGraph(double dt);
+    // 発火したトリガーから繋がった 1 個のアクションを実行する。
+    void runGraphAction(const wizengine::editor::NodeDesc& node, double dt);
+    // 実行状態（タイマー・接触の記憶・発火カウント）と、アクションが加えた
+    // 実行時の上書き（色・ライト・固定）を捨てて設計値へ戻す。
+    // シミュレートの開始・停止・Reset で呼ぶ。
+    void resetGraphRuntime();
+    // 消えた対象（オブジェクト / ライト / カメラ）を参照するノードを掃除する。
+    // 対象そのものが消えたノードは削除、OnCollision の相手フィルタだけが
+    // 消えた場合は「何でも」(-2) に戻す。ジョイントの掃除と同じ流儀。
+    void pruneGraphForRemoved(wizengine::editor::NodeTargetKind kind, int index);
+
     // 置いた場所へ全部戻す（シミュレート停止時と Reset）。
     void restoreAuthoredPoses();
     // シミュレート設定を PhysicsWorld へ流し込む。
@@ -249,4 +275,29 @@ private:
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る
     std::mutex poseMutex_;
     std::vector<BodyTransform> latestPoses_;  // one per box, in box order
+
+    // ---- イベントグラフの実行状態（PHYSICS スレッド専用）------------------
+    // グラフ本体は EditorState が持ち、ここにあるのは実行のためのキャッシュと
+    // 走らせている最中にだけ意味を持つ値。resetGraphRuntime が全部捨てる。
+    struct GraphRuntime {
+        // 取り込んだグラフの版。EditorState::graphVersion と食い違ったら
+        // 一覧をコピーし直す（毎ステップのロックを避けるための番号）。
+        std::uint64_t version = ~std::uint64_t(0);
+        std::vector<wizengine::editor::NodeDesc> nodes;
+        std::vector<wizengine::editor::WireDesc> wires;
+        // OnTimer の経過秒。ノード id で引く（グラフ編集で他のノードの
+        // タイマーがリセットされないように、位置ではなく id）。
+        std::map<int, double> timers;
+        bool startFired = false;  // OnSimStart は最初のステップで 1 回だけ
+        // 前サブステップの接触ペア（オブジェクト番号、-1 = 地面）。
+        // 今回あって前回無いペアだけが「新しくぶつかった」。
+        std::set<std::pair<int, int>> prevContacts;
+        // 最初の収集パスは「覚えるだけ」（false の間）。開始時点で既に触れて
+        // いた接触（置いた箱と地面など）を衝突として発火させないため。
+        bool contactsPrimed = false;
+        // SetFixed アクションが触ったオブジェクト番号。停止時にこれだけ
+        // desc.fixed へ戻す（全ボディを毎回触らないための記録）。
+        std::set<std::size_t> fixedTouched;
+    };
+    GraphRuntime graphRt_;
 };

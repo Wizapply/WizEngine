@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <memory>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace chrono {
@@ -174,6 +176,15 @@ public:
     void disableBody(std::size_t id);
     bool bodyActive(std::size_t id) const;
 
+    // ---- 接触の報告（イベントグラフの衝突トリガー用）----------------------
+    // 直前の step() が作った接触のボディペア（physId の組、first < second、
+    // 重複なし）。Chrono の接触コンテナを走査するので、必ず物理スレッドから
+    // 呼ぶこと。NSC では静止して積まれた物も毎ステップ「接触」なので、
+    // 「ぶつかった瞬間」が欲しい側（Scene::runEventGraph）が前ステップとの
+    // 差分を取る。Multicore の接触コンテナが ReportAllContacts を実装しない
+    // 版では空が返る（衝突トリガーが効かないだけで、他は壊れない）。
+    std::vector<std::pair<std::size_t, std::size_t>> activeContactPairs() const;
+
     // ---- ジョイント -------------------------------------------------------
     // anchor / axis はワールド座標。axis は Revolute の回転軸、Prismatic の
     // スライド方向で、それ以外では無視される。distance は Distance 専用で、
@@ -191,9 +202,15 @@ private:
     // Either a ChSystemNSC (serial core) or a ChSystemMulticoreNSC, chosen at
     // build time by WIZ_USE_MULTICORE. Everything above this class is unaware
     // of which one is in use.
+    // 追加したボディを逆引きマップにも登録する（activeContactPairs 用）。
+    void registerBody(const std::shared_ptr<chrono::ChBody>& body);
+
     std::shared_ptr<chrono::ChSystem> sys_;
     std::shared_ptr<chrono::ChContactMaterialNSC> mat_;
     std::vector<std::shared_ptr<chrono::ChBody>> bodies_;
+    // 接触コールバックが返す ChBody* から physId への逆引き。ボディは
+    // 削除されない（disableBody は退場させるだけ）ので、追加時に足すだけ。
+    std::unordered_map<const chrono::ChBody*, std::size_t> bodyIndex_;
     // disableBody() で退場させたボディは false。番号は詰めない。
     std::vector<bool> active_;
     // シミュレート中だけ存在する拘束。エディタへ戻るときに全部外す。

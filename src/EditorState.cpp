@@ -71,6 +71,134 @@ std::size_t EditorState::jointCount() const {
     return joints_.size();
 }
 
+// ---- イベントグラフ ---------------------------------------------------------
+// 変更は必ず graphVersion_ を進める（物理スレッドが実行キャッシュを取り直す
+// 合図）。mutex_ の下で書き、読みはコピーで返す - ジョイントと同じ流儀。
+
+std::vector<wizengine::editor::NodeDesc> EditorState::graphNodes() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return nodes_;
+}
+
+std::vector<wizengine::editor::WireDesc> EditorState::graphWires() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return wires_;
+}
+
+void EditorState::setGraph(std::vector<wizengine::editor::NodeDesc> nodes,
+                           std::vector<wizengine::editor::WireDesc> wires) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    nodes_ = std::move(nodes);
+    wires_ = std::move(wires);
+    // id はグラフ内で一意なら何でもよい（読み込んだ文書の番号をそのまま
+    // 使う）。次の採番だけ最大値の先へ動かす。
+    nextNodeId_ = 1;
+    for (const auto& n : nodes_) {
+        if (n.id >= nextNodeId_) nextNodeId_ = n.id + 1;
+    }
+    fireCounts_.clear();
+    graphVersion_.fetch_add(1);
+}
+
+int EditorState::addGraphNode(wizengine::editor::NodeDesc node) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    node.id = nextNodeId_++;
+    const int id = node.id;
+    nodes_.push_back(std::move(node));
+    graphVersion_.fetch_add(1);
+    return id;
+}
+
+bool EditorState::updateGraphNode(int id, const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (auto& n : nodes_) {
+        if (n.id != id) continue;
+        // 種類と id は変えさせない（種類が変わると target の意味とワイヤーの
+        // 向きが崩れる。作り直したほうが安全）。
+        wizengine::editor::NodeDesc next =
+            wizengine::editor::clampNode(wizengine::editor::nodeFromJson(patch, n));
+        next.id = n.id;
+        next.kind = n.kind;
+        n = next;
+        graphVersion_.fetch_add(1);
+        return true;
+    }
+    return false;
+}
+
+bool EditorState::removeGraphNode(int id) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const std::size_t before = nodes_.size();
+    nodes_.erase(std::remove_if(nodes_.begin(), nodes_.end(),
+                                [id](const wizengine::editor::NodeDesc& n) {
+                                    return n.id == id;
+                                }),
+                 nodes_.end());
+    if (nodes_.size() == before) return false;
+    wires_.erase(std::remove_if(wires_.begin(), wires_.end(),
+                                [id](const wizengine::editor::WireDesc& w) {
+                                    return w.from == id || w.to == id;
+                                }),
+                 wires_.end());
+    graphVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::addGraphWire(int from, int to) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    // 両端が存在し、from がトリガー・to がアクションであること。UI も同じ
+    // 制約で描くが、リクエストは誰でも作れるので判定はここが持つ。
+    const wizengine::editor::NodeDesc* a = nullptr;
+    const wizengine::editor::NodeDesc* b = nullptr;
+    for (const auto& n : nodes_) {
+        if (n.id == from) a = &n;
+        if (n.id == to) b = &n;
+    }
+    if (!a || !b) return false;
+    if (!wizengine::editor::nodeIsTrigger(a->kind)) return false;
+    if (wizengine::editor::nodeIsTrigger(b->kind)) return false;
+    for (const auto& w : wires_) {
+        if (w.from == from && w.to == to) return false;  // 二重線は張らない
+    }
+    wires_.push_back({from, to});
+    graphVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::removeGraphWire(int from, int to) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const std::size_t before = wires_.size();
+    wires_.erase(std::remove_if(wires_.begin(), wires_.end(),
+                                [from, to](const wizengine::editor::WireDesc& w) {
+                                    return w.from == from && w.to == to;
+                                }),
+                 wires_.end());
+    if (wires_.size() == before) return false;
+    graphVersion_.fetch_add(1);
+    return true;
+}
+
+void EditorState::noteNodeFired(int id) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (auto& fc : fireCounts_) {
+        if (fc.first == id) {
+            ++fc.second;
+            return;
+        }
+    }
+    fireCounts_.push_back({id, 1});
+}
+
+void EditorState::clearNodeFireCounts() {
+    std::lock_guard<std::mutex> lk(mutex_);
+    fireCounts_.clear();
+}
+
+std::vector<std::pair<int, int>> EditorState::nodeFireCounts() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return fireCounts_;
+}
+
 wizengine::editor::SimSettings EditorState::sim() const {
     std::lock_guard<std::mutex> lk(mutex_);
     return sim_;

@@ -224,6 +224,110 @@ struct CameraPose {
     bool active = true;
 };
 
+// ---- イベントグラフ（ノードベースのイベント設計）---------------------------
+// Node-RED 風の「トリガー → アクション」グラフ。ノードは値だけの設計図で、
+// 実行（トリガー判定とアクション適用）はシミュレート中に物理スレッドが行う
+// （Scene::runEventGraph）。アクションが変えた色や強さは「実行時の上書き」で、
+// desc（設計値）は書き換えない - シミュレートを止めると全部元に戻る。
+// 姿勢が desc へ戻るのと同じ原則。
+enum class NodeKind {
+    // トリガー（右の出力ポートから発火）
+    OnCollision,  // 対象オブジェクトが何かに「新しく」触れた（接触の立ち上がり）
+    OnSimStart,   // シミュレート開始の最初のステップ
+    OnTimer,      // seconds ごとに繰り返し
+    // アクション（左の入力ポートで受ける）
+    SetColor,        // オブジェクトの色を color へ（実行時のみ）
+    ApplyImpulse,    // オブジェクトに速度変化 vec (m/s) を与える
+    SetFixed,        // value != 0 で固定、0 で解除（実行時のみ）
+    SetLightColor,   // ライトの色を color へ（実行時のみ）
+    SetLightIntensity,  // ライトの強さを value へ（実行時のみ）
+    CameraLookAt,    // カメラ target の注視点をオブジェクト other へ向ける
+};
+
+inline const char* nodeKindName(NodeKind k) {
+    switch (k) {
+        case NodeKind::OnSimStart: return "onStart";
+        case NodeKind::OnTimer: return "onTimer";
+        case NodeKind::SetColor: return "setColor";
+        case NodeKind::ApplyImpulse: return "impulse";
+        case NodeKind::SetFixed: return "setFixed";
+        case NodeKind::SetLightColor: return "lightColor";
+        case NodeKind::SetLightIntensity: return "lightIntensity";
+        case NodeKind::CameraLookAt: return "cameraLookAt";
+        case NodeKind::OnCollision: break;
+    }
+    return "onCollision";
+}
+inline NodeKind nodeKindFromName(const std::string& s, NodeKind fallback) {
+    if (s == "onCollision" || s == "collision") return NodeKind::OnCollision;
+    if (s == "onStart" || s == "start") return NodeKind::OnSimStart;
+    if (s == "onTimer" || s == "timer") return NodeKind::OnTimer;
+    if (s == "setColor" || s == "color") return NodeKind::SetColor;
+    if (s == "impulse" || s == "push") return NodeKind::ApplyImpulse;
+    if (s == "setFixed" || s == "fixed") return NodeKind::SetFixed;
+    if (s == "lightColor") return NodeKind::SetLightColor;
+    if (s == "lightIntensity") return NodeKind::SetLightIntensity;
+    if (s == "cameraLookAt" || s == "lookAt") return NodeKind::CameraLookAt;
+    return fallback;
+}
+
+// トリガーかアクションか。ワイヤーは「トリガー → アクション」の向きだけ。
+inline bool nodeIsTrigger(NodeKind k) {
+    return k == NodeKind::OnCollision || k == NodeKind::OnSimStart ||
+           k == NodeKind::OnTimer;
+}
+
+// ノードの target 欄が指す種別。番号の検証・削除時の掃除・保存時の詰め替えは
+// 全部これで分岐する（object と light は保存で番号が詰まるため）。
+enum class NodeTargetKind { None, Object, Light, Camera };
+
+inline NodeTargetKind nodeTargetKind(NodeKind k) {
+    switch (k) {
+        case NodeKind::OnCollision:
+        case NodeKind::SetColor:
+        case NodeKind::ApplyImpulse:
+        case NodeKind::SetFixed: return NodeTargetKind::Object;
+        case NodeKind::SetLightColor:
+        case NodeKind::SetLightIntensity: return NodeTargetKind::Light;
+        case NodeKind::CameraLookAt: return NodeTargetKind::Camera;
+        case NodeKind::OnSimStart:
+        case NodeKind::OnTimer: break;
+    }
+    return NodeTargetKind::None;
+}
+
+// other 欄がオブジェクト番号を指すか（OnCollision の相手フィルタと
+// CameraLookAt の注視先）。削除時の掃除と保存時の詰め替えに使う。
+inline bool nodeOtherIsObject(NodeKind k) {
+    return k == NodeKind::OnCollision || k == NodeKind::CameraLookAt;
+}
+
+// 1 個のノード。id はグラフ内で一意（削除しても再利用しない - ワイヤーが
+// 別のノードを指し直してしまうため）。使わない欄は既定値のまま持つ:
+// 種類ごとに構造体を分けるより、UI・JSON・実行の全部が単純になる。
+struct NodeDesc {
+    int id = 0;
+    NodeKind kind = NodeKind::OnCollision;
+    double x = 40.0, y = 40.0;  // ノードエディタのキャンバス座標 (px)
+    // 対象番号。nodeTargetKind(kind) の種別を指す。-1 は OnCollision では
+    // 「どのオブジェクトでも」、アクションでは「未設定（何もしない）」。
+    int target = -1;
+    // OnCollision: 相手のフィルタ（-2 = 何でも, -1 = 地面, n = オブジェクト）。
+    // CameraLookAt: 注視するオブジェクト番号。
+    int other = -2;
+    double seconds = 1.0;                // OnTimer の間隔
+    Color3 color{0.0f, 0.0f, 0.0f};      // SetColor / SetLightColor（既定 = 黒）
+    Vec3d vec{0.0, 5.0, 0.0};            // ApplyImpulse の速度変化 (m/s)
+    double value = 0.0;                  // SetFixed(0/1) / SetLightIntensity
+};
+
+// トリガーの出力からアクションの入力へ 1 本。多対多を許す（1 トリガーで
+// 複数アクション、複数トリガーから同じアクション）。
+struct WireDesc {
+    int from = -1;  // トリガーノードの id
+    int to = -1;    // アクションノードの id
+};
+
 // シミュレート側の設定。ここの値はエディタで編集し、シミュレート開始時に
 // PhysicsWorld へ流し込む（実行中の変更も反映される）。
 struct SimSettings {
@@ -245,15 +349,31 @@ struct SimSettings {
 // 「どのキーが出るか」がそのまま保存フォーマットとブラウザ API になるので、
 // 一箇所で読めるほうがよい。
 
+// 型が違っても投げない数値・整数の取り出し。/input は誰でも叩けるので、
+// 文字列などを混ぜたリクエストで nlohmann の value() が type_error を投げ、
+// 処理スレッドごと落ちる - それを既定値へ落として続行するための口。
+inline double jsonNumber(const nlohmann::json& j, const char* key,
+                         double fallback) {
+    if (!j.is_object()) return fallback;
+    const auto it = j.find(key);
+    return (it != j.end() && it->is_number()) ? it->get<double>() : fallback;
+}
+inline int jsonInt(const nlohmann::json& j, const char* key, int fallback) {
+    if (!j.is_object()) return fallback;
+    const auto it = j.find(key);
+    return (it != j.end() && it->is_number()) ? int(it->get<double>())
+                                              : fallback;
+}
+
 inline nlohmann::json toJson(const Vec3d& v) {
     return nlohmann::json{{"x", v.x}, {"y", v.y}, {"z", v.z}};
 }
 inline Vec3d vec3FromJson(const nlohmann::json& j, const Vec3d& fallback) {
     if (!j.is_object()) return fallback;
     Vec3d v;
-    v.x = j.value("x", fallback.x);
-    v.y = j.value("y", fallback.y);
-    v.z = j.value("z", fallback.z);
+    v.x = jsonNumber(j, "x", fallback.x);
+    v.y = jsonNumber(j, "y", fallback.y);
+    v.z = jsonNumber(j, "z", fallback.z);
     return v;
 }
 
@@ -410,6 +530,53 @@ inline CameraPose cameraPoseFromJson(const nlohmann::json& j,
     return c;
 }
 
+inline nlohmann::json toJson(const NodeDesc& n) {
+    nlohmann::json j;
+    j["id"] = n.id;
+    j["kind"] = nodeKindName(n.kind);
+    j["x"] = n.x;
+    j["y"] = n.y;
+    j["target"] = n.target;
+    j["other"] = n.other;
+    j["seconds"] = n.seconds;
+    j["color"] = colorToHex(n.color);
+    j["vec"] = toJson(n.vec);
+    j["value"] = n.value;
+    return j;
+}
+
+inline NodeDesc nodeFromJson(const nlohmann::json& j, const NodeDesc& base) {
+    NodeDesc n = base;
+    if (!j.is_object()) return n;
+    n.id = jsonInt(j, "id", n.id);
+    if (j.contains("kind") && j["kind"].is_string()) {
+        n.kind = nodeKindFromName(j["kind"], n.kind);
+    }
+    n.x = jsonNumber(j, "x", n.x);
+    n.y = jsonNumber(j, "y", n.y);
+    n.target = jsonInt(j, "target", n.target);
+    n.other = jsonInt(j, "other", n.other);
+    n.seconds = jsonNumber(j, "seconds", n.seconds);
+    if (j.contains("color") && j["color"].is_string()) {
+        n.color = colorFromHex(j["color"], n.color);
+    }
+    n.vec = vec3FromJson(j.value("vec", nlohmann::json()), n.vec);
+    n.value = jsonNumber(j, "value", n.value);
+    return n;
+}
+
+inline nlohmann::json toJson(const WireDesc& w) {
+    return nlohmann::json{{"from", w.from}, {"to", w.to}};
+}
+
+inline WireDesc wireFromJson(const nlohmann::json& j, const WireDesc& base) {
+    WireDesc w = base;
+    if (!j.is_object()) return w;
+    w.from = jsonInt(j, "from", w.from);
+    w.to = jsonInt(j, "to", w.to);
+    return w;
+}
+
 inline nlohmann::json toJson(const SimSettings& s) {
     nlohmann::json j;
     j["gravity"] = s.gravity;
@@ -528,6 +695,29 @@ inline LightDesc clampLight(LightDesc l) {
     l.spotInnerDeg = cl(l.spotInnerDeg, 1.0, 88.0);
     l.spotOuterDeg = cl(l.spotOuterDeg, l.spotInnerDeg, 89.0);
     return l;
+}
+
+// ノードの常識的な範囲。タイマーの下限が一番大事: 0 に近いと毎ステップ
+// 発火して、繋いだアクション（力・色）が暴走する。
+inline NodeDesc clampNode(NodeDesc n) {
+    auto cl = [](double v, double lo, double hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
+    };
+    n.x = cl(n.x, 0.0, 4000.0);
+    n.y = cl(n.y, 0.0, 4000.0);
+    if (n.target < -1) n.target = -1;
+    if (n.other < -2) n.other = -2;
+    // -2（何でも）は OnCollision の相手フィルタだけの語彙。CameraLookAt の
+    // other は注視先のオブジェクト番号なので、-1（未設定）が下限。
+    if (n.kind == NodeKind::CameraLookAt && n.other < -1) n.other = -1;
+    n.seconds = cl(n.seconds, 0.05, 3600.0);
+    n.vec.x = cl(n.vec.x, -100.0, 100.0);
+    n.vec.y = cl(n.vec.y, -100.0, 100.0);
+    n.vec.z = cl(n.vec.z, -100.0, 100.0);
+    // value の意味は種類ごと: SetFixed は 0/1、SetLightIntensity はルーメン。
+    n.value = (n.kind == NodeKind::SetFixed) ? (n.value != 0.0 ? 1.0 : 0.0)
+                                             : cl(n.value, 0.0, 10000000.0);
+    return n;
 }
 
 }  // namespace editor

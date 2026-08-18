@@ -209,6 +209,90 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         return true;
     }
 
+    // ---- イベントグラフ（ノードエディタ）----------------------------------
+    // edit.set と同じくモードは問わない: シミュレートを回しながらトリガーや
+    // アクションを調整して発火を確かめる、という使い方を許す。
+    if (what == "node.add") {
+        // kind も型を確かめてから読む（/input は生 JSON。文字列以外が来ても
+        // 落とさず既定にする - jsonInt / jsonNumber と同じ理由）。
+        const std::string kindName =
+            (msg.contains("kind") && msg["kind"].is_string())
+                ? msg["kind"].get<std::string>()
+                : std::string();
+        const ed::NodeKind kind =
+            ed::nodeKindFromName(kindName, ed::NodeKind::OnCollision);
+        nlohmann::json args;
+        for (const char* key :
+             {"x", "y", "target", "other", "seconds", "color", "vec", "value"}) {
+            if (msg.contains(key)) args[key] = msg[key];
+        }
+        args["kind"] = ed::nodeKindName(kind);  // 名前の揺れはここで正規化
+        // 対象を省いたら「今選んでいるもの」。Inspector の「＋」ボタンは
+        // 選択中の対象に対するノードを作る操作なので、それが既定になる。
+        if (!msg.contains("target")) {
+            switch (ed::nodeTargetKind(kind)) {
+                case ed::NodeTargetKind::Object:
+                    args["target"] = selectionOf(scene, camIndex);
+                    break;
+                case ed::NodeTargetKind::Light:
+                    if (state.selKind() == EditorState::SelKind::Light) {
+                        args["target"] = state.selIndex();
+                    }
+                    break;
+                case ed::NodeTargetKind::Camera:
+                    if (state.selKind() == EditorState::SelKind::Camera) {
+                        args["target"] = state.selIndex();
+                    }
+                    break;
+                case ed::NodeTargetKind::None:
+                    break;
+            }
+        }
+        EditorState::Op op;
+        op.kind = "node.add";
+        op.args = std::move(args);
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    if (what == "node.set") {
+        const int id = ed::jsonInt(msg, "id", -1);
+        if (id < 0) return true;
+        // 送られてきたキーだけを積む（updateGraphNode が「無いキーは今の値」）。
+        nlohmann::json args;
+        args["id"] = id;
+        for (const char* key :
+             {"x", "y", "target", "other", "seconds", "color", "vec", "value"}) {
+            if (msg.contains(key)) args[key] = msg[key];
+        }
+        EditorState::Op op;
+        op.kind = "node.set";
+        op.args = std::move(args);
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    if (what == "node.remove") {
+        EditorState::Op op;
+        op.kind = "node.remove";
+        op.args = {{"id", ed::jsonInt(msg, "id", -1)}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    if (what == "wire.add" || what == "wire.remove") {
+        EditorState::Op op;
+        op.kind = what;
+        op.args = {{"from", ed::jsonInt(msg, "from", -1)},
+                   {"to", ed::jsonInt(msg, "to", -1)}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
     // ---- ライト -------------------------------------------------------------
     if (what == "light.add") {
         ed::LightDesc d;

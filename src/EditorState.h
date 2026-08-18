@@ -2,8 +2,10 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -86,6 +88,36 @@ public:
     bool removeJoint(int index);
     std::size_t jointCount() const;
 
+    // ---- イベントグラフ ---------------------------------------------------
+    // ノードとワイヤーの一覧。書くのは物理スレッド（Op 実行時）、読むのは
+    // HTTP スレッド（サイドバー用 JSON）と物理スレッド（実行キャッシュの
+    // 取り込み）。ジョイントと同じ mutex で守る。ノードは id で引く（番号を
+    // 詰めるとワイヤーが別のノードを指すため、id は再利用しない）。
+    std::vector<wizengine::editor::NodeDesc> graphNodes() const;
+    std::vector<wizengine::editor::WireDesc> graphWires() const;
+    // 丸ごと差し替え（読込・全消し用）。nextNodeId は id の最大 + 1 に直す。
+    void setGraph(std::vector<wizengine::editor::NodeDesc> nodes,
+                  std::vector<wizengine::editor::WireDesc> wires);
+    // id を採番して追加し、その id を返す。
+    int addGraphNode(wizengine::editor::NodeDesc node);
+    // 送られてきたキーだけ上書き（クランプ込み）。id が無ければ false。
+    bool updateGraphNode(int id, const nlohmann::json& patch);
+    // ノードと、それに繋がるワイヤーを消す。
+    bool removeGraphNode(int id);
+    // from = トリガー / to = アクション の向きと存在を検証してから張る。
+    // 重複や向き違いは false（理由は status に入れない - UI 側が防ぐ前提の
+    // 二重チェックなので）。
+    bool addGraphWire(int from, int to);
+    bool removeGraphWire(int from, int to);
+    // グラフが変わるたびに増える版番号。物理スレッドは毎パスこれだけを見て、
+    // 変わったときだけ一覧をコピーし直す（毎ステップのロックを避ける）。
+    std::uint64_t graphVersion() const { return graphVersion_.load(); }
+    // ノードの発火回数（ノードエディタの ⚡ バッジ用）。書くのは物理スレッド、
+    // 読むのは HTTP スレッド。シミュレート開始でクリアされる。
+    void noteNodeFired(int id);
+    void clearNodeFireCounts();
+    std::vector<std::pair<int, int>> nodeFireCounts() const;
+
     // ---- シミュレート設定 -----------------------------------------------
     wizengine::editor::SimSettings sim() const;
     void setSim(const wizengine::editor::SimSettings& s);
@@ -134,6 +166,12 @@ private:
     std::vector<Op> pending_;
     std::atomic<int> pendingCount_{0};
     std::vector<wizengine::editor::JointDesc> joints_;
+    // イベントグラフ（mutex_ の下）。fireCounts_ は id -> 発火回数。
+    std::vector<wizengine::editor::NodeDesc> nodes_;
+    std::vector<wizengine::editor::WireDesc> wires_;
+    int nextNodeId_ = 1;
+    std::atomic<std::uint64_t> graphVersion_{0};
+    std::vector<std::pair<int, int>> fireCounts_;
     wizengine::editor::SimSettings sim_;
     wizengine::editor::GizmoSettings gizmo_;
     std::string status_ = "ready";

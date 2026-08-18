@@ -184,6 +184,22 @@
             <button onclick="send('edit.duplicate')">⧉ 複製</button>
             <button class="danger" onclick="send('edit.remove')">🗑 削除</button>
           </div>
+          <!-- このオブジェクトが関わるイベントノード（Node-RED 風の設計）。
+               ＋ は選択中のオブジェクトを対象にしたノードを作り、詳細な配線は
+               ノードエディタ（映像上のオーバーレイ）で行う。 -->
+          <div class="edLabel">イベント</div>
+          <div id="edObjEvents" class="ndList"></div>
+          <div class="edRow">
+            <select id="edObjNodeKind" class="strSel">
+              <option value="onCollision">⚡ 衝突したら（トリガー）</option>
+              <option value="setColor">🎨 色を変える（アクション）</option>
+              <option value="impulse">🚀 力を加える（アクション）</option>
+              <option value="setFixed">📌 固定する（アクション）</option>
+            </select>
+            <button onclick="addInspectorNode('edObjNodeKind')"
+                    title="選択中のオブジェクトを対象にノードを追加">＋</button>
+          </div>
+          <button class="wide" onclick="openNodeEditor()">⚡&#xFE0E; ノードエディタを開く</button>
         </div>
       </section>
 
@@ -242,6 +258,18 @@
         <div class="edRow btnRow">
           <button class="danger" onclick="removeLight()">🗑 ライトを削除</button>
         </div>
+        <!-- このライトを対象にしたイベントノード。 -->
+        <div class="edLabel">イベント</div>
+        <div id="edLightEvents" class="ndList"></div>
+        <div class="edRow">
+          <select id="edLightNodeKind" class="strSel">
+            <option value="lightColor">💡 ライトの色（アクション）</option>
+            <option value="lightIntensity">🔆 ライトの強さ（アクション）</option>
+          </select>
+          <button onclick="addInspectorNode('edLightNodeKind')"
+                  title="選択中のライトを対象にノードを追加">＋</button>
+        </div>
+        <button class="wide" onclick="openNodeEditor()">⚡&#xFE0E; ノードエディタを開く</button>
         <div class="edHint">Sun はルクス（太陽 ~10万）、Point / Spot は
           ルーメン（電球 ~800 lm。屋外シーンでは数十万必要）。</div>
       </section>
@@ -275,6 +303,17 @@
           <button onclick="openCamPage()">▶ このカメラを見る</button>
           <button class="danger" onclick="removeCamera()">🗑 削除</button>
         </div>
+        <!-- このカメラを対象にしたイベントノード。 -->
+        <div class="edLabel">イベント</div>
+        <div id="edCamEvents" class="ndList"></div>
+        <div class="edRow">
+          <select id="edCamNodeKind" class="strSel">
+            <option value="cameraLookAt">🎥 オブジェクトを注視（アクション）</option>
+          </select>
+          <button onclick="addInspectorNode('edCamNodeKind')"
+                  title="選択中のカメラを対象にノードを追加">＋</button>
+        </div>
+        <button class="wide" onclick="openNodeEditor()">⚡&#xFE0E; ノードエディタを開く</button>
         <div class="edHint">削除しても一覧から消えるだけで、ページの URL 自体は
           生きています（追加すると同じ番号から再利用）。視聴中のページの
           カメラ操作と編集は、後から動かしたほうが勝ちます。</div>
@@ -476,6 +515,52 @@
       <span class="gzSep"></span>
       <button id="gzSettings" onclick="toggleGizmoSettings()"
               title="ギズモ設定（スナップ・刻み・グリッド）を Inspector に開く">⚙&#xFE0E;</button>
+      <button id="gzNodes" onclick="toggleNodeEditor()"
+              title="イベント設計（ノードエディタ）を開閉">⚡&#xFE0E;</button>
+    </div>
+    <!-- ノードエディタ（Node-RED 風のイベント設計）。Editor Camera のページ
+         専用。画面中央の大きなウィンドウ（各辺 90%、.ndWin）として出し、
+         外側の全画面レイヤ（.ndBack）が後ろの映像とパネルを backdrop-filter
+         でぼかす。グラフの実体はサーバー（/scene の graph）で、ここは表示と
+         編集コマンド（edit.node.* / edit.wire.*）の送信だけを受け持つ。
+         開閉はブラウザ内の状態（app.js の nodeEdOpen。✕ / Esc /
+         外側クリックで閉じる）。 -->
+    <div id="nodeEd" hidden>
+      <div class="ndBack" onclick="closeNodeEditor()" title="クリックで閉じる"></div>
+      <div class="ndWin">
+      <div class="ndHead">
+        <span class="ndTitle">⚡&#xFE0E; イベント設計</span>
+        <span class="ndPalette">
+          <button onclick="paletteAdd('onCollision')"
+                  title="対象が何かに新しく触れたら発火">＋衝突</button>
+          <button onclick="paletteAdd('onStart')"
+                  title="シミュレート開始で 1 回発火">＋開始</button>
+          <button onclick="paletteAdd('onTimer')"
+                  title="一定間隔で繰り返し発火">＋タイマー</button>
+          <span class="gzSep"></span>
+          <button onclick="paletteAdd('setColor')"
+                  title="オブジェクトの色を変える（停止で元に戻る）">＋色</button>
+          <button onclick="paletteAdd('impulse')"
+                  title="オブジェクトに速度を与える">＋力</button>
+          <button onclick="paletteAdd('setFixed')"
+                  title="オブジェクトを固定 / 解除する">＋固定</button>
+          <button onclick="paletteAdd('lightColor')"
+                  title="ライトの色を変える（停止で元に戻る）">＋ライト色</button>
+          <button onclick="paletteAdd('lightIntensity')"
+                  title="ライトの強さを変える（停止で元に戻る）">＋ライト強</button>
+          <button onclick="paletteAdd('cameraLookAt')"
+                  title="カメラの注視点をオブジェクトへ向ける">＋注視</button>
+        </span>
+        <button id="ndClose" onclick="closeNodeEditor()" title="閉じる">✕</button>
+      </div>
+      <div id="ndCanvas">
+        <svg id="ndWires"></svg>
+        <div id="ndNodes"></div>
+      </div>
+      <div class="ndHint">トリガー（橙）右の ● からアクション（青）へドラッグで
+        接続 ／ 線をクリックで切断 ／ ノードは見出しをドラッグで移動、✕ で削除。
+        アクションの色・力はシミュレート中だけ効き、停止で設計値に戻ります。</div>
+      </div><!-- /.ndWin -->
     </div>
     <svg id="cursor" viewBox="0 0 24 24" aria-hidden="true">
       <path class="curArrow"

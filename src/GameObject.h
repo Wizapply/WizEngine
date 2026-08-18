@@ -52,5 +52,10 @@ struct GameObject {
     // エディタ中は物理を回していないので、シミュレート開始のときにまとめて
     // 作り直す（スライダーを動かすたびにボディを捨てないための遅延）。
     bool physDirty = false;
+    // イベントグラフのアクション（SetColor）が与える実行時の色。設計値
+    // （desc.color）は書き換えない: シミュレートを止めると desc へ戻る、
+    // という姿勢と同じ原則で色も戻す（Scene::resetGraphRuntime が落とす）。
+    bool hasRuntimeColor = false;
+    wizengine::editor::Color3 runtimeColor;
     std::vector<std::unique_ptr<ObjectAction>> actions;
 };

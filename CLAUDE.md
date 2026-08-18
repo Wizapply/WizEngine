@@ -197,6 +197,64 @@ PhysicsWorld.step(dt)
   広い作業目安なので、床の外はシミュレートで落ちる）。表示と間隔は
   GizmoSettings（`grid` / `gridStep`、Inspector タブ、下限 0.25m）。
 
+## イベントグラフ（ノードベースのイベント設計）
+
+Object / Light / Camera の Inspector と、映像上のノードエディタ（ギズモバーの
+⚡、Node-RED 風）で組む「トリガー → アクション」。「衝突したら色を黒にする」
+をエディタで設計し、シミュレート中に発火する。
+
+- **型は EditorTypes.h**（`NodeKind` / `NodeDesc` / `WireDesc`）。トリガーは
+  衝突（OnCollision）・開始（OnSimStart）・タイマー（OnTimer）、アクションは
+  色（SetColor）・力（ApplyImpulse）・固定（SetFixed）・ライトの色/強さ
+  （SetLight*）・カメラ注視（CameraLookAt）。ワイヤーはトリガー → アクションの
+  1 段だけ（連鎖なし）。target の指す種別は `nodeTargetKind(kind)` が唯一の
+  定義（object / light は保存で番号が詰まるので、詰め替え・掃除が全部ここで
+  分岐する）。
+- **グラフ本体は EditorState**（ジョイントと同じ mutex 流儀）。ノード id は
+  再利用しない（ワイヤーが別のノードを指し直すため）。編集は
+  edit.node.* / edit.wire.* → Op キュー経由で物理スレッドが適用。ワイヤーの
+  向き（from = トリガー、to = アクション）と重複は `addGraphWire` が検証する。
+- **実行は物理スレッド**（`Scene::runEventGraph`、`physics_.step()` の直後 =
+  そのステップの接触を見る）。毎ステップのロックを避けるため、
+  `EditorState::graphVersion()`（変更ごとに進む版番号）が変わったときだけ
+  一覧をコピーする。タイマー等の実行状態は **ノード id で引く**
+  （`Scene::GraphRuntime`）ので、シミュレート中の編集で他のノードの状態が
+  リセットされない。
+- **衝突は「新しく触れたペア」だけ**。NSC は載っているだけでも毎ステップ接触が
+  立つので、前ステップとの差分を取り、さらに**最初の収集パスは覚えるだけ**
+  （priming）にして開始時点で触れていたぶんを発火させない。接触の列挙は
+  `PhysicsWorld::activeContactPairs()`（`ReportContactCallback` を走査、
+  ChBody* → physId は追加時に作る逆引きマップ）。Multicore の接触コンテナが
+  `ReportAllContacts` を実装しない版では空が返る＝衝突トリガーだけ効かない。
+- **アクションは実行時の上書き**で、desc（設計値）は書き換えない。色は
+  `GameObject::runtimeColor`、ライトは `LightItem::runtime*`（syncLights が
+  実体へ流す直前に重ねる）、固定は `fixedTouched` に記録。シミュレートの
+  開始・停止・Reset で `resetGraphRuntime()` が全部戻す（姿勢が desc へ戻るの
+  と同じ原則）。SetColor が効くのは組み込みメッシュ描画だけ（glTF
+  インスタンスは個別のベース色を持てない）。ApplyImpulse は
+  F = m・Δv/dt を `applyForce` に渡す＝レート非依存で Δv がそのまま乗る。
+- **対象が消えたノードは掃除**（`pruneGraphForRemoved`、ジョイントの掃除と
+  同じ判断）。OnCollision の相手フィルタだけが消えたときはノードを残して
+  「何でも」(-2) に戻す。
+- **保存文書は version 3**（nodes / wires 節）。保存でオブジェクト・ライトの
+  番号を詰めるのに合わせて target / other も付け替える（ライトにも remap 表が
+  要るようになった）。読込はジョイントと同じく base / lightBase ぶんずらす。
+  v2 以前の文書はグラフ無し＝空で読める。
+- **UI は /scene の `graph`**（発火回数 fired 付き＝ノードの ⚡ バッジ）を
+  ポーリングで描く。グラフと選択肢が変わったときだけ DOM を組み直し、
+  **ドラッグ中とノード内入力のフォーカス中は組み直さない**（入力欄の
+  「フォーカス中は触らない」と同じ理由）。線はキャンバス座標の SVG ベジェ 2 本
+  （見える線 + 太い透明の当たり判定）。ポートの座標は DOM を測らず
+  「ノード左上 + 定数」で計算する（app.js の NODE_W / PORT_Y）。
+  エディタは**画面中央の 90% ウィンドウ（.ndWin）**で、外側の全画面レイヤ
+  （.ndBack、position:fixed。サイドバー z:40 より上の z:60。#stage の子の
+  ままなのでフルスクリーン中も出る）が後ろを `backdrop-filter: blur` で
+  ぼかす（非対応ブラウザは @supports で濃い半透明に落とす）。✕ / Esc /
+  外側クリックで閉じる。
+- **/input は誰でも叩けるので型を信じない**。数値の取り出しは
+  `EditorTypes.h` の `jsonNumber` / `jsonInt`（型が違えば既定値）を通す。
+  nlohmann の `value()` は型違いで投げ、処理スレッドごと落ちるため。
+
 ## ファイル
 
 - **CPU コアの固定**（`src/CpuAffinity.{h,cpp}`、Windows / Linux 両対応）。設定は **exe 引数**（`--physics-cores "0-11"` / `--render-cores "12-15"` /
@@ -471,6 +529,9 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
 
 - 済: エディタモード（配置・プロパティ編集・ジョイント設計・シーンの保存/読込）と
   シミュレートモードの分割。
+- 済: イベントグラフ（Node-RED 風のノードエディタ。衝突・開始・タイマーの
+  トリガーと、色・力・固定・ライト・カメラ注視のアクション。上の
+  「イベントグラフ」の章を参照）。
 - 済: ステップ3（姿勢反映）〜6（UDP配信）。
 - 未: ステップ7（クライアント→サーバーの入力・制御チャネル。カメラ操作を
   UDP/TCP で受けて `Renderer` にカメラ更新 API を追加）。

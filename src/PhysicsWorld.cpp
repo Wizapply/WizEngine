@@ -5,6 +5,7 @@
 #include <chrono/collision/ChCollisionSystem.h>
 #include <chrono/physics/ChBodyEasy.h>
 #include <chrono/geometry/ChTriangleMeshConnected.h>
+#include <chrono/physics/ChContactContainer.h>
 #include <chrono/physics/ChLinkDistance.h>
 #include <chrono/physics/ChLinkLock.h>
 #include <chrono/physics/ChSystemNSC.h>
@@ -169,6 +170,41 @@ bool initDistance(L*, const B&, const B&, const chrono::ChVector3d&,
     return false;
 }
 
+// 接触コンテナの走査で、ボディ同士の接触だけを physId のペアに集める。
+// ChContactable* から ChBody* へは dynamic_cast（Chrono 自身が
+// SumAllContactForces で使っている手）。同じペアに複数の接触点があるので、
+// 呼び出し側（activeContactPairs）で 1 本化する。
+class ContactPairCollector
+    : public chrono::ChContactContainer::ReportContactCallback {
+public:
+    ContactPairCollector(
+        const std::unordered_map<const chrono::ChBody*, std::size_t>& index,
+        std::vector<std::pair<std::size_t, std::size_t>>& out)
+        : index_(index), out_(out) {}
+
+    bool OnReportContact(const ChVector3d&, const ChVector3d&,
+                         const ChMatrix33<>&, const double&, const double&,
+                         const ChVector3d&, const ChVector3d&,
+                         ChContactable* objA, ChContactable* objB) override {
+        const auto* bodyA = dynamic_cast<const ChBody*>(objA);
+        const auto* bodyB = dynamic_cast<const ChBody*>(objB);
+        if (!bodyA || !bodyB) return true;  // ボディ以外（FEA 等）は対象外
+        const auto ia = index_.find(bodyA);
+        const auto ib = index_.find(bodyB);
+        if (ia == index_.end() || ib == index_.end()) return true;
+        std::size_t a = ia->second;
+        std::size_t b = ib->second;
+        if (a == b) return true;
+        if (a > b) std::swap(a, b);
+        out_.push_back({a, b});
+        return true;  // 続けて最後まで走査する
+    }
+
+private:
+    const std::unordered_map<const chrono::ChBody*, std::size_t>& index_;
+    std::vector<std::pair<std::size_t, std::size_t>>& out_;
+};
+
 // +Z をこの向きに合わせる回転。ChLinkLockRevolute はリンク座標系の Z 軸まわり
 // に回り、ChLinkLockPrismatic は Z 軸方向にスライドするので、ユーザーが指定した
 // ワールド軸をリンクの Z に持ってくる必要がある。
@@ -195,6 +231,26 @@ chrono::ChQuaternion<> quatFromZAxis(const chrono::ChVector3d& axis) {
 
 const char* PhysicsWorld::backendName() const {
     return backend_ == PhysicsBackend::Multicore ? "multicore" : "core";
+}
+
+void PhysicsWorld::registerBody(const std::shared_ptr<chrono::ChBody>& body) {
+    bodyIndex_[body.get()] = bodies_.size();
+    bodies_.push_back(body);
+    active_.push_back(true);
+}
+
+std::vector<std::pair<std::size_t, std::size_t>>
+PhysicsWorld::activeContactPairs() const {
+    std::vector<std::pair<std::size_t, std::size_t>> pairs;
+    const auto container = sys_->GetContactContainer();
+    if (!container) return pairs;
+    auto collector =
+        chrono_types::make_shared<ContactPairCollector>(bodyIndex_, pairs);
+    container->ReportAllContacts(collector);
+    // 1 ペアに接触点は複数あるのが普通（箱同士は最大 4 点）。ここで 1 本化。
+    std::sort(pairs.begin(), pairs.end());
+    pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+    return pairs;
 }
 
 PhysicsWorld::PhysicsWorld(PhysicsBackend backend) {
@@ -463,8 +519,7 @@ std::size_t PhysicsWorld::addSphere(double radius, double density,
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
     sys_->AddBody(b);
-    bodies_.push_back(b);
-    active_.push_back(true);
+    registerBody(b);
     return bodies_.size() - 1;
 }
 
@@ -500,8 +555,7 @@ std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
     sys_->AddBody(b);
-    bodies_.push_back(b);
-    active_.push_back(true);
+    registerBody(b);
     return bodies_.size() - 1;
 }
 
@@ -528,8 +582,7 @@ std::size_t PhysicsWorld::addConvexHull(
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
     sys_->AddBody(b);
-    bodies_.push_back(b);
-    active_.push_back(true);
+    registerBody(b);
     return bodies_.size() - 1;
 }
 
@@ -547,8 +600,7 @@ std::size_t PhysicsWorld::addStaticMesh(
     b->SetFixed(true);
     b->EnableCollision(true);
     sys_->AddBody(b);
-    bodies_.push_back(b);
-    active_.push_back(true);
+    registerBody(b);
     return bodies_.size() - 1;
 }
 
