@@ -65,9 +65,11 @@ PhysicsWorld.step(dt)
   選択、RENDER の反映）は `Scene::lockObjects()` を取る。`applyToRenderer()` は
   丸ごとロックを持つので、その中から呼ばれる `onRender` はロックを取らない
   （取ると自分自身で詰まる）。ロック順は **objects → editor → poses** の一方向。
-- **保存/読込は `assets/scenes/*.json`**（`documentJson()` / `loadDocument()`）。
-  保存時にオブジェクト番号を詰め、ジョイントの参照も付け替える。名前は英数字と
-  `_ -` だけに正規化（保存先を assets/scenes に固定するため）。
+- **保存/読込は `assets/scenes/*.xml`**（`Scene::document()` / `loadDocument()`）。
+  中身は **MuJoCo(MJCF) 風の XML** で、下の「シーン文書（XML）」の章が唯一の
+  定義。保存時にオブジェクト番号を詰め、ジョイント・イベントノードの参照も
+  付け替える。名前は英数字と `_ -` だけに正規化（保存先を assets/scenes に
+  固定するため）。旧 `*.json`（version 1〜3）は**読み込みだけ**できる。
 - **シーンを書き換えるエディタ操作はエディタカメラ（`kEditorCamera`、既定 0）
   のページ専用**。edit.*（sim を除く）は EditorComponent が、ギズモの pick /
   drag / hover は GizmoComponent が、他のカメラからのぶんを弾く。UI 側もその
@@ -105,15 +107,20 @@ PhysicsWorld.step(dt)
   エディタカメラのビューには**ライト（黄）/ カメラ（水色）の線画アイコン**
   （GizmoComponent がバッチ 5/6 に毎フレーム構築、エディタ専用レイヤ）が
   出て、クリックで選択、ギズモで移動 / 回転できる（拡縮は移動に丸める。
-  エディタカメラ自身は選べない）。保存文書は **version 2**（lights /
-  cameras 節が加わった。無い v1 文書は読み込み時に初期構成へリセット）。
+  エディタカメラ自身は選べない）。文書では `<worldbody>` の `<light>` /
+  `<camera>`（旧 JSON の version 2 で加わった節）。ライトを 1 つも書かない
+  文書は読み込み時に初期構成へリセットする。
 - **System タブで変えた値も保存に映る**。PhysicsControlComponent は
   rate / substeps / solver / envelope / recovery を PhysicsTuning に書くとき、
   同じ値を EditorState の SimSettings にもミラーする。シーン保存はそちらを
   書き出すので、怠ると「見ている物理」と「保存される物理」が食い違う。
 - ブラウザ側のタブは **Scene / Inspector / Physics**（`web/index.html` +
   `app.js` の `renderEditor()`。Inspector の内部 id は `tabEditor` /
-  `paneEditor` のまま）。Inspector の選択オブジェクトは **Unity 風の
+  `paneEditor` のまま）。Inspector には**常設の World 節**（`secWorld`）が
+  あり、地面（床の広さ・見える広さ・テクスチャ・タイル・色）と環境光
+  （HDR・強さ）を編集できる（`edit.ground` / `edit.environment`、部分更新で
+  物理スレッドが `setGroundAndEnvironment` を呼ぶ。パスは `assetFileAllowed`
+  の関所を通り、不正なら現状維持）。Inspector の選択オブジェクトは **Unity 風の
   Transform 行**（`.trRow`、位置 / 回転 / スケールに X/Y/Z の色タグ。id は
   edPX〜edSZ のまま、スケールは倍率ではなく実寸 m）。**ギズモのモード切替
   （✥/⟳/⤢ と World⇄Local）と設定の ⚙ は映像左上のツールバー**（`#gizmoBar`、
@@ -127,7 +134,8 @@ PhysicsWorld.step(dt)
   （`gzSettings` → `toggleGizmoSettings()`）が開閉する。ブラウザ内の表示
   状態だけの話なのでサーバーには送らない。
   ビューの下には**アセットパネル**（`#assets`、
-  `renderAssets()`）: プリミティブ（Box/球）はクリックで配置、保存済み
+  `renderAssets()`）: プリミティブ（Box/球）と文書の `<asset>` にある
+  メッシュはクリックで配置、保存済み
   シーンはダブルクリックで読込（confirm 付き。読込は現在の配置を置き換える
   ため）。見出し下の操作列（`.asBar`）に、新規オブジェクトの初期値
   （edNewSize / edNewColor）とシーン名・💾保存・🗑全消し（旧 Inspector の
@@ -139,6 +147,104 @@ PhysicsWorld.step(dt)
   入りきらないタイルは縦スクロール。シミュレート設定（重力・摩擦・反発・減衰・スリープ）
   は Physics タブに置く。入力欄は 500ms ポーリングで上書きされるが、
   **フォーカス中の欄だけは触らない**（打っている途中の数字が消えるため）。
+
+## シーン文書（MuJoCo 風の XML）
+
+**シーンの中身は XML が正**。エディタが保存するのも、起動時に読むのも、
+`/scene.xml` が返すのも同じ文書で、経路は 1 本しかない:
+
+```
+Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
+```
+
+- **書式は MJCF（MuJoCo）に寄せてある**（`src/SceneDocument.h` の先頭に全体像）。
+
+  ```xml
+  <wizengine model="sample_joints" version="4">
+    <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60" .../>
+    <asset>
+      <mesh name="apple" file="apple2.glb" scale="1"/>
+    </asset>
+    <worldbody>
+      <environment hdr="studio.hdr" intensity="30000"/>
+      <ground size="10" visual="8" texture="textures/ground.png" tile="2"/>
+      <light name="key" type="spot" pos="1.5 4 -2" euler="35 -20 0" .../>
+      <camera name="cam0" target="0 1 0" azimuth="37.8" elevation="19.5" radius="12"/>
+      <body name="post" pos="0 1 0" euler="0 0 0" fixed="true">
+        <geom type="box" size="0.1 1 0.1" mass="20" rgba="0.42 0.45 0.5 1"/>
+      </body>
+      <body name="a1" pos="1 2 0">
+        <geom type="mesh" mesh="apple" size="0.1" mass="0.2"/>
+      </body>
+    </worldbody>
+    <equality>
+      <joint name="hinge" type="hinge" body1="arm" body2="post" anchor="0 1.9 0" axis="0 0 1"/>
+    </equality>
+    <events>
+      <node id="1" type="onCollision" pos="40 60" target="1" other="-2"/>
+      <wire from="1" to="2"/>
+    </events>
+  </wizengine>
+  ```
+
+- **MuJoCo に合わせた点**: `<geom size>` は**半分の寸法**（box は各辺の半分、
+  sphere / mesh は半径。`BodyDesc` は辺の長さで持つのでここで 1/2 する）、色は
+  `rgba="r g b a"`（リニア値）、角度は全部**度**、`body1` / `body2` は名前でも
+  番号でも書けて `world` と -1 が地面。`<option timestep>` で書かれていたら
+  Hz に直して読む。glTF モデルは MJCF と同じく **`<asset>` の `<mesh>` に
+  宣言して `<geom type="mesh" mesh="名前">` で参照**する。`file` は assets/
+  からの**相対パスのみ**（`..` と絶対パスは警告して弾く）。`scale` はモデル
+  単位 → m の素の倍率で**見た目だけ**を決め、当たり判定は geom の
+  size / collision（既定はモデルの凸包、読めなければ球）。宣言の無い名前は
+  警告して球で描く。**地面と環境光も文書が持つ**: worldbody 直下の単一要素
+  `<ground size visual texture tile rgba>`（size = 物理の床の半寸法、visual =
+  見える地面の半寸法。texture は assets/ 相対、空 = 市松模様）と
+  `<environment hdr intensity>`（hdr は assets/ 相対、空 = 環境マップ無し）。
+  節を書かない文書は既定値（`GroundDesc` / `EnvironmentDesc`）で開く。
+  **違う点**は `<events>`（イベントグラフ）と `<ground>` / `<environment>` が
+  WizEngine の拡張であることと、`<worldbody>` の直下しか見ないこと（MJCF の入れ子 body は
+  親からの相対姿勢なので、姿勢を合成せずに平らに落とすと物が別の場所に出る）。
+- **XML の実装は自前**（`src/SceneXml.{h,cpp}`、依存なし）。要素・属性・入れ子と
+  コメント・実体参照だけの部分集合で、テキストノードは持たない（値は全部属性）。
+  属性は書いた順に出て、長い要素は要素名の下へ揃えて折り返す＝保存ファイルの
+  差分が読める。**読み取りは失敗しない**（欠けた属性・型違いは既定値）。壊れた
+  XML だけが行番号付きのエラーになる。ただし「黙って別の意味になる」内容
+  （未知の節・種類名の打ち間違い・見つからない body 参照・入れ子 body・
+  零ベクトルの軸・不正なワイヤーなど）は **warnings に文で集まる**
+  （`fromXml` / `parseXml` の第 4 引数）。シーン読込はこれを LOGW に全件、
+  ステータスに件数で出す。ノード id は省略可（読み込みが空き番号を採番）。
+- **節・属性の増やし方は `SceneDocument.h` 冒頭の「拡張の手順」が正**。要点:
+  読み込みは必ず既定値付きで書く（＝属性を足しても古い文書はそのまま読める、
+  新しい文書を古い版が読んでも壊れない）。`kSceneDocVersion` を上げるのは
+  **読めなくなる変更をしたときだけ**。節を足したら fromXml の「知っている節の
+  一覧」（未知の節を警告する箇所）にも名前を足す。
+- **値の型は EditorTypes.h のまま**。`SceneDocument`（`src/SceneDocument.{h,cpp}`）は
+  その入れ物で、XML と 1 対 1。「節が無い」と「空の節」を区別するために
+  `hasSim` / `hasLights` / `hasCameras` を持つ（ライトを書かない文書は初期構成の
+  2 灯で開く＝手書きの最小 XML が真っ暗にならない）。
+- **旧 JSON（version 1〜3）は読み込みだけ**（`fromLegacyJson`）。同じ名前の
+  `.xml` が無いときだけ `.json` を探す。保存は常に `.xml` なので、一度保存すれば
+  そのシーンは XML に移る（`.json` は上書きしない）。一覧（`sceneFiles()`）は
+  拡張子を落とした名前で、新旧が両方あってもタイルは 1 個。保存名の正規化は
+  `EditorState::sanitizeSceneName` の 1 か所（ファイル名・文書の model・
+  sceneFile 表示が同じ文字列になる - 別々に正規化するとタイルの選択表示が
+  外れる）。
+- **`/scene.xml` でいまの中身が読める**（保存しなくてよい）。`Scene::document()`
+  はオブジェクト一覧のロックを自分で取るので、物理スレッド（保存）と HTTP
+  スレッド（この口）の両方から呼べる。ロック順は他と同じ **objects → editor**。
+- **ブラウザから XML を直接編集して適用できる**。アセットパネルの「📄 XML」が
+  モーダルエディタ（`#xmlEd`、ノードエディタと同じ .ndBack/.ndWin の流儀）を
+  開き、「✓ 適用」が `edit.xml`（`{text}`）として送る。**検証は INPUT
+  スレッド**（EditorComponent が parseXml。壊れた XML はキューに積まず理由を
+  ステータスへ）、**適用は物理スレッド**（テキストをそのまま Op で運び、
+  もう一度パースして loadDocument。警告は読込と同じくログ + 件数）。上限
+  1MB。適用はファイルに書かない（保存は従来どおり 💾）。エディタカメラの
+  ページ限定（他の edit.* と同じガード）。
+- **起動時に読むシーンは `SceneConfig.h` の `kStartupScene`**（既定
+  "default" = 同梱の `assets/scenes/default.xml`）。シーンの中身（配置・
+  モデル・ジョイント・イベント）はコードではなく文書が持つ - 以前
+  scene.cpp にあった**格子の自動生成は廃止**した。読めなければ警告を出して
+  空のシーン（地面のみ）で起動する（止めない）。空文字列 = 常に空で起動。
 
 ## ギズモ（`src/GizmoComponent.{h,cpp}`）
 
@@ -236,10 +342,10 @@ Object / Light / Camera の Inspector と、映像上のノードエディタ（
 - **対象が消えたノードは掃除**（`pruneGraphForRemoved`、ジョイントの掃除と
   同じ判断）。OnCollision の相手フィルタだけが消えたときはノードを残して
   「何でも」(-2) に戻す。
-- **保存文書は version 3**（nodes / wires 節）。保存でオブジェクト・ライトの
-  番号を詰めるのに合わせて target / other も付け替える（ライトにも remap 表が
-  要るようになった）。読込はジョイントと同じく base / lightBase ぶんずらす。
-  v2 以前の文書はグラフ無し＝空で読める。
+- **文書では `<events>` 節**（`<node>` / `<wire>`。旧 JSON では version 3 の
+  nodes / wires）。保存でオブジェクト・ライトの番号を詰めるのに合わせて
+  target / other も付け替える（ライトにも remap 表が要る）。読込はジョイントと
+  同じく base / lightBase ぶんずらす。節の無い文書はグラフ無し＝空で読める。
 - **UI は /scene の `graph`**（発火回数 fired 付き＝ノードの ⚡ バッジ）を
   ポーリングで描く。グラフと選択肢が変わったときだけ DOM を組み直し、
   **ドラッグ中とノード内入力のフォーカス中は組み直さない**（入力欄の
@@ -299,9 +405,14 @@ Object / Light / Camera の Inspector と、映像上のノードエディタ（
   `IBLPrefilterContext`（`filament-iblprefilter` + `filament-generatePrefilterMipmap` を
   リンク）で equirect → キューブマップ → ラフネス mip 列を **GPU 上で生成**。cmgen と
   ビルド時変換は廃止したので、**HDR を差し替えても再ビルド不要**（再起動のみ）。
-  irradiance は指定せず、Filament が反射マップの最下位 mip から導出する。scene.cpp の
-  `kEnvironmentHdr`（例 `"studio.hdr"`）と `kEnvironmentIntensity` で設定。読み込み失敗は
-  `AssetError` で停止し、**先頭バイトから実際の形式を判定して報告**する（`.exr` を
+  irradiance は指定せず、Filament が反射マップの最下位 mip から導出する。**指定は
+  シーン文書の `<environment hdr intensity>`**（worldbody 直下の単一要素。節を
+  書かない文書は既定 = studio.hdr。`hdr=""` は環境マップ無し = 一様アンビエント、
+  `Renderer::clearEnvironment`）。差し替えは重い（デコード + GPU プリフィルタ）ので
+  Scene が desc + dirty で持ち、**applyToRenderer がロックの外で適用**する。
+  読み込み失敗は `AssetError` だが、環境光はシーン文書の内容（手で書ける）なので
+  **Scene が捕まえて警告に留める**（前の環境のまま続行 - 起動は止めない）。
+  ローダは**先頭バイトから実際の形式を判定して報告**する（`.exr` を
   `.hdr` にリネームした場合などが一目で分かる）。幅 2048 超はボックスフィルタで縮小
   （8k は float 400MB になり確保に失敗しうる。平均で縮小＝太陽など小さく明るい光源の
   エネルギーを保つ）。ImageLoader.cpp の `STBI_ONLY_*` は
@@ -319,36 +430,44 @@ Object / Light / Camera の Inspector と、映像上のノードエディタ（
   `addShape(ShapeMesh)` / `addGround(halfSize,color)` / `setCamera(eye,target)` で追加。
   箱・床とも lit（`shaded.mat`＝箱用 lit / `ground_lit.mat`＝床用）。箱は影を落とし
   受けもする（以前は unlit＋頂点カラーで焼き込み陰影だったため、転がると陰影が
-  向きに追従せず不自然だった）。箱の色は Scene の `setBoxColor`。床テクスチャは
-  `assets/textures/ground.png`（stb_image で読み込み。sRGB、ミップマップは自前生成＝
-  `generateMipmaps` はこの版で usage フラグ必須のため不可）。画像が無ければ
-  コード生成の市松模様にフォールバック。`baseColor` は乗算する色味。
-  UV は「1リピート＝`kGroundTile` メートル」でタイリング。readPixels で RGBA 取得。
+  向きに追従せず不自然だった）。床の広さ・テクスチャ・タイル・色味は**シーン文書の
+  `<ground>` が持ち**（stb_image で読み込み。sRGB、ミップマップは自前生成＝
+  `generateMipmaps` はこの版で usage フラグ必須のため不可）、画像が無い・読めない
+  ときはコード生成の市松模様に落として警告する。`addGround` は 2 回目以降の
+  呼び出しで前の床を壊して作り直す＝シーン読込による実行時の差し替えに対応
+  （Scene::syncGround が dirty を見て呼ぶ）。物理の床（`<ground size>` の半寸法）は
+  物理スレッドが作り直す（`Scene::rebuildGroundBody`。ジョイントの「ワールド側」
+  番号もここで更新）。readPixels で RGBA 取得。
   エディタ用に**実行時に増減できる形状スロット**（`addShape` / `removeShape`、
   箱と UV 球、削除した番号は空きとして再利用）と**オブジェクトごとの色**
   （`setShapeColor` が初回にそのスロット専用のマテリアルインスタンスを作る。
   共有インスタンスを書き換えると全部の色が変わってしまうため）、
   **ジョイント線**（`setJointLineCount` / `setJointLine`、グラブ線と同じ
-  「2頂点1本」の作りを使い回し）を持つ。glTF インスタンスは gltfio に 1 個だけ
-  壊す口が無いので、削除時は**スケール 0 に潰して見えなくする**（番号は返らない）。
-- `src/GltfLoader.{h,cpp}` — glTF/GLB 読み込み（Filament の gltfio）。`Renderer::addModel()`
-  / `setModelTransform()` 経由で使い、gltfio は Renderer の外に漏らさない。CMake が
+  「2頂点1本」の作りを使い回し）を持つ。glTF は `loadModel`（原型、同じ
+  パスは 1 回だけ）+ `addModelInstance` / `releaseModelInstance`（実体）。
+  gltfio は実体を 1 個だけ壊せないので、release は**スケール 0 で隠して
+  同じモデルの空き番号として再利用**する。
+- `src/GltfLoader.{h,cpp}` — glTF/GLB 読み込み（Filament の gltfio）。
+  **「原型 + 実体」の 2 段**: `loadModel(path)` がファイルを 1 回だけ読んで
+  モデル番号を返し（同じパスはキャッシュ）、`createInstance(model)` が実体を
+  何個でも作る（メッシュ・マテリアル・テクスチャは原型と共有 =
+  `createInstancedAsset` + `createInstance`）。`releaseInstance` はスケール 0 で
+  隠して同じモデルの空きに回す（gltfio に実体を 1 個だけ壊す口が無いため）。
+  gltfio は Renderer の外に漏らさない。シーン文書の `<asset><mesh/>` が
+  そのままこの語彙で、どのモデルをどの剛体で使うかは XML が決める。CMake が
   gltfio のライブラリ（gltfio_core / uberarchive / dracodec / ktxreader / stb）を検出
-  したときだけ有効（`WIZ_HAVE_GLTFIO`）。無い場合もビルドは通り、読み込み時にメッセージを
-  出してスキップする。読み込むモデルは scene.cpp の `kModelPath` ほかで指定（既定は空）。
-  **表示のみで当たり判定は無い**。
-  `kBoxModelPath` を指定すると、動く箱の描画をその glb に差し替える（`createInstancedAsset`
-  で 1 アセット N インスタンス＝メッシュ共有）。物理形状は kBoxSize の立方体のままなので、
-  モデルは単位立方体に収まるものを選び `kBoxModelScale` で微調整する。読み込みに失敗したら
-  自動的に組み込みキューブへフォールバック。モデル使用時は選択ハイライト無し。
+  したときだけ有効（`WIZ_HAVE_GLTFIO`）。無いビルドでは loadModel が
+  AssetError を投げ、Scene 側が球で描いて警告する。
   Filament 1.74 Windows 版のライブラリ名は `uberz` ではなく **`uberzlib`**、また
   `shlwapi` のリンクが必要（`utils::Path`）。
 - `src/ImageLoader.{h,cpp}` — stb_image で画像を RGBA8 として読む（PNG/JPEG/TGA/BMP）。
-- `src/Scene.h` + `src/scene.cpp` — **シーン定義（すべての設定はここ）**。地面と
-  4×4×4=64個の 0.5m 箱を物理・描画の両方へ登録し対応付け（物理ID↔描画ID）を保持。
-  性能つまみ `kSubsteps`（物理サブステップ）と `kSolverIterations`（ソルバ反復）も
-  ここ。マス目サイズ `kGroundSquare` も含め、`build()`（生成＋カメラ）/ `step(dt)`（step のみ。自動リセットは廃止）/ `sync()`（姿勢反映、
-  0.5スケール適用）/ `reset()`。格子・間隔・ジッター等の定数も scene.cpp 先頭に集約。
+- `src/Scene.h` + `src/scene.cpp` — **シーンの実体管理**。オブジェクト
+  （GameObject: 設計値 + 物理ID + 描画ID）・ライト・カメラ・メッシュアセット
+  （`MeshAsset`: 文書の宣言 + Renderer のモデル番号 + 凸包のキャッシュ）を
+  持ち、文書（SceneDocument）との相互変換・編集操作の適用・スレッド間の
+  同期を行う。**シーンの中身は持たない**（配置・モデル・ジョイントは
+  assets/scenes/*.xml。`build()` は地面・ライト・カメラの初期化と
+  kStartupScene の読み込みだけ）。エンジン側の既定値は `SceneConfig.h`。
 - `src/VideoStreamer.{h,cpp}` — GStreamer パイプライン。`OutputMode` で
   web/None（GStreamer出力なし。ブラウザへは WebRtcStreamer が担当）/ window / stream
   （RTP/UDP）/ rtsp（rtspclientsink）を切替。
@@ -393,10 +512,10 @@ Object / Light / Camera の Inspector と、映像上のノードエディタ（
   `build/<config>/../assets/` ではなく `build/assets/` に出力（CMake の `ASSET_DIR`）し、
   中身は `shaded/ground_lit/line.filamat`・`ground.png`・`web/`（index.html, favicon.ico）。
   コード側は `wizengine::assetPath()` を通して解決する（絶対パスと `assets/` 始まりは
-  そのまま＝任意の場所のモデルも読める）。scene.cpp の `kBoxModelPath` 等は
-  **`assets/` からの相対名**で書く。
+  そのまま）。シーン文書の `<mesh file>` は **`assets/` からの相対名のみ**
+  （`..` と絶対パスは読み込みで弾く - 文書は手で書けるため）。
 - **アセット読み込み失敗は例外で強制停止**（`src/AssetError.{h,cpp}`）。重要なのは
-  **チェックリストを持たない**こと: `GltfLoader::add/createInstances`、マテリアル読み込み、
+  **チェックリストを持たない**こと: `GltfLoader::loadModel`、マテリアル読み込み、
   テクスチャ読み込みという**読む側そのものが `AssetError` を投げる**ので、scene.cpp に
   新しいファイルを追加しても検証漏れが起きない（変数名を列挙する方式は、追加時に
   すり抜けるため廃止）。戻り値でのエラー報告とフォールバックも廃止（呼び出し側が
@@ -415,8 +534,15 @@ Object / Light / Camera の Inspector と、映像上のノードエディタ（
   `ShapeKind` / `JointKind` / `BodyDesc` / `JointDesc` / `SimSettings` と、その
   JSON 変換・範囲クランプ）。Chrono も Filament も出てこないので、どのスレッド
   からでもコピーできる。保存フォーマットとブラウザ API のキーはここが唯一の定義。
+- `src/SceneXml.{h,cpp}` — 依存の無い最小 XML DOM（読み書き）。シーン文書の
+  ためだけの部分集合で、要素・属性・入れ子とコメント・実体参照まで。整形出力は
+  属性の順を保ち、長い要素を折り返す。
+- `src/SceneDocument.{h,cpp}` — シーン文書の値型（`SceneDocument`）と、その
+  **MuJoCo 風 XML** への変換。保存フォーマットの定義はここ 1 か所（旧 JSON の
+  取り込み `fromLegacyJson` も同居）。上の「シーン文書（XML）」の章を参照。
 - `src/EditorState.{h,cpp}` — モード（atomic）、編集操作のキュー、ジョイント一覧、
-  シミュレート設定、`assets/scenes` の読み書きと一覧キャッシュ。オブジェクト
+  シミュレート設定、`assets/scenes` の読み書き（`.xml` が正、`.json` は
+  読み込みのみ）と一覧キャッシュ。オブジェクト
   そのものは持たない（実体と並べて Scene が持つ。番号がずれると黙って別の物を
   動かしてしまうため）。
 - `src/EditorComponent.{h,cpp}` — ブラウザの `mode` / `edit.*` コマンドを受ける
@@ -529,6 +655,12 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
 
 - 済: エディタモード（配置・プロパティ編集・ジョイント設計・シーンの保存/読込）と
   シミュレートモードの分割。
+- 済: シーン文書の MuJoCo 風 XML 化（`assets/scenes/*.xml`、`/scene.xml`、
+  `kStartupScene`。上の「シーン文書（XML）」の章を参照）。
+- 済: glTF モデルの文書化（`<asset><mesh/>` + `<geom type="mesh" mesh=...>`。
+  配置も含め、シーンの中身はコードから文書へ全面移行。scene.cpp の
+  格子自動生成・kBoxModelPath プール・置物 kModelPath は廃止し、既定シーンは
+  `assets/scenes/default.xml`）。
 - 済: イベントグラフ（Node-RED 風のノードエディタ。衝突・開始・タイマーの
   トリガーと、色・力・固定・ライト・カメラ注視のアクション。上の
   「イベントグラフ」の章を参照）。

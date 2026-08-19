@@ -16,7 +16,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstddef>
-#include <random>
 
 #include "AssetError.h"
 #include "GizmoComponent.h"
@@ -29,10 +28,9 @@ namespace ed = wizengine::editor;
 
 namespace {
 
-// Scene parameters (grid, cameras, lights, physics, ...) live in
-// SceneConfig.h; below are only derived helpers and the implementation.
-
-std::size_t boxTotal() { return static_cast<std::size_t>(kNx * kNy * kNz); }
+// Scene parameters (cameras, lights, physics, ...) live in SceneConfig.h;
+// below are only derived helpers and the implementation. シーンの中身
+// （オブジェクト・ジョイント・アセット）はここではなく文書（XML）が持つ。
 
 // エディタの回転（オイラー角・度）を Chrono の四元数へ。順序の定義は
 // scene_math.h に 1 か所だけ置いてある（インスペクタの数字・ギズモの回転・
@@ -41,14 +39,6 @@ ChQuaternion<> quatFromEuler(const ed::Vec3d& degrees) {
     const scenemath::Quat q =
         scenemath::quatFromEulerDegrees(degrees.x, degrees.y, degrees.z);
     return ChQuaternion<>(q.w(), q.x(), q.y(), q.z());
-}
-
-// 逆変換。格子の初期傾きのように四元数で作った姿勢を、設計値（オイラー角）
-// として持ち直すために使う。
-ed::Vec3d eulerFromQuat(const ChQuaternion<>& q) {
-    const scenemath::Vec3 e = scenemath::eulerDegreesFromQuat(
-        scenemath::Quat(q.e0(), q.e1(), q.e2(), q.e3()));
-    return {e.x(), e.y(), e.z()};
 }
 
 // エディタの JointKind を PhysicsWorld の enum へ。
@@ -76,52 +66,9 @@ filament::math::float3 jointColor(ed::JointKind k) {
     return {1.0f, 0.55f, 0.15f};  // 橙
 }
 
-ChVector3d gridPos(std::size_t k) {
-    const int nyz = kNy * kNz;
-    const int i = static_cast<int>(k) / nyz;
-    const int rem = static_cast<int>(k) % nyz;
-    const int j = rem / kNz;
-    const int l = rem % kNz;
-    return ChVector3d((i - (kNx - 1) / 2.0) * kSpacing, kBaseY + j * kSpacing,
-                      (l - (kNz - 1) / 2.0) * kSpacing);
-}
-
-ChQuaternion<> dropTilt(std::size_t k) {
-    const double a = 0.08 + 0.02 * static_cast<double>(k % 5);
-    return QuatFromAngleAxis(a, ChVector3d(1, 0.3, 1).GetNormalized());
-}
-
-ChVector3d jitter() {
-    static std::mt19937 rng(1234);
-    std::uniform_real_distribution<double> d(-0.02, 0.02);
-    return ChVector3d(d(rng), d(rng), d(rng));
-}
-
 // ---- ライト -----------------------------------------------------------------
 constexpr double kRadToDeg = 180.0 / scenemath::kPi;
 constexpr double kDegToRad = scenemath::kPi / 180.0;
-
-// SceneConfig.h の LightObject::Config（方向ベクトルで書く従来の設定）を
-// エディタの設計値（向きはオイラー角）へ。初期ライトの取り込みに使う。
-ed::LightDesc lightDescFromConfig(const LightObject::Config& c) {
-    ed::LightDesc d;
-    switch (c.type) {
-        case LightObject::Type::Directional: d.kind = ed::LightKind::Sun; break;
-        case LightObject::Type::Spot: d.kind = ed::LightKind::Spot; break;
-        case LightObject::Type::Point: d.kind = ed::LightKind::Point; break;
-    }
-    d.color = {c.color.x, c.color.y, c.color.z};
-    d.intensity = c.intensity;
-    d.position = {c.position.x, c.position.y, c.position.z};
-    const scenemath::Vec3 e = scenemath::eulerDegreesFromDirection(
-        scenemath::Vec3(c.direction.x, c.direction.y, c.direction.z));
-    d.rotation = {e.x(), e.y(), e.z()};
-    d.falloff = c.falloffRadius;
-    d.spotInnerDeg = c.spotInnerRadians * kRadToDeg;
-    d.spotOuterDeg = c.spotOuterRadians * kRadToDeg;
-    d.shadows = c.castShadows;
-    return d;
-}
 
 // エディタの設計値をレンダラの語彙へ（向きはここでベクトルに戻す）。
 wizengine::LightDesc toRendererLight(const ed::LightDesc& d) {
@@ -169,6 +116,50 @@ scenemath::Vec3 orbitVector(double azimuthRad, double elevationRad) {
     return scenemath::Vec3(std::cos(elevationRad) * std::sin(azimuthRad),
                            std::sin(elevationRad),
                            std::cos(elevationRad) * std::cos(azimuthRad));
+}
+
+// ---- シーンファイルの読み込み -----------------------------------------------
+// 保存名から assets/scenes の文書を読む。今の形式は XML（*.xml）で、同じ名前の
+// XML が無ければ旧形式（*.json、version 1〜3）を探す。どちらも読めなければ
+// false と理由を返す。読み取りの警告（打ち間違い・未対応の節など。
+// SceneDocument.h の「読み取りの約束」）は全文をログに出し、件数を
+// warningCount へ返す - ステータス行に「警告 N 件」と出すため。
+bool readSceneDocument(const std::string& name, ed::SceneDocument& doc,
+                       std::string& reason,
+                       std::size_t* warningCount = nullptr) {
+    if (warningCount) *warningCount = 0;
+    const std::string xmlPath = EditorState::scenePath(name);
+    if (xmlPath.empty()) {
+        reason = "名前が不正です（英数字と _ - のみ）";
+        return false;
+    }
+    std::string text;
+    std::string xmlReason;
+    if (EditorState::readText(xmlPath, text, xmlReason)) {
+        std::string error;
+        std::vector<std::string> warnings;
+        if (!ed::parseXml(text, doc, error, &warnings)) {
+            reason = "XML が読めません（" + error + "）: " + xmlPath;
+            return false;
+        }
+        for (const auto& w : warnings) {
+            LOGW("editor", "scene '%s': %s", name.c_str(), w.c_str());
+        }
+        if (warningCount) *warningCount = warnings.size();
+        return true;
+    }
+    // 旧形式へのフォールバック。以後の保存は XML になる（JSON は上書きしない）。
+    const std::string jsonPath = EditorState::legacyScenePath(name);
+    nlohmann::json legacy;
+    std::string jsonReason;
+    if (!jsonPath.empty() && EditorState::readJson(jsonPath, legacy, jsonReason)) {
+        doc = ed::fromLegacyJson(legacy);
+        LOGI("editor", "loaded legacy json scene '%s' (saving writes xml)",
+             name.c_str());
+        return true;
+    }
+    reason = jsonReason.empty() ? xmlReason : jsonReason;
+    return false;
 }
 
 }  // namespace
@@ -429,8 +420,8 @@ private:
         if (index >= scene.objectCount()) return;
         const GameObject& obj = scene.object(index);
         if (obj.renderId == GameObject::kInvalidId) return;
-        // 描き方はオブジェクトごと: エディタで置いた箱・球は組み込みメッシュ、
-        // シーン既定の物は glTF インスタンス。
+        // 描き方はオブジェクトごと: 箱・球は組み込みメッシュ、mesh 指定の
+        // 物は glTF の実体（<asset> の <mesh> をシーン文書が割り当てる）。
         if (obj.modelDraw) {
             scene.renderer().setModelInstanceTint(
                 obj.renderId, scene.cameraColor(cam),
@@ -516,9 +507,6 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
 
     nlohmann::json j;
     j["camera"] = int(cameraIndex);
-    // 形はオブジェクトごとに持つようになったので、ここに出すのはシーン共通の
-    // モデル名だけ（インスペクタが「Model (apple2.glb)」と出すのに使う）。
-    j["model"] = useModel_ ? kBoxModelPath : "";
 
     // ここからライト・カメラ有効フラグ・オブジェクト一覧を読むのでロックする
     // （物理スレッドが追加・削除している最中かもしれない）。ロック順は
@@ -597,6 +585,13 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     j["status"] = editor_.status();
     j["sceneFile"] = editor_.sceneFile();
     for (const auto& f : editor_.sceneFiles()) j["files"].push_back(f);
+    // メッシュアセット（文書の <asset>）。アセットパネルのタイルと
+    // Inspector の「Model (名前)」表示が使う。
+    j["meshes"] = nlohmann::json::array();
+    for (const auto& m : meshes_) j["meshes"].push_back(ed::toJson(m.desc));
+    // 地面と環境光（Inspector の World 節が編集する）。
+    j["ground"] = ed::toJson(ground_);
+    j["environment"] = ed::toJson(environment_);
     j["objects"] = nlohmann::json::array();
     j["joints"] = nlohmann::json::array();
     {
@@ -833,81 +828,18 @@ void Scene::build() {
     physics_.setContactSettings(kContactRecovery, kSolverTolerance);
     physics_.setRollingFriction(kRollingFriction, kSpinningFriction);
     applySimSettings();  // 重力・摩擦・減衰・スリープ・反復回数
-    renderer_.setBoxColor({kBoxR, kBoxG, kBoxB});
-
-    // Ground: a static collision box in physics + a lit plane in the renderer.
-    // 番号を覚えておくのは、ジョイントの「ワールド側」に使うため。
-    groundPhysId_ = physics_.addBox(kGroundSize, 1.0, kGroundSize, kDensity,
-                                    ChVector3d(0, -0.5, 0), QUNIT,
-                                    /*fixed*/ true);
-    renderer_.addGround(kGroundHalf, {kGroundTintR, kGroundTintG, kGroundTintB},
-                        kGroundTile, kGroundTexture);
-
-    if (kModelPath[0] != '\0') {
-        const std::size_t model = renderer_.addModel(kModelPath);
-        {
-            // Yaw about +Y, built by hand: quaternion factory names differ
-            // between filament math versions, and an explicit quatf(w,x,y,z)
-            // works everywhere.
-            const float yaw = float(scenemath::radians(kModelYawDegrees));
-            const filament::math::float3 position{kModelX, kModelY, kModelZ};
-            const filament::math::quatf rotation(std::cos(yaw * 0.5f), 0.0f,
-                                                 std::sin(yaw * 0.5f), 0.0f);
-            renderer_.setModelTransform(model, position, rotation, kModelScale);
-        }
-        if (kModelCollision) {
-            // Static collision mesh at the model's pose. A low-poly proxy
-            // (kModelCollisionPath) is preferred when configured; otherwise
-            // the drawn model itself is used.
-            const char* collisionSrc = kModelCollisionPath[0] != '\0'
-                                           ? kModelCollisionPath
-                                           : kModelPath;
-            auto mesh =
-                chrono_types::make_shared<chrono::ChTriangleMeshConnected>();
-            if (wizengine::loadCollisionMesh(collisionSrc, kModelScale,
-                                             *mesh)) {
-                const double yaw = scenemath::radians(kModelYawDegrees);
-                physics_.addStaticMesh(
-                    mesh, ChVector3d(kModelX, kModelY, kModelZ),
-                    ChQuaternion<>(std::cos(yaw * 0.5), 0.0,
-                                   std::sin(yaw * 0.5), 0.0));
-                LOGI("scene", "model '%s': static mesh collision enabled",
-                     collisionSrc);
-            } else {
-                LOGW("scene",
-                     "model '%s': collision mesh unavailable - decoration only",
-                     collisionSrc);
-            }
-        }
-    }
-
-    // Optionally draw the dynamic objects as a model instead of the built-in
-    // cube. One asset, N instances - the mesh is shared.
-    // Loading throws if the model is unusable, so reaching the next line means
-    // the objects really are drawn as that model.
-    useModel_ = kBoxModelPath[0] != '\0';
-    if (useModel_) {
-        renderer_.createModelInstances(kBoxModelPath, boxTotal());
-        // インスタンスは数が固定。エディタで消しても番号は返ってこない
-        // （インスタンスを壊す口が gltfio に無いため）ので、使い切ったら
-        // 以降は組み込みの球で置き換える。
-        modelCapacity_ = boxTotal();
-        modelNext_ = 0;
-    }
-    // No list of files to keep in sync here: every loader throws AssetError
-    // when it cannot read what it was given, so a file added to the scene
-    // config later is validated by the same path automatically.
+    // Ground: 物理の床はここで作る（物理は最初のステップから要る）。見える
+    // 地面と環境光は desc + dirty で持ち、最初の applyToRenderer（RENDER
+    // スレッド）が作る - シーン読込による実行時の差し替えと同じ経路に揃える。
+    // 既定値は GroundDesc / EnvironmentDesc（EditorTypes.h）のまま。
+    rebuildGroundBody();
 
     // シーンの初期ライトを編集可能な設計値として取り込む。実体（Filament の
     // ライト）は RENDER スレッドが最初の applyToRenderer（syncLights）で作る。
-    for (const auto& cfg : lightConfigs()) {
+    for (const auto& desc : lightConfigs()) {
         LightItem item;
-        item.desc = lightDescFromConfig(cfg);
+        item.desc = desc;
         lights_.push_back(item);
-    }
-
-    if (kEnvironmentHdr[0] != '\0') {
-        renderer_.loadEnvironment(kEnvironmentHdr, kEnvironmentIntensity);
     }
 
     renderer_.configureHighlightColors(cameraColors());
@@ -925,59 +857,25 @@ void Scene::build() {
     // 中身は GizmoComponent が表示状態や間隔の変わったときに入れる。
     for (const auto& c : gizmo::gridColors()) renderer_.addLineSet(c);
 
-    if (useModel_) {
-        modelScale_ = kBoxModelScale;
-        const float modelSize = renderer_.modelInstanceSize();
-        LOGI("scene",
-             "bodies drawn as: glTF model instances ('%s', model size %.4f -> "
-             "%.4f m at scale %.3f; shape is %.3f m across)",
-             kBoxModelPath, modelSize, modelSize * modelScale_, modelScale_,
-             kBoxSize);
-    } else {
-        LOGI("scene", "bodies drawn as: built-in cube (kBoxModelPath=\"%s\")",
-             kBoxModelPath);
-    }
-
-    // ConvexHull bodies collide as the drawn model's hull: load the point
-    // cloud once here, shared by every body. Empty = unavailable, and the
-    // loop below falls back to spheres so the scene still runs.
-    if (kBodyShape == BodyShape::ConvexHull) {
-        if (useModel_) {
-            hullPoints_ =
-                wizengine::loadCollisionPoints(kBoxModelPath, kBoxModelScale);
+    // ---- シーンの中身は文書（XML）から ------------------------------------
+    // 以前ここにあった格子の自動生成は廃止した。オブジェクトの配置・glTF
+    // モデルの割り当てはすべて assets/scenes/*.xml が持ち、コード側は
+    // kStartupScene（既定 "default"）を読むだけ。読めなければ警告を出して
+    // 空のシーン（地面のみ）で起動する - ブラウザから別のシーンを読み込めば
+    // よいので、起動は止めない。
+    if (kStartupScene[0] != '\0') {
+        ed::SceneDocument doc;
+        std::string reason;
+        if (readSceneDocument(kStartupScene, doc, reason)) {
+            loadDocument(doc);
+            editor_.setSceneFile(kStartupScene);
+            editor_.setStatus(std::string("読み込みました: ") + kStartupScene);
+            LOGI("scene", "startup scene '%s' loaded (%zu bodies, %zu meshes)",
+                 kStartupScene, doc.bodies.size(), doc.meshes.size());
+        } else {
+            LOGW("scene", "startup scene '%s' not loaded: %s (starting empty)",
+                 kStartupScene, reason.c_str());
         }
-        if (hullPoints_.empty()) {
-            LOGW("scene",
-                 "convex hull unavailable (kBoxModelPath=\"%s\") - bodies "
-                 "fall back to spheres",
-                 kBoxModelPath);
-        }
-    }
-
-    // 既定シーンの格子。エディタから見ると「最初から置いてあるオブジェクト」
-    // で、掴む・動かす・消す・ジョイントを付けるが普通にできる。
-    ed::BodyDesc proto;
-    proto.shape = useModel_ ? ed::ShapeKind::Model
-                            : (kBodyShape == BodyShape::Box
-                                   ? ed::ShapeKind::Box
-                                   : ed::ShapeKind::Sphere);
-    proto.collision = (kBodyShape == BodyShape::Box) ? ed::ShapeKind::Box
-                      : (kBodyShape == BodyShape::Sphere)
-                          ? ed::ShapeKind::Sphere
-                          : ed::ShapeKind::Model;  // Model = 凸包
-    proto.size = {kBoxSize, kBoxSize, kBoxSize};
-    proto.mass = kMassPerBody;
-    proto.fixed = false;
-    proto.color = {kBoxR, kBoxG, kBoxB};
-
-    for (std::size_t k = 0; k < boxTotal(); ++k) {
-        const ChVector3d p = gridPos(k) + jitter();
-        ed::BodyDesc d = proto;
-        d.position = {p.x(), p.y(), p.z()};
-        // 初期の傾きもオイラー角に直して持つ。設計値が四元数とオイラー角に
-        // 二重化すると、インスペクタの数字と実物がずれる元になる。
-        d.rotation = eulerFromQuat(dropTilt(k));
-        createObject(d);
     }
     snapshot();  // initial poses so the first frame shows the boxes in place
 }
@@ -1375,44 +1273,81 @@ void Scene::enterMode(ed::AppMode target) {
     LOGI("editor", "mode -> %s", ed::modeName(target));
 }
 
-std::size_t Scene::createObject(const ed::BodyDesc& descIn) {
-    ed::BodyDesc desc = ed::clampBody(descIn);
+// 名前からメッシュアセット番号を引く（-1 = 無い）。
+int Scene::meshIndexFor(const std::string& name) const {
+    if (name.empty()) return -1;
+    for (std::size_t i = 0; i < meshes_.size(); ++i) {
+        if (meshes_[i].desc.name == name) return int(i);
+    }
+    return -1;
+}
 
-    // 描画: glTF インスタンスは有限。使い切ったら組み込みの球に落とす。
-    bool modelDraw = false;
-    std::size_t renderId = GameObject::kInvalidId;
+// メッシュの凸包。最初に使うときに読み込む（ファイル IO と cgltf の CPU
+// 処理だけなので PHYSICS スレッドでよい - Filament は触らない）。読めなければ
+// nullptr = 呼び出し側が球へ倒す。
+const std::vector<ChVector3d>* Scene::meshHull(int meshIndex) {
+    if (meshIndex < 0 || std::size_t(meshIndex) >= meshes_.size()) {
+        return nullptr;
+    }
+    MeshAsset& m = meshes_[std::size_t(meshIndex)];
+    if (!m.hullTried) {
+        m.hullTried = true;
+        m.hull =
+            wizengine::loadCollisionPoints(m.desc.file, float(m.desc.scale));
+        if (m.hull.empty()) {
+            LOGW("scene",
+                 "mesh '%s' (%s): convex hull unavailable - bodies fall back "
+                 "to spheres",
+                 m.desc.name.c_str(), m.desc.file.c_str());
+        }
+    }
+    return m.hull.empty() ? nullptr : &m.hull;
+}
+
+// 設計値から Chrono のボディを 1 個作る（createObject / rebuildBody 共通）。
+// 当たり判定の Model は「メッシュの凸包」で、点群が無ければ球へ。
+std::size_t Scene::createBody(const ed::BodyDesc& desc, int meshIndex) {
+    const ChVector3d pos(desc.position.x, desc.position.y, desc.position.z);
+    const ChQuaternion<> rot = quatFromEuler(desc.rotation);
+    if (desc.collision == ed::ShapeKind::Model) {
+        if (const auto* hull = meshHull(meshIndex)) {
+            const std::size_t physId =
+                physics_.addConvexHull(*hull, desc.density(), pos, rot);
+            if (desc.fixed) physics_.setBodyFixed(physId, true);
+            return physId;
+        }
+    }
+    if (desc.collision == ed::ShapeKind::Box) {
+        return physics_.addBox(desc.size.x, desc.size.y, desc.size.z,
+                               desc.density(), pos, rot, desc.fixed);
+    }
+    return physics_.addSphere(desc.size.x * 0.5, desc.density(), pos, rot,
+                              desc.fixed);
+}
+
+std::size_t Scene::createObject(const ed::BodyDesc& descIn) {
+    const ed::BodyDesc desc = ed::clampBody(descIn);
+
+    // 描画するメッシュ。見つからない名前は組み込みの球で描く。desc は
+    // 書き換えない - 文書としては参照を保つので、アセットを足して読み直せば
+    // そのまま直る。
+    int meshIndex = -1;
     if (desc.shape == ed::ShapeKind::Model) {
-        if (modelNext_ < modelCapacity_) {
-            renderId = modelNext_++;
-            modelDraw = true;
-        } else {
-            desc.shape = ed::ShapeKind::Sphere;
+        meshIndex = meshIndexFor(desc.mesh);
+        if (meshIndex < 0) {
+            LOGW("scene",
+                 "object '%s': mesh '%s' is not declared - drawing a sphere",
+                 desc.name.c_str(), desc.mesh.c_str());
         }
     }
 
-    const ChVector3d pos(desc.position.x, desc.position.y, desc.position.z);
-    const ChQuaternion<> rot = quatFromEuler(desc.rotation);
-
-    // 当たり判定。Model は「モデルの凸包」で、点群が無ければ球へ。
-    std::size_t physId;
-    if (desc.collision == ed::ShapeKind::Model && !hullPoints_.empty()) {
-        physId = physics_.addConvexHull(hullPoints_, desc.density(), pos, rot);
-        if (desc.fixed) physics_.setBodyFixed(physId, true);
-    } else if (desc.collision == ed::ShapeKind::Box) {
-        physId = physics_.addBox(desc.size.x, desc.size.y, desc.size.z,
-                                 desc.density(), pos, rot, desc.fixed);
-    } else {
-        physId = physics_.addSphere(desc.size.x * 0.5, desc.density(), pos, rot,
-                                    desc.fixed);
-    }
-
     GameObject obj;
-    obj.physId = physId;
-    obj.renderId = renderId;   // Box/Sphere は RENDER スレッドが作る
-    obj.modelDraw = modelDraw;
+    obj.physId = createBody(desc, meshIndex);
+    obj.meshIndex = meshIndex;
     obj.desc = desc;
     obj.alive = true;
     obj.colorDirty = true;
+    // renderId は RENDER スレッドが syncRenderables で作る（モデルも組み込みも）。
 
     std::lock_guard<std::mutex> lk(objectsMutex_);
     boxes_.push_back(std::move(obj));
@@ -1502,20 +1437,7 @@ void Scene::rebuildBody(std::size_t index) {
     // 溜まるが、動かないし当たらないのでステップ時間には効かない。
     if (obj.physId != GameObject::kInvalidId) physics_.disableBody(obj.physId);
 
-    const ed::BodyDesc& d = obj.desc;
-    const ChVector3d pos(d.position.x, d.position.y, d.position.z);
-    const ChQuaternion<> rot = quatFromEuler(d.rotation);
-    std::size_t physId;
-    if (d.collision == ed::ShapeKind::Model && !hullPoints_.empty()) {
-        physId = physics_.addConvexHull(hullPoints_, d.density(), pos, rot);
-        if (d.fixed) physics_.setBodyFixed(physId, true);
-    } else if (d.collision == ed::ShapeKind::Box) {
-        physId = physics_.addBox(d.size.x, d.size.y, d.size.z, d.density(), pos,
-                                 rot, d.fixed);
-    } else {
-        physId = physics_.addSphere(d.size.x * 0.5, d.density(), pos, rot,
-                                    d.fixed);
-    }
+    const std::size_t physId = createBody(obj.desc, obj.meshIndex);
 
     std::lock_guard<std::mutex> lk(objectsMutex_);
     obj.physId = physId;
@@ -1600,9 +1522,9 @@ void Scene::cameraEditPose(std::size_t index, ed::Vec3d& pos,
 void Scene::resetLightsToDefaults() {
     std::lock_guard<std::mutex> lk(objectsMutex_);
     for (auto& l : lights_) l.alive = false;  // 実体の片付けは syncLights
-    for (const auto& cfg : lightConfigs()) {
+    for (const auto& desc : lightConfigs()) {
         LightItem item;
-        item.desc = lightDescFromConfig(cfg);
+        item.desc = desc;
         lights_.push_back(item);
     }
 }
@@ -1619,6 +1541,57 @@ void Scene::resetCamerasToDefaults() {
         camerasActive_[i] = (i < cfgs.size()) ? 1 : 0;
     }
     camerasActive_[editorCamera()] = 1;  // エディタカメラは常に居る
+}
+
+// ---- 地面と環境光（シーン文書の <ground> / <environment>）------------------
+
+void Scene::rebuildGroundBody() {
+    // 古い床は退場（disableBody = 当たり判定を切って地面の下へ。Multicore の
+    // ボディ削除は危ないので、オブジェクトの作り直しと同じ流儀）。
+    if (groundPhysId_ != GameObject::kInvalidId) {
+        physics_.disableBody(groundPhysId_);
+    }
+    // 番号を覚えておくのは、ジョイントの「ワールド側」に使うため
+    // （buildJoints はシミュレート開始のたびに読み直すのでずれない）。
+    groundPhysId_ = physics_.addBox(ground_.half * 2.0, 1.0, ground_.half * 2.0,
+                                    1000.0, ChVector3d(0, -0.5, 0), QUNIT,
+                                    /*fixed*/ true);
+}
+
+void Scene::setGroundAndEnvironment(const ed::GroundDesc& ground,
+                                    const ed::EnvironmentDesc& env) {
+    bool groundBodyChanged = false;
+    {
+        std::lock_guard<std::mutex> lk(objectsMutex_);
+        const bool groundChanged =
+            ground.half != ground_.half ||
+            ground.visualHalf != ground_.visualHalf ||
+            ground.texture != ground_.texture || ground.tile != ground_.tile ||
+            ground.tint.r != ground_.tint.r || ground.tint.g != ground_.tint.g ||
+            ground.tint.b != ground_.tint.b;
+        groundBodyChanged = ground.half != ground_.half;
+        if (groundChanged) {
+            ground_ = ground;
+            groundDirty_ = true;  // 見た目は RENDER スレッドが作り直す
+        }
+        // 環境光は差し替えが重い（HDR デコード + GPU プリフィルタ）ので、
+        // 実際に変わったときだけ dirty を立てる。
+        if (env.hdr != environment_.hdr ||
+            env.intensity != environment_.intensity) {
+            environment_ = env;
+            envDirty_ = true;
+        }
+    }
+    if (groundBodyChanged) rebuildGroundBody();
+}
+
+// RENDER スレッド（applyToRenderer のロック中）。
+void Scene::syncGround() {
+    if (!groundDirty_) return;
+    groundDirty_ = false;
+    renderer_.addGround(float(ground_.visualHalf),
+                        {ground_.tint.r, ground_.tint.g, ground_.tint.b},
+                        float(ground_.tile), ground_.texture);
 }
 
 // RENDER スレッド。実体の無いライトを作り、消されたもの・作り直しが要る
@@ -1971,12 +1944,64 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         return;
     }
 
+    if (op.kind == "ground") {
+        // 送られてきたキーだけ上書き（edit.sim と同じ部分更新）。パスの検証は
+        // groundFromJson が行い、不正なら現状維持になる。
+        const ed::GroundDesc g =
+            ed::clampGround(ed::groundFromJson(a, ground_));
+        setGroundAndEnvironment(g, environment_);
+        editor_.setStatus("地面を更新");
+        return;
+    }
+
+    if (op.kind == "environment") {
+        const ed::EnvironmentDesc e =
+            ed::clampEnvironment(ed::environmentFromJson(a, environment_));
+        setGroundAndEnvironment(ground_, e);
+        editor_.setStatus(e.hdr.empty() ? "環境光を更新（環境マップ無し）"
+                                        : "環境光を更新");
+        return;
+    }
+
+    if (op.kind == "xml") {
+        // ブラウザの XML エディタから。INPUT スレッドが一度パースを通して
+        // いる（壊れた XML はここまで来ない）ので、ここでの失敗は実質無い
+        // が、念のため同じ扱いにする。警告は読込と同じくログ + 件数。
+        ed::SceneDocument doc;
+        std::string error;
+        std::vector<std::string> warnings;
+        if (!ed::parseXml(a.value("text", std::string()), doc, error,
+                          &warnings)) {
+            editor_.setStatus("XML が読めません: " + error);
+            return;
+        }
+        for (const auto& w : warnings) {
+            LOGW("editor", "xml apply: %s", w.c_str());
+        }
+        loadDocument(doc);
+        // 保存名は触らない: 適用はファイルにしていない編集で、💾 保存して
+        // 初めてファイルになる（モーダルの見出しにもそう書いてある）。
+        editor_.setStatus(
+            warnings.empty()
+                ? "XML を適用しました"
+                : "XML を適用しました（警告 " +
+                      std::to_string(warnings.size()) + " 件 - コンソール参照）");
+        return;
+    }
+
     if (op.kind == "clear") {
         physics_.removeAllJoints();
         editor_.setJoints({});
         editor_.setGraph({}, {});  // イベントグラフもシーンの一部
         resetGraphRuntime();
         for (std::size_t i = 0; i < boxes_.size(); ++i) destroyObject(i);
+        {
+            // メッシュアセットの宣言もシーンの一部。
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            meshes_.clear();
+        }
+        // 地面・環境光も初期値へ（ライト・カメラと同じ扱い）。
+        setGroundAndEnvironment(ed::GroundDesc{}, ed::EnvironmentDesc{});
         for (auto& c : controllers_) c->setSelected(BoxController::kNone);
         // ライトとカメラも初期状態へ（真っ暗なシーンから始めさせない）。
         resetLightsToDefaults();
@@ -1989,16 +2014,23 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     }
 
     if (op.kind == "save") {
-        const std::string name = a.value("name", std::string());
+        // 名前はここで一度だけ正規化し、以後（ファイル名・文書の model・
+        // sceneFile 表示）は同じ文字列を使う。生の名前を残すと、一覧
+        // （ファイル名の語幹 = 正規化後）と突き合わせるタイルの選択表示が
+        // 外れる。
+        const std::string name =
+            EditorState::sanitizeSceneName(a.value("name", std::string()));
         const std::string path = EditorState::scenePath(name);
         if (path.empty()) {
             editor_.setStatus("保存名が不正です（英数字と _ - のみ）");
             return;
         }
+        ed::SceneDocument doc = document();
+        doc.model = name;  // <wizengine model="..."> に出る名前
         std::string reason;
-        if (EditorState::writeJson(path, documentJson(), reason)) {
+        if (EditorState::writeText(path, ed::toXmlText(doc), reason)) {
             editor_.setSceneFile(name);
-            editor_.setStatus("保存しました: " + name);
+            editor_.setStatus("保存しました: " + name + ".xml");
         } else {
             editor_.setStatus("保存できません: " + reason);
         }
@@ -2007,18 +2039,23 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     }
 
     if (op.kind == "load") {
-        const std::string name = a.value("name", std::string());
-        const std::string path = EditorState::scenePath(name);
-        nlohmann::json doc;
+        const std::string name =
+            EditorState::sanitizeSceneName(a.value("name", std::string()));
+        ed::SceneDocument doc;
         std::string reason;
-        if (path.empty() || !EditorState::readJson(path, doc, reason)) {
+        std::size_t warnCount = 0;
+        if (!readSceneDocument(name, doc, reason, &warnCount)) {
             editor_.setStatus("読み込めません: " +
                               (reason.empty() ? name : reason));
             return;
         }
         loadDocument(doc);
         editor_.setSceneFile(name);
-        editor_.setStatus("読み込みました: " + name);
+        editor_.setStatus(
+            warnCount == 0
+                ? "読み込みました: " + name
+                : "読み込みました: " + name + "（警告 " +
+                      std::to_string(warnCount) + " 件 - コンソール参照）");
         editor_.refreshSceneFiles();
         return;
     }
@@ -2026,31 +2063,41 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     LOGW("editor", "unknown edit operation '%s'", op.kind.c_str());
 }
 
-nlohmann::json Scene::documentJson() const {
-    nlohmann::json doc;
-    doc["format"] = "wizengine-scene";
-    // version 3: nodes / wires（イベントグラフ）が加わった。version 2 は
-    // lights / cameras。古い文書も読める（欠けている節は初期値 / 空になる。
-    // loadDocument を参照）。
-    doc["version"] = 3;
-    doc["sim"] = ed::toJson(editor_.sim());
+// シーンの今の中身を文書にする。保存されるのはこれを XML にしたもので、
+// ブラウザ API（/scene の JSON）とは別物 - あちらは「今どう見えているか」、
+// こちらは「何を設計したか」。オブジェクト一覧のロックを取るので HTTP
+// スレッドから呼んでもよい（ロック順は objects -> editor）。
+ed::SceneDocument Scene::document() {
+    std::lock_guard<std::mutex> lk(objectsMutex_);
 
-    // ライト（削除済みは詰める。ジョイントと違い番号参照が無い…のは v2 まで
-    // の話で、いまはイベントノードがライト番号を参照するので、オブジェクトと
-    // 同じく詰めた先への対応表を持つ）。
-    doc["lights"] = nlohmann::json::array();
+    ed::SceneDocument doc;
+    doc.model = editor_.sceneFile();
+    doc.sim = editor_.sim();
+    doc.hasSim = true;
+
+    // メッシュアセット（<asset> 節）。オブジェクトから参照されていなくても
+    // 宣言は文書の一部としてそのまま書く（作業途中のシーンで消えると困る）。
+    for (const auto& m : meshes_) doc.meshes.push_back(m.desc);
+
+    doc.ground = ground_;
+    doc.hasGround = true;
+    doc.environment = environment_;
+    doc.hasEnvironment = true;
+
+    // ライト（削除済みは詰める。イベントノードがライト番号を参照するので、
+    // オブジェクトと同じく詰めた先への対応表を持つ）。
     std::vector<int> lightRemap(lights_.size(), -1);
     {
         int nextLight = 0;
         for (std::size_t i = 0; i < lights_.size(); ++i) {
             if (!lights_[i].alive) continue;
             lightRemap[i] = nextLight++;
-            doc["lights"].push_back(ed::toJson(lights_[i].desc));
+            doc.lights.push_back(lights_[i].desc);
         }
     }
+    doc.hasLights = true;
 
     // カメラ（全スロット、姿勢と有効フラグ。スロット番号 = 配列位置）。
-    doc["cameras"] = nlohmann::json::array();
     for (std::size_t i = 0; i < cameras_.size(); ++i) {
         ed::CameraPose p;
         p.azimuth = cameras_[i]->azimuth();
@@ -2059,20 +2106,20 @@ nlohmann::json Scene::documentJson() const {
         const auto t = cameras_[i]->target();
         p.target = {t.x, t.y, t.z};
         p.active = camerasActive_[i] != 0;
-        doc["cameras"].push_back(ed::toJson(p));
+        doc.cameras.push_back(p);
     }
+    doc.hasCameras = true;
 
-    doc["objects"] = nlohmann::json::array();
-    // 保存では番号を詰める。読み込み側は 0 から順に作るので、ジョイントの
-    // 参照も詰めた番号に付け替える必要がある。
+    // オブジェクト。保存では番号を詰めるので、ジョイントとイベントノードの
+    // 参照も詰めた番号へ付け替える。
     std::vector<int> remap(boxes_.size(), -1);
     int next = 0;
     for (std::size_t i = 0; i < boxes_.size(); ++i) {
         if (!boxes_[i].alive) continue;
         remap[i] = next++;
-        doc["objects"].push_back(ed::toJson(boxes_[i].desc));
+        doc.bodies.push_back(boxes_[i].desc);
     }
-    doc["joints"] = nlohmann::json::array();
+
     for (const auto& j : editor_.joints()) {
         ed::JointDesc copy = j;
         auto fix = [&](int& ref) {
@@ -2083,7 +2130,7 @@ nlohmann::json Scene::documentJson() const {
             return true;
         };
         if (!fix(copy.bodyA) || !fix(copy.bodyB)) continue;
-        doc["joints"].push_back(ed::toJson(copy));
+        doc.joints.push_back(copy);
     }
 
     // ---- イベントグラフ ----------------------------------------------------
@@ -2091,8 +2138,6 @@ nlohmann::json Scene::documentJson() const {
     // カメラはスロット固定なのでそのまま）。対象が消えているノードは
     // pruneGraphForRemoved が落としているはずだが、二重の安全でここでも弾き、
     // 落ちたノードに繋がるワイヤーも書かない。
-    doc["nodes"] = nlohmann::json::array();
-    doc["wires"] = nlohmann::json::array();
     {
         std::set<int> kept;
         auto fixObj = [&remap](int& ref) {
@@ -2124,18 +2169,20 @@ nlohmann::json Scene::documentJson() const {
             }
             if (!ok) continue;
             kept.insert(n.id);
-            doc["nodes"].push_back(ed::toJson(n));
+            doc.nodes.push_back(n);
         }
         for (const auto& w : editor_.graphWires()) {
-            if (kept.count(w.from) && kept.count(w.to)) {
-                doc["wires"].push_back(ed::toJson(w));
-            }
+            if (kept.count(w.from) && kept.count(w.to)) doc.wires.push_back(w);
         }
     }
     return doc;
 }
 
-void Scene::loadDocument(const nlohmann::json& doc) {
+std::string Scene::documentXml() {
+    return ed::toXmlText(document());
+}
+
+void Scene::loadDocument(const ed::SceneDocument& doc) {
     // いま在るものを全部畳んでから作り直す。番号は 0 から振り直されるので、
     // 掴んでいる選択も落とす。
     physics_.removeAllJoints();
@@ -2144,32 +2191,48 @@ void Scene::loadDocument(const nlohmann::json& doc) {
     for (auto& c : controllers_) c->setSelected(BoxController::kNone);
     editor_.clearSel();
 
-    // ライト。文書に無ければ（v1 の保存）初期構成へ戻す - 読み込んだシーンが
-    // 保存時と同じ見た目になるのが原則で、v1 の保存時は必ず初期構成だった。
+    // メッシュアセットのカタログを文書のもので置き換える。Renderer 側の
+    // 原型はパスでキャッシュされているので、同じファイルを使う文書へ
+    // 読み替えても再ロードは起きない（凸包は次に使うときに読み直す）。
+    {
+        std::lock_guard<std::mutex> lk(objectsMutex_);
+        meshes_.clear();
+        for (const auto& m : doc.meshes) {
+            MeshAsset a;
+            a.desc = m;
+            meshes_.push_back(std::move(a));
+        }
+    }
+
+    // 地面と環境光もシーンの一部。節を持たない文書は既定値へ戻す
+    // （ライト・カメラと同じ扱い）。
+    setGroundAndEnvironment(
+        doc.hasGround ? doc.ground : ed::GroundDesc{},
+        doc.hasEnvironment ? doc.environment : ed::EnvironmentDesc{});
+
+    // ライト。文書がライトを 1 つも持たなければ初期構成へ戻す（旧 v1 の保存や、
+    // 手で書いた最小の XML）。読み込んだシーンが保存時と同じ見た目になるのが
+    // 原則で、ライトを書いていない文書は「指定なし」とみなす。
     // 文書のライト番号は 0 起点で、実際にはこの位置から後ろに足されるので、
     // ライトを参照するイベントノードはこのぶんずらす（オブジェクトの base と
     // 同じ理屈）。
     const std::size_t lightBase = lights_.size();
-    if (doc.contains("lights") && doc["lights"].is_array()) {
+    if (doc.hasLights) {
         {
             std::lock_guard<std::mutex> lk(objectsMutex_);
             for (auto& l : lights_) l.alive = false;
         }
-        for (const auto& lj : doc["lights"]) {
-            createLight(ed::lightFromJson(lj, ed::LightDesc{}));
-        }
+        for (const auto& l : doc.lights) createLight(l);
     } else {
         resetLightsToDefaults();
     }
 
-    // カメラ。配列位置 = スロット番号。無い文書は初期構成へ。
-    if (doc.contains("cameras") && doc["cameras"].is_array()) {
-        const auto& arr = doc["cameras"];
+    // カメラ。配列位置 = スロット番号。持たない文書は初期構成へ。
+    if (doc.hasCameras) {
         std::lock_guard<std::mutex> lk(objectsMutex_);
         for (std::size_t i = 0; i < cameras_.size(); ++i) {
-            if (i >= arr.size()) { camerasActive_[i] = 0; continue; }
-            const ed::CameraPose p =
-                ed::cameraPoseFromJson(arr[i], ed::CameraPose{});
+            if (i >= doc.cameras.size()) { camerasActive_[i] = 0; continue; }
+            const ed::CameraPose& p = doc.cameras[i];
             cameras_[i]->setPose(p.azimuth, p.elevation, p.radius);
             cameras_[i]->setTarget(p.target.x, p.target.y, p.target.z);
             camerasActive_[i] = p.active ? 1 : 0;
@@ -2179,58 +2242,42 @@ void Scene::loadDocument(const nlohmann::json& doc) {
         resetCamerasToDefaults();
     }
 
-    if (doc.contains("sim")) {
-        editor_.setSim(ed::clampSim(ed::simFromJson(doc["sim"], editor_.sim())));
+    if (doc.hasSim) {
+        editor_.setSim(ed::clampSim(doc.sim));
         applySimSettings();
     }
 
-    ed::BodyDesc defaults;
     const std::size_t base = boxes_.size();  // 追加ぶんの先頭番号
-    if (doc.contains("objects") && doc["objects"].is_array()) {
-        for (const auto& o : doc["objects"]) {
-            createObject(ed::bodyFromJson(o, defaults));
-        }
-    }
+    for (const auto& b : doc.bodies) createObject(ed::clampBody(b));
 
     std::vector<ed::JointDesc> joints;
-    if (doc.contains("joints") && doc["joints"].is_array()) {
-        for (const auto& jj : doc["joints"]) {
-            ed::JointDesc j = ed::jointFromJson(jj, ed::JointDesc{});
-            // 文書の中では 0 起点。実際の番号は既存ぶんだけずれる。
-            if (j.bodyA >= 0) j.bodyA += int(base);
-            if (j.bodyB >= 0) j.bodyB += int(base);
-            joints.push_back(j);
-        }
+    for (const auto& jIn : doc.joints) {
+        ed::JointDesc j = jIn;
+        // 文書の中では 0 起点。実際の番号は既存ぶんだけずれる。
+        if (j.bodyA >= 0) j.bodyA += int(base);
+        if (j.bodyB >= 0) j.bodyB += int(base);
+        joints.push_back(j);
     }
     editor_.setJoints(std::move(joints));
 
-    // イベントグラフ（version 3）。無い文書は空のグラフになる。対象番号は
-    // ジョイントと同じく、今回足されたぶんの先頭（base / lightBase）だけ
-    // ずらす。カメラはスロット番号なのでそのまま。
+    // イベントグラフ。対象番号はジョイントと同じく、今回足されたぶんの先頭
+    // （base / lightBase）だけずらす。カメラはスロット番号なのでそのまま。
     std::vector<ed::NodeDesc> nodes;
-    std::vector<ed::WireDesc> wires;
-    if (doc.contains("nodes") && doc["nodes"].is_array()) {
-        for (const auto& nj : doc["nodes"]) {
-            ed::NodeDesc n = ed::clampNode(ed::nodeFromJson(nj, ed::NodeDesc{}));
-            const ed::NodeTargetKind tk = ed::nodeTargetKind(n.kind);
-            if (tk == ed::NodeTargetKind::Object && n.target >= 0) {
-                n.target += int(base);
-            }
-            if (tk == ed::NodeTargetKind::Light && n.target >= 0) {
-                n.target += int(lightBase);
-            }
-            if (ed::nodeOtherIsObject(n.kind) && n.other >= 0) {
-                n.other += int(base);
-            }
-            nodes.push_back(n);
+    for (const auto& nIn : doc.nodes) {
+        ed::NodeDesc n = ed::clampNode(nIn);
+        const ed::NodeTargetKind tk = ed::nodeTargetKind(n.kind);
+        if (tk == ed::NodeTargetKind::Object && n.target >= 0) {
+            n.target += int(base);
         }
-    }
-    if (doc.contains("wires") && doc["wires"].is_array()) {
-        for (const auto& wj : doc["wires"]) {
-            wires.push_back(ed::wireFromJson(wj, ed::WireDesc{}));
+        if (tk == ed::NodeTargetKind::Light && n.target >= 0) {
+            n.target += int(lightBase);
         }
+        if (ed::nodeOtherIsObject(n.kind) && n.other >= 0) {
+            n.other += int(base);
+        }
+        nodes.push_back(n);
     }
-    editor_.setGraph(std::move(nodes), std::move(wires));
+    editor_.setGraph(std::move(nodes), doc.wires);
     resetGraphRuntime();
 
     if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
@@ -2260,26 +2307,55 @@ void Scene::syncRenderables() {
             !obj.alive || (obj.renderDirty && obj.renderId != GameObject::kInvalidId);
         if (wantRelease && obj.renderId != GameObject::kInvalidId) {
             if (obj.modelDraw) {
-                // glTF インスタンスは 1 個だけ壊せないので、潰して見えなくする。
-                renderer_.setModelInstanceTransform(
-                    obj.renderId,
-                    filament::math::mat4f::scaling(filament::math::float3{0.0f}));
+                // glTF の実体は 1 個だけ壊せないので、隠して空き番号にする
+                // （同じモデルの次のオブジェクトが再利用する）。
+                renderer_.releaseModelInstance(obj.renderId);
             } else {
                 renderer_.removeShape(obj.renderId);
             }
             obj.renderId = GameObject::kInvalidId;
+            obj.modelDraw = false;
         }
         obj.renderDirty = false;
         if (!obj.alive) continue;
 
         if (obj.renderId == GameObject::kInvalidId) {
-            // モデル描画は起動時に配ったインスタンス番号でしか使えないので、
-            // ここで作れるのは組み込みメッシュだけ（createObject が形を
-            // 落としてある）。
-            obj.renderId = renderer_.addShape(obj.desc.shape == ed::ShapeKind::Sphere
-                                                  ? wizengine::ShapeMesh::Sphere
-                                                  : wizengine::ShapeMesh::Box);
-            obj.modelDraw = false;
+            // メッシュ指定があればモデルの実体を作る。原型はここで最初に
+            // 使うときに読み込む（Filament を触れるのはこのスレッドだけ）。
+            // 読めないファイルはシーンを止めず、組み込みの球で描いて警告に
+            // 留める - 起動時の一括検証と違い、実行中のシーン読込から来る
+            // ため（文書の他の部分は生かす）。
+            if (obj.desc.shape == ed::ShapeKind::Model && obj.meshIndex >= 0 &&
+                std::size_t(obj.meshIndex) < meshes_.size()) {
+                MeshAsset& m = meshes_[std::size_t(obj.meshIndex)];
+                if (m.modelId == GameObject::kInvalidId && !m.loadFailed) {
+                    try {
+                        m.modelId = renderer_.loadModel(m.desc.file);
+                        const float raw = renderer_.modelSize(m.modelId);
+                        LOGI("scene",
+                             "mesh '%s': '%s' (model size %.4f -> %.4f m at "
+                             "scale %.3f)",
+                             m.desc.name.c_str(), m.desc.file.c_str(), raw,
+                             raw * float(m.desc.scale), float(m.desc.scale));
+                    } catch (const wizengine::AssetError& e) {
+                        m.loadFailed = true;
+                        LOGW("scene", "mesh '%s': %s", m.desc.name.c_str(),
+                             e.what());
+                    }
+                }
+                if (m.modelId != GameObject::kInvalidId) {
+                    obj.renderId = renderer_.addModelInstance(m.modelId);
+                    obj.modelDraw = obj.renderId != GameObject::kInvalidId;
+                }
+            }
+            if (obj.renderId == GameObject::kInvalidId) {
+                // 組み込みメッシュ（Box / Sphere。読めないモデルも球で代役）。
+                obj.renderId = renderer_.addShape(
+                    obj.desc.shape == ed::ShapeKind::Box
+                        ? wizengine::ShapeMesh::Box
+                        : wizengine::ShapeMesh::Sphere);
+                obj.modelDraw = false;
+            }
             obj.colorDirty = true;
         }
         if (obj.colorDirty && !obj.modelDraw) {
@@ -2299,6 +2375,7 @@ void Scene::applyToRenderer() {
     std::unique_lock<std::mutex> lk(objectsMutex_);
     syncRenderables();
     syncLights();
+    syncGround();
 
     for (auto& c : components_) c->onRender(*this);
 
@@ -2318,7 +2395,14 @@ void Scene::applyToRenderer() {
         const ed::BodyDesc& d = obj.desc;
         filament::math::float3 s;
         if (obj.modelDraw) {
-            s = filament::math::float3{modelScale_};
+            // モデルの見た目の大きさは <mesh scale>（アセット単位 → m）。
+            // 当たり判定の寸法（desc.size）とは独立。
+            const float sc =
+                (obj.meshIndex >= 0 &&
+                 std::size_t(obj.meshIndex) < meshes_.size())
+                    ? float(meshes_[std::size_t(obj.meshIndex)].desc.scale)
+                    : 1.0f;
+            s = filament::math::float3{sc};
         } else if (d.shape == ed::ShapeKind::Sphere) {
             s = filament::math::float3{float(d.size.x)};
         } else {
@@ -2372,6 +2456,35 @@ void Scene::applyToRenderer() {
         } else {
             renderer_.setJointLine(i * 2, pa, pb, col, true);
             renderer_.setJointLine(i * 2 + 1, pa, pb, col, false);
+        }
+    }
+
+    // ---- 環境光 -----------------------------------------------------------
+    // HDR のデコードと GPU プリフィルタは重い（数十〜数百 ms）ので、
+    // オブジェクト一覧のロックを持ったままやらない - 物理スレッドを
+    // 止めないため。dirty と desc だけロック中に取り出して、外で適用する。
+    ed::EnvironmentDesc envPending;
+    bool applyEnv = false;
+    if (envDirty_) {
+        envDirty_ = false;
+        envPending = environment_;
+        applyEnv = true;
+    }
+    lk.unlock();
+    if (applyEnv) {
+        if (envPending.hdr.empty()) {
+            renderer_.clearEnvironment();
+            LOGI("scene", "environment: none (flat ambient)");
+        } else {
+            try {
+                renderer_.loadEnvironment(envPending.hdr,
+                                          float(envPending.intensity));
+            } catch (const wizengine::AssetError& e) {
+                // 環境光はシーン文書の内容（手で書ける）なので、読めなくても
+                // シーンは止めない。前の環境（または一様アンビエント）のまま。
+                LOGW("scene", "environment '%s': %s", envPending.hdr.c_str(),
+                     e.what());
+            }
         }
     }
 }

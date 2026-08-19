@@ -128,7 +128,7 @@ set(MAT_SRC ${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/shaded.mat)
 # together.
 set(ASSET_DIR ${CMAKE_CURRENT_BINARY_DIR}/assets)
 file(MAKE_DIRECTORY ${ASSET_DIR})
-# エディタが保存するシーン（assets/scenes/*.json）の置き場。実行時にも
+# エディタが保存するシーン（assets/scenes/*.xml）の置き場。実行時にも
 # 作られるが、初回起動前から一覧に見えるように先に用意しておく。
 file(MAKE_DIRECTORY ${ASSET_DIR}/scenes)
 
@@ -283,12 +283,13 @@ add_executable(wizengine
     src/Log.cpp
     src/Versions.cpp
     src/CameraObject.cpp
-    src/LightObject.cpp
     src/GltfLoader.cpp
     src/PortScan.cpp
     src/AssetError.cpp
     src/EditorState.cpp
     src/EditorComponent.cpp
+    src/SceneXml.cpp
+    src/SceneDocument.cpp
     src/GizmoComponent.cpp
     src/CpuAffinity.cpp)
 # Version pins surfaced in the browser's About section (src/Versions.cpp).

@@ -4,7 +4,6 @@
 #include <chrono/collision/ChCollisionModel.h>
 #include <chrono/collision/ChCollisionSystem.h>
 #include <chrono/physics/ChBodyEasy.h>
-#include <chrono/geometry/ChTriangleMeshConnected.h>
 #include <chrono/physics/ChContactContainer.h>
 #include <chrono/physics/ChLinkDistance.h>
 #include <chrono/physics/ChLinkLock.h>
@@ -581,24 +580,6 @@ std::size_t PhysicsWorld::addConvexHull(
         b->SetSleepTime(sleepSeconds_);
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
-    sys_->AddBody(b);
-    registerBody(b);
-    return bodies_.size() - 1;
-}
-
-std::size_t PhysicsWorld::addStaticMesh(
-    std::shared_ptr<chrono::ChTriangleMeshConnected> mesh,
-    const ChVector3d& pos, const ChQuaternion<>& rot) {
-    // compute_mass=false: the body is fixed, its mass is irrelevant. The
-    // small sphere-swept thickness rounds each triangle slightly, which is
-    // what makes NSC contacts against a raw mesh behave.
-    auto b = chrono_types::make_shared<ChBodyEasyMesh>(
-        mesh, 1000.0, /*compute_mass*/ false, /*visualize*/ false,
-        /*collide*/ true, mat_, /*sphere_swept*/ 0.002);
-    b->SetPos(pos);
-    b->SetRot(rot);
-    b->SetFixed(true);
-    b->EnableCollision(true);
     sys_->AddBody(b);
     registerBody(b);
     return bodies_.size() - 1;

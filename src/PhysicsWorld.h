@@ -10,7 +10,6 @@
 #include <vector>
 
 namespace chrono {
-class ChTriangleMeshConnected;
 class ChLinkBase;
 }
 
@@ -143,12 +142,6 @@ public:
     std::size_t addConvexHull(const std::vector<chrono::ChVector3d>& points,
                               double density, const chrono::ChVector3d& pos,
                               const chrono::ChQuaternion<>& rot);
-
-    // Fixed body colliding as an exact triangle mesh - for terrain and
-    // obstacles only; dynamic mesh-vs-mesh contact is slow and fragile.
-    std::size_t addStaticMesh(
-        std::shared_ptr<chrono::ChTriangleMeshConnected> mesh,
-        const chrono::ChVector3d& pos, const chrono::ChQuaternion<>& rot);
 
     std::size_t bodyCount() const;
     BodyTransform bodyTransform(std::size_t id) const;

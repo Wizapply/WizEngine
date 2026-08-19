@@ -32,8 +32,8 @@ inline AppMode modeFromName(const std::string& s, AppMode fallback) {
     return fallback;
 }
 
-// 剛体の形。Model は scene.cpp の kBoxModelPath で作った glTF インスタンス群
-// （数が固定のプール）を指す。エディタで新規に置けるのは Box と Sphere。
+// 剛体の形。Model は glTF モデル（シーン文書の <asset> 節で相対パスを宣言し、
+// BodyDesc::mesh が名前で参照する）。Box / Sphere は組み込みメッシュ。
 enum class ShapeKind { Box, Sphere, Model };
 
 inline const char* shapeName(ShapeKind s) {
@@ -122,11 +122,24 @@ struct Color3 {
     float r = 0.80f, g = 0.36f, b = 0.18f;
 };
 
+// glTF モデルのアセット宣言（シーン文書の <asset><mesh .../>）。file は
+// assets/ からの相対パス（".." や絶対パスは読み込みで弾く）。scale はモデル
+// 単位からメートルへの素の倍率で、当たり判定の寸法（BodyDesc::size）とは
+// 独立 - 見た目はアーティストの出力そのまま、当たりはエディタで決める。
+struct MeshAssetDesc {
+    std::string name;
+    std::string file;
+    double scale = 1.0;
+};
+
 // 1個の剛体の設計値。position/rotation は「エディタで置いた姿勢」で、
 // シミュレートを止めるとここに戻る（＝オーサリング状態は壊れない）。
 struct BodyDesc {
     std::string name;
     ShapeKind shape = ShapeKind::Box;
+    // shape=Model のとき、どの glTF モデルで描くか（シーン文書の <asset> 節に
+    // ある <mesh> の名前）。空や未知の名前は球へフォールバックする。
+    std::string mesh;
     // 当たり判定の形。ふつうは shape と同じだが、既存シーンのように
     //「見た目は glTF モデル・当たりは球」という組み合わせがあるので分けて
     // 持つ。collision=Model は「モデルの凸包」の意味で、読めなければ球。
@@ -208,6 +221,28 @@ struct LightDesc {
     double spotInnerDeg = 25.0;     // Spot: 全力の円錐（半頂角・度）
     double spotOuterDeg = 35.0;     // Spot: 減衰しきる円錐（半頂角・度）
     bool shadows = false;
+};
+
+// ---- 地面と環境光 -----------------------------------------------------------
+// どちらもシーンの一部（文書の <worldbody> の <ground/> と <environment/>）。
+// 節を書かない文書はこの既定値で開く（ライト・カメラと同じ扱い）。
+
+// 地面。物理の床（当たり判定の箱）と見える地面（テクスチャ付きの板）は
+// 半分の広さを別々に持つ - 作業の目安になる床は見えている範囲より広く
+// 効いていてほしいため。texture は assets/ からの相対パス（空 = 市松模様）。
+struct GroundDesc {
+    double half = 10.0;        // 物理の床の半分の広さ (m)。MuJoCo と同じ半寸法
+    double visualHalf = 8.0;   // 見える地面の半分の広さ (m)
+    std::string texture = "textures/ground.png";
+    double tile = 2.0;         // テクスチャ 1 リピートが覆うメートル
+    Color3 tint{1.0f, 1.0f, 1.0f};  // テクスチャに乗す色（白 = 画像のまま）
+};
+
+// 環境光（IBL）。assets/ の Radiance .hdr を GPU 上でキューブマップ化して
+// 使う。空 = 環境マップ無し（一様な弱いアンビエントのみ）。
+struct EnvironmentDesc {
+    std::string hdr = "studio.hdr";
+    double intensity = 30000.0;
 };
 
 // ---- カメラ -----------------------------------------------------------------
@@ -408,10 +443,19 @@ inline Color3 colorFromHex(const std::string& hex, const Color3& fallback) {
     return c;
 }
 
+inline nlohmann::json toJson(const MeshAssetDesc& m) {
+    nlohmann::json j;
+    j["name"] = m.name;
+    j["file"] = m.file;
+    j["scale"] = m.scale;
+    return j;
+}
+
 inline nlohmann::json toJson(const BodyDesc& b) {
     nlohmann::json j;
     j["name"] = b.name;
     j["shape"] = shapeName(b.shape);
+    if (b.shape == ShapeKind::Model) j["mesh"] = b.mesh;
     j["collision"] = shapeName(b.collision);
     j["size"] = toJson(b.size);
     j["position"] = toJson(b.position);
@@ -435,6 +479,7 @@ inline BodyDesc bodyFromJson(const nlohmann::json& j, const BodyDesc& base) {
     if (j.contains("collision") && j["collision"].is_string()) {
         b.collision = shapeFromName(j["collision"], b.collision);
     }
+    if (j.contains("mesh") && j["mesh"].is_string()) b.mesh = j["mesh"];
     b.size = vec3FromJson(j.value("size", nlohmann::json()), b.size);
     b.position = vec3FromJson(j.value("position", nlohmann::json()), b.position);
     b.rotation = vec3FromJson(j.value("rotation", nlohmann::json()), b.rotation);
@@ -577,6 +622,69 @@ inline WireDesc wireFromJson(const nlohmann::json& j, const WireDesc& base) {
     return w;
 }
 
+// 文書に書いてよいファイル参照（<mesh file> / <ground texture> /
+// <environment hdr>）は assets/ からの相対パスだけ。".." と絶対パス
+// （/ 始まり・ドライブレター）を弾いて、読み込み先を assets/ の下に
+// 閉じ込める（保存名の正規化と同じ動機。文書もブラウザの入力欄も
+// 手で書けるので、XML の読み込みと edit.* の両方がこれを通す）。
+inline bool assetFileAllowed(const std::string& file) {
+    if (file.empty()) return false;
+    if (file[0] == '/' || file[0] == '\\') return false;
+    if (file.size() > 1 && file[1] == ':') return false;  // C:\ ...
+    if (file.find("..") != std::string::npos) return false;
+    return true;
+}
+
+// 地面と環境光。キーは XML の属性名と同じ（size = 物理の半寸法、visual =
+// 見える地面の半寸法）。ブラウザの World 節（Inspector）とやり取りする。
+inline nlohmann::json toJson(const GroundDesc& g) {
+    nlohmann::json j;
+    j["size"] = g.half;
+    j["visual"] = g.visualHalf;
+    j["texture"] = g.texture;
+    j["tile"] = g.tile;
+    j["color"] = colorToHex(g.tint);
+    return j;
+}
+
+inline GroundDesc groundFromJson(const nlohmann::json& j,
+                                 const GroundDesc& base) {
+    GroundDesc g = base;
+    if (!j.is_object()) return g;
+    g.half = jsonNumber(j, "size", g.half);
+    g.visualHalf = jsonNumber(j, "visual", g.visualHalf);
+    if (j.contains("texture") && j["texture"].is_string()) {
+        // 空 = 市松模様。パスとして不正なもの（".." 等）は無視して現状維持。
+        const std::string t = j["texture"];
+        if (t.empty() || assetFileAllowed(t)) g.texture = t;
+    }
+    g.tile = jsonNumber(j, "tile", g.tile);
+    if (j.contains("color") && j["color"].is_string()) {
+        g.tint = colorFromHex(j["color"], g.tint);
+    }
+    return g;
+}
+
+inline nlohmann::json toJson(const EnvironmentDesc& e) {
+    nlohmann::json j;
+    j["hdr"] = e.hdr;
+    j["intensity"] = e.intensity;
+    return j;
+}
+
+inline EnvironmentDesc environmentFromJson(const nlohmann::json& j,
+                                           const EnvironmentDesc& base) {
+    EnvironmentDesc e = base;
+    if (!j.is_object()) return e;
+    if (j.contains("hdr") && j["hdr"].is_string()) {
+        // 空 = 環境マップ無し。不正なパスは無視して現状維持。
+        const std::string h = j["hdr"];
+        if (h.empty() || assetFileAllowed(h)) e.hdr = h;
+    }
+    e.intensity = jsonNumber(j, "intensity", e.intensity);
+    return e;
+}
+
 inline nlohmann::json toJson(const SimSettings& s) {
     nlohmann::json j;
     j["gravity"] = s.gravity;
@@ -695,6 +803,22 @@ inline LightDesc clampLight(LightDesc l) {
     l.spotInnerDeg = cl(l.spotInnerDeg, 1.0, 88.0);
     l.spotOuterDeg = cl(l.spotOuterDeg, l.spotInnerDeg, 89.0);
     return l;
+}
+
+// 地面・環境光の常識的な範囲。0 や負の広さは描画も物理も壊す。
+inline GroundDesc clampGround(GroundDesc g) {
+    auto cl = [](double v, double lo, double hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
+    };
+    g.half = cl(g.half, 1.0, 1000.0);
+    g.visualHalf = cl(g.visualHalf, 1.0, 1000.0);
+    g.tile = cl(g.tile, 0.1, 100.0);
+    return g;
+}
+inline EnvironmentDesc clampEnvironment(EnvironmentDesc e) {
+    if (e.intensity < 0.0) e.intensity = 0.0;
+    if (e.intensity > 10000000.0) e.intensity = 10000000.0;
+    return e;
 }
 
 // ノードの常識的な範囲。タイマーの下限が一番大事: 0 に近いと毎ステップ

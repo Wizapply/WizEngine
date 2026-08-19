@@ -74,8 +74,8 @@ ChVector3d transformPoint(const float* m, float x, float y, float z) {
                       m[2] * x + m[6] * y + m[10] * z + m[14]);
 }
 
-}  // namespace
-
+// Every triangle of a .glb/.gltf as one connected mesh. いまは凸包
+// （loadCollisionPoints）の入力にだけ使う内部関数。
 bool loadCollisionMesh(const std::string& name, double scale,
                        ChTriangleMeshConnected& out) {
     const std::string path = assetPath(name);
@@ -158,11 +158,13 @@ bool loadCollisionMesh(const std::string& name, double scale,
         LOGW("collision",
              "%s: %zu triangles is a lot for a collision mesh - the multicore "
              "collision system pays per triangle and the physics thread can "
-             "stall. Use a decimated proxy (kModelCollisionPath).",
+             "stall. Use a decimated proxy mesh.",
              name.c_str(), tris.size());
     }
     return true;
 }
+
+}  // namespace
 
 std::vector<ChVector3d> loadCollisionPoints(const std::string& name,
                                             double scale,

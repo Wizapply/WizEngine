@@ -244,20 +244,37 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
     groundMatInstance_ = groundMaterial_->createInstance();
 
     // Direct lights are no longer created here: the scene owns them as
-    // LightObjects (scene.cpp, lightConfigs()) and adds them through
-    // addLight() during Scene::build. Only the ambient below is built in,
-    // so a scene with no lights configured still isn't pitch black.
+    // editable light descriptors (Scene::LightItem, saved in the scene
+    // document) and adds them through addLight() via syncLights. Only the
+    // ambient below is built in, so a scene with no lights configured still
+    // isn't pitch black.
 
-    // Uniform ambient (constant SH, no environment map) so shadowed areas of the
-    // lit ground are a soft gray instead of pure black. Tune intensity to taste:
-    // higher = lighter shadows, lower = darker.
+    // Uniform ambient (constant SH, no environment map) so shadowed areas of
+    // the lit ground are a soft gray instead of pure black. Replaced by
+    // loadEnvironment() when the scene names an HDR; clearEnvironment() puts
+    // it back.
+    installFlatAmbient();
+}
+
+// 一様な弱いアンビエント（環境マップ無し）。起動時と、シーンが環境光を
+// 持たないとき（<environment hdr=""> やシーンの全消し）に使う。
+void Renderer::installFlatAmbient() {
     const float3 ambientSH[1] = {float3{1.0f, 1.0f, 1.05f}};
-    ibl_ = filament::IndirectLight::Builder()
-               .irradiance(1, ambientSH)
-               .intensity(30000.0f)
-               .build(*engine_);
-    scene_->setIndirectLight(ibl_);
+    filament::IndirectLight* flat = filament::IndirectLight::Builder()
+                                        .irradiance(1, ambientSH)
+                                        .intensity(30000.0f)
+                                        .build(*engine_);
+    scene_->setIndirectLight(flat);
+    if (ibl_) engine_->destroy(ibl_);
+    if (iblTexture_) {
+        engine_->destroy(iblTexture_);
+        iblTexture_ = nullptr;
+    }
+    ibl_ = flat;
+}
 
+void Renderer::clearEnvironment() {
+    installFlatAmbient();
 }
 
 void Renderer::ensureSphereMesh() {
@@ -476,16 +493,24 @@ void Renderer::updateLight(std::size_t index, const float3& color,
     lm.setPosition(li, position);
 }
 
-std::size_t Renderer::addModel(const std::string& path) {
+std::size_t Renderer::loadModel(const std::string& path) {
     // Created on first use: an engine that never loads a model pays nothing.
     if (!gltf_) gltf_ = std::make_unique<GltfLoader>(*engine_, *scene_);
-    return gltf_->add(path);  // throws AssetError on failure
+    return gltf_->loadModel(path);  // throws AssetError on failure
 }
 
-void Renderer::createModelInstances(const std::string& path,
-                                    std::size_t count) {
-    if (!gltf_) gltf_ = std::make_unique<GltfLoader>(*engine_, *scene_);
-    gltf_->createInstances(path, count);  // throws AssetError on failure
+float Renderer::modelSize(std::size_t modelId) const {
+    return gltf_ ? gltf_->modelSize(modelId) : 0.0f;
+}
+
+std::size_t Renderer::addModelInstance(std::size_t modelId) {
+    if (!gltf_) return kInvalidModel;
+    const std::size_t id = gltf_->createInstance(modelId);
+    return id == GltfLoader::kInvalid ? kInvalidModel : id;
+}
+
+void Renderer::releaseModelInstance(std::size_t instanceId) {
+    if (gltf_) gltf_->releaseInstance(instanceId);
 }
 
 void Renderer::setModelInstanceTransform(
@@ -774,23 +799,6 @@ void Renderer::setModelInstanceTint(std::size_t index,
     if (gltf_) gltf_->setInstanceTint(index, color, amount);
 }
 
-float Renderer::modelInstanceSize() const {
-    return gltf_ ? gltf_->instancedModelSize() : 0.0f;
-}
-
-void Renderer::setModelTransform(std::size_t id,
-                                 const filament::math::float3& position,
-                                 const filament::math::quatf& rotation,
-                                 float scale) {
-    if (gltf_ && id != kInvalidModel) {
-        gltf_->setTransform(id, position, rotation, scale);
-    }
-}
-
-void Renderer::setBoxColor(const filament::math::float3& color) {
-    matInstance_->setParameter("baseColor", RgbType::LINEAR, color);
-}
-
 void Renderer::configureHighlightColors(
     const std::vector<filament::math::float3>& colors) {
     for (auto* mi : highlightInstances_) engine_->destroy(mi);
@@ -825,12 +833,28 @@ void Renderer::setBoxHighlighted(std::size_t id, int styleIndex) {
 
 void Renderer::addGround(float halfSize, const filament::math::float3& color,
                          float tileMeters, const std::string& texturePath) {
+    // 2 回目以降の呼び出しは作り直し（シーン文書の <ground> が実行時に
+    // 変わるため）。Filament の destroy は使用中の GPU 資源を安全に遅延破棄
+    // するので、前フレームが参照していても構わない。
+    if (!groundEntity_.isNull()) {
+        scene_->remove(groundEntity_);
+        engine_->destroy(groundEntity_);
+        EntityManager::get().destroy(groundEntity_);
+        groundEntity_ = utils::Entity();
+    }
+    if (groundVb_) { engine_->destroy(groundVb_); groundVb_ = nullptr; }
+    if (groundIb_) { engine_->destroy(groundIb_); groundIb_ = nullptr; }
+    if (groundTexture_) {
+        engine_->destroy(groundTexture_);
+        groundTexture_ = nullptr;
+    }
+
     groundMatInstance_->setParameter("baseColor", RgbType::LINEAR, color);
 
     // ---- Ground texture --------------------------------------------------
-    // An image file (PNG/JPEG/TGA/BMP) when the scene names one - and then it
-    // must load, or the run stops. Only when no texture is configured at all
-    // does the ground fall back to a generated 2 x 2 checkerboard. Image
+    // An image file (PNG/JPEG/TGA/BMP) when the scene names one. 読めない・
+    // 無いときは市松模様に落として警告する（テクスチャはシーン文書の内容 =
+    // 手で書けるので、glTF メッシュと同じく止めずに降格する）。Image
     // colours are sRGB; the checker is a linear multiplier on baseColor.
     std::vector<uint8_t> pixels;
     int texW = 0;
@@ -838,12 +862,6 @@ void Renderer::addGround(float halfSize, const filament::math::float3& color,
     const bool fromFile =
         !texturePath.empty() &&
         loadImageRGBA(assetPath(texturePath), pixels, texW, texH);
-    if (!texturePath.empty() && !fromFile) {
-        // A named texture that will not decode is a configuration error, not
-        // something to paper over with the checkerboard.
-        throw AssetError(assetPath(texturePath),
-                         "ground texture is missing or is not a readable image");
-    }
     if (fromFile) {
         LOGI("render", "ground texture: %s (%dx%d)",
              assetPath(texturePath).c_str(), texW, texH);

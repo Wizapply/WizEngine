@@ -530,6 +530,10 @@ int run(int argc, char** argv) {
                 return j.dump();
             });
 
+            // シーン文書そのもの（保存されるのと同じ XML）。ブラウザの
+            // アセットパネルの「📄 XML」から開く。
+            ep->http->setSceneXmlProvider([&scene] { return scene.documentXml(); });
+
             endpoints.push_back(std::move(ep));
         }
         // Browser "stream" commands land here (INPUT thread): store, mark

@@ -39,8 +39,8 @@ namespace wizengine {
 class GltfLoader;
 
 // Everything the renderer needs to create or update a light, in renderer
-// vocabulary (no Filament types leak out of Renderer.cpp). LightObject fills
-// one of these; the scene never touches it directly.
+// vocabulary (no Filament types leak out of Renderer.cpp). Scene converts its
+// editor-side LightDesc (euler angles) into one of these (direction vector).
 struct LightDesc {
     enum class Type { Directional, Point, Spot };
     Type type = Type::Directional;
@@ -111,8 +111,6 @@ public:
     void updateLight(std::size_t index, const filament::math::float3& color,
                      float intensity, const filament::math::float3& direction,
                      const filament::math::float3& position);
-    // Colour shared by every box (lit material).
-    void setBoxColor(const filament::math::float3& color);
     // One highlight style per camera, configured once by the scene, so each
     // viewer's selection has its own colour and several can be lit at once.
     void configureHighlightColors(
@@ -125,26 +123,27 @@ public:
     double aspect() const { return double(width_) / double(height_); }
     // tileMeters: how many metres one full repeat of the texture covers.
     // texturePath: image file (PNG etc) for the ground; if empty or missing,
-    // a checkerboard is generated instead.
+    // a checkerboard is generated instead. 2 回目以降の呼び出しは前の地面を
+    // 壊して作り直す（シーン文書の <ground> の実行時反映）。RENDER スレッド。
     void addGround(float halfSize, const filament::math::float3& color,
                    float tileMeters, const std::string& texturePath);
 
-    // Load a glTF (.gltf) or binary glTF (.glb) model into the scene. Returns
-    // an id for setModelTransform(). Throws AssetError if it cannot be loaded,
-    // so any model named by the scene is validated without the caller having
-    // to remember to check a return value.
+    // ---- glTF モデル（シーン文書の <asset><mesh/> に対応）----------------
+    // loadModel が原型（同じパスは 1 回だけ読む）、addModelInstance が実体。
+    // 実体の番号は組み込み形状（addShape）とは別の空間で、姿勢は
+    // setModelInstanceTransform で入れる。gltfio は実体を 1 個だけ壊せない
+    // ので、releaseModelInstance はスケール 0 で隠して同じモデルの次の実体に
+    // 番号を再利用させる。すべて RENDER スレッド。
     static constexpr std::size_t kInvalidModel = static_cast<std::size_t>(-1);
-    std::size_t addModel(const std::string& path);
-
-    // Use a glTF/GLB model instead of the built-in cube for the dynamic
-    // objects: loads `path` once and creates `count` instances of it. Returns
-    // Throws AssetError if the model cannot be loaded. Instance transforms go
-    // through setModelInstanceTransform() instead of setBoxTransform().
-    void createModelInstances(const std::string& path, std::size_t count);
+    // THROWS AssetError（見つからない・壊れている・glTF 非対応ビルド）。
+    std::size_t loadModel(const std::string& path);
+    // モデルのバウンディングボックスの最長辺（モデル自身の単位、0 = 無い）。
+    // <mesh scale> を決める目安として起動ログに出す。
+    float modelSize(std::size_t modelId) const;
+    std::size_t addModelInstance(std::size_t modelId);
+    void releaseModelInstance(std::size_t instanceId);
     void setModelInstanceTransform(std::size_t index,
                                    const filament::math::mat4f& transform);
-    // Largest dimension of the instanced model in its own units (0 if none).
-    float modelInstanceSize() const;
 
     // Replaces the flat ambient light with an environment generated from an
     // HDR panorama. `name` is a Radiance .hdr file under assets/, e.g.
@@ -156,6 +155,9 @@ public:
     // diffuse colour of their own, so without one they render black wherever
     // the direct lights do not hit them.
     bool loadEnvironment(const std::string& name, float intensity);
+    // 環境マップを外して、起動時と同じ一様な弱いアンビエントへ戻す
+    // （シーン文書の <environment hdr=""> に対応）。RENDER スレッド。
+    void clearEnvironment();
 
     // ---- Grab lines -------------------------------------------------------
     // A line drawn in the scene from a grabbed object to the point the user is
@@ -227,9 +229,6 @@ public:
     // untouched). Used for the per-camera grab highlight on glTF models.
     void setModelInstanceTint(std::size_t index,
                               const filament::math::float3& color, float amount);
-    void setModelTransform(std::size_t id,
-                           const filament::math::float3& position,
-                           const filament::math::quatf& rotation, float scale);
     // A view is one camera's worth of rendering: its own Filament camera,
     // view and swap chain, all drawing the same scene. View 0 always exists;
     // addView() creates more, one per extra camera.
@@ -266,6 +265,9 @@ public:
     void finishPendingReadbacks();
 
 private:
+    // 起動時の一様アンビエントを（作り直して）張る。clearEnvironment の実体。
+    void installFlatAmbient();
+
     int width_;
     int height_;
 

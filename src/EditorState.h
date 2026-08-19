@@ -137,21 +137,35 @@ public:
     void setSceneFile(std::string name);
     std::string sceneFile() const;
 
-    // assets/scenes/ にある *.json の一覧（キャッシュ）。保存・読込のたびに
-    // refresh する。HTTP スレッドが毎回ディレクトリを走査しないための配慮。
+    // assets/scenes/ にあるシーンの一覧（拡張子を落とした名前。キャッシュ）。
+    // *.xml（今の形式）と *.json（旧形式）の両方を拾い、同じ名前があれば
+    // 1 つにまとめる。保存・読込のたびに refresh する。HTTP スレッドが毎回
+    // ディレクトリを走査しないための配慮。
     std::vector<std::string> sceneFiles() const;
     void refreshSceneFiles();
 
     // ---- ファイル ---------------------------------------------------------
     // assets/scenes（無ければ作る）。
     static std::string scenesDir();
-    // 受け取った名前から英数字・_ - のみを残し、".json" を付けたフルパス。
-    // 空になった場合は空文字列を返す（呼び出し側で弾く）。
+    // 保存名の正規化（英数字と _ - のみを残す・64 文字まで）。ファイル名と
+    // 文書の model 名の両方にこれを使う - 一覧（sceneFiles）はファイル名の
+    // 語幹なので、別々に正規化すると「保存したのにタイルが選択されない」に
+    // なる。空になったら不正な名前（呼び出し側で弾く）。
+    static std::string sanitizeSceneName(const std::string& name);
+    // 受け取った名前から英数字・_ - のみを残し、".xml" を付けたフルパス。
+    // 空になった場合は空文字列を返す（呼び出し側で弾く）。シーンの保存は
+    // 常にこちら（XML が正）。
     static std::string scenePath(const std::string& name);
+    // 同じ名前の旧形式（.json）のフルパス。読み込みの後方互換にだけ使う。
+    static std::string legacyScenePath(const std::string& name);
 
-    // 保存・読み込み。失敗時は false を返し、reason に理由を入れる。
-    static bool writeJson(const std::string& path, const nlohmann::json& doc,
+    // 保存・読み込み（テキスト）。失敗時は false を返し、reason に理由を
+    // 入れる。中身が XML か JSON かはここでは見ない。
+    static bool writeText(const std::string& path, const std::string& text,
                           std::string& reason);
+    static bool readText(const std::string& path, std::string& text,
+                         std::string& reason);
+    // 旧形式（*.json）の読み込み。新規の保存には使わない。
     static bool readJson(const std::string& path, nlohmann::json& doc,
                          std::string& reason);
 

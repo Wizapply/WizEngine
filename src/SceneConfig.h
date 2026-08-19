@@ -1,9 +1,13 @@
 #pragma once
 
-// Every scene parameter in one place: object grid and materials, cameras,
-// lights, models, grab feel, streaming, physics solver. scene.cpp reads
-// these; nothing else includes this header. The section markers below are
-// unchanged from when this block lived at the top of scene.cpp.
+// Engine-level defaults in one place: cameras, lights, ground, environment,
+// physics solver, grab feel. scene.cpp reads these; nothing else includes
+// this header.
+//
+// ここにあるのは「実行環境と起動時の既定値」だけ。**シーンの中身**
+// （オブジェクトの配置・glTF モデルの割り当て・ジョイント・イベント）は
+// このヘッダではなく assets/scenes/*.xml が持つ（CLAUDE.md の
+// 「シーン文書（XML）」の章）。起動時に読む文書は下の kStartupScene。
 //
 // Everything here is a compile-time value or a small inline factory - editing
 // a number and rebuilding is the whole workflow. Runtime-tunable values
@@ -16,25 +20,11 @@
 
 #include "BoxController.h"
 #include "CameraObject.h"
-#include "EditorTypes.h"     // AppMode
-#include "LightObject.h"
+#include "EditorTypes.h"     // AppMode, LightDesc
 #include "PhysicsWorld.h"    // PhysicsBackend
-#include "scene_math.h"      // kPi, used by the volume calculation
+#include "scene_math.h"      // eulerDegreesFromDirection (lightConfigs)
 
-// ---- Scene parameters (everything lives here) ---------------------------
-constexpr int kNx = 8;                // boxes along X
-constexpr int kNy = 6;                // boxes along Y (stacked height)
-constexpr int kNz = 8;                // boxes along Z   -> 8*8*8 = 512
-// Collision shape of the dynamic objects. Sphere suits round models (an
-// apple); Box suits crates. kBoxSize is the box edge OR the sphere diameter,
-// so the object occupies the same space either way. ConvexHull collides as
-// the convex hull of kBoxModelPath's mesh (kBoxModelScale applied), so the
-// physics silhouette matches the drawn model - requires kBoxModelPath, and
-// falls back to Box (with a warning) when the mesh cannot be read. Author
-// hull models with the origin near their centre: Chrono re-centres the hull
-// on its barycentre, and a far-off origin renders offset from the collision.
-enum class BodyShape { Box, Sphere, ConvexHull };
-constexpr BodyShape kBodyShape = BodyShape::Sphere;
+// ---- Contact material ----------------------------------------------------
 // Rolling/spinning resistance - only meaningful for spheres, which otherwise
 // roll across a flat floor forever. Raise if the fruit never settles.
 // (Chrono only solves these when the solver runs in spinning mode, which
@@ -55,51 +45,10 @@ constexpr float kRestitution = 0.0f;
 constexpr double kLinearDamping = 0.15;   // 1/s
 constexpr double kAngularDamping = 0.60;  // 1/s
 
-constexpr double kBoxSize = 0.1;      // box edge length / sphere diameter
-constexpr double kSpacing = 0.15;     // centre-to-centre gap (> kBoxSize)
-constexpr double kBaseY = 1.0;        // height of the lowest layer
-// Mass per object, converted to the density Chrono wants. Doing it this way
-// keeps the mass fixed when the shape or size changes: a sphere of diameter
-// kBoxSize has a bit over half the volume of the cube it fits in, so the same
-// density would give a much lighter fruit.
-constexpr double kMassPerBody = 0.2;  // kg
-// (ConvexHull uses the box volume as its estimate here; the actual mass is
-// density x the real hull volume, so it lands near kMassPerBody for a model
-// that roughly fills its kBoxSize cube.)
-constexpr double kBodyVolume =
-    (kBodyShape == BodyShape::Sphere)
-        ? (4.0 / 3.0) * scenemath::kPi * (kBoxSize * 0.5) * (kBoxSize * 0.5) *
-              (kBoxSize * 0.5)
-        : kBoxSize * kBoxSize * kBoxSize;
-constexpr double kDensity = kMassPerBody / kBodyVolume;  // kg/m^3
-// Box colour (linear RGB). Shading comes from the lights, so keep it a plain
-// base colour rather than a pre-shaded one.
-constexpr float kBoxR = 0.80f, kBoxG = 0.36f, kBoxB = 0.18f;
-
-constexpr double kGroundSize = 20.0;  // physics ground box (X and Z)
-constexpr float kGroundHalf = 8.0f;   // visible ground half-extent (16 x 16)
-// Ground texture: image under assets/ (copied next to the executable by the
-// build). Set to "" to use the generated checkerboard.
-constexpr const char* kGroundTexture = "textures/ground.png";
-constexpr float kGroundTile = 2.0f;   // metres covered by one texture repeat
-// Tint multiplied onto the texture (white = image colours as-is).
-constexpr float kGroundTintR = 1.0f, kGroundTintG = 1.0f, kGroundTintB = 1.0f;
-
-// --- Performance knobs ---------------------------------------------------
-// Substeps multiply the physics cost directly: 1 is cheapest, 2-4 settles
-// stacks better. Solver iterations are the other big cost; lower them when
-// running many boxes (jitter comes back, so tune against the perf overlay).
-// ---- Environment lighting -------------------------------------------------
-// The HDR panorama that lights the scene. Put a Radiance .hdr file in
-// assets/ and name it here; it is converted into a cubemap on the GPU at load
-// time, so swapping the file only needs a restart, not a rebuild. Empty =
-// flat ambient light only.
-//
-// Worth setting whenever glTF models are used: glTF defaults metallicFactor to
-// 1.0, and metal has no diffuse colour - with nothing to reflect it renders
-// black in shadow. An environment gives it something to reflect.
-constexpr const char* kEnvironmentHdr = "studio.hdr";  // e.g. "studio.hdr"
-constexpr float kEnvironmentIntensity = 30000.0f;  // as the flat ambient was
+// 地面（物理の床・見える地面・テクスチャ）と環境光（HDR の IBL）はシーンの
+// 一部になった: シーン文書の <worldbody> の <ground> / <environment> が持ち、
+// 節を書かない文書は GroundDesc / EnvironmentDesc（EditorTypes.h）の既定値で
+// 開く。ここには定数を置かない。
 
 // ---- Cameras -------------------------------------------------------------
 // One entry per camera. Each gets its own browser page on its own port
@@ -152,76 +101,44 @@ constexpr std::size_t kEditorCamera = 0;
 
 // ---- Lights --------------------------------------------------------------
 // One entry per light; add or remove entries freely. These are the direct
-// lights of the scene (the ambient/IBL is separate - see kEnvironmentHdr).
-// ここにあるのは**初期構成**: Scene::build がエディタの設計値（ed::LightDesc、
-// 向きはオイラー角）へ取り込み、以後はブラウザのエディタで追加・削除・編集
-// できる（シーンの保存/読込にも含まれる。旧い保存やシーンの全消しはこの
-// 初期構成に戻る）。LightObject クラス自体は使われなくなり、この Config が
-// 「方向ベクトルで書ける」初期値の語彙として残っている。
+// lights of the scene (the ambient/IBL is separate - the scene document's
+// <environment> owns it).
+// ここにあるのは**初期構成**: シーン文書がライトを持たないとき（新規・
+// 全消し・ライト無しの手書き XML）にこの 2 灯で開く。以後はブラウザの
+// エディタで編集でき、シーンの保存/読込（<worldbody> の <light>）に含まれる。
 //
-// Intensity units: lux for Directional (sun ~100k, overcast ~10k), lumens for
-// Point/Spot (a 60W-ish bulb ~800 lm - point lights need surprisingly large
-// values to compete with a sun-lit scene).
-inline std::vector<LightObject::Config> lightConfigs() {
-    LightObject::Config key;  // warm main light, casts the shadows
-    key.type = LightObject::Type::Directional;
-    key.color = {1.0f, 0.97f, 0.92f};
-    key.intensity = 70000.0f;
-    key.direction = {-0.5f, -1.0f, -0.35f};
-    key.castShadows = true;
+// 向きは方向ベクトルで書き、エディタの語彙（オイラー角・ゼロ = 真下）へ
+// ここで変換する。Intensity units: lux for Directional (sun ~100k), lumens
+// for Point/Spot (a 60W-ish bulb ~800 lm - point lights need surprisingly
+// large values to compete with a sun-lit scene).
+inline std::vector<wizengine::editor::LightDesc> lightConfigs() {
+    using wizengine::editor::LightDesc;
+    using wizengine::editor::LightKind;
+    auto directional = [](const char* name, float r, float g, float b,
+                          double intensity, const scenemath::Vec3& direction,
+                          bool shadows) {
+        LightDesc d;
+        d.name = name;
+        d.kind = LightKind::Sun;
+        d.color = {r, g, b};
+        d.intensity = intensity;
+        const scenemath::Vec3 e = scenemath::eulerDegreesFromDirection(direction);
+        d.rotation = {e.x(), e.y(), e.z()};
+        d.shadows = shadows;
+        return d;
+    };
 
-    LightObject::Config fill;  // cool light from the other side, no shadows.
-    fill.type = LightObject::Type::Directional;  // Lifts shadowed ground out
-    fill.color = {0.85f, 0.90f, 1.0f};           // of pure black.
-    fill.intensity = 40000.0f;
-    fill.direction = {0.6f, -0.5f, 0.45f};
-    fill.castShadows = false;
-
-    // Example of a positioned light - uncomment to try:
-    // LightObject::Config lamp;
-    // lamp.type = LightObject::Type::Point;
-    // lamp.color = {1.0f, 0.6f, 0.3f};
-    // lamp.intensity = 500000.0f;  // lumens
-    // lamp.position = {0.0f, 4.0f, 0.0f};
-    // lamp.falloffRadius = 25.0f;
-    // return {key, fill, lamp};
-
-    return {key, fill};
+    // warm main light (casts the shadows) + cool fill from the other side
+    // (lifts shadowed ground out of pure black).
+    return {directional("key", 1.0f, 0.97f, 0.92f, 70000.0,
+                        scenemath::Vec3(-0.5, -1.0, -0.35), true),
+            directional("fill", 0.85f, 0.90f, 1.0f, 40000.0,
+                        scenemath::Vec3(0.6, -0.5, 0.45), false)};
 }
 
-// ---- Models --------------------------------------------------------------
-// Optional glTF / GLB model loaded at startup, looked up next to the .filamat
-// files (i.e. the build dir) unless an absolute path is given. Leave empty for
-// none. The model is decoration only - it has no collision shape.
-constexpr const char* kModelPath = "";  // e.g. "model.glb"
-
-// Use a glTF/GLB model for the dynamic objects instead of the built-in cube.
-// Empty = plain boxes. The physics shape stays a kBoxSize cube either way.
-// If the file cannot be loaded the scene falls back to boxes.
-constexpr const char* kBoxModelPath = "apple2.glb";  // e.g. "crate.glb"
-// Straight multiplier applied to the model's own units. The console prints the
-// model's measured size at startup, so pick a value from that: to make a model
-// that measures 0.01 span 0.3 m, use 30. Nothing is fitted automatically.
-constexpr float kBoxModelScale = 1.0f;
 // How strongly the grabbed object is washed towards white so it stands out.
 // 0 = no change, 1 = strongly whitened. Works with opaque models.
 constexpr float kSelectedWhiten = 0.7f;
-constexpr float kModelX = 0.0f, kModelY = 0.0f, kModelZ = 0.0f;
-constexpr float kModelYawDegrees = 0.0f;
-constexpr float kModelScale = 1.0f;
-// Give the model above a static triangle-mesh collision at the same pose, so
-// dynamic objects pile against it instead of passing through. Exact but for
-// FIXED geometry only. Read failures degrade to "decoration only" with a
-// warning rather than aborting the run.
-constexpr bool kModelCollision = false;
-// Collision proxy: a separate low-poly mesh used ONLY for collision, while
-// kModelPath stays the pretty one on screen. Empty = collide with kModelPath
-// itself. Strongly recommended for dense models: the multicore collision
-// system treats every triangle as its own shape, so a high-poly collision
-// mesh stalls the physics thread (hundreds of ms per step reads as a freeze).
-// A few hundred to a few thousand triangles is the healthy range - in
-// Blender: duplicate, Decimate modifier, export. Same pose/scale is applied.
-constexpr const char* kModelCollisionPath = "";  // e.g. "model_collision.glb"
 
 // ---- Grab control --------------------------------------------------------
 // Grab an object with the left mouse button and drag to push it in the
@@ -273,6 +190,13 @@ constexpr bool kIdleWhenUnwatched = true;
 // 切り替えられるので、好みの問題）。
 constexpr wizengine::editor::AppMode kStartMode =
     wizengine::editor::AppMode::Simulate;
+
+// 起動時に読み込むシーン文書（assets/scenes の名前。拡張子は書かない）。
+// シーンの中身（配置・モデル・ジョイント・イベント）はコードではなく XML が
+// 持つので、既定シーンもただのファイル（assets/scenes/default.xml、リポジトリ
+// 同梱）。読めなければ警告を出して空のシーン（地面のみ）で起動する。
+// 空文字列にすると常に空のシーンで起動する。
+constexpr const char* kStartupScene = "default";
 
 // 重力（-Y 方向、m/s^2）。エディタのシミュレート設定の初期値でもある。
 constexpr double kGravityY = -9.81;

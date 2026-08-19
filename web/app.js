@@ -317,6 +317,11 @@
       closeNodeEditor();
       return;
     }
+    if (e.key === 'Escape' && xmlEdOpen) {
+      e.preventDefault();
+      closeXmlEditor();
+      return;
+    }
     if (!owner || !sceneData || sceneData.mode !== 'editor') return;
     if (!isEditorCam()) return;  // ギズモが出ないページで切り替えても意味がない
     const key = e.key.toLowerCase();
@@ -1074,7 +1079,7 @@
       return;
     }
     const drawn = o.shape === 'model'
-      ? ('Model (' + (sceneData.model || '') + ')')
+      ? ('Model (' + (o.mesh || '?') + ')')
       : (o.shape === 'sphere' ? 'Sphere' : 'Box');
     const size = o.shape === 'box'
       ? [o.size.x, o.size.y, o.size.z].map((v) => v.toFixed(2)).join(' × ')
@@ -1162,13 +1167,22 @@
     send('hover', hoverNdc);
   }, 70);
 
-  function addObject(shape) {
-    send('edit.add', {
+  // アセットパネルの mesh タイル（配列番号 → いまの一覧から名前を引く）。
+  function addMeshAsset(i) {
+    const m = ((sceneData && sceneData.meshes) || [])[i];
+    if (m) addObject('model', m.name);
+  }
+  function addObject(shape, mesh) {
+    const msg = {
       shape: shape,
       size: num('edNewSize', 0.5),
       color: document.getElementById('edNewColor').value,
       mass: 1.0
-    });
+    };
+    // glTF モデルの配置（アセットパネルの mesh タイル）。size は当たり判定の
+    // 大きさで、見た目の大きさは文書の <mesh scale> が決める。
+    if (mesh) msg.mesh = mesh;
+    send('edit.add', msg);
   }
 
   // 触った項目だけを送る（edit.set は部分更新）。全部まとめて送ると、
@@ -1336,12 +1350,61 @@
     if (hz >= 10 && hz <= 240) send('rate', { hz: hz });
   }
 
+  // ---- World（地面・環境光）--------------------------------------------
+  // 触った欄も含めて節の値を丸ごと送る（部分更新はサーバー側が現在値へ
+  // 重ねるので、こちらは見えている値をそのまま渡せばよい）。
+  function applyGround() {
+    send('edit.ground', {
+      size: num('edGroundSize', 10),
+      visual: num('edGroundVisual', 8),
+      texture: document.getElementById('edGroundTex').value.trim(),
+      tile: num('edGroundTile', 2),
+      color: document.getElementById('edGroundColor').value
+    });
+  }
+  function applyEnvironment() {
+    send('edit.environment', {
+      hdr: document.getElementById('edEnvHdr').value.trim(),
+      intensity: num('edEnvIntensity', 30000)
+    });
+  }
+
   function saveScene() {
     const name = document.getElementById('edSceneName').value.trim();
     if (!name) return;
     send('edit.save', { name: name });
   }
   // 読込はアセットパネルのタイルのダブルクリック（assetLoad）が受け持つ。
+  // シーンの中身は MuJoCo 風の XML が正（assets/scenes/<名前>.xml）。保存
+  // しなくても、いま組んでいる中身は /scene.xml で読める。
+  function openSceneXml() { window.open('scene.xml', '_blank'); }
+
+  // ---- シーン XML エディタ（モーダル）------------------------------------
+  // /scene.xml のテキストをそのまま編集し、「✓ 適用」で edit.xml として
+  // 送る。検証と適用はサーバー側（壊れた XML は適用されず、理由が status に
+  // 出る）ので、ここは取得・送信・表示だけ。適用結果はモーダル右上に
+  // status をミラーして見せる（送信は非同期でレスポンスに結果が無いため）。
+  let xmlEdOpen = false;
+  function toggleXmlEditor() { xmlEdOpen ? closeXmlEditor() : openXmlEditor(); }
+  function openXmlEditor() {
+    xmlEdOpen = true;
+    document.getElementById('xmlEd').hidden = false;
+    reloadXml();
+  }
+  function closeXmlEditor() {
+    xmlEdOpen = false;
+    document.getElementById('xmlEd').hidden = true;
+  }
+  function reloadXml() {
+    fetch('scene.xml')
+      .then((r) => r.text())
+      .then((t) => { document.getElementById('xmText').value = t; })
+      .catch(() => { document.getElementById('xmText').value = ''; });
+  }
+  function applyXml() {
+    send('edit.xml', { text: document.getElementById('xmText').value });
+    document.getElementById('xmStatus').textContent = '適用中...';
+  }
   function clearScene() {
     if (!confirm('シーンのオブジェクトとジョイントを全部消します。よろしいですか？')) return;
     send('edit.clear');
@@ -1440,6 +1503,20 @@
       setField('gzScaleStep', gz.scaleStep);
       setField('gzGrid', gz.grid);
       setField('gzGridStep', gz.gridStep);
+    }
+    // World 節（地面・環境光）。入力欄は「フォーカス中は触らない」の
+    // 既定どおり setField 経由で。
+    if (sceneData.ground) {
+      const g = sceneData.ground;
+      setField('edGroundSize', round2(g.size));
+      setField('edGroundVisual', round2(g.visual));
+      setField('edGroundTex', g.texture);
+      setField('edGroundTile', round2(g.tile));
+      setField('edGroundColor', g.color);
+    }
+    if (sceneData.environment) {
+      setField('edEnvHdr', sceneData.environment.hdr);
+      setField('edEnvIntensity', Math.round(sceneData.environment.intensity));
     }
     // ギズモ設定の節はツールバーの ⚙ で開閉（エディタモード中だけ意味がある）。
     document.getElementById('gzSettings')
@@ -1583,7 +1660,9 @@
     if (!show) { assetListKey = ''; return; }
 
     const files = sceneData.files || [];
-    const key = files.join('|') + '@' + (sceneData.sceneFile || '');
+    const meshes = sceneData.meshes || [];
+    const key = files.join('|') + '@' + (sceneData.sceneFile || '') + '#' +
+      meshes.map((m) => m.name).join('|');
     if (key === assetListKey) return;  // 変化が無ければ DOM を組み直さない
     assetListKey = key;
 
@@ -1607,6 +1686,18 @@
       '<div class="asItem" title="平行光を追加（太陽。位置は光に影響しない）" ' +
       'onclick="addLight(\'sun\')"><span class="ico">☀&#xFE0E;</span>' +
       '<span class="name">Sun</span><span class="kind">light</span></div>';
+    // シーン文書の <asset><mesh/>。クリックでそのモデルのオブジェクトを
+    // カメラ正面に配置する。名前は XML 由来（手で書ける）なので HTML には
+    // エスケープして出し、onclick へは配列番号だけを埋め込む（名前を JS
+    // 文字列に埋め込むと引用符入りの名前で壊れる）。
+    const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    meshes.forEach((m, i) => {
+      html += '<div class="asItem" title="クリックでカメラ正面に配置（' +
+        esc(m.file) + '）" onclick="addMeshAsset(' + i + ')">' +
+        '<span class="ico">🧊</span><span class="name">' + esc(m.name) +
+        '</span><span class="kind">mesh</span></div>';
+    });
     for (const f of files) {
       const cur = f === sceneData.sceneFile;
       html += '<div class="asItem' + (cur ? ' sel' : '') +
@@ -2011,6 +2102,10 @@
       const r = await fetch('scene');
       sceneData = await r.json();
       noteSceneChanges(sceneData);
+      if (xmlEdOpen) {
+        document.getElementById('xmStatus').textContent =
+          sceneData.status || '';
+      }
       renderCameras();
       renderHierarchy();
       renderInspector();

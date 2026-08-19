@@ -3,15 +3,14 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 
 #include "AssetError.h"
 #include "Log.h"
 
-namespace {
-
 // 保存名に使ってよい文字だけ残す。".." や "/" を弾くのが目的（保存先は
 // assets/scenes に固定したい）。
-std::string sanitizeName(const std::string& name) {
+std::string EditorState::sanitizeSceneName(const std::string& name) {
     std::string out;
     for (char c : name) {
         const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
@@ -21,8 +20,6 @@ std::string sanitizeName(const std::string& name) {
     }
     return out;
 }
-
-}  // namespace
 
 void EditorState::push(Op op) {
     std::lock_guard<std::mutex> lk(mutex_);
@@ -252,11 +249,16 @@ void EditorState::refreshSceneFiles() {
         for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
             if (ec) break;
             if (!entry.is_regular_file(ec)) continue;
-            if (entry.path().extension() != ".json") continue;
+            const std::string ext = entry.path().extension().string();
+            // .xml が今の形式、.json は旧形式（読み込みのみ）。一覧に出す
+            // 名前は拡張子を落としたものなので、同名の新旧が両方あっても
+            // タイルは 1 個になる（読み込みは .xml を先に見る）。
+            if (ext != ".xml" && ext != ".json") continue;
             found.push_back(entry.path().stem().string());
         }
     }
     std::sort(found.begin(), found.end());
+    found.erase(std::unique(found.begin(), found.end()), found.end());
     std::lock_guard<std::mutex> lk(mutex_);
     files_.swap(found);
 }
@@ -267,12 +269,18 @@ std::string EditorState::scenesDir() {
 }
 
 std::string EditorState::scenePath(const std::string& name) {
-    const std::string safe = sanitizeName(name);
+    const std::string safe = sanitizeSceneName(name);
+    if (safe.empty()) return {};
+    return scenesDir() + "/" + safe + ".xml";
+}
+
+std::string EditorState::legacyScenePath(const std::string& name) {
+    const std::string safe = sanitizeSceneName(name);
     if (safe.empty()) return {};
     return scenesDir() + "/" + safe + ".json";
 }
 
-bool EditorState::writeJson(const std::string& path, const nlohmann::json& doc,
+bool EditorState::writeText(const std::string& path, const std::string& text,
                             std::string& reason) {
     std::error_code ec;
     std::filesystem::create_directories(
@@ -282,7 +290,7 @@ bool EditorState::writeJson(const std::string& path, const nlohmann::json& doc,
         reason = "書き込めません: " + path;
         return false;
     }
-    f << doc.dump(2) << "\n";
+    f << text;
     if (!f) {
         reason = "書き込み中にエラー: " + path;
         return false;
@@ -291,19 +299,32 @@ bool EditorState::writeJson(const std::string& path, const nlohmann::json& doc,
     return true;
 }
 
-bool EditorState::readJson(const std::string& path, nlohmann::json& doc,
+bool EditorState::readText(const std::string& path, std::string& text,
                            std::string& reason) {
     std::ifstream f(path, std::ios::binary);
     if (!f) {
         reason = "見つかりません: " + path;
         return false;
     }
-    doc = nlohmann::json::parse(f, nullptr, false);
+    text.assign(std::istreambuf_iterator<char>(f),
+                std::istreambuf_iterator<char>());
+    if (f.bad()) {
+        reason = "読み込み中にエラー: " + path;
+        return false;
+    }
+    LOGI("editor", "loaded %s", path.c_str());
+    return true;
+}
+
+bool EditorState::readJson(const std::string& path, nlohmann::json& doc,
+                           std::string& reason) {
+    std::string text;
+    if (!readText(path, text, reason)) return false;
+    doc = nlohmann::json::parse(text, nullptr, false);
     if (doc.is_discarded() || !doc.is_object()) {
         reason = "JSON として読めません: " + path;
         return false;
     }
-    LOGI("editor", "loaded %s", path.c_str());
     return true;
 }
 

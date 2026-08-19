@@ -625,6 +625,28 @@
     /* ぼけた背景がうっすら透けるくらいの下地。 */
     .ndWin { background: rgba(21,23,28,.9); }
   }
+  /* シーン XML エディタ。ノードエディタと同じモーダルの流儀（#nodeEd の
+     配置 CSS と .ndBack / .ndWin を共有）。中身はテキストエリア 1 枚。 */
+  #xmlEd {
+    position: fixed; inset: 0; z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #xmlEd[hidden] { display: none; }
+  #xmlEd, #xmlEd * { cursor: auto; }
+  #xmlEd button, #xmlEd .ndBack { cursor: pointer; }
+  #xmText {
+    flex: 1; width: 100%; resize: none; border: 0; outline: none;
+    padding: 10px 12px; box-sizing: border-box;
+    background: #101216; color: #cdd3dd;
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+    white-space: pre; tab-size: 2;
+  }
+  .xmStatus {
+    margin-left: auto; font-size: 11px; color: #9aa3b2;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 40%;
+  }
+
   /* ステージは OS カーソルを消して自前の矢印を描くが（#stage * の
      cursor:none）、ノードエディタは普通のフォーム操作なので OS カーソルに
      戻す。app.js 側もこの上ではソフトウェアカーソルを出さない。 */

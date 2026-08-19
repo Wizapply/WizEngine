@@ -218,6 +218,23 @@ void HttpServer::registerRoutes(httplib::Server& srv,
         res.set_content(provider ? provider() : "{}", "application/json");
     });
 
+    // シーン文書（XML）。保存ファイルと同じ中身を、保存せずに読む口。
+    srv.Get(prefix + "/scene.xml", [this](const httplib::Request&,
+                                          httplib::Response& res) {
+        std::function<std::string()> provider;
+        {
+            std::lock_guard<std::mutex> lock(offerMutex_);
+            provider = sceneXmlProvider_;
+        }
+        if (!provider) {
+            res.status = 503;
+            return;
+        }
+        res.set_header("Cache-Control", "no-store");
+        // text/xml にしておくとブラウザがそのまま整形して見せる。
+        res.set_content(provider(), "text/xml; charset=utf-8");
+    });
+
     // Performance counters for the browser overlay.
     srv.Get(prefix + "/stats", [this](const httplib::Request&, httplib::Response& res) {
         std::function<std::string()> provider;
@@ -292,6 +309,11 @@ void HttpServer::setStatsProvider(std::function<std::string()> provider) {
 void HttpServer::setSceneProvider(std::function<std::string()> provider) {
     std::lock_guard<std::mutex> lock(offerMutex_);
     sceneProvider_ = std::move(provider);
+}
+
+void HttpServer::setSceneXmlProvider(std::function<std::string()> provider) {
+    std::lock_guard<std::mutex> lock(offerMutex_);
+    sceneXmlProvider_ = std::move(provider);
 }
 
 std::vector<std::string> HttpServer::drainCommands() {

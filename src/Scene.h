@@ -18,6 +18,7 @@
 #include "EditorTypes.h"
 #include "GameObject.h"
 #include "SceneComponent.h"
+#include "SceneDocument.h"
 #include "PhysicsWorld.h"  // for BodyTransform
 
 namespace wizengine {
@@ -104,6 +105,19 @@ public:
         return i < lights_.size() && lights_[i].alive;
     }
 
+    // ---- glTF メッシュアセット（シーン文書の <asset><mesh/>）--------------
+    // 文書の宣言（desc）と、実体側の遅延キャッシュ。modelId は RENDER
+    // スレッドが最初に描くときに読み込む（Filament を触れるのはそのスレッド
+    // だけ）。hull は PHYSICS スレッドが最初に当たり判定へ使うときに読み込む
+    // （cgltf の CPU 処理だけ）。構造を他スレッドから読むときは lockObjects()。
+    struct MeshAsset {
+        wizengine::editor::MeshAssetDesc desc;
+        std::size_t modelId = GameObject::kInvalidId;  // Renderer のモデル番号
+        bool loadFailed = false;  // 読めなかった（毎フレーム試さない）
+        std::vector<chrono::ChVector3d> hull;  // 凸包の点群（空 = 無し）
+        bool hullTried = false;
+    };
+
     // Pick the object under a screen position, given in normalised device
     // coords (x, y in [-1, 1], y up), through the given camera. Selects it (or
     // clears that camera's selection on a miss) and returns the index or
@@ -182,9 +196,13 @@ public:
     void cameraEditPose(std::size_t index, wizengine::editor::Vec3d& pos,
                         wizengine::editor::Vec3d& rot) const;
 
-    // 保存用のシーン文書（オブジェクト・ジョイント・ライト・カメラ・設定）。
-    // PHYSICS thread。
-    nlohmann::json documentJson() const;
+    // シーン文書（オブジェクト・ジョイント・ライト・カメラ・イベント・設定）。
+    // これが保存される中身そのもので、XML と 1 対 1 に対応する
+    // （SceneDocument.h）。オブジェクト一覧のロックを自分で取るので、
+    // PHYSICS スレッド（保存）からも HTTP スレッド（/scene.xml）からも呼べる。
+    wizengine::editor::SceneDocument document();
+    // 同じものを XML テキストにしたもの。保存されるファイルの中身と同じ。
+    std::string documentXml();
 
     void stepPhysics(double dt);
     // Re-drop the boxes (browser Reset / R key).
@@ -208,6 +226,13 @@ private:
     void applyEditorOp(const EditorState::Op& op);
     // 設計値からオブジェクトを1個作る。番号を返す。
     std::size_t createObject(const wizengine::editor::BodyDesc& desc);
+    // desc.mesh（アセット名）→ meshes_ の番号。-1 = 無い（球で描く）。
+    int meshIndexFor(const std::string& name) const;
+    // メッシュの凸包（最初に使うときに読み込む）。nullptr = 読めない。
+    const std::vector<chrono::ChVector3d>* meshHull(int meshIndex);
+    // 設計値から Chrono のボディを 1 個（createObject / rebuildBody 共通）。
+    std::size_t createBody(const wizengine::editor::BodyDesc& desc,
+                           int meshIndex);
     void destroyObject(std::size_t index);
     // 形・大きさ・質量が変わったオブジェクトの Chrono ボディを作り直す。
     // physDirty が立っているものだけが対象。
@@ -234,7 +259,8 @@ private:
     void restoreAuthoredPoses();
     // シミュレート設定を PhysicsWorld へ流し込む。
     void applySimSettings();
-    void loadDocument(const nlohmann::json& doc);
+    // 文書の中身で今のシーンを置き換える（読み込み・起動時のシーン指定）。
+    void loadDocument(const wizengine::editor::SceneDocument& doc);
     // ジョイントの端点に使う物理ボディ番号。-1 は地面。
     std::size_t jointBodyId(int objectIndex) const;
 
@@ -249,6 +275,15 @@ private:
     void resetLightsToDefaults();
     void resetCamerasToDefaults();
 
+    // 地面・環境光の差し替え（PHYSICS thread）。物理の床が変わるときは
+    // その場で作り直し、見た目は dirty を立てて RENDER スレッドに任せる。
+    void setGroundAndEnvironment(const wizengine::editor::GroundDesc& ground,
+                                 const wizengine::editor::EnvironmentDesc& env);
+    // ground_.half の物理の床を作り直す（初回は新規作成）。PHYSICS thread。
+    void rebuildGroundBody();
+    // RENDER thread: 見える地面の作り直し（applyToRenderer のロック中）。
+    void syncGround();
+
     PhysicsWorld& physics_;
     wizengine::Renderer& renderer_;
     std::vector<std::unique_ptr<CameraObject>> cameras_;
@@ -261,17 +296,17 @@ private:
     EditorState editor_;
     // 地面の物理ボディ。ジョイントの「ワールド側」に使う。
     std::size_t groundPhysId_ = GameObject::kInvalidId;
-    // glTF インスタンスは数が固定のプール（gltfio に 1 個だけ壊す口が無い）。
-    // 先頭から順に配り、使い切ったら以降は組み込みメッシュで描く。消した
-    // インスタンスは潰して見えなくするだけで、番号は返ってこない。
-    std::size_t modelCapacity_ = 0;
-    std::size_t modelNext_ = 0;
-    // ConvexHull 判定に使う点群（scene.cpp の kBodyShape 用）。空 = 使わない。
-    std::vector<chrono::ChVector3d> hullPoints_;
-    // True when the dynamic objects are drawn as glTF instances (see
-    // kBoxModelPath in scene.cpp).
-    bool useModel_ = false;
-    float modelScale_ = 1.0f;  // model units -> metres (see scene.cpp)
+    // メッシュアセットのカタログ（文書の <asset>）。構造は objectsMutex_。
+    std::vector<MeshAsset> meshes_;
+    // 地面と環境光（文書の <ground> / <environment>）。書くのは物理スレッド
+    // （loadDocument / clear）、読むのは RENDER スレッド（dirty を見て反映）。
+    // どちらも objectsMutex_ の下。物理の床の作り直しは物理スレッドが即座に
+    // 行い（rebuildGroundBody）、見た目は RENDER スレッドがフレーム境界で
+    // 追いつく（syncGround / 環境光は applyToRenderer 末尾のロック外）。
+    wizengine::editor::GroundDesc ground_;
+    wizengine::editor::EnvironmentDesc environment_;
+    bool groundDirty_ = true;  // 初回の applyToRenderer が見た目を作る
+    bool envDirty_ = true;
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る
     std::mutex poseMutex_;
     std::vector<BodyTransform> latestPoses_;  // one per box, in box order

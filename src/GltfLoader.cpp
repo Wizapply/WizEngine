@@ -4,7 +4,6 @@
 #include "AssetError.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <fstream>
 
 #include <filament/Box.h>
@@ -56,26 +55,40 @@ GltfLoader::GltfLoader(filament::Engine& engine, filament::Scene& scene)
 }
 
 GltfLoader::~GltfLoader() {
-    for (auto* asset : assets_) {
-        scene_.removeEntities(asset->getEntities(), asset->getEntityCount());
-        loader_->destroyAsset(asset);
+    // 動的に作った実体のエンティティも外してからアセットを壊す
+    // （getEntities が後から作った実体を含むかは版に依るので、両方外す。
+    // シーンに無いエンティティの remove は無害）。
+    for (auto* inst : instances_) {
+        if (inst) scene_.removeEntities(inst->getEntities(), inst->getEntityCount());
     }
-    assets_.clear();
+    for (auto& m : models_) {
+        if (!m.asset) continue;
+        scene_.removeEntities(m.asset->getEntities(), m.asset->getEntityCount());
+        loader_->destroyAsset(m.asset);
+    }
+    models_.clear();
     filament::gltfio::AssetLoader::destroy(&loader_);
     delete materials_;
 }
 
-std::size_t GltfLoader::add(const std::string& pathIn) {
+std::size_t GltfLoader::loadModel(const std::string& pathIn) {
     const std::string path = wizengine::assetPath(pathIn);
+    for (std::size_t i = 0; i < models_.size(); ++i) {
+        if (models_[i].path == path) return i;  // 同じファイルは 1 回だけ
+    }
+
     const std::vector<uint8_t> bytes = readFileBytes(path);
     if (bytes.empty()) {
         throw wizengine::AssetError(path, "model file is missing or empty");
     }
 
-    // createAsset handles both .glb (binary) and .gltf (JSON) contents.
-    filament::gltfio::FilamentAsset* asset =
-        loader_->createAsset(bytes.data(), static_cast<uint32_t>(bytes.size()));
-    if (!asset) {
+    // 原型はインスタンス化アセットとして作る（あとから createInstance で
+    // 実体を増やせるのはこの形だけ）。最初の 1 実体は「まだ誰の物でもない」
+    // ので、スケール 0 で隠して空きリストに入れておく。
+    filament::gltfio::FilamentInstance* first = nullptr;
+    filament::gltfio::FilamentAsset* asset = loader_->createInstancedAsset(
+        bytes.data(), static_cast<uint32_t>(bytes.size()), &first, 1);
+    if (!asset || !first) {
         throw wizengine::AssetError(path, "is not a readable glTF/GLB file");
     }
 
@@ -100,58 +113,67 @@ std::size_t GltfLoader::add(const std::string& pathIn) {
     scene_.addEntities(asset->getEntities(), asset->getEntityCount());
     asset->releaseSourceData();  // the CPU-side glTF is no longer needed
 
-    LOGI("model", "loaded '%s' (%zu entities)", path.c_str(),
-                static_cast<std::size_t>(asset->getEntityCount()));
-    assets_.push_back(asset);
-    return assets_.size() - 1;
-}
-
-void GltfLoader::createInstances(const std::string& pathIn, std::size_t count) {
-    if (count == 0) return;
-    const std::string path = wizengine::assetPath(pathIn);
-    const std::vector<uint8_t> bytes = readFileBytes(path);
-    if (bytes.empty()) {
-        throw wizengine::AssetError(path, "model file is missing or empty");
-    }
-
-    // One asset, many instances: geometry and materials are shared, so this is
-    // far cheaper than loading the file N times.
-    instances_.resize(count);
-    filament::gltfio::FilamentAsset* asset = loader_->createInstancedAsset(
-        bytes.data(), static_cast<uint32_t>(bytes.size()), instances_.data(),
-        static_cast<size_t>(count));
-    if (!asset) {
-        instances_.clear();
-        throw wizengine::AssetError(path, "is not a readable glTF/GLB file");
-    }
-
-    filament::gltfio::ResourceConfiguration rc{};
-    rc.engine = &engine_;
-    rc.gltfPath = path.c_str();
-    rc.normalizeSkinningWeights = true;
-    filament::gltfio::ResourceLoader resourceLoader(rc);
-    resourceLoader.addTextureProvider(
-        "image/png", filament::gltfio::createStbProvider(&engine_));
-    resourceLoader.addTextureProvider(
-        "image/jpeg", filament::gltfio::createStbProvider(&engine_));
-    resourceLoader.addTextureProvider(
-        "image/ktx2", filament::gltfio::createKtx2Provider(&engine_));
-    if (!resourceLoader.loadResources(asset)) {
-        throw wizengine::AssetError(
-            path, "buffers or textures referenced by the model could not be loaded");
-    }
-
-    scene_.addEntities(asset->getEntities(), asset->getEntityCount());
-    asset->releaseSourceData();
-    assets_.push_back(asset);
-
-    // Model's own size, so the scene can scale it to a physical size.
+    Model m;
+    m.asset = asset;
+    m.path = path;
     const filament::Aabb box = asset->getBoundingBox();
     const filament::math::float3 extent = box.max - box.min;
-    instancedSize_ = std::max(extent.x, std::max(extent.y, extent.z));
+    m.size = std::max(extent.x, std::max(extent.y, extent.z));
 
-    LOGI("model", "loaded '%s' as %zu instances (model size %.4f)",
-                path.c_str(), count, instancedSize_);
+    // 最初の実体を空きとして登録（スケール 0 で見えない）。
+    const std::size_t firstIndex = instances_.size();
+    instances_.push_back(first);
+    instanceModel_.push_back(models_.size());
+    {
+        auto& tcm = engine_.getTransformManager();
+        tcm.setTransform(tcm.getInstance(first->getRoot()),
+                         filament::math::mat4f::scaling(
+                             filament::math::float3{0.0f}));
+    }
+    m.freeInstances.push_back(firstIndex);
+
+    models_.push_back(std::move(m));
+    LOGI("model", "loaded '%s' (size %.4f)", path.c_str(),
+         models_.back().size);
+    return models_.size() - 1;
+}
+
+float GltfLoader::modelSize(std::size_t modelId) const {
+    return modelId < models_.size() ? models_[modelId].size : 0.0f;
+}
+
+std::size_t GltfLoader::createInstance(std::size_t modelId) {
+    if (modelId >= models_.size()) return kInvalid;
+    Model& m = models_[modelId];
+
+    // 空き（release 済み）があれば再利用。姿勢は呼び出し側が毎フレーム
+    // 入れるので、ここではスケール 0 のままでよい（原点で 1 フレーム光る
+    // より、遅れて現れる方がまし）。
+    if (!m.freeInstances.empty()) {
+        const std::size_t index = m.freeInstances.back();
+        m.freeInstances.pop_back();
+        return index;
+    }
+
+    filament::gltfio::FilamentInstance* inst = loader_->createInstance(m.asset);
+    if (!inst) return kInvalid;
+    scene_.addEntities(inst->getEntities(), inst->getEntityCount());
+    instances_.push_back(inst);
+    instanceModel_.push_back(modelId);
+    return instances_.size() - 1;
+}
+
+void GltfLoader::releaseInstance(std::size_t index) {
+    if (index >= instances_.size()) return;
+    auto& tcm = engine_.getTransformManager();
+    tcm.setTransform(tcm.getInstance(instances_[index]->getRoot()),
+                     filament::math::mat4f::scaling(
+                         filament::math::float3{0.0f}));
+    // 二重 release を空きリストに二度積まない。
+    auto& free = models_[instanceModel_[index]].freeInstances;
+    if (std::find(free.begin(), free.end(), index) == free.end()) {
+        free.push_back(index);
+    }
 }
 
 void GltfLoader::setInstanceTransform(std::size_t index,
@@ -190,19 +212,6 @@ void GltfLoader::setInstanceTint(std::size_t index,
     }
 }
 
-void GltfLoader::setTransform(std::size_t id,
-                              const filament::math::float3& position,
-                              const filament::math::quatf& rotation,
-                              float scale) {
-    if (id >= assets_.size()) return;
-    auto& tcm = engine_.getTransformManager();
-    const auto instance = tcm.getInstance(assets_[id]->getRoot());
-    const filament::math::mat4f m =
-        filament::math::mat4f::translation(position) *
-        filament::math::mat4f(rotation) * filament::math::mat4f::scaling(scale);
-    tcm.setTransform(instance, m);
-}
-
 #else  // no gltfio in this build
 
 GltfLoader::GltfLoader(filament::Engine& engine, filament::Scene& scene)
@@ -210,20 +219,17 @@ GltfLoader::GltfLoader(filament::Engine& engine, filament::Scene& scene)
 
 GltfLoader::~GltfLoader() = default;
 
-std::size_t GltfLoader::add(const std::string& path) {
+std::size_t GltfLoader::loadModel(const std::string& path) {
     throw wizengine::AssetError(
         path, "this build has no glTF support (gltfio libraries were not found "
               "at configure time)");
 }
 
-void GltfLoader::setTransform(std::size_t, const filament::math::float3&,
-                              const filament::math::quatf&, float) {}
+float GltfLoader::modelSize(std::size_t) const { return 0.0f; }
 
-void GltfLoader::createInstances(const std::string& path, std::size_t) {
-    throw wizengine::AssetError(
-        path, "this build has no glTF support (gltfio libraries were not found "
-              "at configure time)");
-}
+std::size_t GltfLoader::createInstance(std::size_t) { return kInvalid; }
+
+void GltfLoader::releaseInstance(std::size_t) {}
 
 void GltfLoader::setInstanceTransform(std::size_t,
                                       const filament::math::mat4f&) {}

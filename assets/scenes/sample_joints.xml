@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wizengine model="sample_joints" version="4">
+  <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60" envelope="0.002"
+          recovery="0.2" friction="0.6" restitution="0" lineardamping="0.05"
+          angulardamping="0.1" sleeping="true"/>
+  <worldbody>
+    <body name="post" pos="0 1 0" euler="0 0 0" fixed="true">
+      <geom type="box" size="0.1 1 0.1" mass="20" rgba="0.419608 0.447059 0.501961 1"/>
+    </body>
+    <body name="arm" pos="0.8 1.9 0" euler="0 0 0" fixed="false">
+      <geom type="box" size="0.8 0.07 0.07" mass="2" rgba="0.878431 0.462745 0.180392 1"/>
+    </body>
+    <body name="bob" pos="1.6 1.45 0" euler="0 0 0" fixed="false">
+      <geom type="sphere" size="0.175" mass="1.5" rgba="0.290196 0.564706 0.85098 1"/>
+    </body>
+    <body name="plate" pos="-0.9 1.6 0" euler="0 0 0" fixed="false">
+      <geom type="box" size="0.3 0.04 0.3" mass="1" rgba="0.498039 0.819608 0.290196 1"/>
+    </body>
+    <body name="ramp" pos="0 0.35 2" euler="0 0 -12" fixed="true">
+      <geom type="box" size="1.2 0.05 0.6" mass="50" rgba="0.603922 0.627451 0.666667 1"/>
+    </body>
+    <body name="crate" pos="-0.8 1.1 2" euler="0 0 0" fixed="false">
+      <geom type="box" size="0.15 0.15 0.15" mass="0.5" rgba="0.85098 0.752941 0.290196 1"/>
+    </body>
+  </worldbody>
+  <equality>
+    <joint name="hinge" type="hinge" body1="arm" body2="post" anchor="0 1.9 0" axis="0 0 1"/>
+    <joint name="rod" type="distance" body1="bob" body2="arm" anchor="1.6 1.45 0" axis="0 1 0"
+           distance="0"/>
+    <joint name="ball" type="ball" body1="plate" body2="post" anchor="-0.15 1.6 0" axis="0 1 0"/>
+  </equality>
+</wizengine>

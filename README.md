@@ -15,13 +15,16 @@ web UI. (Docs below are in Japanese.)
   「エディタ」と、それを走らせる「シミュレート」をブラウザから切り替え。
   ボックス・球の追加／削除／複製、位置・回転・大きさ・質量・色の編集、
   5 種類のジョイント（固定・ちょうつがい・ボール・直動・距離）の設計、
-  重力や摩擦などのシミュレート設定、`assets/scenes/*.json` への保存・読込
+  重力や摩擦などのシミュレート設定、`assets/scenes/*.xml`（**MuJoCo 風の
+  XML**）への保存・読込
 - **マルチカメラ Web UI**: カメラごとに専用ページ（ポート 8080, 8081, ...）。
   オービット / パン / ズーム、オブジェクトのドラッグ（グラブ）、クリック選択、
   シーン階層サイドバー（カメラ・ライト・オブジェクト）、インスペクタ、
   ソルバーやレートをその場で変えられる物理チューニングパネル
-- **物理**: Chrono Core / Multicore（OpenMP 並列）を切り替え可能。既定シーンは
-  512 剛体の落下スタック。スリープ、固定タイムステップ + キャッチアップ制御
+- **物理**: Chrono Core / Multicore（OpenMP 並列）を切り替え可能。スリープ、
+  固定タイムステップ + キャッチアップ制御。既定シーンは
+  `assets/scenes/default.xml`（箱スタック + 球。シーンの中身はコードではなく
+  XML が持つ）
 - **描画**: Filament ヘッドレス（Vulkan / OpenGL）。HDR パノラマ（Radiance .hdr）を
   **起動時に GPU 上でキューブマップ化・プリフィルタ**する IBL —
   ファイル差し替えは再起動だけで反映、ビルド不要
@@ -58,9 +61,11 @@ web UI. (Docs below are in Japanese.)
 src/
   SceneConfig.h            シーンの全パラメータ（まずここを編集）
   scene.cpp / Scene.h      シーン実装・階層 JSON・コンポーネント登録
-  CameraObject / LightObject   シーンオブジェクト（atomic 状態 + applyTo）
+  CameraObject             カメラ（atomic なオービット状態）
   BoxController            グラブ（掴んで引っ張る）制御
   EditorTypes.h            エディタ文書の型（剛体・ジョイント・設定 + JSON）
+  SceneDocument            シーン文書 ⇄ MuJoCo 風 XML（保存形式の定義）
+  SceneXml                 最小 XML DOM（読み書き。外部依存なし）
   EditorState              モード・編集キュー・ジョイント・シーンファイル
   EditorComponent          ブラウザの編集コマンド受付（検証と既定値）
   PhysicsControlComponent / PhysicsTuning   ブラウザからの物理チューニング
@@ -75,7 +80,8 @@ web/index.html             ブラウザ UI（ビルド時にコピー、リロ�
 assets/
   materials/*.mat          matc でビルド時に .filamat へコンパイル
   textures/ground.png      地面テクスチャ（差し替え可）
-  scenes/*.json            エディタで保存したシーン（sample_joints.json 同梱）
+  scenes/*.xml             エディタで保存したシーン（MuJoCo 風 XML。
+                           sample_joints.xml 同梱、旧 *.json も読込可）
   *.hdr / *.glb            環境マップ・モデル（各自配置、git 管理外）
 ```
 
@@ -218,7 +224,7 @@ Cameras 一覧やヘッダでは、このカメラは番号ではなく **Editor
 | タブ | 内容 |
 |---|---|
 | Scene | 再生/リセット、カメラ・オブジェクト一覧、イベント、選択の要約 |
-| Inspector | エディタ操作（下表）。エディタカメラのページにだけ表示 |
+| Inspector | World（地面・環境光）と選択中の内容。エディタカメラのページにだけ表示 |
 | Physics | シミュレート設定（シーンに保存）、ソルバー、レート、接触、配信 |
 
 **Inspector タブ**は Unity と同じく「**選択しているオブジェクトの内容**」だけを
@@ -246,9 +252,55 @@ Cameras 一覧やヘッダでは、このカメラは番号ではなく **Editor
 **距離**（2 点間の距離を保つ）。ビューには種類ごとの色で線が引かれ、エディタ中は
 A →軸→ B、シミュレート中は A → B を結びます。
 
-同梱の `sample_joints.json` を読み込むと、ちょうつがい・距離・ボールの 3 種類が
+同梱の `sample_joints.xml` を読み込むと、ちょうつがい・距離・ボールの 3 種類が
 入った小さな仕掛けが出ます（Assets パネルの `sample_joints` タイルを
 ダブルクリック）。
+
+### シーンの保存形式（MuJoCo 風の XML）
+
+シーンの中身は **XML が正**です。💾 保存は `assets/scenes/<名前>.xml` を書き、
+タイルのダブルクリックはそれを読みます。書式は MuJoCo(MJCF) に寄せてあるので、
+テキストエディタで開いてそのまま読めますし、手で書いた XML も読み込めます:
+
+```xml
+<wizengine model="sample_joints" version="4">
+  <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60" .../>
+  <worldbody>
+    <light name="key" type="spot" pos="1.5 4 -2" euler="35 -20 0" .../>
+    <camera name="cam0" target="0 1 0" azimuth="37.8" elevation="19.5" radius="12"/>
+    <body name="post" pos="0 1 0" euler="0 0 0" fixed="true">
+      <geom type="box" size="0.1 1 0.1" mass="20" rgba="0.42 0.45 0.5 1"/>
+    </body>
+  </worldbody>
+  <equality>
+    <joint name="hinge" type="hinge" body1="arm" body2="post"
+           anchor="0 1.9 0" axis="0 0 1"/>
+  </equality>
+  <events>
+    <node id="1" type="onCollision" pos="40 60" target="1" other="-2"/>
+    <wire from="1" to="2"/>
+  </events>
+</wizengine>
+```
+
+- `<geom size>` は MuJoCo と同じ**半分の寸法**（box は各辺の半分、sphere と
+  mesh は半径）、角度は全部**度**、色は `rgba="r g b a"`（リニア値）です。
+- `body1` / `body2` は**名前でも番号でも**書けます。`world`（または -1）が地面。
+- `<events>` は WizEngine の拡張（イベントグラフ）。MuJoCo には対応物が
+  ありません。
+- **XML はブラウザで直接編集できます**: Assets パネルの **📄 XML** ボタンで
+  モーダルエディタが開き、いま組んでいるシーンの XML を編集して
+  「✓ 適用」でそのまま反映できます（ファイルには書きません。保存は 💾）。
+  壊れた XML は適用されず、行番号付きの理由がステータスに出ます。読むだけ
+  なら `/cam0/scene.xml` でも見られます。
+- 起動時に読み込ませたいときは `SceneConfig.h` の `kStartupScene` にシーン名を
+  書きます（既定は空 = `scene.cpp` の既定シーン）。
+- 旧形式の `assets/scenes/*.json`（version 1〜3）は**読み込みのみ**対応します。
+  同じ名前の `.xml` があればそちらが優先され、保存は常に `.xml` です。
+- 打ち間違いは**読み飛ばして警告**になります（未知の `type`、見つからない
+  `body1`、入れ子の `<body>`、零ベクトルの `axis` など）。読込時にステータスへ
+  件数、コンソールへ内容が出るので、手書きの XML はそこで答え合わせできます。
+  `<node>` の `id` は省略でき、読み込みが空き番号を振ります。
 
 ### ギズモ
 
@@ -279,8 +331,8 @@ A →軸→ B、シミュレート中は A → B を結びます。
 カメラのみ）。作業の目安なので描画は 1 ピクセルの線（軽量）で、原点を通る
 2 本は軸の色（X=赤 / Z=青）＝向きの目印になります。表示の ON/OFF と間隔
 （0.25〜10 m、既定 1 m）は映像左上の **⚙（ギズモ設定）**から変えられます。グリッドは
-物理の床（`kGroundSize`、既定 20 m）より広いことに注意してください -
-床の外に置いた物はシミュレートで落下します。
+物理の床（シーン XML の `<ground size>`、既定 ±10 m）より広いことに注意して
+ください - 床の外に置いた物はシミュレートで落下します。
 
 ### ライトとカメラの編集
 
@@ -365,20 +417,28 @@ textarea と同じ要領で**右下のつまみ**をドラッグすると高さ�
 
 ## シーンをいじる
 
-`src/SceneConfig.h` がすべての入口です。例:
+**シーンの中身（配置・モデル・ジョイント・イベント）は `assets/scenes/*.xml`**
+です（上の「シーンの保存形式」を参照）。エディタで組んで 💾 保存するか、
+テキストエディタで直接書きます。起動時に読むシーンは `SceneConfig.h` の
+`kStartupScene`（既定 "default"）。
 
-- 剛体の数・形状: `kNx/kNy/kNz`, `kBodyShape`(Box / Sphere / **ConvexHull** =
-  `kBoxModelPath` のメッシュ凸包で衝突), `kBoxSize`
-- 静的メッシュ衝突: `kModelCollision = true` で `kModelPath` のモデルが
-  トライアングルメッシュの障害物になります（固定ジオメトリ専用）。
-  高ポリモデルは物理が固まるので、`kModelCollisionPath` に
-  Decimate した衝突専用の低ポリ版（数百〜数千三角形）を指定してください
-- ライト: `lightConfigs()`（Directional / Point / Spot、色・強度・影）。
-  実行時にも `scene.light(i).setDirection(...)` などで動かせます
-- 環境光: `kEnvironmentHdr = "studio.hdr"` — `assets/` に Radiance .hdr を
-  置くだけ（<https://polyhaven.com/hdris> の 2k で十分）。リポジトリには
-  同梱していないので各自取得してください
-- glTF モデル: `kModelPath`（置物）/ `kBoxModelPath`（剛体の見た目差し替え）
+- glTF モデル: シーン XML の `<asset><mesh name file scale/></asset>` に
+  宣言し、`<geom type="mesh" mesh="名前" size="..."/>` で剛体に割り当てます。
+  `file` は assets/ からの相対パス、`scale` は見た目の倍率。当たり判定は
+  既定でモデルの凸包（読めなければ球）、`collision="box"` / `"sphere"` で
+  明示もできます。宣言したメッシュは Assets パネルにタイルとして出て、
+  クリックで配置できます
+
+`src/SceneConfig.h` は**エンジン側の既定値**の入口です。例:
+
+- ライト初期構成: `lightConfigs()`（シーン XML が `<light>` を持たないときの
+  2 灯。以後はエディタで編集し、シーンに保存されます）。地面・環境光の
+  既定値は `EditorTypes.h` の `GroundDesc` / `EnvironmentDesc`
+- 環境光と地面もシーン XML: `<environment hdr="studio.hdr" intensity="30000"/>`
+  と `<ground size="10" visual="8" texture="textures/ground.png" tile="2"/>`
+  （worldbody 直下。書かなければ既定値）。.hdr は `assets/` に置くだけ
+  （<https://polyhaven.com/hdris> の 2k で十分。リポジトリ非同梱・各自取得。
+  無い場合は警告が出て一様な環境光になります）
 - 配信コーデック等（H264 / H265 / AV1 / VP9、ビットレート、GPU色変換）は
   シーンではなくエンジン設定として `main.cpp` 冒頭で定義。起動時は
   `--codec` / `--encoder`、実行中はブラウザの Physics > Stream から変更可

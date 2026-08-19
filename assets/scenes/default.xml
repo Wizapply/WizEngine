@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- WizEngine の既定シーン（kStartupScene = "default"）。
+     シーンの中身はコードではなくこの XML が持つ。書式は CLAUDE.md の
+     「シーン文書（MuJoCo 風の XML）」の章を参照。
+     glTF モデルを使うときは <asset> に宣言して geom から名前で参照する:
+       <asset> <mesh name="apple" file="apple2.glb" scale="1"/> </asset>
+       <body name="a1" pos="0 1 0">
+         <geom type="mesh" mesh="apple" size="0.1" mass="0.2"/>
+       </body>
+     file は assets/ からの相対パス。ライト・カメラ・<option>・<ground>・
+     <environment> を書かない文書は初期構成（既定値）で開く。 -->
+<wizengine model="default" version="4">
+  <worldbody>
+    <environment hdr="studio.hdr" intensity="30000"/>
+    <ground size="10" visual="8" texture="textures/ground.png" tile="2" rgba="1 1 1 1"/>
+    <body name="box0" pos="-0.607 1.00 -0.614" euler="-5.1 4.2 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.80 0.36 0.18 1"/>
+    </body>
+    <body name="box1" pos="-0.599 1.00 -0.205" euler="0.1 -12.4 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.76 0.42 0.20 1"/>
+    </body>
+    <body name="box2" pos="-0.619 1.00 0.197" euler="-4.9 -12.0 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.72 0.34 0.22 1"/>
+    </body>
+    <body name="box3" pos="-0.603 1.00 0.613" euler="-3.3 -10.5 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.82 0.46 0.16 1"/>
+    </body>
+    <body name="box4" pos="-0.595 1.40 -0.582" euler="-1.2 2.2 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.70 0.38 0.26 1"/>
+    </body>
+    <body name="box5" pos="-0.581 1.40 -0.218" euler="-2.5 10.0 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.80 0.36 0.18 1"/>
+    </body>
+    <body name="box6" pos="-0.614 1.40 0.185" euler="3.8 -5.4 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.76 0.42 0.20 1"/>
+    </body>
+    <body name="box7" pos="-0.613 1.40 0.603" euler="-1.5 3.9 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.72 0.34 0.22 1"/>
+    </body>
+    <body name="box8" pos="-0.598 1.80 -0.617" euler="-3.5 -12.3 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.82 0.46 0.16 1"/>
+    </body>
+    <body name="box9" pos="-0.593 1.80 -0.203" euler="1.0 -5.2 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.70 0.38 0.26 1"/>
+    </body>
+    <body name="box10" pos="-0.602 1.80 0.192" euler="2.4 8.2 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.80 0.36 0.18 1"/>
+    </body>
+    <body name="box11" pos="-0.610 1.80 0.603" euler="4.5 0.7 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.76 0.42 0.20 1"/>
+    </body>
+    <body name="box12" pos="-0.191 1.00 -0.608" euler="-4.6 13.4 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.72 0.34 0.22 1"/>
+    </body>
+    <body name="box13" pos="-0.203 1.00 -0.190" euler="-0.1 -9.7 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.82 0.46 0.16 1"/>
+    </body>
+    <body name="box14" pos="-0.218 1.00 0.207" euler="0.9 7.4 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.70 0.38 0.26 1"/>
+    </body>
+    <body name="box15" pos="-0.185 1.00 0.593" euler="1.1 5.5 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.80 0.36 0.18 1"/>
+    </body>
+    <body name="box16" pos="-0.197 1.40 -0.602" euler="5.3 9.5 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.76 0.42 0.20 1"/>
+    </body>
+    <body name="box17" pos="-0.201 1.40 -0.193" euler="2.4 -12.3 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.72 0.34 0.22 1"/>
+    </body>
+    <body name="box18" pos="-0.194 1.40 0.220" euler="-2.6 9.0 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.82 0.46 0.16 1"/>
+    </body>
+    <body name="box19" pos="-0.205 1.40 0.607" euler="-0.5 -13.4 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.70 0.38 0.26 1"/>
+    </body>
+    <body name="box20" pos="-0.213 1.80 -0.615" euler="3.2 -12.3 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.80 0.36 0.18 1"/>
+    </body>
+    <body name="box21" pos="-0.215 1.80 -0.210" euler="4.5 -3.1 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.76 0.42 0.20 1"/>
+    </body>
+    <body name="box22" pos="-0.217 1.80 0.198" euler="4.6 1.4 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.72 0.34 0.22 1"/>
+    </body>
+    <body name="box23" pos="-0.187 1.80 0.615" euler="-1.0 -6.2 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.82 0.46 0.16 1"/>
+    </body>
+    <body name="box24" pos="0.194 1.00 -0.585" euler="-4.2 12.8 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.70 0.38 0.26 1"/>
+    </body>
+    <body name="box25" pos="0.187 1.00 -0.211" euler="-0.2 -7.5 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.80 0.36 0.18 1"/>
+    </body>
+    <body name="box26" pos="0.204 1.00 0.191" euler="-1.0 -13.9 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.76 0.42 0.20 1"/>
+    </body>
+    <body name="box27" pos="0.195 1.00 0.603" euler="2.3 12.7 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.72 0.34 0.22 1"/>
+    </body>
+    <body name="box28" pos="0.201 1.40 -0.595" euler="-5.4 4.9 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.82 0.46 0.16 1"/>
+    </body>
+    <body name="box29" pos="0.216 1.40 -0.189" euler="3.6 10.5 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.70 0.38 0.26 1"/>
+    </body>
+    <body name="box30" pos="0.196 1.40 0.196" euler="1.6 -11.1 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.80 0.36 0.18 1"/>
+    </body>
+    <body name="box31" pos="0.182 1.40 0.583" euler="-4.1 -8.2 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.76 0.42 0.20 1"/>
+    </body>
+    <body name="box32" pos="0.194 1.80 -0.618" euler="-4.2 -14.0 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.72 0.34 0.22 1"/>
+    </body>
+    <body name="box33" pos="0.184 1.80 -0.205" euler="4.5 -13.3 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.82 0.46 0.16 1"/>
+    </body>
+    <body name="box34" pos="0.205 1.80 0.186" euler="-1.8 -6.9 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.70 0.38 0.26 1"/>
+    </body>
+    <body name="box35" pos="0.195 1.80 0.585" euler="5.9 9.8 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.80 0.36 0.18 1"/>
+    </body>
+    <body name="box36" pos="0.599 1.00 -0.601" euler="-4.8 -11.6 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.76 0.42 0.20 1"/>
+    </body>
+    <body name="box37" pos="0.594 1.00 -0.209" euler="-4.1 9.2 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.72 0.34 0.22 1"/>
+    </body>
+    <body name="box38" pos="0.581 1.00 0.218" euler="-4.2 0.8 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.82 0.46 0.16 1"/>
+    </body>
+    <body name="box39" pos="0.602 1.00 0.581" euler="5.7 0.8 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.70 0.38 0.26 1"/>
+    </body>
+    <body name="box40" pos="0.615 1.40 -0.592" euler="-1.6 -6.7 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.80 0.36 0.18 1"/>
+    </body>
+    <body name="box41" pos="0.587 1.40 -0.189" euler="3.3 0.9 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.76 0.42 0.20 1"/>
+    </body>
+    <body name="box42" pos="0.593 1.40 0.189" euler="5.8 8.7 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.72 0.34 0.22 1"/>
+    </body>
+    <body name="box43" pos="0.614 1.40 0.612" euler="2.9 8.9 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.82 0.46 0.16 1"/>
+    </body>
+    <body name="box44" pos="0.589 1.80 -0.599" euler="-5.7 -4.0 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.70 0.38 0.26 1"/>
+    </body>
+    <body name="box45" pos="0.581 1.80 -0.209" euler="2.3 -6.7 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.80 0.36 0.18 1"/>
+    </body>
+    <body name="box46" pos="0.618 1.80 0.198" euler="5.9 12.2 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.76 0.42 0.20 1"/>
+    </body>
+    <body name="box47" pos="0.618 1.80 0.595" euler="-3.3 -7.8 0">
+      <geom type="box" size="0.175 0.175 0.175" mass="0.5" rgba="0.72 0.34 0.22 1"/>
+    </body>
+    <body name="ball0" pos="-0.90 2.6 0" euler="0 0 0">
+      <geom type="sphere" size="0.15" mass="0.4" rgba="0.29 0.56 0.85 1"/>
+    </body>
+    <body name="ball1" pos="0.00 2.6 0" euler="0 0 0">
+      <geom type="sphere" size="0.15" mass="0.4" rgba="0.29 0.56 0.85 1"/>
+    </body>
+    <body name="ball2" pos="0.90 2.6 0" euler="0 0 0">
+      <geom type="sphere" size="0.15" mass="0.4" rgba="0.29 0.56 0.85 1"/>
+    </body>
+  </worldbody>
+</wizengine>

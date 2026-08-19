@@ -6,6 +6,7 @@
 #include "EditorTypes.h"
 #include "Log.h"
 #include "Scene.h"
+#include "SceneDocument.h"
 #include "scene_math.h"
 
 namespace ed = wizengine::editor;
@@ -105,6 +106,12 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         ed::BodyDesc d;
         d.shape = ed::shapeFromName(msg.value("shape", "box"), ed::ShapeKind::Box);
         d.collision = d.shape;
+        // メッシュ（glTF）を置く場合はアセット名が要る。実在の検証は
+        // createObject が行う（見つからなければ球で描く）。
+        if (d.shape == ed::ShapeKind::Model && msg.contains("mesh") &&
+            msg["mesh"].is_string()) {
+            d.mesh = msg["mesh"];
+        }
         const double size = msg.value("size", 0.5);
         d.size = {size, size, size};
         d.mass = msg.value("mass", 1.0);
@@ -408,6 +415,47 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
     // その場で入れ替える（次のフレームから効く）。
     if (what == "gizmo") {
         state.setGizmo(ed::gizmoFromJson(msg, state.gizmo()));
+        return true;
+    }
+
+    // ---- 地面・環境光 -----------------------------------------------------
+    // World 節（Inspector）から。値の解釈（部分更新・クランプ・パス検証）は
+    // 物理スレッド側の適用時に行うが、キーの取り出しだけ済ませて素通しする
+    // （/input は誰でも叩けるので、JSON をそのまま運ぶ他の Op と同じ流儀）。
+    if (what == "ground" || what == "environment") {
+        EditorState::Op op;
+        op.kind = what;
+        op.args = msg;
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- XML の直接適用 ---------------------------------------------------
+    // モーダルの XML エディタから。パースは**ここ（INPUT スレッド）で検証**
+    // する - 壊れた XML はキューに積まず、行番号付きの理由をステータスへ
+    // 出す（適用は非同期なので、レスポンスでは返せない）。通ったテキストを
+    // そのまま Op で運び、物理スレッドがもう一度パースして適用する
+    // （SceneDocument を JSON に往復させるより、二度目の軽いパースの方が
+    // 単純で間違いが無い）。
+    if (what == "xml") {
+        const std::string text = msg.value("text", std::string());
+        if (text.empty() || text.size() > 1024 * 1024) {
+            state.setStatus(text.empty() ? "XML が空です"
+                                         : "XML が大きすぎます（1MB まで）");
+            return true;
+        }
+        ed::SceneDocument doc;
+        std::string error;
+        if (!ed::parseXml(text, doc, error)) {
+            state.setStatus("XML が読めません: " + error);
+            return true;
+        }
+        EditorState::Op op;
+        op.kind = "xml";
+        op.args = {{"text", text}};
+        op.camera = camIndex;
+        state.push(std::move(op));
         return true;
     }
 

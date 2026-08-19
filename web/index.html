@@ -128,6 +128,58 @@
           ドラッグで軸に沿って、四角で平面上を、中央の箱で一様に。</div>
       </section>
 
+      <!-- World: シーン全体のプロパティ（地面・環境光）。選択とは無関係に
+           常設。値の実体はシーン文書の <ground> / <environment> で、変更は
+           edit.ground / edit.environment としてサーバーへ送る。 -->
+      <section class="sbSec" id="secWorld">
+        <div class="sbSecHead">World</div>
+        <div class="edRow">
+          <span>床の広さ (±m)</span>
+          <input id="edGroundSize" class="num" type="number" step="1" min="1"
+                 max="1000" title="物理の床の半分の広さ。外に出た物は落下する"
+                 onchange="applyGround()">
+        </div>
+        <div class="edRow">
+          <span>見える広さ (±m)</span>
+          <input id="edGroundVisual" class="num" type="number" step="1" min="1"
+                 max="1000" title="描画される地面の半分の広さ"
+                 onchange="applyGround()">
+        </div>
+        <div class="edRow">
+          <span>テクスチャ</span>
+          <input id="edGroundTex" class="txt" type="text"
+                 placeholder="textures/ground.png"
+                 title="assets/ からの相対パス。空 = 市松模様"
+                 onchange="applyGround()">
+        </div>
+        <div class="edRow">
+          <span>タイル (m) / 色</span>
+          <span>
+            <input id="edGroundTile" class="num" type="number" step="0.5"
+                   min="0.1" max="100" title="テクスチャ 1 リピートのメートル"
+                   onchange="applyGround()">
+            <input id="edGroundColor" class="col" type="color"
+                   title="テクスチャに乗す色（白 = 画像のまま）"
+                   onchange="applyGround()">
+          </span>
+        </div>
+        <div class="edRow">
+          <span>環境光 HDR</span>
+          <input id="edEnvHdr" class="txt" type="text" placeholder="studio.hdr"
+                 title="assets/ からの相対パス（Radiance .hdr）。空 = 環境マップ無し"
+                 onchange="applyEnvironment()">
+        </div>
+        <div class="edRow">
+          <span>環境光の強さ</span>
+          <input id="edEnvIntensity" class="num" type="number" step="1000"
+                 min="0" title="IBL の強さ（lux 相当）"
+                 onchange="applyEnvironment()">
+        </div>
+        <div class="edHint">地面と環境光はシーンの一部（XML の
+          &lt;ground&gt; / &lt;environment&gt;）として保存されます。HDR の
+          差し替えは一瞬固まります（GPU で変換するため）。</div>
+      </section>
+
       <section class="sbSec" id="secObj">
         <div class="sbSecHead">選択オブジェクト</div>
         <div id="edNoSel" class="edHint">ビューかリストで選択してください。</div>
@@ -562,6 +614,32 @@
         アクションの色・力はシミュレート中だけ効き、停止で設計値に戻ります。</div>
       </div><!-- /.ndWin -->
     </div>
+    <!-- シーン XML エディタ。ノードエディタと同じモーダルの流儀（.ndBack /
+         .ndWin）。中身は /scene.xml と同じ文書で、「✓ 適用」が edit.xml と
+         して送る（サーバーが検証し、壊れた XML は適用せず理由をステータス
+         へ）。ファイルには書かない - 保存はいままでどおり 💾。 -->
+    <div id="xmlEd" hidden>
+      <div class="ndBack" onclick="closeXmlEditor()" title="クリックで閉じる"></div>
+      <div class="ndWin">
+        <div class="ndHead">
+          <span class="ndTitle">📄&#xFE0E; シーン XML</span>
+          <button onclick="applyXml()"
+                  title="この内容でシーンを置き換える（ファイルには書かない）"
+                  >✓ 適用</button>
+          <button onclick="reloadXml()"
+                  title="いまのシーンから読み直す（編集内容は破棄）">↻ 再読込</button>
+          <button onclick="openSceneXml()" title="別タブで開く">⧉</button>
+          <span id="xmStatus" class="xmStatus"></span>
+          <button id="xmClose" onclick="closeXmlEditor()" title="閉じる">✕</button>
+        </div>
+        <textarea id="xmText" spellcheck="false" wrap="off"
+                  placeholder="読み込み中..."></textarea>
+        <div class="ndHint">MuJoCo 風のシーン文書（書式は CLAUDE.md の
+          「シーン文書（XML）」の章）。「✓ 適用」で現在の配置を置き換えます。
+          打ち間違いは警告としてステータスとコンソールに出ます。ファイルへの
+          保存は Assets パネルの 💾（assets/scenes/&lt;名前&gt;.xml）。</div>
+      </div><!-- /.ndWin -->
+    </div>
     <svg id="cursor" viewBox="0 0 24 24" aria-hidden="true">
       <path class="curArrow"
             d="M5 2 L5 19 L9.5 15.2 L12.2 21.5 L15 20.3 L12.3 14.2 L18 14 Z"
@@ -605,7 +683,10 @@
         <input id="edSceneName" class="txt" type="text" placeholder="myscene"
                title="保存名（英数字と _ - のみ）。タイルのクリックでも入る">
         <button onclick="saveScene()"
-                title="assets/scenes/&lt;名前&gt;.json へ保存">💾 保存</button>
+                title="assets/scenes/&lt;名前&gt;.xml へ保存">💾 保存</button>
+        <button onclick="toggleXmlEditor()"
+                title="シーンを XML で見る・編集して適用する"
+                >📄 XML</button>
         <button class="danger" onclick="clearScene()"
                 title="オブジェクトとジョイントを全部消す">🗑 全消し</button>
       </span>

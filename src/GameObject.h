@@ -40,10 +40,14 @@ struct GameObject {
     std::size_t renderId = kInvalidId;
     wizengine::editor::BodyDesc desc;
     bool alive = true;
-    // 今の renderId が glTF インスタンスプールの番号か（true）、Renderer の
+    // 今の renderId が glTF モデル実体の番号か（true）、Renderer の
     // 形状スロットの番号か（false）。形を変えたときにどちらを片付ければ
     // よいかは、これを見ないと分からない。
     bool modelDraw = false;
+    // desc.mesh（アセット名）を引いた結果（Scene::meshes_ の番号、-1 = 無い/
+    // 見つからない）。名前引きを毎フレームやらないためのキャッシュで、
+    // シーンの読込はオブジェクトを作り直すのでズレない。
+    int meshIndex = -1;
     // 描画側に色を送り直す必要があるか（RENDER スレッドが見て落とす）。
     bool colorDirty = true;
     // 形や大きさが変わったのでレンダラブルを作り直す（同上）。

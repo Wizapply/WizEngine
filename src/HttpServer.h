@@ -49,6 +49,10 @@ public:
     void setStatsProvider(std::function<std::string()> provider);
     // Served at "<prefix>/scene": the hierarchy shown in the sidebar.
     void setSceneProvider(std::function<std::string()> provider);
+    // Served at "<prefix>/scene.xml": シーンの中身そのもの（保存されるのと
+    // 同じ MJCF 風の XML）。ブラウザで開けば、いま組んでいるシーンが
+    // どういう文書になっているかがそのまま読める。
+    void setSceneXmlProvider(std::function<std::string()> provider);
 
     // True while a browser holds the viewer session (used to idle the engine
     // when nobody is watching). Also expires a viewer that stopped pinging.
@@ -73,6 +77,7 @@ private:
     std::function<void()> viewerGoneHandler_;
     std::function<std::string()> statsProvider_;
     std::function<std::string()> sceneProvider_;
+    std::function<std::string()> sceneXmlProvider_;
 
     // Single-viewer session state.
     static constexpr std::chrono::seconds kViewerTimeout{6};
