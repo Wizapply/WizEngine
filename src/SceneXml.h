@@ -76,7 +76,8 @@ private:
 // 整形して 1 本の文字列に。declaration = true で <?xml ...?> 行を先頭に付ける。
 std::string write(const Element& root, bool declaration = true);
 
-// 読み込み。成功したら true。失敗時は error に「行番号付きの理由」を入れる。
+// 読み込み。成功したら true。失敗時は error に「行番号付きの理由」（英語、
+// コンソールログに出る診断はすべて英語という規約）を入れる。
 // 対応するのは要素・属性・自己閉じ・コメント・XML 宣言・DOCTYPE の読み飛ばし
 // と、定義済み実体（&amp; &lt; &gt; &quot; &apos;）＋数値文字参照。
 bool parse(const std::string& text, Element& out, std::string& error);

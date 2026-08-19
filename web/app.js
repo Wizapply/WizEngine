@@ -618,7 +618,8 @@
   setInterval(() => {
     fetch('stats').then((r) => r.json()).then((s) => {
       if (s.cameraCount !== undefined && !camLinksDone) {
-        document.getElementById('camLabel').textContent =
+        // カメラ名は映像ヘッダーに出す（サイドバー側はバージョン表記のみ）。
+        document.getElementById('vhCam').textContent =
           (s.editorCam !== undefined && s.camera === s.editorCam)
             ? 'Editor Camera'
             : 'camera ' + s.camera + ' of ' + s.cameraCount;
@@ -629,6 +630,12 @@
       if (s.versions && !versionsShown) {
         versionsShown = true;
         const v = s.versions;
+        // サイドバーのバージョン表記。正はソースコード（engineVersion）で、
+        // ここは受け取って埋めるだけ。
+        if (v['WizEngine']) {
+          document.getElementById('appVer').textContent =
+            'Version ' + v['WizEngine'];
+        }
         let html = '<div class="vTitle">WizEngine ' + (v['WizEngine'] || '') +
                    '</div>';
         for (const name of Object.keys(v)) {
@@ -1450,19 +1457,24 @@
 
     // モード切替はどのカメラのページからでもできる（サーバー側も同じ扱い）。
     // Editor Camera は「編集できる」カメラなだけで、モードを握ってはいない。
-    const bEdit = document.getElementById('btnModeEdit');
-    const bSim = document.getElementById('btnModeSim');
-    bEdit.classList.toggle('active', editing);
-    bSim.classList.toggle('active', !editing);
-    bEdit.disabled = bSim.disabled = !owner;
+    // ボタンは映像ヘッダーの 1 組だけ。
+    const vEdit = document.getElementById('vhModeEdit');
+    const vSim = document.getElementById('vhModeSim');
+    vEdit.classList.toggle('active', editing);
+    vSim.classList.toggle('active', !editing);
+    vEdit.disabled = vSim.disabled = !owner;
+    let editTitle = '物理を止めて配置・設計する';
     if (!editorHere) {
       const eCamIdx =
         (sceneData.editorCam !== undefined) ? sceneData.editorCam : 0;
-      bEdit.title = '物理を止めて配置・設計する（編集操作は Editor Camera ' +
-        '= /cam' + eCamIdx + '/ のページから）';
-    } else {
-      bEdit.title = '物理を止めて配置・設計する';
+      editTitle += '（編集操作は Editor Camera = /cam' + eCamIdx +
+        '/ のページから）';
     }
+    vEdit.title = editTitle;
+
+    // ヘッダーのシーンタイトル。保存名がまだ無いシーンは「(無題)」。
+    document.getElementById('vhTitle').textContent =
+      sceneData.sceneFile || '(無題のシーン)';
 
     // エディタ中は時間が進まないので、Play / Reset ボタンとタイムスタンプは
     // 使わない。無効化ではなく行ごと非表示にする。

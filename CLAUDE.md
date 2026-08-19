@@ -7,6 +7,10 @@ Claude Code 向けのプロジェクト前提メモ。作業開始時にまず�
 - 応答・説明・コミットメッセージはすべて日本語で行う。
 - コード内のコメントも日本語で書く。
 - ファイル名・ディレクトリ名・識別子・APIは英語のまま（従来どおり）。
+- **コンソールに出るログは英語**（LOG* マクロの本文と、そこへ流れる診断
+  文字列 - XML のパースエラー・シーン文書の warnings・ファイル I/O の
+  reason）。ブラウザに出す操作結果のステータス（`setStatus` の
+  「保存しました」等）は日本語のまま。
 
 （より確実に固定したい場合は `.claude/settings.json` に `"language": "japanese"` を併用する。）
 
@@ -114,6 +118,12 @@ PhysicsWorld.step(dt)
   rate / substeps / solver / envelope / recovery を PhysicsTuning に書くとき、
   同じ値を EditorState の SimSettings にもミラーする。シーン保存はそちらを
   書き出すので、怠ると「見ている物理」と「保存される物理」が食い違う。
+- **映像エリアの上にヘッダー**（`#viewHead`）: サイドバーの表示/非表示（☰、
+  Tab キーと同じ）・シーンタイトル（sceneFile、無題は "(無題のシーン)"）・
+  カメラ名・エディタ⇄シミュレートのモードボタン。**モードボタンはここの
+  1 組だけ**（サイドバー上部にあったものは廃止。以前の浮きボタン #sbOpen も
+  このヘッダーに置き換えた）。サイドバーのヘッダは「WizEngine / Version 1.0」
+  の表記のみで、カメラ名は映像ヘッダーが受け持つ。
 - ブラウザ側のタブは **Scene / Inspector / Physics**（`web/index.html` +
   `app.js` の `renderEditor()`。Inspector の内部 id は `tabEditor` /
   `paneEditor` のまま）。Inspector には**常設の World 節**（`secWorld`）が

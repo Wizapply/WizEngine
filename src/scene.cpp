@@ -130,7 +130,7 @@ bool readSceneDocument(const std::string& name, ed::SceneDocument& doc,
     if (warningCount) *warningCount = 0;
     const std::string xmlPath = EditorState::scenePath(name);
     if (xmlPath.empty()) {
-        reason = "名前が不正です（英数字と _ - のみ）";
+        reason = "invalid name (letters, digits, _ - only)";
         return false;
     }
     std::string text;
@@ -139,7 +139,7 @@ bool readSceneDocument(const std::string& name, ed::SceneDocument& doc,
         std::string error;
         std::vector<std::string> warnings;
         if (!ed::parseXml(text, doc, error, &warnings)) {
-            reason = "XML が読めません（" + error + "）: " + xmlPath;
+            reason = "unreadable XML (" + error + "): " + xmlPath;
             return false;
         }
         for (const auto& w : warnings) {

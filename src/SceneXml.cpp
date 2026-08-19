@@ -146,7 +146,7 @@ public:
 private:
     void fail(const char* what) {
         if (!error_.empty()) return;  // 最初の失敗だけを残す
-        error_ = std::to_string(line()) + " 行目: " + what;
+        error_ = "line " + std::to_string(line()) + ": " + what;
     }
     std::size_t line() const {
         std::size_t n = 1;
@@ -206,13 +206,13 @@ private:
     bool expectElement(Element& out) {
         skipSpaceAndComments();
         if (peek() != '<') {
-            fail("要素が始まっていません（'<' が要ります）");
+            fail("expected an element ('<')");
             return false;
         }
         ++i_;
         const std::string name = readName();
         if (name.empty()) {
-            fail("要素名が読めません");
+            fail("cannot read an element name");
             return false;
         }
         out.setName(name);
@@ -221,7 +221,7 @@ private:
         for (;;) {
             skipSpace();
             if (eof()) {
-                fail("要素が閉じられていません");
+                fail("element is not closed");
                 return false;
             }
             if (starts("/>")) {
@@ -234,26 +234,26 @@ private:
             }
             const std::string key = readName();
             if (key.empty()) {
-                fail("属性名が読めません");
+                fail("cannot read an attribute name");
                 return false;
             }
             skipSpace();
             if (peek() != '=') {
-                fail("属性に '=' がありません");
+                fail("attribute is missing '='");
                 return false;
             }
             ++i_;
             skipSpace();
             const char quote = peek();
             if (quote != '"' && quote != '\'') {
-                fail("属性値が引用符で囲まれていません");
+                fail("attribute value is not quoted");
                 return false;
             }
             ++i_;
             const std::size_t start = i_;
             while (!eof() && s_[i_] != quote) ++i_;
             if (eof()) {
-                fail("属性値が閉じられていません");
+                fail("attribute value is not closed");
                 return false;
             }
             out.set(key.c_str(), unescape(s_.substr(start, i_ - start)));
@@ -264,7 +264,7 @@ private:
         for (;;) {
             skipSpaceAndComments();
             if (eof()) {
-                fail("終了タグがありません");
+                fail("missing closing tag");
                 return false;
             }
             if (starts("</")) {
@@ -272,12 +272,12 @@ private:
                 const std::string close = readName();
                 skipSpace();
                 if (peek() != '>') {
-                    fail("終了タグが閉じられていません");
+                    fail("closing tag is not terminated");
                     return false;
                 }
                 ++i_;
                 if (close != name) {
-                    fail("終了タグの名前が合いません");
+                    fail("closing tag name does not match");
                     return false;
                 }
                 return true;
@@ -418,7 +418,7 @@ bool parse(const std::string& text, Element& out, std::string& error) {
     Element root;
     Parser p(text, error);
     if (!p.run(root)) {
-        if (error.empty()) error = "XML として読めません";
+        if (error.empty()) error = "not readable as XML";
         return false;
     }
     out = std::move(root);

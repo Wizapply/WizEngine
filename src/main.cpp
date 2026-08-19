@@ -131,7 +131,9 @@ static // ---- Streaming defaults ----------------------------------------------
 // (CPU-encode) fallback. H265/AV1 fall back to H264 with a warning when
 // their pieces are missing.
 constexpr VideoCodec kDefaultCodec = VideoCodec::H264;
-constexpr int kVideoBitrate = 4000000;  // bits per second
+// 既定 1080p60 に見合う値（720p の頃は 4Mbps だった）。回線が細いときは
+// ブラウザの Physics > Stream からカメラごとに下げられる。
+constexpr int kVideoBitrate = 8000000;  // bits per second
 // Colour conversion (RGBA -> NV12) on the GPU instead of a CPU core per
 // camera. Automatically ignored (CPU path) when the encoder cannot take
 // D3D11 memory - software encoders, VP9, non-Windows.
@@ -142,8 +144,8 @@ int run(int argc, char** argv) {
     // stays cheap to render, encode and stream whatever the display size.
     // Raise it if the upscaled picture looks too soft (1920x1080 is ~2.2x the
     // pixels, and costs roughly that much more everywhere).
-    constexpr int kWidth = 1280;
-    constexpr int kHeight = 720;
+    constexpr int kWidth = 1920;
+    constexpr int kHeight = 1080;
     constexpr int kFps = 60;
 
     // Usage:
@@ -369,7 +371,7 @@ int run(int argc, char** argv) {
     // モードを読むのはここから。
     LOGI("physics", "rate: %d Hz (scene default), substeps %d",
          scene.physicsHz(), scene.substeps());
-    LOGI("app", "start mode: %s (ブラウザの Editor タブで切り替え)",
+    LOGI("app", "start mode: %s (switchable from the browser header)",
          wizengine::editor::modeName(scene.mode()));
 
     // This thread runs the render loop; keep it off the physics cores.

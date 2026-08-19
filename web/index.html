@@ -12,19 +12,15 @@
   <aside id="sidebar">
     <div class="sbHead">
       <span class="sbTitle">WizEngine</span>
-      <span id="camLabel" class="sbSub"></span>
+      <!-- バージョンはソースコードが正（src/Versions.cpp の engineVersion）。
+           /stats の versions.WizEngine を受けて app.js が書き換える。 -->
+      <span id="appVer" class="sbSub">Version</span>
       <button id="sbClose" onclick="toggleSidebar()" title="Hide sidebar (Tab)">‹</button>
     </div>
 
-    <!-- エディタ / シミュレートの切り替え。タブより上に置いてあるのは、
-         どのタブを見ていても今どちらのモードかが分かるようにするため。 -->
-    <div class="modeRow">
-      <button id="btnModeEdit" class="modeBtn" onclick="setMode('editor')"
-              title="物理を止めて配置・設計する">✎ エディタ</button>
-      <button id="btnModeSim" class="modeBtn" onclick="setMode('simulate')"
-              title="設計した状態からシミュレートする">▶ シミュレート</button>
-    </div>
-
+    <!-- エディタ / シミュレートの切り替えは映像ヘッダー（#viewHead）に
+         一本化した。サイドバーを畳んでいても常に見える場所が 1 か所あれば
+         足りる。 -->
     <!-- タブ。Inspector（旧 Editor）はエディタカメラのページにだけ出る
          （app.js が editorCam を見て隠す）。 -->
     <div class="sbTabs">
@@ -543,9 +539,23 @@
 
   <div id="sbResize" title="Drag to resize the panel"></div>
 
-  <button id="sbOpen" onclick="toggleSidebar()" title="Show sidebar (Tab)">☰</button>
-
   <main id="main">
+  <!-- 映像エリアのヘッダー。サイドバーを隠しても、シーン名とモード切替が
+       手元に残るようにする。☰ はサイドバーの表示/非表示（Tab と同じ）、
+       モードボタンはサイドバー上部のものと同じ setMode を送るだけで、
+       active 表示は renderEditor() が両方まとめて更新する。 -->
+  <div id="viewHead">
+    <button id="vhSidebar" onclick="toggleSidebar()"
+            title="サイドバーの表示 / 非表示 (Tab)">☰</button>
+    <span id="vhTitle" class="vhTitle"
+          title="シーン名（Assets パネルの 💾 保存の名前）">…</span>
+    <span id="vhCam" class="vhCam"></span>
+    <span class="vhSpacer"></span>
+    <button id="vhModeEdit" class="modeBtn" onclick="setMode('editor')"
+            title="物理を止めて配置・設計する">✎ エディタ</button>
+    <button id="vhModeSim" class="modeBtn" onclick="setMode('simulate')"
+            title="設計した状態からシミュレートする">▶ シミュレート</button>
+  </div>
   <div id="stage">
     <video id="video" autoplay playsinline muted></video>
     <div id="loading"><div class="spin"></div><span>connecting…</span></div>

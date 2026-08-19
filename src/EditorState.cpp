@@ -287,12 +287,12 @@ bool EditorState::writeText(const std::string& path, const std::string& text,
         std::filesystem::path(path).parent_path(), ec);
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) {
-        reason = "書き込めません: " + path;
+        reason = "cannot write: " + path;
         return false;
     }
     f << text;
     if (!f) {
-        reason = "書き込み中にエラー: " + path;
+        reason = "write error: " + path;
         return false;
     }
     LOGI("editor", "saved %s", path.c_str());
@@ -303,13 +303,13 @@ bool EditorState::readText(const std::string& path, std::string& text,
                            std::string& reason) {
     std::ifstream f(path, std::ios::binary);
     if (!f) {
-        reason = "見つかりません: " + path;
+        reason = "not found: " + path;
         return false;
     }
     text.assign(std::istreambuf_iterator<char>(f),
                 std::istreambuf_iterator<char>());
     if (f.bad()) {
-        reason = "読み込み中にエラー: " + path;
+        reason = "read error: " + path;
         return false;
     }
     LOGI("editor", "loaded %s", path.c_str());
@@ -322,7 +322,7 @@ bool EditorState::readJson(const std::string& path, nlohmann::json& doc,
     if (!readText(path, text, reason)) return false;
     doc = nlohmann::json::parse(text, nullptr, false);
     if (doc.is_discarded() || !doc.is_object()) {
-        reason = "JSON として読めません: " + path;
+        reason = "not readable as JSON: " + path;
         return false;
     }
     return true;

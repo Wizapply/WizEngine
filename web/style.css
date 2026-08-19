@@ -55,7 +55,7 @@
   #cursor.cross .curArrow { display:none; }
   #cursor.cross .curCross { display:block; }
   #cursor.cross { margin-left:-11px; margin-top:-11px; }
-  /* The stream is 720p; the browser upscales it to the window width. */
+  /* The stream is 1080p by default; the browser scales it to the window. */
   #video { width:100%; aspect-ratio:16/9; border-radius:8px;
            background:#000; display:block; object-fit:contain;
            image-rendering:auto; }
@@ -189,14 +189,27 @@
   body.resizing-col, body.resizing-col * { cursor: col-resize !important; }
   body.resizing-row, body.resizing-row * { cursor: row-resize !important; }
   body.resizing-col, body.resizing-row { user-select: none; }
-  #sbOpen {
-    position: fixed; left: 8px; top: 8px; z-index: 30;
-    font-size: 15px; padding: 5px 10px; margin: 0;
+  /* ---- 映像エリアのヘッダー --------------------------------------------
+     サイドバー開閉（☰）・シーン名・モード切替。サイドバーを隠しても
+     ここだけで一通り操作が続けられる。モードボタンは .modeBtn を共有し、
+     ヘッダーでは幅いっぱいに伸ばさない。 */
+  #viewHead {
+    display: flex; align-items: center; gap: 8px; margin: 0 0 10px;
+    min-height: 32px;
+  }
+  #vhSidebar {
+    font-size: 15px; padding: 5px 10px; margin: 0; cursor: pointer;
     background: #24262c; color: #ddd; border: 1px solid #3a3d45;
     border-radius: 5px;
   }
-  #sidebar:not(.hidden) ~ #sbOpen { display: none; }
-  #sbOpen:hover { background: #30333a; }
+  #vhSidebar:hover { background: #30333a; }
+  .vhTitle {
+    font-weight: 600; font-size: 15px; color: #e8e8e8; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .vhCam { font-size: 11px; color: #8b8f99; white-space: nowrap; }
+  .vhSpacer { flex: 1 1 auto; }
+  #viewHead .modeBtn { flex: 0 0 auto; padding: 6px 12px; cursor: pointer; }
 
   .sbHead { display: flex; align-items: center; gap: 8px; }
   .sbTitle { font-weight: 600; font-size: 15px; }
@@ -411,9 +424,9 @@
   .inspector .k { color: #7b7f88; }
 
   /* ---- モード切替 --------------------------------------------------------
-     タブより上に置いた 2 択。今どちらのモードかは操作の意味そのものが変わる
-     （ドラッグが「押す」か「置く」か）ので、常に見える位置に出す。 */
-  .modeRow { display: flex; gap: 4px; flex: 0 0 auto; }
+     エディタ⇄シミュレートの 2 択。今どちらのモードかは操作の意味そのものが
+     変わる（ドラッグが「押す」か「置く」か）ので、常に見える映像ヘッダー
+     （#viewHead）に置く。 */
   .modeBtn {
     flex: 1 1 0; min-width: 0; margin: 0; padding: 7px 6px; font-size: 12px;
     background: #24262c; color: #9aa0aa;
@@ -422,10 +435,10 @@
   }
   .modeBtn:hover:enabled { background: #30333a; color: #c8ccd4; }
   /* 走っているほうを目立たせる: エディタは落ち着いた青、シミュレートは緑。 */
-  #btnModeEdit.active {
+  #vhModeEdit.active {
     background: #2f4a72; border-color: #4a70ad; color: #eaf1fb;
   }
-  #btnModeSim.active {
+  #vhModeSim.active {
     background: #2c5b3a; border-color: #47935c; color: #eafbee;
   }
 
@@ -784,7 +797,7 @@
   body.resizing-row, body.resizing-row * { cursor: row-resize !important; }
   body.resizing-col, body.resizing-row { user-select: none; }
     #main { padding: 8px 8px 16px; }
-    #sbOpen { padding: 8px 13px; font-size: 17px; }  /* thumb-sized */
+    #vhSidebar { padding: 8px 13px; font-size: 17px; }  /* thumb-sized */
     .item { padding: 6px 6px; }                       /* easier to tap */
     #sidebar button.wide { padding: 10px 12px; }
     /* The video is the point of the page on a phone; the tuning panel and the

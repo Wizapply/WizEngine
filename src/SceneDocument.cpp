@@ -27,7 +27,7 @@ public:
         if (!out_) return;
         if (out_->size() >= kMax) {
             if (!overflowNoted_) {
-                out_->push_back("（以降の警告は省略）");
+                out_->push_back("(further warnings omitted)");
                 overflowNoted_ = true;
             }
             return;
@@ -60,8 +60,8 @@ void warnUnknownChildren(const xml::Element& parent,
             if (c.name() == k) { ok = true; break; }
         }
         if (!ok) {
-            warn(std::string(where) + " の <" + c.name() +
-                 "> は未対応です - 無視します");
+            warn(std::string("unsupported <") + c.name() + "> in " + where +
+                 " - ignored");
         }
     }
 }
@@ -176,10 +176,9 @@ int bodyRefIndex(const std::vector<BodyDesc>& bodies, const std::string& text,
         const int index = std::atoi(text.c_str());
         if (index < 0) return -1;  // -1 は明示的な地面
         if (std::size_t(index) >= bodies.size()) {
-            warn(std::string(attr) + "=\"" + text +
-                 "\" は範囲外（オブジェクトは " +
+            warn(std::string(attr) + "=\"" + text + "\" is out of range (" +
                  std::to_string(bodies.size()) +
-                 " 個）- 地面(world)として読みます");
+                 " objects) - reading as world");
             return -1;
         }
         return index;
@@ -188,7 +187,7 @@ int bodyRefIndex(const std::vector<BodyDesc>& bodies, const std::string& text,
         if (bodies[i].name == text) return int(i);
     }
     warn(std::string(attr) + "=\"" + text +
-         "\" というオブジェクトが見つかりません - 地面(world)として読みます");
+         "\" does not name an object - reading as world (ground)");
     return -1;
 }
 
@@ -275,22 +274,23 @@ BodyDesc bodyFromXml(const xml::Element& e,
     // 構造の検査。MJCF の入れ子 <body> は親からの相対姿勢なので、姿勢を
     // 合成せずに取り込むと物が別の場所に出る - 黙って捨てず、必ず伝える。
     const std::string label =
-        b.name.empty() ? std::string("(無名)") : b.name;
+        b.name.empty() ? std::string("(unnamed)") : b.name;
     std::size_t geoms = 0;
     for (const auto& c : e.children()) {
         if (c.name() == "geom") {
             ++geoms;
         } else if (c.name() == "body") {
-            warn("<body name=\"" + label + "\"> の入れ子 <body> は未対応です"
-                 " - 無視します（worldbody 直下に置いてください）");
+            warn("<body name=\"" + label + "\">: nested <body> is not "
+                 "supported - ignored (place bodies directly under "
+                 "worldbody)");
         } else {
-            warn("<body name=\"" + label + "\"> の <" + c.name() +
-                 "> は未対応です - 無視します");
+            warn("<body name=\"" + label + "\">: unsupported <" + c.name() +
+                 "> - ignored");
         }
     }
     if (geoms > 1) {
         warn("<body name=\"" + label +
-             "\"> の 2 個目以降の <geom> は無視します（1 剛体 1 形状）");
+             "\">: extra <geom> elements are ignored (one shape per body)");
     }
 
     // MJCF は 1 つの body に複数 geom を書けるが、こちらの剛体は 1 形状。
@@ -299,16 +299,16 @@ BodyDesc bodyFromXml(const xml::Element& e,
         if (g->has("type") &&
             unknownName(geomTypeFromName, g->attr("type"), ShapeKind::Box,
                         ShapeKind::Sphere)) {
-            warn("<body name=\"" + label + "\"> の geom type=\"" +
-                 g->attr("type") + "\" は未知の形です - box として読みます");
+            warn("<body name=\"" + label + "\">: geom type=\"" +
+                 g->attr("type") + "\" is unknown - reading as box");
         }
         b.shape = geomTypeFromName(g->attr("type", "box"), b.shape);
         if (g->has("collision") &&
             unknownName(geomTypeFromName, g->attr("collision"), ShapeKind::Box,
                         ShapeKind::Sphere)) {
-            warn("<body name=\"" + label + "\"> の collision=\"" +
-                 g->attr("collision") + "\" は未知の形です - 見た目と同じ形で"
-                 "読みます");
+            warn("<body name=\"" + label + "\">: collision=\"" +
+                 g->attr("collision") +
+                 "\" is unknown - using the visual shape");
         }
         b.collision = geomTypeFromName(g->attr("collision"), b.shape);
         // mesh geom はアセット参照が要る。無い・見つからないは球へ倒す
@@ -321,11 +321,11 @@ BodyDesc bodyFromXml(const xml::Element& e,
                 if (m.name == b.mesh) { found = true; break; }
             }
             if (b.mesh.empty()) {
-                warn("<body name=\"" + label + "\"> の geom type=\"mesh\" に"
-                     " mesh=\"アセット名\" がありません - 球として読みます");
+                warn("<body name=\"" + label + "\">: geom type=\"mesh\" "
+                     "needs mesh=\"<asset name>\" - reading as a sphere");
             } else if (!found) {
-                warn("<body name=\"" + label + "\"> の mesh=\"" + b.mesh +
-                     "\" は <asset> に宣言がありません - 球として読みます");
+                warn("<body name=\"" + label + "\">: mesh=\"" + b.mesh +
+                     "\" is not declared in <asset> - reading as a sphere");
             }
             if (b.mesh.empty() || !found) {
                 b.shape = ShapeKind::Sphere;
@@ -348,7 +348,7 @@ BodyDesc bodyFromXml(const xml::Element& e,
         b.color = getColor(*g, "rgba", b.color);
     } else {
         warn("<body name=\"" + label +
-             "\"> に <geom> がありません - 既定の箱として読みます");
+             "\"> has no <geom> - using a default box");
     }
     return clampBody(b);
 }
@@ -375,8 +375,8 @@ LightDesc lightFromXml(const xml::Element& e, Warn& warn) {
     if (e.has("type") &&
         unknownName(lightKindFromName, e.attr("type"), LightKind::Sun,
                     LightKind::Point)) {
-        warn("<light> の type=\"" + e.attr("type") +
-             "\" は未知の種類です - point として読みます");
+        warn("<light> type=\"" + e.attr("type") +
+             "\" is unknown - reading as point");
     }
     // directional="true" 表記（MJCF）も受ける。
     l.kind = lightKindFromName(e.attr("type", "point"), l.kind);
@@ -439,8 +439,8 @@ JointDesc jointFromXml(const xml::Element& e,
     if (e.has("type") &&
         unknownName(jointTypeFromName, e.attr("type"), JointKind::Fixed,
                     JointKind::Revolute)) {
-        warn(label + " の type=\"" + e.attr("type") +
-             "\" は未知の種類です - hinge として読みます");
+        warn(label + " type=\"" + e.attr("type") +
+             "\" is unknown - reading as hinge");
     }
     j.kind = jointTypeFromName(e.attr("type", "hinge"), j.kind);
     j.bodyA = bodyRefIndex(bodies, e.attr("body1", "world"), "body1", warn);
@@ -452,7 +452,7 @@ JointDesc jointFromXml(const xml::Element& e,
     const double len2 =
         j.axis.x * j.axis.x + j.axis.y * j.axis.y + j.axis.z * j.axis.z;
     if (len2 < 1e-12) {
-        warn(label + " の axis が零ベクトルです - 0 1 0 として読みます");
+        warn(label + " has a zero-length axis - using 0 1 0");
         j.axis = Vec3d{0.0, 1.0, 0.0};
     }
     j.distance = e.number("distance", j.distance);
@@ -489,8 +489,8 @@ NodeDesc nodeFromXml(const xml::Element& e, Warn& warn) {
     if (e.has("type") &&
         unknownName(nodeKindFromName, e.attr("type"), NodeKind::OnCollision,
                     NodeKind::OnSimStart)) {
-        warn("<node> の type=\"" + e.attr("type") +
-             "\" は未知の種類です - onCollision として読みます");
+        warn("<node> type=\"" + e.attr("type") +
+             "\" is unknown - reading as onCollision");
     }
     n.kind = nodeKindFromName(e.attr("type", "onCollision"), n.kind);
     double pos[2] = {n.x, n.y};
@@ -583,9 +583,10 @@ SceneDocument fromXml(const xml::Element& root,
     // 約束なので、ここに来るのは意味の変わる変更があったときだけ）。
     const int version = root.integer("version", kSceneDocVersion);
     if (version > kSceneDocVersion) {
-        warn("文書の version " + std::to_string(version) +
-             " はこの版（" + std::to_string(kSceneDocVersion) +
-             "）より新しい形式です - 読める範囲で読み込みます");
+        warn("document version " + std::to_string(version) +
+             " is newer than this build (" +
+             std::to_string(kSceneDocVersion) +
+             ") - reading what is understood");
     }
 
     warnUnknownChildren(root,
@@ -607,13 +608,13 @@ SceneDocument fromXml(const xml::Element& root,
             if (m.scale <= 1e-9) m.scale = 1.0;
             if (m.name.empty()) {
                 warn("<mesh file=\"" + m.file +
-                     "\"> に name がありません - 無視します");
+                     "\"> has no name - ignored");
                 continue;
             }
             if (!assetFileAllowed(m.file)) {
-                warn("<mesh name=\"" + m.name + "\"> の file=\"" + m.file +
-                     "\" は使えません（assets/ からの相対パスのみ）- "
-                     "無視します");
+                warn("<mesh name=\"" + m.name + "\"> file=\"" + m.file +
+                     "\" is not allowed (assets-relative paths only) - "
+                     "ignored");
                 continue;
             }
             bool dup = false;
@@ -622,7 +623,7 @@ SceneDocument fromXml(const xml::Element& root,
             }
             if (dup) {
                 warn("<mesh name=\"" + m.name + "\" file=\"" + m.file +
-                     "\"> の name が重複しています - 後の方を無視します");
+                     "\"> duplicates an earlier name - ignored");
                 continue;
             }
             doc.meshes.push_back(std::move(m));
@@ -644,9 +645,9 @@ SceneDocument fromXml(const xml::Element& root,
                 if (hdr.empty() || assetFileAllowed(hdr)) {
                     doc.environment.hdr = hdr;
                 } else {
-                    warn("<environment> の hdr=\"" + hdr +
-                         "\" は使えません（assets/ からの相対パスのみ）- "
-                         "環境光なしで読みます");
+                    warn("<environment> hdr=\"" + hdr +
+                         "\" is not allowed (assets-relative paths only) - "
+                         "loading no environment");
                     doc.environment.hdr.clear();
                 }
             }
@@ -654,7 +655,7 @@ SceneDocument fromXml(const xml::Element& root,
                 e.number("intensity", doc.environment.intensity);
             doc.environment = clampEnvironment(doc.environment);
             if (envs.size() > 1) {
-                warn("<environment> が複数あります - 最初の 1 個だけ読みます");
+                warn("multiple <environment> elements - using the first");
             }
         }
         const auto grounds = world->all("ground");
@@ -668,9 +669,9 @@ SceneDocument fromXml(const xml::Element& root,
                 if (tex.empty() || assetFileAllowed(tex)) {
                     doc.ground.texture = tex;
                 } else {
-                    warn("<ground> の texture=\"" + tex +
-                         "\" は使えません（assets/ からの相対パスのみ）- "
-                         "市松模様で読みます");
+                    warn("<ground> texture=\"" + tex +
+                         "\" is not allowed (assets-relative paths only) - "
+                         "using the checkerboard");
                     doc.ground.texture.clear();
                 }
             }
@@ -678,7 +679,7 @@ SceneDocument fromXml(const xml::Element& root,
             doc.ground.tint = getColor(g, "rgba", doc.ground.tint);
             doc.ground = clampGround(doc.ground);
             if (grounds.size() > 1) {
-                warn("<ground> が複数あります - 最初の 1 個だけ読みます");
+                warn("multiple <ground> elements - using the first");
             }
         }
         // ライト・カメラを 1 つも書かない文書は「指定なし」＝初期構成で開く
@@ -726,27 +727,27 @@ SceneDocument fromXml(const xml::Element& root,
             const NodeTargetKind tk = nodeTargetKind(nd.kind);
             if (tk == NodeTargetKind::Object && nd.target >= 0 &&
                 std::size_t(nd.target) >= doc.bodies.size()) {
-                warn(label + " の target=" + std::to_string(nd.target) +
-                     " は範囲外のオブジェクトです - 未設定にします");
+                warn(label + " target=" + std::to_string(nd.target) +
+                     " is out of range (objects) - cleared");
                 nd.target = -1;
             }
             if (tk == NodeTargetKind::Light && doc.hasLights &&
                 nd.target >= 0 &&
                 std::size_t(nd.target) >= doc.lights.size()) {
-                warn(label + " の target=" + std::to_string(nd.target) +
-                     " は範囲外のライトです - 未設定にします");
+                warn(label + " target=" + std::to_string(nd.target) +
+                     " is out of range (lights) - cleared");
                 nd.target = -1;
             }
             if (nodeOtherIsObject(nd.kind) && nd.other >= 0 &&
                 std::size_t(nd.other) >= doc.bodies.size()) {
-                warn(label + " の other=" + std::to_string(nd.other) +
-                     " は範囲外のオブジェクトです");
+                warn(label + " other=" + std::to_string(nd.other) +
+                     " is out of range (objects)");
                 nd.other = (nd.kind == NodeKind::OnCollision) ? -2 : -1;
             }
 
             if (nd.id > 0) {
                 if (!usedIds.insert(nd.id).second) {
-                    warn(label + " が重複しています - 後の方を無視します");
+                    warn(label + " duplicates an earlier node id - ignored");
                     continue;
                 }
             }
@@ -774,16 +775,16 @@ SceneDocument fromXml(const xml::Element& root,
             const auto f = kindById.find(wire.from);
             const auto t = kindById.find(wire.to);
             if (f == kindById.end() || t == kindById.end()) {
-                warn(label + " が存在しないノードを指しています - 無視します");
+                warn(label + " points at a missing node - ignored");
                 continue;
             }
             if (!nodeIsTrigger(f->second) || nodeIsTrigger(t->second)) {
-                warn(label + " の向きが不正です（from=トリガー, to=アクション）"
-                     " - 無視します");
+                warn(label + " has the wrong direction (from=trigger, "
+                     "to=action) - ignored");
                 continue;
             }
             if (!seen.insert({wire.from, wire.to}).second) {
-                warn(label + " が重複しています - 無視します");
+                warn(label + " duplicates an earlier wire - ignored");
                 continue;
             }
             doc.wires.push_back(wire);
