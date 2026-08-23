@@ -32,6 +32,13 @@ namespace {
 // below are only derived helpers and the implementation. シーンの中身
 // （オブジェクト・ジョイント・アセット）はここではなく文書（XML）が持つ。
 
+// 既定のマウス操作スクリプト（イベントアセット）の名前。エンジンは「掴んだら
+// 動く」を持たず、この名前のアセットがシーンに付いていて初めて物が動く。
+// 節を持たない文書と「全消し」はこれを作って付ける（defaultPickupAsset /
+// Scene::resetEventsToDefaults）。既定シーン assets/scenes/default.xml にも
+// 同じ名前で書いてある。
+constexpr const char* kMouseEventAsset = "pickup";
+
 // エディタの回転（オイラー角・度）を Chrono の四元数へ。順序の定義は
 // scene_math.h に 1 か所だけ置いてある（インスペクタの数字・ギズモの回転・
 // 物理に渡す姿勢が食い違わないように）。
@@ -195,64 +202,27 @@ public:
     }
 };
 
-// Applies each camera's mouse drag to its grabbed object and keeps the
-// per-camera coloured highlight in sync.
+// ブラウザのドラッグ（掴む・引く・離す）を受け、エディタモードでは掴んだ物を
+// 置き直し、カメラごとの色分けハイライトを保つ。
+//
+// **シミュレート中に掴んだ物を引き寄せるのは、ここではなくイベントアセット**
+// （onGrab → grabPull）。エンジンに「掴んだら動く」は焼き込まない、という
+// 整理で、既定シーンに付いている "pickup" スクリプトがその配線を持つ。
+// 掴みの計算そのもの（対象・カーソルの指す点・引っぱり線）は Scene が持つ
+// （Scene::pointerGrab）: エディタの置き直しとイベントの引き寄せで同じ答えが
+// 要るため。
 class BoxControlComponent : public SceneComponent {
 public:
-    void onPhysicsStep(Scene& scene, double dt) override {
-        prepare(scene);
-        for (std::size_t c = 0; c < scene.cameraCount(); ++c) {
-            const Grab g = grabFor(scene, c);
-            if (!g.valid) continue;
-
-            // Servo towards the target: F = m * (kp*e - kd*v), acceleration
-            // capped. Applied every step, which is what makes it track - a
-            // one-shot impulse dies to friction immediately.
-            const auto& cfg = scene.boxController(c).config();
-            const chrono::ChVector3d cv = scene.physics().bodyVelocity(g.physId);
-            const scenemath::Vec3 vel(cv.x(), cv.y(), cv.z());
-            scenemath::Vec3 accel =
-                cfg.stiffness * (g.target - g.objPos) - cfg.damping * vel;
-            const double a = accel.norm();
-            if (a > cfg.maxAcceleration) accel *= cfg.maxAcceleration / a;
-
-            const double mass = scene.physics().bodyMass(g.physId);
-            if (mass <= 0.0) continue;
-            const scenemath::Vec3 force = accel * mass;
-            scene.physics().applyForce(
-                g.physId, chrono::ChVector3d(force.x(), force.y(), force.z()),
-                dt);
-
-            // Line endpoints for the render thread: object -> cursor point.
-            LineState& ln = *lines_[c];
-            ln.ax.store(g.objPos.x());
-            ln.ay.store(g.objPos.y());
-            ln.az.store(g.objPos.z());
-            ln.bx.store(g.target.x());
-            ln.by.store(g.target.y());
-            ln.bz.store(g.target.z());
-            ln.on.store(true);
-        }
-    }
-
     // エディタモードでのドラッグ: 力で引っぱるのではなく、置いた場所そのものを
     // 書き換える。掴んだ物がカーソルに正確に付いてくるので、配置作業がしやすい。
     // 置き直せるのはエディタカメラだけ - 他のカメラは見る・選ぶまで。
     void onEditorStep(Scene& scene, double dt) override {
         (void)dt;
-        prepare(scene);
         const std::size_t editorCam = scene.editorCamera();
-        for (std::size_t c = 0; c < scene.cameraCount(); ++c) {
-            if (c != editorCam) {
-                lines_[c]->on.store(false);
-                continue;
-            }
-            const Grab g = grabFor(scene, c);
-            if (!g.valid) continue;
-            scene.moveObject(g.index, g.target.x(), g.target.y(),
-                             g.target.z());
-            // 物がカーソル上にあるので、引っぱり線は出さない。
-            lines_[c]->on.store(false);
+        scene.clearGrabLines();  // エディタでは物がカーソル上にあるので線は出さない
+        Scene::PointerGrab g;
+        if (scene.pointerGrab(editorCam, g) && g.valid) {
+            scene.moveObject(g.index, g.tgtX, g.tgtY, g.tgtZ);
         }
     }
 
@@ -313,15 +283,15 @@ public:
 
     void onRender(Scene& scene) override {
         // Grab lines are real geometry in the scene, so they follow the object
-        // in 3D and are visible from every camera.
-        for (std::size_t c = 0; c < lines_.size(); ++c) {
-            const LineState& ln = *lines_[c];
-            const bool on = ln.on.load();
+        // in 3D and are visible from every camera. 端点を書くのは物理スレッド
+        // （grabPull アクション）で、ここは読んでレンダラへ流すだけ。
+        for (std::size_t c = 0; c < scene.cameraCount(); ++c) {
+            double a[3] = {0.0, 0.0, 0.0};
+            double b[3] = {0.0, 0.0, 0.0};
+            const bool on = scene.grabLine(c, a, b);
             scene.renderer().setGrabLine(
-                c,
-                {float(ln.ax.load()), float(ln.ay.load()), float(ln.az.load())},
-                {float(ln.bx.load()), float(ln.by.load()), float(ln.bz.load())},
-                on);
+                c, {float(a[0]), float(a[1]), float(a[2])},
+                {float(b[0]), float(b[1]), float(b[2])}, on);
         }
 
         // Selections are per camera, so several highlights can be lit at once;
@@ -339,82 +309,6 @@ public:
     }
 
 private:
-    // 掴んでいる対象と、カーソルが指す3D点。押す（シミュレート）のと
-    // 置き直す（エディタ）のとで違うのは最後の一手だけなので、そこまでの
-    // 計算はここにまとめてある。
-    struct Grab {
-        bool valid = false;
-        std::size_t index = BoxController::kNone;  // オブジェクト番号
-        std::size_t physId = 0;
-        scenemath::Vec3 objPos;
-        scenemath::Vec3 target;
-    };
-
-    void prepare(Scene& scene) {
-        if (depths_.size() == scene.cameraCount()) return;
-        depths_.assign(scene.cameraCount(), Depth{});
-        lines_.clear();
-        for (std::size_t k = 0; k < scene.cameraCount(); ++k) {
-            lines_.push_back(std::make_unique<LineState>());
-        }
-    }
-
-    Grab grabFor(Scene& scene, std::size_t c) {
-        Grab g;
-        BoxController& ctl = scene.boxController(c);
-        const std::size_t sel = ctl.selected();
-        Depth& depth = depths_[c];
-        if (sel >= scene.objectCount() || !scene.objectAlive(sel)) {
-            depth.valid = false;
-            lines_[c]->on.store(false);
-            return g;
-        }
-
-        double ndcX = 0.0, ndcY = 0.0;
-        if (!ctl.pointer(ndcX, ndcY)) {
-            // 掴んでいない = 次に掴んだときは奥行きを測り直す。エディタでは
-            // 離しても選択が残るので、これが無いと前回のカメラ向きで測った
-            // 奥行きを使い回してしまう。
-            depth.held = false;
-            lines_[c]->on.store(false);
-            return g;
-        }
-
-        const std::size_t physId = scene.object(sel).physId;
-        const BodyTransform tr = scene.physics().bodyTransform(physId);
-
-        // Camera basis and the point under the cursor, both from the
-        // shared Eigen helpers so picking and dragging cannot drift apart.
-        const auto basis = scenemath::cameraBasis(scene.camera(c));
-        if (!basis.valid) return g;
-
-        // Depth of the object when it was grabbed: the target rides on the
-        // plane at that depth, so the object stays under the cursor
-        // without being pulled towards or away from the camera.
-        const scenemath::Vec3 objPos(tr.px, tr.py, tr.pz);
-        if (!depth.valid || depth.sel != sel || !depth.held) {
-            depth.valid = true;
-            depth.held = true;
-            depth.sel = sel;
-            depth.z = std::max(0.1, (objPos - basis.eye).dot(basis.forward));
-        }
-
-        // Ray through the cursor, hit against that plane. Absolute, so the
-        // target is exactly under the cursor every step - no drift.
-        const scenemath::Vec3 dir = scenemath::rayThrough(
-            basis, ndcX, ndcY, scene.renderer().verticalFovDegrees(),
-            scene.renderer().aspect());
-        const double along = dir.dot(basis.forward);
-        if (along <= 1e-6) return g;
-
-        g.valid = true;
-        g.index = sel;
-        g.physId = physId;
-        g.objPos = objPos;
-        g.target = basis.eye + dir * (depth.z / along);
-        return g;
-    }
-
     static void setMark(Scene& scene, std::size_t index, std::size_t cam,
                         bool on) {
         if (index >= scene.objectCount()) return;
@@ -443,26 +337,6 @@ private:
     // Radians of orbit per unit of normalised device coords. The screen spans
     // 2 units, so this is roughly "half a screen drag = this many radians".
     static constexpr double kOrbitRadPerNdc = 1.6;
-
-    // Distance from the camera to the object at grab time (physics thread).
-    // held は「前のパスでも掴んでいたか」。掴み直しのたびに奥行きを測り直す
-    // ための印で、選択が残ったままカメラを回しても破綻しない。
-    struct Depth {
-        bool valid = false;
-        bool held = false;
-        std::size_t sel = BoxController::kNone;
-        double z = 0.0;
-    };
-    std::vector<Depth> depths_;
-
-    // Line endpoints handed from the physics thread to the render thread: the
-    // object and the point it is being pulled towards.
-    struct LineState {
-        std::atomic<bool> on{false};
-        std::atomic<double> ax{0.0}, ay{0.0}, az{0.0};  // object
-        std::atomic<double> bx{0.0}, by{0.0}, bz{0.0};  // target
-    };
-    std::vector<std::unique_ptr<LineState>> lines_;
 };
 
 // --- Example ObjectAction ---------------------------------------------------
@@ -603,28 +477,25 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         }
     }
 
-    // イベントグラフ（Inspector のイベント節とノードエディタが描く）。
-    // 発火回数付き: シミュレート中にどのノードが動いたかが見える
-    // （Node-RED のデバッグバッジに相当）。
+    // イベントアセット（ASSETS パネルのタイル・Inspector の付け外し・
+    // ノードエディタが描く）。発火回数付き: シミュレート中にどのノードが
+    // 動いたかが見える（Node-RED のデバッグバッジに相当）。
     {
-        nlohmann::json g;
-        g["nodes"] = nlohmann::json::array();
+        nlohmann::json ev;
+        ev["assets"] = nlohmann::json::array();
         const auto fires = editor_.nodeFireCounts();
-        for (const auto& n : editor_.graphNodes()) {
-            nlohmann::json e = ed::toJson(n);
-            for (const auto& fc : fires) {
-                if (fc.first == n.id) {
-                    e["fired"] = fc.second;
-                    break;
-                }
+        for (const auto& a : editor_.eventAssets()) {
+            nlohmann::json e = ed::toJson(a);
+            for (auto& n : e["nodes"]) {
+                const auto it = fires.find({a.name, ed::jsonInt(n, "id", -1)});
+                if (it != fires.end()) n["fired"] = it->second;
             }
-            g["nodes"].push_back(e);
+            ev["assets"].push_back(std::move(e));
         }
-        g["wires"] = nlohmann::json::array();
-        for (const auto& w : editor_.graphWires()) {
-            g["wires"].push_back(ed::toJson(w));
-        }
-        j["graph"] = g;
+        // シーン全体に付いているアセット（オブジェクトに付いているぶんは
+        // それぞれの selected / objects 側に入る）。
+        ev["world"] = editor_.worldEvents();
+        j["events"] = ev;
     }
 
     // Who (if anyone) is holding each object, so the list can colour it.
@@ -647,6 +518,9 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         if (boxes_[i].desc.fixed) e["fixed"] = true;
         // 名前は付けた物だけ送る（512個ぶんの既定名を毎回運ぶのは無駄）。
         if (!boxes_[i].desc.name.empty()) e["name"] = boxes_[i].desc.name;
+        // 付いているイベントアセット（階層一覧の ⚡ バッジ）。付いていない
+        // 物のほうが多いので、あるときだけ送る。
+        if (!boxes_[i].desc.events.empty()) e["events"] = boxes_[i].desc.events;
         j["objects"].push_back(e);
     }
     j["aliveCount"] = alive;
@@ -709,6 +583,10 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
             std::make_unique<BoxController>(boxControllerConfig()));
         camerasActive_.push_back(i < cfgs.size() ? 1 : 0);
     }
+    // 掴み用の配列（奥行きの記憶と引っぱり線）はここで作り切る。カメラは
+    // 固定プールなので後から増えない = 描画スレッドが読んでいる最中に
+    // 配列が伸びる、が起きない。
+    ensureGrabState();
     // ギズモが最初。pick / drag をカメラやグラブより先に見て、ハンドルに
     // 当たっていればそこで止める（選択し直しや自由移動をさせないため）。
     addComponent(std::make_unique<GizmoComponent>());
@@ -842,6 +720,11 @@ void Scene::build() {
         lights_.push_back(item);
     }
 
+    // 既定のイベントアセット（マウス操作スクリプト）。起動シーンがイベントの
+    // 節を持っていればそちらで上書きされ、読めなければこのまま - どちらでも
+    // 「掴んだら動く」が最初から効く。
+    resetEventsToDefaults();
+
     renderer_.configureHighlightColors(cameraColors());
     // One line per camera, in that camera's colour.
     {
@@ -965,31 +848,230 @@ void Scene::buildJoints() {
     }
 }
 
+// ---- マウスの掴み（PHYSICS スレッド）---------------------------------------
+// 「どの物を、カーソルのどの点へ」を出すだけ。実際に動かすのはエディタの
+// 置き直し（BoxControlComponent）か、イベントアセットの grabPull アクション。
+
+void Scene::ensureGrabState() {
+    if (grabDepths_.size() == cameras_.size()) return;
+    grabDepths_.assign(cameras_.size(), GrabDepth{});
+    grabLines_.clear();
+    for (std::size_t i = 0; i < cameras_.size(); ++i) {
+        grabLines_.push_back(std::make_unique<GrabLine>());
+    }
+}
+
+bool Scene::pointerGrab(std::size_t cameraIndex, PointerGrab& out) {
+    out = PointerGrab{};
+    ensureGrabState();
+    if (cameraIndex >= cameras_.size()) return false;
+
+    BoxController& ctl = *controllers_[cameraIndex];
+    const std::size_t sel = ctl.selected();
+    GrabDepth& depth = grabDepths_[cameraIndex];
+    if (sel >= boxes_.size() || !boxes_[sel].alive) {
+        depth.valid = false;
+        return false;
+    }
+
+    double ndcX = 0.0, ndcY = 0.0;
+    if (!ctl.pointer(ndcX, ndcY)) {
+        // 掴んでいない = 次に掴んだときは奥行きを測り直す。エディタでは
+        // 離しても選択が残るので、これが無いと前回のカメラ向きで測った
+        // 奥行きを使い回してしまう。
+        depth.held = false;
+        return false;
+    }
+
+    const std::size_t physId = boxes_[sel].physId;
+    if (physId == GameObject::kInvalidId) return false;
+    const BodyTransform tr = physics_.bodyTransform(physId);
+
+    // Camera basis and the point under the cursor, both from the shared Eigen
+    // helpers so picking and dragging cannot drift apart.
+    const auto basis = scenemath::cameraBasis(*cameras_[cameraIndex]);
+    if (!basis.valid) return false;
+
+    // Depth of the object when it was grabbed: the target rides on the plane
+    // at that depth, so the object stays under the cursor without being
+    // pulled towards or away from the camera.
+    const scenemath::Vec3 objPos(tr.px, tr.py, tr.pz);
+    if (!depth.valid || depth.sel != sel || !depth.held) {
+        depth.valid = true;
+        depth.held = true;
+        depth.sel = sel;
+        depth.z = std::max(0.1, (objPos - basis.eye).dot(basis.forward));
+    }
+
+    // Ray through the cursor, hit against that plane. Absolute, so the target
+    // is exactly under the cursor every step - no drift.
+    const scenemath::Vec3 dir = scenemath::rayThrough(
+        basis, ndcX, ndcY, renderer_.verticalFovDegrees(), renderer_.aspect());
+    const double along = dir.dot(basis.forward);
+    if (along <= 1e-6) return false;
+    const scenemath::Vec3 target = basis.eye + dir * (depth.z / along);
+
+    out.valid = true;
+    out.camera = cameraIndex;
+    out.index = sel;
+    out.physId = physId;
+    out.objX = objPos.x();
+    out.objY = objPos.y();
+    out.objZ = objPos.z();
+    out.tgtX = target.x();
+    out.tgtY = target.y();
+    out.tgtZ = target.z();
+    return true;
+}
+
+void Scene::setGrabLine(std::size_t cameraIndex, bool on, double ax, double ay,
+                        double az, double bx, double by, double bz) {
+    ensureGrabState();
+    if (cameraIndex >= grabLines_.size()) return;
+    GrabLine& l = *grabLines_[cameraIndex];
+    l.ax.store(ax);
+    l.ay.store(ay);
+    l.az.store(az);
+    l.bx.store(bx);
+    l.by.store(by);
+    l.bz.store(bz);
+    l.on.store(on);
+}
+
+void Scene::clearGrabLines() {
+    ensureGrabState();
+    for (auto& l : grabLines_) l->on.store(false);
+}
+
+bool Scene::grabLine(std::size_t cameraIndex, double* from3,
+                     double* to3) const {
+    if (cameraIndex >= grabLines_.size()) return false;
+    const GrabLine& l = *grabLines_[cameraIndex];
+    from3[0] = l.ax.load();
+    from3[1] = l.ay.load();
+    from3[2] = l.az.load();
+    to3[0] = l.bx.load();
+    to3[1] = l.by.load();
+    to3[2] = l.bz.load();
+    return l.on.load();
+}
+
 // ---- イベントグラフの実行 ---------------------------------------------------
 // すべて PHYSICS スレッド。シミュレートの 1 サブステップごとに、トリガーを
 // 判定してワイヤー先のアクションを実行する 1 段だけの評価（アクション →
 // アクションの連鎖は無い）。グラフ本体は EditorState、ここは実行するだけ。
 
+namespace {
+
+// 既定のマウス操作スクリプト。「掴んでいる間、カーソルへ引き寄せる」だけの
+// 2 ノード。エンジンには焼き込まず、シーンのアセットとして持つ - 動きは全部
+// ノードで説明できる、という整理のため。付け先はワールド（誰が何を掴んでも
+// 効く）で、対象を書いていない（target = -1）ので「掴んだ物」に働く。
+ed::EventAssetDesc defaultPickupAsset() {
+    ed::EventAssetDesc a;
+    a.name = kMouseEventAsset;
+    ed::NodeDesc trigger;
+    trigger.id = 1;
+    trigger.kind = ed::NodeKind::OnGrab;
+    trigger.x = 40.0;
+    trigger.y = 40.0;
+    ed::NodeDesc action;
+    action.id = 2;
+    action.kind = ed::NodeKind::GrabPull;
+    action.x = 300.0;
+    action.y = 40.0;
+    action.value = 1.0;  // 引き寄せる強さの倍率
+    a.nodes.push_back(trigger);
+    a.nodes.push_back(action);
+    a.wires.push_back({1, 2});
+    return a;
+}
+
+}  // namespace
+
+void Scene::resetEventsToDefaults() {
+    std::vector<ed::EventAssetDesc> assets;
+    assets.push_back(defaultPickupAsset());
+    editor_.setEventAssets(std::move(assets),
+                           std::vector<std::string>{kMouseEventAsset});
+    // オブジェクト側の付け先も落とす（アセットが総取っ替えになったので、
+    // 残っていると存在しない名前を指し続ける）。
+    {
+        std::lock_guard<std::mutex> lk(objectsMutex_);
+        for (auto& o : boxes_) o.desc.events.clear();
+    }
+    resetGraphRuntime();
+}
+
+void Scene::detachEventFromObjects(const std::string& name) {
+    std::lock_guard<std::mutex> lk(objectsMutex_);
+    for (auto& o : boxes_) {
+        o.desc.events.erase(
+            std::remove(o.desc.events.begin(), o.desc.events.end(), name),
+            o.desc.events.end());
+    }
+}
+
+int Scene::graphTarget(const ed::NodeDesc& node, const GraphContext& ctx) {
+    if (node.target >= 0) return node.target;   // 番号を書いてあればそれ
+    if (ctx.object >= 0) return ctx.object;     // トリガーが指した物
+    return ctx.self;                            // 付いている相手（-1 = 無し）
+}
+
+void Scene::rebuildGraphInstances() {
+    graphRt_.instances.clear();
+    auto findAsset = [this](const std::string& name) {
+        for (std::size_t i = 0; i < graphRt_.assets.size(); ++i) {
+            if (graphRt_.assets[i].name == name) return i;
+        }
+        return graphRt_.assets.size();  // 見つからない
+    };
+    // ワールドに付いているぶん（owner = -1）。
+    for (const auto& name : editor_.worldEvents()) {
+        const std::size_t a = findAsset(name);
+        if (a < graphRt_.assets.size()) {
+            graphRt_.instances.push_back({a, -1});
+        }
+    }
+    // オブジェクトに付いているぶん。同じアセットを何個のオブジェクトに
+    // 付けてもよく、1 個のオブジェクトに何本付けてもよい。
+    for (std::size_t i = 0; i < boxes_.size(); ++i) {
+        if (!boxes_[i].alive) continue;
+        for (const auto& name : boxes_[i].desc.events) {
+            const std::size_t a = findAsset(name);
+            if (a < graphRt_.assets.size()) {
+                graphRt_.instances.push_back({a, int(i)});
+            }
+        }
+    }
+}
+
 void Scene::runEventGraph(double dt) {
-    // グラフが変わっていたら一覧を取り直す。タイマー等はノード id で引くので、
-    // シミュレート中の追加・削除でも残りのノードの状態は保たれる。
+    // 引っぱり線は毎ステップ消してから、grabPull が引いたぶんだけ点ける
+    // （スクリプトが無ければ線も出ない = 何も起きていないことが見える）。
+    clearGrabLines();
+
+    // グラフが変わっていたら一覧を取り直す。タイマー等は（アセット名, 付け先,
+    // ノード id）で引くので、シミュレート中の編集でも残りの状態は保たれる。
     const std::uint64_t v = editor_.graphVersion();
     if (v != graphRt_.version) {
         graphRt_.version = v;
-        graphRt_.nodes = editor_.graphNodes();
-        graphRt_.wires = editor_.graphWires();
+        graphRt_.assets = editor_.eventAssets();
+        rebuildGraphInstances();
     }
-    if (graphRt_.nodes.empty()) {
+    if (graphRt_.instances.empty()) {
         graphRt_.startFired = true;  // 後から足した OnSimStart を発火させない
         return;
     }
 
-    // 衝突トリガーがあるときだけ接触コンテナを走査する（タダではないので）。
+    // 接触の走査と掴みの計算は「そのトリガーを使っているアセットが付いて
+    // いるときだけ」（どちらもタダではない）。
     bool wantContacts = false;
-    for (const auto& n : graphRt_.nodes) {
-        if (n.kind == ed::NodeKind::OnCollision) {
-            wantContacts = true;
-            break;
+    bool wantGrabs = false;
+    for (const auto& inst : graphRt_.instances) {
+        for (const auto& n : graphRt_.assets[inst.asset].nodes) {
+            if (n.kind == ed::NodeKind::OnCollision) wantContacts = true;
+            if (n.kind == ed::NodeKind::OnGrab) wantGrabs = true;
         }
     }
 
@@ -1033,116 +1115,204 @@ void Scene::runEventGraph(double dt) {
         graphRt_.prevContacts.swap(now);
     }
 
-    // ---- トリガー判定 ----
-    // ペア (a, b) がノードに合うか。target = -1 は「どのオブジェクトでも」。
-    // 相手フィルタ（other）は target でない側に掛かる。
-    auto collisionMatches = [](const ed::NodeDesc& n, int a, int b) {
-        auto pairOk = [&n](int self, int partner) {
-            if (n.target >= 0 && self != n.target) return false;
-            if (n.target < 0 && self < 0) return false;  // 地面は対象ではない
+    // 掴んでいるカメラぶん（カメラごとに違う物を掴める）。
+    std::vector<PointerGrab> grabs;
+    if (wantGrabs) {
+        for (std::size_t c = 0; c < cameras_.size(); ++c) {
+            PointerGrab g;
+            if (pointerGrab(c, g) && g.valid) grabs.push_back(g);
+        }
+    }
+
+    // ペア (a, b) がノードに合うか。対象は「番号を書いてあればそれ、無ければ
+    // 付いている相手」。どちらも無い（ワールド付け）なら「どのオブジェクト
+    // でも」。相手フィルタ（other）は対象でない側に掛かる。合ったときは
+    // 対象側の番号を hit に返す（アクションへ渡す文脈になる）。
+    auto collisionMatches = [](const ed::NodeDesc& n, int owner, int a, int b,
+                               int& hit) {
+        const int want = n.target >= 0 ? n.target : owner;
+        auto pairOk = [&n, want](int self, int partner) {
+            if (want >= 0 && self != want) return false;
+            if (want < 0 && self < 0) return false;  // 地面は対象ではない
             if (n.other == -2) return true;
             return partner == n.other;
         };
-        return pairOk(a, b) || pairOk(b, a);
+        if (pairOk(a, b)) { hit = a; return true; }
+        if (pairOk(b, a)) { hit = b; return true; }
+        return false;
     };
 
-    std::vector<int> fired;
-    for (const auto& n : graphRt_.nodes) {
-        bool fire = false;
-        switch (n.kind) {
-            case ed::NodeKind::OnSimStart:
-                fire = !graphRt_.startFired;
-                break;
-            case ed::NodeKind::OnTimer: {
-                double& t = graphRt_.timers[n.id];
-                t += dt;
-                if (t >= n.seconds) {
-                    fire = true;
-                    // 溜まっていても 1 回だけ（重いフレームの後に連射しない）。
-                    t = std::fmod(t, n.seconds);
-                }
-                break;
-            }
-            case ed::NodeKind::OnCollision:
-                for (const auto& p : newPairs) {
-                    if (collisionMatches(n, p.first, p.second)) {
-                        fire = true;
-                        break;
-                    }
-                }
-                break;
-            default:
-                break;  // アクションは自分からは発火しない
+    // ---- 付いているアセットを 1 つずつ走らせる ----
+    for (const auto& inst : graphRt_.instances) {
+        const ed::EventAssetDesc& asset = graphRt_.assets[inst.asset];
+        // 付け先が消えていたら（削除の直後など）このパスは飛ばす。
+        if (inst.owner >= 0 &&
+            (std::size_t(inst.owner) >= boxes_.size() ||
+             !boxes_[std::size_t(inst.owner)].alive)) {
+            continue;
         }
-        if (fire) fired.push_back(n.id);
+        GraphRuntime::InstanceState& st =
+            graphRt_.state[{asset.name, inst.owner}];
+
+        for (const auto& n : asset.nodes) {
+            if (!ed::nodeIsTrigger(n.kind)) continue;
+            // 1 回のステップで複数の文脈が立つことがある（2 台のカメラが
+            // 別々の物を掴んでいる・複数のペアが同時に当たった）。
+            std::vector<GraphContext> fires;
+            GraphContext base;
+            base.self = inst.owner;
+            switch (n.kind) {
+                case ed::NodeKind::OnSimStart:
+                    if (!graphRt_.startFired) fires.push_back(base);
+                    break;
+                case ed::NodeKind::OnTimer: {
+                    double& t = st.timers[n.id];
+                    t += dt;
+                    if (t >= n.seconds) {
+                        // 溜まっていても 1 回だけ（重いフレームの後に
+                        // 連射しない）。
+                        t = std::fmod(t, n.seconds);
+                        fires.push_back(base);
+                    }
+                    break;
+                }
+                case ed::NodeKind::OnGrab:
+                    for (const auto& g : grabs) {
+                        const int want = n.target >= 0 ? n.target : inst.owner;
+                        if (want >= 0 && g.index != std::size_t(want)) continue;
+                        GraphContext c = base;
+                        c.object = int(g.index);
+                        c.camera = g.camera;
+                        c.hasPoint = true;
+                        c.px = g.tgtX;
+                        c.py = g.tgtY;
+                        c.pz = g.tgtZ;
+                        fires.push_back(c);
+                    }
+                    break;
+                case ed::NodeKind::OnCollision:
+                    for (const auto& p : newPairs) {
+                        int hit = -1;
+                        if (!collisionMatches(n, inst.owner, p.first, p.second,
+                                              hit)) {
+                            continue;
+                        }
+                        GraphContext c = base;
+                        c.object = hit;
+                        fires.push_back(c);
+                    }
+                    break;
+                default:
+                    break;  // アクションは自分からは発火しない
+            }
+            if (fires.empty()) continue;
+
+            // 発火バッジは「このステップで動いた」の 1 回ぶん（文脈の数だけ
+            // 数えると、掴んでいるあいだ 2 倍速で増えて読みにくい）。
+            editor_.noteNodeFired(asset.name, n.id);
+            for (const auto& w : asset.wires) {
+                if (w.from != n.id) continue;
+                for (const auto& an : asset.nodes) {
+                    if (an.id != w.to) continue;
+                    editor_.noteNodeFired(asset.name, an.id);
+                    for (const auto& ctx : fires) runGraphAction(an, ctx, dt);
+                    break;
+                }
+            }
+        }
     }
     graphRt_.startFired = true;
-    if (fired.empty()) return;
-
-    // ---- ワイヤーをたどってアクションへ ----
-    for (const int fromId : fired) {
-        editor_.noteNodeFired(fromId);
-        for (const auto& w : graphRt_.wires) {
-            if (w.from != fromId) continue;
-            for (const auto& n : graphRt_.nodes) {
-                if (n.id != w.to) continue;
-                editor_.noteNodeFired(n.id);
-                runGraphAction(n, dt);
-                break;
-            }
-        }
-    }
 }
 
-void Scene::runGraphAction(const ed::NodeDesc& n, double dt) {
+void Scene::runGraphAction(const ed::NodeDesc& n, const GraphContext& ctx,
+                           double dt) {
+    // オブジェクトを対象にするアクションの相手。番号 → トリガーが渡した物 →
+    // 付いている相手、の順で決まる（graphTarget）。
+    const int obj = graphTarget(n, ctx);
+    auto objectAlive = [this](int index) {
+        return index >= 0 && std::size_t(index) < boxes_.size() &&
+               boxes_[std::size_t(index)].alive;
+    };
+
     switch (n.kind) {
         case ed::NodeKind::SetColor: {
-            if (n.target < 0 || std::size_t(n.target) >= boxes_.size() ||
-                !boxes_[std::size_t(n.target)].alive) {
-                return;
-            }
+            if (!objectAlive(obj)) return;
             // 実行時の上書きだけ。desc.color（設計値）は触らない - 停止で
             // resetGraphRuntime が元の色へ戻す。glTF インスタンス描画の
             // オブジェクトには効かない（個別のベース色を持てないため）。
             std::lock_guard<std::mutex> lk(objectsMutex_);
-            GameObject& obj = boxes_[std::size_t(n.target)];
-            obj.runtimeColor = n.color;
-            obj.hasRuntimeColor = true;
-            obj.colorDirty = true;
+            GameObject& o = boxes_[std::size_t(obj)];
+            o.runtimeColor = n.color;
+            o.hasRuntimeColor = true;
+            o.colorDirty = true;
             return;
         }
         case ed::NodeKind::ApplyImpulse: {
-            if (n.target < 0 || std::size_t(n.target) >= boxes_.size() ||
-                !boxes_[std::size_t(n.target)].alive || dt <= 0.0) {
-                return;
-            }
-            const GameObject& obj = boxes_[std::size_t(n.target)];
-            if (obj.physId == GameObject::kInvalidId) return;
+            if (!objectAlive(obj) || dt <= 0.0) return;
+            const GameObject& o = boxes_[std::size_t(obj)];
+            if (o.physId == GameObject::kInvalidId) return;
             // applyForce は v += F*dt/m なので、F = m*Δv/dt でちょうど vec
             // ぶん速度が変わる（レート非依存）。
-            const double m = physics_.bodyMass(obj.physId);
+            const double m = physics_.bodyMass(o.physId);
             if (m <= 0.0) return;
             physics_.applyForce(
-                obj.physId,
+                o.physId,
                 chrono::ChVector3d(n.vec.x * m / dt, n.vec.y * m / dt,
                                    n.vec.z * m / dt),
                 dt);
             return;
         }
         case ed::NodeKind::SetFixed: {
-            if (n.target < 0 || std::size_t(n.target) >= boxes_.size() ||
-                !boxes_[std::size_t(n.target)].alive) {
-                return;
-            }
-            const GameObject& obj = boxes_[std::size_t(n.target)];
-            if (obj.physId == GameObject::kInvalidId) return;
-            physics_.setBodyFixed(obj.physId, n.value != 0.0);
+            if (!objectAlive(obj)) return;
+            const GameObject& o = boxes_[std::size_t(obj)];
+            if (o.physId == GameObject::kInvalidId) return;
+            physics_.setBodyFixed(o.physId, n.value != 0.0);
             // 設計値（desc.fixed）は変えない。停止時に戻す対象として記録。
-            graphRt_.fixedTouched.insert(std::size_t(n.target));
+            graphRt_.fixedTouched.insert(std::size_t(obj));
+            return;
+        }
+        case ed::NodeKind::GrabPull: {
+            // マウスで掴んでいる物をカーソルへ引き寄せる。文脈にカーソルの
+            // 点が無い（onGrab 以外から繋がれた）ときは何もしない。
+            if (!ctx.hasPoint || !objectAlive(obj) || dt <= 0.0) return;
+            const GameObject& o = boxes_[std::size_t(obj)];
+            if (o.physId == GameObject::kInvalidId) return;
+            const double mass = physics_.bodyMass(o.physId);
+            if (mass <= 0.0) return;
+
+            // サーボ: F = m * (kp*e - kd*v)、加速度は上限で頭打ち。毎ステップ
+            // 掛けるからこそ追従する（1 発の力積では摩擦ですぐ死ぬ）。ばね
+            // 定数は BoxController の設定（SceneConfig.h）で、ノードの value は
+            // その倍率。
+            const BoxController::Config& cfg =
+                controllers_[ctx.camera < controllers_.size() ? ctx.camera : 0]
+                    ->config();
+            const double gain = n.value > 0.0 ? n.value : 1.0;
+            const BodyTransform tr = physics_.bodyTransform(o.physId);
+            const scenemath::Vec3 objPos(tr.px, tr.py, tr.pz);
+            const scenemath::Vec3 target(ctx.px, ctx.py, ctx.pz);
+            const chrono::ChVector3d cv = physics_.bodyVelocity(o.physId);
+            const scenemath::Vec3 vel(cv.x(), cv.y(), cv.z());
+            scenemath::Vec3 accel = cfg.stiffness * gain * (target - objPos) -
+                                    cfg.damping * vel;
+            const double a = accel.norm();
+            const double maxA = cfg.maxAcceleration * gain;
+            if (a > maxA) accel *= maxA / a;
+            const scenemath::Vec3 force = accel * mass;
+            physics_.applyForce(
+                o.physId,
+                chrono::ChVector3d(force.x(), force.y(), force.z()), dt);
+
+            // 引っぱり線（物 → カーソルの点）。シーンの中の線なので、どの
+            // カメラから見ても同じフレームに乗る。
+            setGrabLine(ctx.camera, true, objPos.x(), objPos.y(), objPos.z(),
+                        target.x(), target.y(), target.z());
             return;
         }
         case ed::NodeKind::SetLightColor:
         case ed::NodeKind::SetLightIntensity: {
+            // ライトとカメラは「付いている相手」を持たない（付け先は
+            // オブジェクトかワールドだけ）ので、番号は必ず明示させる。
             if (n.target < 0 || std::size_t(n.target) >= lights_.size() ||
                 !lights_[std::size_t(n.target)].alive) {
                 return;
@@ -1164,15 +1334,17 @@ void Scene::runGraphAction(const ed::NodeDesc& n, double dt) {
                 !cameraActive(std::size_t(n.target))) {
                 return;
             }
-            if (n.other < 0 || std::size_t(n.other) >= boxes_.size() ||
-                !boxes_[std::size_t(n.other)].alive) {
-                return;
-            }
-            const GameObject& obj = boxes_[std::size_t(n.other)];
-            if (obj.physId == GameObject::kInvalidId) return;
+            // 注視先は other。書いていなければ文脈の物（触れた物・掴んだ物、
+            // または付いている相手）を見る。
+            const int look = n.other >= 0 ? n.other
+                                          : (ctx.object >= 0 ? ctx.object
+                                                             : ctx.self);
+            if (!objectAlive(look)) return;
+            const GameObject& o = boxes_[std::size_t(look)];
+            if (o.physId == GameObject::kInvalidId) return;
             // 注視点だけ動かす（視点は保つ）。CameraObject は atomic なので
             // 物理スレッドから書いてよい。ユーザーのカメラ操作と同じ口。
-            const BodyTransform tr = physics_.bodyTransform(obj.physId);
+            const BodyTransform tr = physics_.bodyTransform(o.physId);
             cameras_[std::size_t(n.target)]->setTarget(tr.px, tr.py, tr.pz);
             return;
         }
@@ -1183,13 +1355,14 @@ void Scene::runGraphAction(const ed::NodeDesc& n, double dt) {
 
 void Scene::resetGraphRuntime() {
     graphRt_.version = ~std::uint64_t(0);  // 次のステップで取り込み直す
-    graphRt_.nodes.clear();
-    graphRt_.wires.clear();
-    graphRt_.timers.clear();
+    graphRt_.assets.clear();
+    graphRt_.instances.clear();
+    graphRt_.state.clear();
     graphRt_.startFired = false;
     graphRt_.prevContacts.clear();
     graphRt_.contactsPrimed = false;
     editor_.clearNodeFireCounts();
+    clearGrabLines();
 
     // SetFixed が触ったオブジェクトだけ設計値の固定状態へ戻す。
     for (const std::size_t i : graphRt_.fixedTouched) {
@@ -1222,19 +1395,27 @@ void Scene::pruneGraphForRemoved(ed::NodeTargetKind kind, int index) {
     // 落とす）。OnCollision の相手フィルタだけが消えた場合は「何でも」(-2) に
     // 戻して生かす。残すと「対象が無い」まま黙って動かないだけになる - 消えた
     // ことが見えるほうがよい、というジョイントと同じ判断。
-    for (const auto& n : editor_.graphNodes()) {
-        const bool targetGone =
-            ed::nodeTargetKind(n.kind) == kind && n.target == index;
-        const bool otherGone = kind == ed::NodeTargetKind::Object &&
-                               ed::nodeOtherIsObject(n.kind) &&
-                               n.other == index;
-        if (targetGone) {
-            editor_.removeGraphNode(n.id);
-        } else if (otherGone) {
-            if (n.kind == ed::NodeKind::OnCollision) {
-                editor_.updateGraphNode(n.id, {{"other", -2}});
-            } else {
-                editor_.removeGraphNode(n.id);  // 注視先の無い LookAt は無意味
+    //
+    // 番号を書いていないノード（target = -1 = 付いている相手）は触らない:
+    // 付け先が消えたのならアセットの実体ごと居なくなるだけで、アセット自体は
+    // 他の相手にも付けられる部品として残る。
+    for (const auto& asset : editor_.eventAssets()) {
+        for (const auto& n : asset.nodes) {
+            const bool targetGone =
+                ed::nodeTargetKind(n.kind) == kind && n.target == index;
+            const bool otherGone = kind == ed::NodeTargetKind::Object &&
+                                   ed::nodeOtherIsObject(n.kind) &&
+                                   n.other == index;
+            if (targetGone) {
+                editor_.removeGraphNode(asset.name, n.id);
+            } else if (otherGone) {
+                if (n.kind == ed::NodeKind::OnCollision) {
+                    editor_.updateGraphNode(asset.name, n.id, {{"other", -2}});
+                } else {
+                    // 注視先の無い LookAt は「文脈の物を見る」に落とす
+                    // （番号を書かない = 触れた物 / 掴んだ物）。
+                    editor_.updateGraphNode(asset.name, n.id, {{"other", -1}});
+                }
             }
         }
     }
@@ -1349,6 +1530,10 @@ std::size_t Scene::createObject(const ed::BodyDesc& descIn) {
     obj.colorDirty = true;
     // renderId は RENDER スレッドが syncRenderables で作る（モデルも組み込みも）。
 
+    // イベントの実行側は「付いているアセット」の一覧を版番号で取り直す。
+    // オブジェクトが増減すると付け先も変わるので、ここで版を進める。
+    editor_.bumpGraphVersion();
+
     std::lock_guard<std::mutex> lk(objectsMutex_);
     boxes_.push_back(std::move(obj));
     return boxes_.size() - 1;
@@ -1375,8 +1560,10 @@ void Scene::destroyObject(std::size_t index) {
         if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
     }
 
-    // このオブジェクトを見張る / 動かすイベントノードも一緒に掃除する。
+    // このオブジェクトを見張る / 動かすイベントノードも一緒に掃除する
+    // （付いていたアセットは desc ごと残るが、実体の一覧からは外れる）。
     pruneGraphForRemoved(ed::NodeTargetKind::Object, int(index));
+    editor_.bumpGraphVersion();
 
     // 誰かが掴んだままなら離させる。
     for (auto& c : controllers_) {
@@ -1781,35 +1968,105 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         return;
     }
 
-    // ---- イベントグラフ ----------------------------------------------------
+    // ---- イベントアセット --------------------------------------------------
+    // ノードとワイヤーの操作は「どのアセットに対してか」を必ず伴う。
+    // EditorComponent が名前を正規化して積むので、ここでは存在だけ見る。
+    if (op.kind == "event.add") {
+        const std::string name = a.value("name", "");
+        if (name.empty()) return;
+        if (!editor_.addEventAsset(name)) {
+            editor_.setStatus("同じ名前のイベントがあります: " + name);
+            return;
+        }
+        editor_.setStatus("イベントを作成: " + name);
+        return;
+    }
+
+    if (op.kind == "event.remove") {
+        const std::string name = a.value("name", "");
+        if (name.empty()) return;
+        // 付いている先（オブジェクト・ワールド）から先に外す。外し忘れると
+        // 存在しない名前を指したままになる。
+        detachEventFromObjects(name);
+        if (!editor_.removeEventAsset(name)) return;
+        // 実行中でも版が進めば次のステップで実体の一覧が作り直される。
+        // 実行状態を丸ごと捨てない（resetGraphRuntime を呼ばない）のは、
+        // それをすると走っている最中に OnSimStart がもう一度発火するため。
+        editor_.bumpGraphVersion();
+        editor_.setStatus("イベントを削除: " + name);
+        return;
+    }
+
+    if (op.kind == "event.attach" || op.kind == "event.detach") {
+        const std::string name = a.value("name", "");
+        const int target = ed::jsonInt(a, "target", ed::kEventOwnerWorld);
+        if (name.empty()) return;
+        const bool attach = op.kind == "event.attach";
+        const std::string what = attach ? "を付けました" : "を外しました";
+        if (target < 0) {  // ワールド（シーン全体）
+            const bool ok = attach ? editor_.attachWorldEvent(name)
+                                   : editor_.detachWorldEvent(name);
+            if (ok) editor_.setStatus("World に " + name + what);
+            return;
+        }
+        if (std::size_t(target) >= boxes_.size() ||
+            !boxes_[std::size_t(target)].alive) {
+            return;
+        }
+        if (attach && !editor_.hasEventAsset(name)) return;  // 無いものは付けない
+        {
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            auto& list = boxes_[std::size_t(target)].desc.events;
+            const auto it = std::find(list.begin(), list.end(), name);
+            if (attach) {
+                if (it != list.end()) return;  // 二重付けは意味が無い
+                list.push_back(name);
+            } else {
+                if (it == list.end()) return;
+                list.erase(it);
+            }
+        }
+        editor_.bumpGraphVersion();
+        editor_.setStatus("#" + std::to_string(target) + " に " + name + what);
+        return;
+    }
+
     if (op.kind == "node.add") {
+        const std::string asset = a.value("asset", "");
         const ed::NodeDesc n = ed::clampNode(ed::nodeFromJson(a, ed::NodeDesc{}));
-        const int id = editor_.addGraphNode(n);
+        const int id = editor_.addGraphNode(asset, n);
+        if (id < 0) {
+            editor_.setStatus("イベントが見つかりません: " + asset);
+            return;
+        }
         editor_.setStatus("ノードを追加: " +
                           std::string(ed::nodeKindName(n.kind)) + " #" +
-                          std::to_string(id));
+                          std::to_string(id) + "（" + asset + "）");
         return;
     }
 
     if (op.kind == "node.set") {
+        const std::string asset = a.value("asset", "");
         const int id = ed::jsonInt(a, "id", -1);
         if (id < 0) return;
         // ドラッグ（位置）の連投でも来るので、ステータスは出さない。
-        editor_.updateGraphNode(id, a);
+        editor_.updateGraphNode(asset, id, a);
         return;
     }
 
     if (op.kind == "node.remove") {
+        const std::string asset = a.value("asset", "");
         const int id = ed::jsonInt(a, "id", -1);
-        if (id < 0 || !editor_.removeGraphNode(id)) return;
+        if (id < 0 || !editor_.removeGraphNode(asset, id)) return;
         editor_.setStatus("ノードを削除: #" + std::to_string(id));
         return;
     }
 
     if (op.kind == "wire.add") {
+        const std::string asset = a.value("asset", "");
         const int from = ed::jsonInt(a, "from", -1);
         const int to = ed::jsonInt(a, "to", -1);
-        if (editor_.addGraphWire(from, to)) {
+        if (editor_.addGraphWire(asset, from, to)) {
             editor_.setStatus("ノードを接続: #" + std::to_string(from) +
                               " → #" + std::to_string(to));
         }
@@ -1817,9 +2074,10 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     }
 
     if (op.kind == "wire.remove") {
+        const std::string asset = a.value("asset", "");
         const int from = ed::jsonInt(a, "from", -1);
         const int to = ed::jsonInt(a, "to", -1);
-        if (editor_.removeGraphWire(from, to)) {
+        if (editor_.removeGraphWire(asset, from, to)) {
             editor_.setStatus("接続を解除: #" + std::to_string(from) + " → #" +
                               std::to_string(to));
         }
@@ -1992,8 +2250,6 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     if (op.kind == "clear") {
         physics_.removeAllJoints();
         editor_.setJoints({});
-        editor_.setGraph({}, {});  // イベントグラフもシーンの一部
-        resetGraphRuntime();
         for (std::size_t i = 0; i < boxes_.size(); ++i) destroyObject(i);
         {
             // メッシュアセットの宣言もシーンの一部。
@@ -2004,8 +2260,11 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         setGroundAndEnvironment(ed::GroundDesc{}, ed::EnvironmentDesc{});
         for (auto& c : controllers_) c->setSelected(BoxController::kNone);
         // ライトとカメラも初期状態へ（真っ暗なシーンから始めさせない）。
+        // イベントアセットも同じ扱いで既定へ - マウスで掴んでも何も起きない
+        // シーンから始めさせない（resetEventsToDefaults が実行状態も捨てる）。
         resetLightsToDefaults();
         resetCamerasToDefaults();
+        resetEventsToDefaults();
         editor_.clearSel();
         editor_.setSceneFile("");
         editor_.setStatus("シーンを空にしました");
@@ -2133,47 +2392,56 @@ ed::SceneDocument Scene::document() {
         doc.joints.push_back(copy);
     }
 
-    // ---- イベントグラフ ----------------------------------------------------
-    // ノードの対象番号も詰めた番号へ付け替える（オブジェクト / ライト。
-    // カメラはスロット固定なのでそのまま）。対象が消えているノードは
-    // pruneGraphForRemoved が落としているはずだが、二重の安全でここでも弾き、
-    // 落ちたノードに繋がるワイヤーも書かない。
+    // ---- イベントアセット --------------------------------------------------
+    // 中身（ノード）はそのまま。ノードの対象番号だけ詰めた番号へ付け替える
+    // （オブジェクト / ライト。カメラはスロット固定なのでそのまま）。対象が
+    // 消えているノードは pruneGraphForRemoved が落としているはずだが、二重の
+    // 安全でここでも弾き、落ちたノードに繋がるワイヤーも書かない。
     {
-        std::set<int> kept;
         auto fixObj = [&remap](int& ref) {
-            if (ref < 0) return true;  // -1 / -2 の意味（どれでも等）は保つ
+            if (ref < 0) return true;  // -1 / -2 の意味（自分・何でも）は保つ
             if (std::size_t(ref) >= remap.size() || remap[std::size_t(ref)] < 0)
                 return false;
             ref = remap[std::size_t(ref)];
             return true;
         };
-        for (const auto& nIn : editor_.graphNodes()) {
-            ed::NodeDesc n = nIn;
-            const ed::NodeTargetKind tk = ed::nodeTargetKind(n.kind);
-            bool ok = true;
-            if (tk == ed::NodeTargetKind::Object) ok = fixObj(n.target);
-            if (ok && tk == ed::NodeTargetKind::Light && n.target >= 0) {
-                if (std::size_t(n.target) >= lightRemap.size() ||
-                    lightRemap[std::size_t(n.target)] < 0) {
-                    ok = false;
-                } else {
-                    n.target = lightRemap[std::size_t(n.target)];
+        for (const auto& assetIn : editor_.eventAssets()) {
+            ed::EventAssetDesc asset;
+            asset.name = assetIn.name;
+            std::set<int> kept;
+            for (const auto& nIn : assetIn.nodes) {
+                ed::NodeDesc n = nIn;
+                const ed::NodeTargetKind tk = ed::nodeTargetKind(n.kind);
+                bool ok = true;
+                if (tk == ed::NodeTargetKind::Object) ok = fixObj(n.target);
+                if (ok && tk == ed::NodeTargetKind::Light && n.target >= 0) {
+                    if (std::size_t(n.target) >= lightRemap.size() ||
+                        lightRemap[std::size_t(n.target)] < 0) {
+                        ok = false;
+                    } else {
+                        n.target = lightRemap[std::size_t(n.target)];
+                    }
+                }
+                if (ok && ed::nodeOtherIsObject(n.kind)) {
+                    if (n.kind == ed::NodeKind::OnCollision) {
+                        if (!fixObj(n.other)) n.other = -2;  // 相手だけ消: 何でも
+                    } else if (!fixObj(n.other)) {
+                        n.other = -1;  // 注視先だけ消: 文脈の物を見る
+                    }
+                }
+                if (!ok) continue;
+                kept.insert(n.id);
+                asset.nodes.push_back(n);
+            }
+            for (const auto& w : assetIn.wires) {
+                if (kept.count(w.from) && kept.count(w.to)) {
+                    asset.wires.push_back(w);
                 }
             }
-            if (ok && ed::nodeOtherIsObject(n.kind)) {
-                if (n.kind == ed::NodeKind::OnCollision) {
-                    if (!fixObj(n.other)) n.other = -2;  // 相手だけ消: 何でも
-                } else {
-                    ok = fixObj(n.other);
-                }
-            }
-            if (!ok) continue;
-            kept.insert(n.id);
-            doc.nodes.push_back(n);
+            doc.eventAssets.push_back(std::move(asset));
         }
-        for (const auto& w : editor_.graphWires()) {
-            if (kept.count(w.from) && kept.count(w.to)) doc.wires.push_back(w);
-        }
+        doc.worldEvents = editor_.worldEvents();
+        doc.hasEvents = true;
     }
     return doc;
 }
@@ -2260,25 +2528,40 @@ void Scene::loadDocument(const ed::SceneDocument& doc) {
     }
     editor_.setJoints(std::move(joints));
 
-    // イベントグラフ。対象番号はジョイントと同じく、今回足されたぶんの先頭
-    // （base / lightBase）だけずらす。カメラはスロット番号なのでそのまま。
-    std::vector<ed::NodeDesc> nodes;
-    for (const auto& nIn : doc.nodes) {
-        ed::NodeDesc n = ed::clampNode(nIn);
-        const ed::NodeTargetKind tk = ed::nodeTargetKind(n.kind);
-        if (tk == ed::NodeTargetKind::Object && n.target >= 0) {
-            n.target += int(base);
+    // イベントアセット。中身のノードの対象番号は、ジョイントと同じく今回
+    // 足されたぶんの先頭（base / lightBase）だけずらす（カメラはスロット
+    // 番号なのでそのまま）。付け先はオブジェクト側が BodyDesc::events
+    // （createObject が desc ごと持ち込み済み）、ワールド側がこの一覧。
+    // イベントの節を持たない文書は既定の構成へ - ライトを 1 灯も書かない
+    // 文書が初期構成で開くのと同じ扱いで、「掴んでも動かないシーン」で
+    // 始めさせないため。
+    if (doc.hasEvents) {
+        std::vector<ed::EventAssetDesc> assets;
+        for (const auto& assetIn : doc.eventAssets) {
+            ed::EventAssetDesc asset;
+            asset.name = assetIn.name;
+            for (const auto& nIn : assetIn.nodes) {
+                ed::NodeDesc n = ed::clampNode(nIn);
+                const ed::NodeTargetKind tk = ed::nodeTargetKind(n.kind);
+                if (tk == ed::NodeTargetKind::Object && n.target >= 0) {
+                    n.target += int(base);
+                }
+                if (tk == ed::NodeTargetKind::Light && n.target >= 0) {
+                    n.target += int(lightBase);
+                }
+                if (ed::nodeOtherIsObject(n.kind) && n.other >= 0) {
+                    n.other += int(base);
+                }
+                asset.nodes.push_back(n);
+            }
+            asset.wires = assetIn.wires;
+            assets.push_back(std::move(asset));
         }
-        if (tk == ed::NodeTargetKind::Light && n.target >= 0) {
-            n.target += int(lightBase);
-        }
-        if (ed::nodeOtherIsObject(n.kind) && n.other >= 0) {
-            n.other += int(base);
-        }
-        nodes.push_back(n);
+        editor_.setEventAssets(std::move(assets), doc.worldEvents);
+        resetGraphRuntime();
+    } else {
+        resetEventsToDefaults();
     }
-    editor_.setGraph(std::move(nodes), doc.wires);
-    resetGraphRuntime();
 
     if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
     snapshot();

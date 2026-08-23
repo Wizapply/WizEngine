@@ -22,15 +22,21 @@
 // ---- 書式（MJCF に寄せた点・違う点）----------------------------------------
 //   <wizengine model="名前" version="4">
 //     <option .../>                     ... シミュレート設定（MuJoCo の option）
-//     <asset> <mesh name="apple" file="apple2.glb" scale="1"/> </asset>
+//     <asset>
+//       <mesh name="apple" file="apple2.glb" scale="1"/>
+//       <event name="pickup"> <node .../> <wire from to/> </event>
+//     </asset>
 //     <worldbody>
 //       <environment hdr="studio.hdr" intensity="30000"/>
 //       <ground size="10" visual="8" texture="textures/ground.png" tile="2"/>
 //       <light .../> <camera .../>
-//       <body name pos euler fixed> <geom type size mass rgba/> </body>
+//       <body name pos euler fixed>
+//         <geom type size mass rgba/>
+//         <event name="blink"/>            ... このオブジェクトに付ける
+//       </body>
 //     </worldbody>
 //     <equality> <joint type body1 body2 anchor axis/> </equality>
-//     <events>  <node .../> <wire from to/> </events>   ... WizEngine 独自
+//     <events>  <event name="pickup"/>  </events>   ... ワールドに付ける
 //   </wizengine>
 //
 //   * 角度は全部「度」。<body euler> と <light euler> はエディタが持つ
@@ -46,8 +52,15 @@
 //   * 色は rgba="r g b a"（リニア値、a は今は常に 1）。
 //   * body1 / body2 は名前でも番号でも書ける。"world" と -1 が地面。
 //     保存側は名前が一意ならその名前、そうでなければ番号を書く。
-//   * <events> は MuJoCo に無い WizEngine の拡張（イベントグラフ）。
-//     ノードの target / other はオブジェクト・ライト・カメラの番号。
+//   * イベントグラフは MuJoCo に無い WizEngine の拡張。中身（ノードと
+//     ワイヤー）は <asset> の <event name="..."> に「イベントアセット」
+//     として置き、<body> の中の <event name="..."/> か、ルートの <events>
+//     の <event name="..."/> で**付けて**初めて動く（Unity のスクリプトと
+//     同じ関係）。1 つのオブジェクトに何本でも付けられる。ノードの
+//     target / other はオブジェクト・ライト・カメラの番号で、-1 は
+//     「明示しない」= 付いている相手（EditorTypes.h の NodeDesc 参照）。
+//     旧形式（<events> の直下に <node> / <wire> を並べた文書）も読める:
+//     "events" という名前のアセットに入れてワールドへ付ける。
 //
 // ---- 拡張の手順（新しい値を足すとき）---------------------------------------
 // この文書は今後も節・属性が増えていく前提。足すときの決まりはこれだけ:
@@ -86,16 +99,19 @@ struct SceneDocument {
     std::vector<CameraPose> cameras;
     std::vector<BodyDesc> bodies;
     std::vector<JointDesc> joints;
-    std::vector<NodeDesc> nodes;
-    std::vector<WireDesc> wires;
-    // 「節が無い」と「空の節」の区別。ライト / カメラの節を持たない文書
-    // （旧 v1 の保存や手書きの最小 XML）は初期構成へ戻す意味になるので、
-    // 空配列と同じにはできない。
+    // イベントアセット（<asset> の <event>）と、ワールドに付いているぶん
+    // （ルートの <events>）。オブジェクトに付いているぶんは BodyDesc::events。
+    std::vector<EventAssetDesc> eventAssets;
+    std::vector<std::string> worldEvents;
+    // 「節が無い」と「空の節」の区別。ライト / カメラ / イベントの節を持た
+    // ない文書（旧 v1 の保存や手書きの最小 XML）は初期構成へ戻す意味に
+    // なるので、空配列と同じにはできない。
     bool hasSim = false;
     bool hasGround = false;
     bool hasEnvironment = false;
     bool hasLights = false;
     bool hasCameras = false;
+    bool hasEvents = false;
 };
 
 // ---- XML -------------------------------------------------------------------

@@ -214,12 +214,6 @@
   .sbHead { display: flex; align-items: center; gap: 8px; }
   .sbTitle { font-weight: 600; font-size: 15px; }
   .sbSub { opacity: .55; font-size: 11px; }
-  #sbClose {
-    margin: 0 0 0 auto; padding: 2px 8px; font-size: 14px; line-height: 1.2;
-    background: #24262c; color: #aeb2ba; border: 1px solid #3a3d45;
-    border-radius: 4px;
-  }
-  #sbClose:hover:enabled { background: #30333a; }
 
   /* Tabs: Scene (what is in the world) and Physics (how it is simulated).
      Browser-style: a darker strip spans the sidebar, tabs have rounded top
@@ -516,6 +510,10 @@
     color: #8b8f99; cursor: pointer;
   }
   .item .camEdit:hover { background: #2f3542; color: #dfe2e7; }
+  /* プレビューの目アイコン（SVG）。行の高さの中で中央に座らせる。 */
+  .item .camEdit.eye { display: inline-flex; align-items: center; }
+  .item .camEdit.eye svg { display: block; }
+  .eyeBtn svg { vertical-align: -2px; }
   .item .camEdit.on { color: #9fc1f2; }
   .item .camEdit.del:hover { background: #4a2a2a; color: #e7b4b4; }
   /* セクション見出しの小さな操作ボタン（Cameras の ＋/－）。 */
@@ -763,6 +761,61 @@
   .ndItem .sub { margin-left: auto; color: #7b7f88; font-size: 10.5px; }
   .ndItem .x { color: #8b8f99; cursor: pointer; padding: 0 4px; }
   .ndItem .x:hover { color: #e7b4b4; }
+  /* 行の名前はクリックでノードエディタが開く（付いているアセットの中身を
+     見に行く導線）。リンクに見せるが色は控えめに。 */
+  .ndItem .link { cursor: pointer; }
+  .ndItem .link:hover { color: #e8e8e8; text-decoration: underline; }
+  /* ノードエディタ見出しのアセット選択。パレット（右寄せ）に押し出されない
+     ように、見出しのすぐ隣で幅を確保する。 */
+  .ndHead .strSel { max-width: 190px; flex: 0 1 auto; }
+  .ndHead > button {
+    margin: 0; padding: 3px 8px; font-size: 11px;
+    background: #2a2d34; color: #dfe2e7; border: 1px solid #3a3d45;
+    border-radius: 4px; cursor: pointer;
+  }
+  .ndHead > button:hover:enabled { background: #343841; }
+  .ndHead > button.danger { color: #e7b4b4; }
+
+  /* ---- 右クリックメニュー ------------------------------------------------
+     ノードの追加やイベントの作成 / 付ける の入口。押した場所に出したいので
+     body 直下に position:fixed で置き、はみ出さない位置は JS が測って決める。
+     モーダル（z:60）より上に出す - ノードエディタの上でも使うため。 */
+  #ctxMenu {
+    position: fixed; z-index: 80; min-width: 190px; padding: 4px;
+    background: #1b1d22; border: 1px solid #3a3d45; border-radius: 6px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.55); font-size: 12px; color: #dfe2e7;
+    user-select: none;
+  }
+  /* #stage の中（フルスクリーン中の置き場所）に出ても、ここだけは
+     ソフトウェアカーソルではなく普通のポインタにする。 */
+  #ctxMenu, #ctxMenu * { cursor: pointer; }
+  #ctxMenu .ctxHead, #ctxMenu .ctxSep, #ctxMenu .ctxItem.off { cursor: default; }
+  #ctxMenu .ctxHead {
+    font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+    color: #8b8f99; padding: 5px 8px 3px;
+  }
+  #ctxMenu .ctxSep { height: 1px; background: #303239; margin: 4px 2px; }
+  #ctxMenu .ctxItem {
+    display: flex; align-items: center; gap: 10px; justify-content: space-between;
+    padding: 5px 8px; border-radius: 4px; cursor: pointer; white-space: nowrap;
+  }
+  #ctxMenu .ctxItem:hover { background: #2a2d34; }
+  #ctxMenu .ctxItem .hint { color: #7b7f88; font-size: 10.5px; }
+  #ctxMenu .ctxItem.danger { color: #e7b4b4; }
+  #ctxMenu .ctxItem.off { opacity: .4; cursor: default; }
+  #ctxMenu .ctxItem.off:hover { background: transparent; }
+  /* ノードエディタ見出しの「右クリックで追加」の案内（旧パレットの跡地）。 */
+  .ndHeadHint { font-size: 10.5px; color: #7b7f88; }
+
+  /* ---- カメラのプレビュー窓（?popup=1）------------------------------------
+     Inspector の 👁 が開くページ。映像だけを見るための窓なので、編集の道具
+     （サイドバー・アセットパネル・モード切替・☰）は出さない。 */
+  body.popup #sidebar,
+  body.popup #sbResize,
+  body.popup #assets,
+  body.popup #vhSidebar,
+  body.popup #viewHead .modeBtn { display: none; }
+  body.popup #main { padding: 6px 8px 10px; }
 
   /* Phones and narrow windows: the video gets the whole width and the sidebar
      slides over it when opened, instead of squeezing the layout. */

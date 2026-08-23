@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -88,35 +89,54 @@ public:
     bool removeJoint(int index);
     std::size_t jointCount() const;
 
-    // ---- イベントグラフ ---------------------------------------------------
-    // ノードとワイヤーの一覧。書くのは物理スレッド（Op 実行時）、読むのは
-    // HTTP スレッド（サイドバー用 JSON）と物理スレッド（実行キャッシュの
-    // 取り込み）。ジョイントと同じ mutex で守る。ノードは id で引く（番号を
-    // 詰めるとワイヤーが別のノードを指すため、id は再利用しない）。
-    std::vector<wizengine::editor::NodeDesc> graphNodes() const;
-    std::vector<wizengine::editor::WireDesc> graphWires() const;
-    // 丸ごと差し替え（読込・全消し用）。nextNodeId は id の最大 + 1 に直す。
-    void setGraph(std::vector<wizengine::editor::NodeDesc> nodes,
-                  std::vector<wizengine::editor::WireDesc> wires);
-    // id を採番して追加し、その id を返す。
-    int addGraphNode(wizengine::editor::NodeDesc node);
+    // ---- イベントアセット（ノードベースのスクリプト）------------------------
+    // ノードとワイヤーの束を「アセット」として名前で持つ（EditorTypes.h の
+    // EventAssetDesc）。アセットは付けて初めて動く: オブジェクトに付いたぶんは
+    // BodyDesc::events（Scene が持つ）、シーン全体に付いたぶんはここの
+    // worldEvents。書くのは物理スレッド（Op 実行時）、読むのは HTTP スレッド
+    // （サイドバー用 JSON）と物理スレッド（実行キャッシュの取り込み）。
+    // ジョイントと同じ mutex で守る。ノード id はアセットの中で一意で、
+    // 削除しても再利用しない（ワイヤーが別のノードを指してしまうため）。
+    std::vector<wizengine::editor::EventAssetDesc> eventAssets() const;
+    bool hasEventAsset(const std::string& name) const;
+    // 丸ごと差し替え（読込・全消し用）。各アセットの採番は id の最大 + 1。
+    void setEventAssets(std::vector<wizengine::editor::EventAssetDesc> assets,
+                        std::vector<std::string> worldEvents);
+    // 空のアセットを作る / 消す（消すときはワールドの付け先も外す。
+    // オブジェクト側の付け先を外すのは Scene の仕事）。名前は正規化済みの
+    // ものを渡すこと（wizengine::editor::sanitizeEventName）。
+    bool addEventAsset(const std::string& name);
+    bool removeEventAsset(const std::string& name);
+    // シーン全体に付いているアセット名。
+    std::vector<std::string> worldEvents() const;
+    bool attachWorldEvent(const std::string& name);
+    bool detachWorldEvent(const std::string& name);
+
+    // ---- ノードとワイヤーの編集（必ずどのアセットへの操作かを渡す）--------
+    // id を採番して追加し、その id を返す（アセットが無ければ -1）。
+    int addGraphNode(const std::string& asset, wizengine::editor::NodeDesc node);
     // 送られてきたキーだけ上書き（クランプ込み）。id が無ければ false。
-    bool updateGraphNode(int id, const nlohmann::json& patch);
+    bool updateGraphNode(const std::string& asset, int id,
+                         const nlohmann::json& patch);
     // ノードと、それに繋がるワイヤーを消す。
-    bool removeGraphNode(int id);
+    bool removeGraphNode(const std::string& asset, int id);
     // from = トリガー / to = アクション の向きと存在を検証してから張る。
     // 重複や向き違いは false（理由は status に入れない - UI 側が防ぐ前提の
     // 二重チェックなので）。
-    bool addGraphWire(int from, int to);
-    bool removeGraphWire(int from, int to);
+    bool addGraphWire(const std::string& asset, int from, int to);
+    bool removeGraphWire(const std::string& asset, int from, int to);
     // グラフが変わるたびに増える版番号。物理スレッドは毎パスこれだけを見て、
     // 変わったときだけ一覧をコピーし直す（毎ステップのロックを避ける）。
+    // オブジェクト側の付け先（BodyDesc::events）を書き換えた Scene も、
+    // 実行側に取り込み直させるために bumpGraphVersion() を呼ぶ。
     std::uint64_t graphVersion() const { return graphVersion_.load(); }
-    // ノードの発火回数（ノードエディタの ⚡ バッジ用）。書くのは物理スレッド、
-    // 読むのは HTTP スレッド。シミュレート開始でクリアされる。
-    void noteNodeFired(int id);
+    void bumpGraphVersion() { graphVersion_.fetch_add(1); }
+    // ノードの発火回数（ノードエディタの ⚡ バッジ用）。キーは（アセット名,
+    // ノード id）。書くのは物理スレッド、読むのは HTTP スレッド。
+    // シミュレート開始でクリアされる。
+    void noteNodeFired(const std::string& asset, int id);
     void clearNodeFireCounts();
-    std::vector<std::pair<int, int>> nodeFireCounts() const;
+    std::map<std::pair<std::string, int>, int> nodeFireCounts() const;
 
     // ---- シミュレート設定 -----------------------------------------------
     wizengine::editor::SimSettings sim() const;
@@ -180,12 +200,16 @@ private:
     std::vector<Op> pending_;
     std::atomic<int> pendingCount_{0};
     std::vector<wizengine::editor::JointDesc> joints_;
-    // イベントグラフ（mutex_ の下）。fireCounts_ は id -> 発火回数。
-    std::vector<wizengine::editor::NodeDesc> nodes_;
-    std::vector<wizengine::editor::WireDesc> wires_;
-    int nextNodeId_ = 1;
+    // イベントアセット（mutex_ の下）。nextNodeId はアセットごとの採番、
+    // fireCounts_ は（アセット名, ノード id）-> 発火回数。
+    struct EventAssetState {
+        wizengine::editor::EventAssetDesc desc;
+        int nextNodeId = 1;
+    };
+    std::vector<EventAssetState> events_;
+    std::vector<std::string> worldEvents_;
     std::atomic<std::uint64_t> graphVersion_{0};
-    std::vector<std::pair<int, int>> fireCounts_;
+    std::map<std::pair<std::string, int>, int> fireCounts_;
     wizengine::editor::SimSettings sim_;
     wizengine::editor::GizmoSettings gizmo_;
     std::string status_ = "ready";

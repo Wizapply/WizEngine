@@ -68,47 +68,134 @@ std::size_t EditorState::jointCount() const {
     return joints_.size();
 }
 
-// ---- イベントグラフ ---------------------------------------------------------
+// ---- イベントアセット -------------------------------------------------------
 // 変更は必ず graphVersion_ を進める（物理スレッドが実行キャッシュを取り直す
 // 合図）。mutex_ の下で書き、読みはコピーで返す - ジョイントと同じ流儀。
+// ノードとワイヤーは「どのアセットのものか」を必ず伴う: 同じ id が別の
+// アセットにも居るので、名前を落とすと黙って別のノードを触ってしまう。
 
-std::vector<wizengine::editor::NodeDesc> EditorState::graphNodes() const {
-    std::lock_guard<std::mutex> lk(mutex_);
-    return nodes_;
-}
-
-std::vector<wizengine::editor::WireDesc> EditorState::graphWires() const {
-    std::lock_guard<std::mutex> lk(mutex_);
-    return wires_;
-}
-
-void EditorState::setGraph(std::vector<wizengine::editor::NodeDesc> nodes,
-                           std::vector<wizengine::editor::WireDesc> wires) {
-    std::lock_guard<std::mutex> lk(mutex_);
-    nodes_ = std::move(nodes);
-    wires_ = std::move(wires);
-    // id はグラフ内で一意なら何でもよい（読み込んだ文書の番号をそのまま
-    // 使う）。次の採番だけ最大値の先へ動かす。
-    nextNodeId_ = 1;
-    for (const auto& n : nodes_) {
-        if (n.id >= nextNodeId_) nextNodeId_ = n.id + 1;
+namespace {
+// name のアセットを探す（見つからなければ nullptr）。呼び出し側は mutex_ を
+// 取っていること。
+template <typename T>
+T* findAsset(std::vector<T>& list, const std::string& name) {
+    for (auto& a : list) {
+        if (a.desc.name == name) return &a;
     }
+    return nullptr;
+}
+}  // namespace
+
+std::vector<wizengine::editor::EventAssetDesc> EditorState::eventAssets() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    std::vector<wizengine::editor::EventAssetDesc> out;
+    out.reserve(events_.size());
+    for (const auto& a : events_) out.push_back(a.desc);
+    return out;
+}
+
+bool EditorState::hasEventAsset(const std::string& name) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (const auto& a : events_) {
+        if (a.desc.name == name) return true;
+    }
+    return false;
+}
+
+void EditorState::setEventAssets(
+    std::vector<wizengine::editor::EventAssetDesc> assets,
+    std::vector<std::string> worldEvents) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    events_.clear();
+    for (auto& d : assets) {
+        EventAssetState st;
+        // id はアセット内で一意なら何でもよい（読み込んだ文書の番号をその
+        // まま使う）。次の採番だけ最大値の先へ動かす。
+        for (const auto& n : d.nodes) {
+            if (n.id >= st.nextNodeId) st.nextNodeId = n.id + 1;
+        }
+        st.desc = std::move(d);
+        events_.push_back(std::move(st));
+    }
+    worldEvents_ = std::move(worldEvents);
     fireCounts_.clear();
     graphVersion_.fetch_add(1);
 }
 
-int EditorState::addGraphNode(wizengine::editor::NodeDesc node) {
+bool EditorState::addEventAsset(const std::string& name) {
     std::lock_guard<std::mutex> lk(mutex_);
-    node.id = nextNodeId_++;
+    if (name.empty() || findAsset(events_, name) != nullptr) return false;
+    EventAssetState st;
+    st.desc.name = name;
+    events_.push_back(std::move(st));
+    graphVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::removeEventAsset(const std::string& name) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const std::size_t before = events_.size();
+    events_.erase(std::remove_if(events_.begin(), events_.end(),
+                                 [&name](const EventAssetState& a) {
+                                     return a.desc.name == name;
+                                 }),
+                  events_.end());
+    if (events_.size() == before) return false;
+    // ワールドの付け先も外す（オブジェクト側は Scene が外す - BodyDesc を
+    // 持っているのは向こうなので）。
+    worldEvents_.erase(
+        std::remove(worldEvents_.begin(), worldEvents_.end(), name),
+        worldEvents_.end());
+    graphVersion_.fetch_add(1);
+    return true;
+}
+
+std::vector<std::string> EditorState::worldEvents() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return worldEvents_;
+}
+
+bool EditorState::attachWorldEvent(const std::string& name) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (findAsset(events_, name) == nullptr) return false;  // 無いものは付けない
+    if (std::find(worldEvents_.begin(), worldEvents_.end(), name) !=
+        worldEvents_.end()) {
+        return false;  // 二重付けは意味が無い（同じことを 2 回する）
+    }
+    worldEvents_.push_back(name);
+    graphVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::detachWorldEvent(const std::string& name) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const std::size_t before = worldEvents_.size();
+    worldEvents_.erase(
+        std::remove(worldEvents_.begin(), worldEvents_.end(), name),
+        worldEvents_.end());
+    if (worldEvents_.size() == before) return false;
+    graphVersion_.fetch_add(1);
+    return true;
+}
+
+int EditorState::addGraphNode(const std::string& asset,
+                              wizengine::editor::NodeDesc node) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    EventAssetState* a = findAsset(events_, asset);
+    if (a == nullptr) return -1;
+    node.id = a->nextNodeId++;
     const int id = node.id;
-    nodes_.push_back(std::move(node));
+    a->desc.nodes.push_back(std::move(node));
     graphVersion_.fetch_add(1);
     return id;
 }
 
-bool EditorState::updateGraphNode(int id, const nlohmann::json& patch) {
+bool EditorState::updateGraphNode(const std::string& asset, int id,
+                                  const nlohmann::json& patch) {
     std::lock_guard<std::mutex> lk(mutex_);
-    for (auto& n : nodes_) {
+    EventAssetState* a = findAsset(events_, asset);
+    if (a == nullptr) return false;
+    for (auto& n : a->desc.nodes) {
         if (n.id != id) continue;
         // 種類と id は変えさせない（種類が変わると target の意味とワイヤーの
         // 向きが崩れる。作り直したほうが安全）。
@@ -123,67 +210,70 @@ bool EditorState::updateGraphNode(int id, const nlohmann::json& patch) {
     return false;
 }
 
-bool EditorState::removeGraphNode(int id) {
+bool EditorState::removeGraphNode(const std::string& asset, int id) {
     std::lock_guard<std::mutex> lk(mutex_);
-    const std::size_t before = nodes_.size();
-    nodes_.erase(std::remove_if(nodes_.begin(), nodes_.end(),
-                                [id](const wizengine::editor::NodeDesc& n) {
-                                    return n.id == id;
-                                }),
-                 nodes_.end());
-    if (nodes_.size() == before) return false;
-    wires_.erase(std::remove_if(wires_.begin(), wires_.end(),
-                                [id](const wizengine::editor::WireDesc& w) {
-                                    return w.from == id || w.to == id;
-                                }),
-                 wires_.end());
+    EventAssetState* a = findAsset(events_, asset);
+    if (a == nullptr) return false;
+    auto& nodes = a->desc.nodes;
+    const std::size_t before = nodes.size();
+    nodes.erase(std::remove_if(nodes.begin(), nodes.end(),
+                               [id](const wizengine::editor::NodeDesc& n) {
+                                   return n.id == id;
+                               }),
+                nodes.end());
+    if (nodes.size() == before) return false;
+    auto& wires = a->desc.wires;
+    wires.erase(std::remove_if(wires.begin(), wires.end(),
+                               [id](const wizengine::editor::WireDesc& w) {
+                                   return w.from == id || w.to == id;
+                               }),
+                wires.end());
     graphVersion_.fetch_add(1);
     return true;
 }
 
-bool EditorState::addGraphWire(int from, int to) {
+bool EditorState::addGraphWire(const std::string& asset, int from, int to) {
     std::lock_guard<std::mutex> lk(mutex_);
+    EventAssetState* st = findAsset(events_, asset);
+    if (st == nullptr) return false;
     // 両端が存在し、from がトリガー・to がアクションであること。UI も同じ
     // 制約で描くが、リクエストは誰でも作れるので判定はここが持つ。
     const wizengine::editor::NodeDesc* a = nullptr;
     const wizengine::editor::NodeDesc* b = nullptr;
-    for (const auto& n : nodes_) {
+    for (const auto& n : st->desc.nodes) {
         if (n.id == from) a = &n;
         if (n.id == to) b = &n;
     }
     if (!a || !b) return false;
     if (!wizengine::editor::nodeIsTrigger(a->kind)) return false;
     if (wizengine::editor::nodeIsTrigger(b->kind)) return false;
-    for (const auto& w : wires_) {
+    for (const auto& w : st->desc.wires) {
         if (w.from == from && w.to == to) return false;  // 二重線は張らない
     }
-    wires_.push_back({from, to});
+    st->desc.wires.push_back({from, to});
     graphVersion_.fetch_add(1);
     return true;
 }
 
-bool EditorState::removeGraphWire(int from, int to) {
+bool EditorState::removeGraphWire(const std::string& asset, int from, int to) {
     std::lock_guard<std::mutex> lk(mutex_);
-    const std::size_t before = wires_.size();
-    wires_.erase(std::remove_if(wires_.begin(), wires_.end(),
-                                [from, to](const wizengine::editor::WireDesc& w) {
-                                    return w.from == from && w.to == to;
-                                }),
-                 wires_.end());
-    if (wires_.size() == before) return false;
+    EventAssetState* st = findAsset(events_, asset);
+    if (st == nullptr) return false;
+    auto& wires = st->desc.wires;
+    const std::size_t before = wires.size();
+    wires.erase(std::remove_if(wires.begin(), wires.end(),
+                               [from, to](const wizengine::editor::WireDesc& w) {
+                                   return w.from == from && w.to == to;
+                               }),
+                wires.end());
+    if (wires.size() == before) return false;
     graphVersion_.fetch_add(1);
     return true;
 }
 
-void EditorState::noteNodeFired(int id) {
+void EditorState::noteNodeFired(const std::string& asset, int id) {
     std::lock_guard<std::mutex> lk(mutex_);
-    for (auto& fc : fireCounts_) {
-        if (fc.first == id) {
-            ++fc.second;
-            return;
-        }
-    }
-    fireCounts_.push_back({id, 1});
+    ++fireCounts_[{asset, id}];
 }
 
 void EditorState::clearNodeFireCounts() {
@@ -191,7 +281,7 @@ void EditorState::clearNodeFireCounts() {
     fireCounts_.clear();
 }
 
-std::vector<std::pair<int, int>> EditorState::nodeFireCounts() const {
+std::map<std::pair<std::string, int>, int> EditorState::nodeFireCounts() const {
     std::lock_guard<std::mutex> lk(mutex_);
     return fireCounts_;
 }

@@ -143,6 +143,9 @@ constexpr float kSelectedWhiten = 0.7f;
 // ---- Grab control --------------------------------------------------------
 // Grab an object with the left mouse button and drag to push it in the
 // camera's screen plane.
+// これは「引き寄せのばね」の強さだけ。掴んだ物を実際に動かすかどうかは
+// **シーンのイベントアセット**（既定シーンの "pickup" = onGrab → grabPull）が
+// 決める - grabPull の value がここの値に掛かる倍率になる。
 inline BoxController::Config boxControllerConfig() {
     BoxController::Config c;
     c.stiffness = 80.0;         // pull towards the mouse target (1/s^2)

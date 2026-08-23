@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -151,6 +152,11 @@ struct BodyDesc {
     double mass = 1.0;              // kg。密度は体積から逆算する
     bool fixed = false;             // true = 動かない土台
     Color3 color;
+    // このオブジェクトに付いているイベントアセットの名前（文書では
+    // <body> の中の <event name="..."/>）。順番はインスペクタの並び順で、
+    // 同じ名前は 1 回だけ。番号ではなく名前で持つので、保存でオブジェクトを
+    // 詰めても付け替えが要らない。
+    std::vector<std::string> events;
 
     // 形状から体積を出す。密度 = mass / volume を Chrono に渡すので、
     // 形や大きさを変えても質量は指定どおりに保たれる。見た目ではなく
@@ -270,10 +276,12 @@ enum class NodeKind {
     OnCollision,  // 対象オブジェクトが何かに「新しく」触れた（接触の立ち上がり）
     OnSimStart,   // シミュレート開始の最初のステップ
     OnTimer,      // seconds ごとに繰り返し
+    OnGrab,       // マウスで掴んでいる間、毎ステップ（掴んだ物が文脈に乗る）
     // アクション（左の入力ポートで受ける）
     SetColor,        // オブジェクトの色を color へ（実行時のみ）
     ApplyImpulse,    // オブジェクトに速度変化 vec (m/s) を与える
     SetFixed,        // value != 0 で固定、0 で解除（実行時のみ）
+    GrabPull,        // 掴んでいる物をカーソルへ引き寄せる（value = 強さ倍率）
     SetLightColor,   // ライトの色を color へ（実行時のみ）
     SetLightIntensity,  // ライトの強さを value へ（実行時のみ）
     CameraLookAt,    // カメラ target の注視点をオブジェクト other へ向ける
@@ -283,7 +291,9 @@ inline const char* nodeKindName(NodeKind k) {
     switch (k) {
         case NodeKind::OnSimStart: return "onStart";
         case NodeKind::OnTimer: return "onTimer";
+        case NodeKind::OnGrab: return "onGrab";
         case NodeKind::SetColor: return "setColor";
+        case NodeKind::GrabPull: return "grabPull";
         case NodeKind::ApplyImpulse: return "impulse";
         case NodeKind::SetFixed: return "setFixed";
         case NodeKind::SetLightColor: return "lightColor";
@@ -297,7 +307,9 @@ inline NodeKind nodeKindFromName(const std::string& s, NodeKind fallback) {
     if (s == "onCollision" || s == "collision") return NodeKind::OnCollision;
     if (s == "onStart" || s == "start") return NodeKind::OnSimStart;
     if (s == "onTimer" || s == "timer") return NodeKind::OnTimer;
+    if (s == "onGrab" || s == "grab") return NodeKind::OnGrab;
     if (s == "setColor" || s == "color") return NodeKind::SetColor;
+    if (s == "grabPull" || s == "pull") return NodeKind::GrabPull;
     if (s == "impulse" || s == "push") return NodeKind::ApplyImpulse;
     if (s == "setFixed" || s == "fixed") return NodeKind::SetFixed;
     if (s == "lightColor") return NodeKind::SetLightColor;
@@ -309,7 +321,7 @@ inline NodeKind nodeKindFromName(const std::string& s, NodeKind fallback) {
 // トリガーかアクションか。ワイヤーは「トリガー → アクション」の向きだけ。
 inline bool nodeIsTrigger(NodeKind k) {
     return k == NodeKind::OnCollision || k == NodeKind::OnSimStart ||
-           k == NodeKind::OnTimer;
+           k == NodeKind::OnTimer || k == NodeKind::OnGrab;
 }
 
 // ノードの target 欄が指す種別。番号の検証・削除時の掃除・保存時の詰め替えは
@@ -319,9 +331,11 @@ enum class NodeTargetKind { None, Object, Light, Camera };
 inline NodeTargetKind nodeTargetKind(NodeKind k) {
     switch (k) {
         case NodeKind::OnCollision:
+        case NodeKind::OnGrab:
         case NodeKind::SetColor:
         case NodeKind::ApplyImpulse:
-        case NodeKind::SetFixed: return NodeTargetKind::Object;
+        case NodeKind::SetFixed:
+        case NodeKind::GrabPull: return NodeTargetKind::Object;
         case NodeKind::SetLightColor:
         case NodeKind::SetLightIntensity: return NodeTargetKind::Light;
         case NodeKind::CameraLookAt: return NodeTargetKind::Camera;
@@ -344,8 +358,12 @@ struct NodeDesc {
     int id = 0;
     NodeKind kind = NodeKind::OnCollision;
     double x = 40.0, y = 40.0;  // ノードエディタのキャンバス座標 (px)
-    // 対象番号。nodeTargetKind(kind) の種別を指す。-1 は OnCollision では
-    // 「どのオブジェクトでも」、アクションでは「未設定（何もしない）」。
+    // 対象番号。nodeTargetKind(kind) の種別を指す。-1 は「明示しない」で、
+    // 意味は**そのノードが走っている文脈**で決まる（EventAssetDesc の項を
+    // 参照）: オブジェクトに付いたアセットなら「自分」、トリガーが対象を
+    // 渡してきたなら「その物」（OnGrab が掴んだ物・OnCollision が触れた物）、
+    // どちらも無ければ OnCollision は「どのオブジェクトでも」、アクションは
+    // 「未設定（何もしない）」。
     int target = -1;
     // OnCollision: 相手のフィルタ（-2 = 何でも, -1 = 地面, n = オブジェクト）。
     // CameraLookAt: 注視するオブジェクト番号。
@@ -362,6 +380,44 @@ struct WireDesc {
     int from = -1;  // トリガーノードの id
     int to = -1;    // アクションノードの id
 };
+
+// ---- イベントアセット -------------------------------------------------------
+// ノードとワイヤーをひとまとめにした「スクリプト」。Unity のスクリプト資産と
+// 同じ位置づけで、シーンのアセット（文書の <asset><event>）として名前で持ち、
+// オブジェクトかワールドに**付ける**ことで初めて動く。1 つのオブジェクトに
+// 何本でも付けられ、同じアセットを複数のオブジェクトに付け回せる。
+//
+//   * ノード id はアセットの中で一意（ワイヤーが id で指すため、削除しても
+//     再利用しない）。別のアセットとは番号が重なってよい。
+//   * 対象を書かない（target = -1）ノードは「付いている相手」に働く。だから
+//     同じアセットを別のオブジェクトに付けると、そのオブジェクトに対して
+//     同じことをする。番号を明示すれば今までどおり特定の相手に働く。
+//   * 名前はファイル名と同じ流儀（英数字と _ -）に正規化する。XML の
+//     参照（<event name="...">）に使うため。
+struct EventAssetDesc {
+    std::string name;
+    std::vector<NodeDesc> nodes;
+    std::vector<WireDesc> wires;
+};
+
+// アセット名の正規化（英数字と _ - だけ・64 文字まで）。空になったら不正な
+// 名前（呼び出し側で弾く）。シーン名（EditorState::sanitizeSceneName）と
+// 同じ規則だが、あちらはファイル名、こちらは文書内の参照名。
+inline std::string sanitizeEventName(const std::string& name) {
+    std::string out;
+    for (const char c : name) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '_' || c == '-';
+        if (ok) out.push_back(c);
+        if (out.size() >= 64) break;
+    }
+    return out;
+}
+
+// 付け先。オブジェクト番号か、ワールド（シーン全体）。ワールドに付けた
+// アセットは「自分」を持たないので、対象を書かないノードはトリガーが渡して
+// きた物にだけ働く（既定のマウス操作スクリプトがこれ）。
+constexpr int kEventOwnerWorld = -1;
 
 // シミュレート側の設定。ここの値はエディタで編集し、シミュレート開始時に
 // PhysicsWorld へ流し込む（実行中の変更も反映される）。
@@ -398,6 +454,16 @@ inline int jsonInt(const nlohmann::json& j, const char* key, int fallback) {
     const auto it = j.find(key);
     return (it != j.end() && it->is_number()) ? int(it->get<double>())
                                               : fallback;
+}
+// 文字列の配列（イベントアセット名の一覧）。文字列以外の要素は捨てる
+// - /input は誰でも叩けるので、型を信じない、の同じ流儀。
+inline std::vector<std::string> stringList(const nlohmann::json& j) {
+    std::vector<std::string> out;
+    if (!j.is_array()) return out;
+    for (const auto& e : j) {
+        if (e.is_string()) out.push_back(e.get<std::string>());
+    }
+    return out;
 }
 
 inline nlohmann::json toJson(const Vec3d& v) {
@@ -463,6 +529,7 @@ inline nlohmann::json toJson(const BodyDesc& b) {
     j["mass"] = b.mass;
     j["fixed"] = b.fixed;
     j["color"] = colorToHex(b.color);
+    j["events"] = b.events;  // 付いているイベントアセット名
     return j;
 }
 
@@ -487,6 +554,11 @@ inline BodyDesc bodyFromJson(const nlohmann::json& j, const BodyDesc& base) {
     b.fixed = j.value("fixed", b.fixed);
     if (j.contains("color") && j["color"].is_string()) {
         b.color = colorFromHex(j["color"], b.color);
+    }
+    // イベントアセットの付け外しは専用のコマンド（edit.event.attach /
+    // detach）で行うので、ここでは配列がまるごと来たときだけ受ける。
+    if (j.contains("events") && j["events"].is_array()) {
+        b.events = stringList(j["events"]);
     }
     return b;
 }
@@ -612,6 +684,18 @@ inline NodeDesc nodeFromJson(const nlohmann::json& j, const NodeDesc& base) {
 
 inline nlohmann::json toJson(const WireDesc& w) {
     return nlohmann::json{{"from", w.from}, {"to", w.to}};
+}
+
+// イベントアセット 1 個ぶん。ブラウザはこれを受けてノードエディタを描く
+// （発火回数 fired は Scene が実行時に足す）。
+inline nlohmann::json toJson(const EventAssetDesc& a) {
+    nlohmann::json j;
+    j["name"] = a.name;
+    j["nodes"] = nlohmann::json::array();
+    for (const auto& n : a.nodes) j["nodes"].push_back(toJson(n));
+    j["wires"] = nlohmann::json::array();
+    for (const auto& w : a.wires) j["wires"].push_back(toJson(w));
+    return j;
 }
 
 inline WireDesc wireFromJson(const nlohmann::json& j, const WireDesc& base) {
@@ -838,9 +922,15 @@ inline NodeDesc clampNode(NodeDesc n) {
     n.vec.x = cl(n.vec.x, -100.0, 100.0);
     n.vec.y = cl(n.vec.y, -100.0, 100.0);
     n.vec.z = cl(n.vec.z, -100.0, 100.0);
-    // value の意味は種類ごと: SetFixed は 0/1、SetLightIntensity はルーメン。
-    n.value = (n.kind == NodeKind::SetFixed) ? (n.value != 0.0 ? 1.0 : 0.0)
-                                             : cl(n.value, 0.0, 10000000.0);
+    // value の意味は種類ごと: SetFixed は 0/1、GrabPull は強さの倍率
+    // （0 以下 = 既定の 1 倍）、SetLightIntensity はルーメン。
+    if (n.kind == NodeKind::SetFixed) {
+        n.value = n.value != 0.0 ? 1.0 : 0.0;
+    } else if (n.kind == NodeKind::GrabPull) {
+        n.value = n.value <= 0.0 ? 1.0 : cl(n.value, 0.1, 10.0);
+    } else {
+        n.value = cl(n.value, 0.0, 10000000.0);
+    }
     return n;
 }
 

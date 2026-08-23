@@ -122,11 +122,34 @@ PhysicsWorld.step(dt)
   Tab キーと同じ）・シーンタイトル（sceneFile、無題は "(無題のシーン)"）・
   カメラ名・エディタ⇄シミュレートのモードボタン。**モードボタンはここの
   1 組だけ**（サイドバー上部にあったものは廃止。以前の浮きボタン #sbOpen も
-  このヘッダーに置き換えた）。サイドバーのヘッダは「WizEngine / Version 1.0」
-  の表記のみで、カメラ名は映像ヘッダーが受け持つ。
+  このヘッダーに置き換えた）。**サイドバーを畳む口もここの ☰ だけ**
+  （サイドバー内にあった ‹ ＝ #sbClose は廃止。畳んだ瞬間に一緒に消える
+  ボタンなので、開く側は結局 ☰ が受け持っていた）。サイドバーのヘッダは
+  「WizEngine / Version 1.0」の表記のみで、カメラ名は映像ヘッダーが受け持つ。
 - ブラウザ側のタブは **Scene / Inspector / Physics**（`web/index.html` +
   `app.js` の `renderEditor()`。Inspector の内部 id は `tabEditor` /
-  `paneEditor` のまま）。Inspector には**常設の World 節**（`secWorld`）が
+  `paneEditor` のまま）。**カメラの入口は Scene タブの Cameras 一覧**で、
+  **行クリックの意味はモードで変わる**（Unity のヒエラルキーと同じ感覚）:
+  エディタモード×エディタカメラのページでは**クリック = エディタ選択**
+  （ビューにギズモが出て移動 / 回転。もう一度で解除。数値・削除は選択で
+  出る Inspector の「選択カメラ」節）、追加は見出しの ＋、ページ移動は
+  ダブルクリック、映像の確認は行の目アイコン。それ以外では従来どおり
+  クリック = ページ移動。**Inspector に常設のカメラ一覧は置かない** -
+  Inspector は「選択しているものの内容」だけ、という整理（一覧と選択の
+  二重表示になるため一度置いて廃止した）。行の目アイコン（👁 の絵文字は
+  フォントによって出ないため **インライン SVG**、app.js の `EYE_SVG`）は
+  そのカメラの映像を小窓で開く（`openCamPopup`）。**Chrome / Edge 116+ は
+  Document Picture-in-Picture** - アドレスバーの無い常時前面の小窓に、
+  このページが張った 2 本目の WHEP 接続の video だけを入れる（`openCamPip` /
+  `pipConnect`。トークンは別で、視聴セッションはカメラごとに独立。PiP は
+  ブラウザ全体で 1 窓なので保持も 1 台ぶん）。非対応ブラウザは従来の
+  ポップアップ（`openCamWindow`、URL は `?popup=1` でサイドバー・アセット
+  パネル・モード切替を CSS で隠す。**window.open のアドレスバーは仕様上
+  消せない** - なりすまし対策で URL 表示が強制されるため、消したい環境では
+  PiP 対応ブラウザを使う）。視聴はカメラごとに 1 ブラウザなので、既に誰かが
+  見ているカメラは「視聴中」表示で再試行する。**シミュレートへ切り替えると
+  窓は閉じる**（`closeCamPopups`、元のページを離れるときも）- 編集のための
+  窓なので、走らせる段になったら残さない。Inspector には**常設の World 節**（`secWorld`）が
   あり、地面（床の広さ・見える広さ・テクスチャ・タイル・色）と環境光
   （HDR・強さ）を編集できる（`edit.ground` / `edit.environment`、部分更新で
   物理スレッドが `setGroundAndEnvironment` を呼ぶ。パスは `assetFileAllowed`
@@ -137,15 +160,17 @@ PhysicsWorld.step(dt)
   Unity のシーンビュー左上相当）に重ねて出す: `#hit`(z=1) より上の z=2 に
   置いてクリックを受け、エディタモード×Editor Camera のページでだけ
   `renderEditor()` が表示する。**Inspector は「選択しているオブジェクトの
-  内容」だけ**: Transform・質量・固定・色に加え、ジョイント節も選択時のみ
-  表示し、一覧は選択が関わるものに絞る（どのジョイントにも地面でない体が
+  内容」だけ**: Transform・質量・固定・色に加え、**付いているイベント
+  アセットの一覧**（付ける / 外す。World 節にはシーン全体ぶん）と、ジョイント節も
+  選択時のみ表示し、一覧は選択が関わるものに絞る（どのジョイントにも地面でない体が
   必ずあるので、どれかを選べば必ず一覧に届く）。ギズモの数値設定（スナップ・
   刻み・グリッド）は普段隠れた `secGizmo` 節で、ツールバー右端の ⚙
   （`gzSettings` → `toggleGizmoSettings()`）が開閉する。ブラウザ内の表示
   状態だけの話なのでサーバーには送らない。
   ビューの下には**アセットパネル**（`#assets`、
   `renderAssets()`）: プリミティブ（Box/球）と文書の `<asset>` にある
-  メッシュはクリックで配置、保存済み
+  メッシュはクリックで配置、**イベントアセット（⚡）はクリックで
+  ノードエディタに開く**（「✨ 新しいイベント」で作成）、保存済み
   シーンはダブルクリックで読込（confirm 付き。読込は現在の配置を置き換える
   ため）。見出し下の操作列（`.asBar`）に、新規オブジェクトの初期値
   （edNewSize / edNewColor）とシーン名・💾保存・🗑全消し（旧 Inspector の
@@ -174,6 +199,11 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
     <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60" .../>
     <asset>
       <mesh name="apple" file="apple2.glb" scale="1"/>
+      <event name="pickup">
+        <node id="1" type="onGrab" pos="40 40" target="-1"/>
+        <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+        <wire from="1" to="2"/>
+      </event>
     </asset>
     <worldbody>
       <environment hdr="studio.hdr" intensity="30000"/>
@@ -185,14 +215,14 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
       </body>
       <body name="a1" pos="1 2 0">
         <geom type="mesh" mesh="apple" size="0.1" mass="0.2"/>
+        <event name="blink"/>
       </body>
     </worldbody>
     <equality>
       <joint name="hinge" type="hinge" body1="arm" body2="post" anchor="0 1.9 0" axis="0 0 1"/>
     </equality>
     <events>
-      <node id="1" type="onCollision" pos="40 60" target="1" other="-2"/>
-      <wire from="1" to="2"/>
+      <event name="pickup"/>
     </events>
   </wizengine>
   ```
@@ -211,9 +241,11 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   見える地面の半寸法。texture は assets/ 相対、空 = 市松模様）と
   `<environment hdr intensity>`（hdr は assets/ 相対、空 = 環境マップ無し）。
   節を書かない文書は既定値（`GroundDesc` / `EnvironmentDesc`）で開く。
-  **違う点**は `<events>`（イベントグラフ）と `<ground>` / `<environment>` が
-  WizEngine の拡張であることと、`<worldbody>` の直下しか見ないこと（MJCF の入れ子 body は
-  親からの相対姿勢なので、姿勢を合成せずに平らに落とすと物が別の場所に出る）。
+  **違う点**はイベント（`<asset>` の `<event>` = 中身、`<body>` の
+  `<event name/>` とルートの `<events>` = 付け先）と `<ground>` /
+  `<environment>` が WizEngine の拡張であることと、`<worldbody>` の直下しか
+  見ないこと（MJCF の入れ子 body は親からの相対姿勢なので、姿勢を合成せずに
+  平らに落とすと物が別の場所に出る）。
 - **XML の実装は自前**（`src/SceneXml.{h,cpp}`、依存なし）。要素・属性・入れ子と
   コメント・実体参照だけの部分集合で、テキストノードは持たない（値は全部属性）。
   属性は書いた順に出て、長い要素は要素名の下へ揃えて折り返す＝保存ファイルの
@@ -230,8 +262,9 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   一覧」（未知の節を警告する箇所）にも名前を足す。
 - **値の型は EditorTypes.h のまま**。`SceneDocument`（`src/SceneDocument.{h,cpp}`）は
   その入れ物で、XML と 1 対 1。「節が無い」と「空の節」を区別するために
-  `hasSim` / `hasLights` / `hasCameras` を持つ（ライトを書かない文書は初期構成の
-  2 灯で開く＝手書きの最小 XML が真っ暗にならない）。
+  `hasSim` / `hasLights` / `hasCameras` / `hasEvents` を持つ（ライトを書かない
+  文書は初期構成の 2 灯で開く＝手書きの最小 XML が真っ暗にならない。イベントを
+  書かない文書は既定の pickup で開く＝掴んでも動かないシーンにならない）。
 - **旧 JSON（version 1〜3）は読み込みだけ**（`fromLegacyJson`）。同じ名前の
   `.xml` が無いときだけ `.json` を探す。保存は常に `.xml` なので、一度保存すれば
   そのシーンは XML に移る（`.json` は上書きしない）。一覧（`sceneFiles()`）は
@@ -313,29 +346,50 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   広い作業目安なので、床の外はシミュレートで落ちる）。表示と間隔は
   GizmoSettings（`grid` / `gridStep`、Inspector タブ、下限 0.25m）。
 
-## イベントグラフ（ノードベースのイベント設計）
+## イベントアセット（ノードベースのイベント設計）
 
-Object / Light / Camera の Inspector と、映像上のノードエディタ（ギズモバーの
-⚡、Node-RED 風）で組む「トリガー → アクション」。「衝突したら色を黒にする」
-をエディタで設計し、シミュレート中に発火する。
+映像上のノードエディタ（ギズモバーの ⚡、Node-RED 風）で組む「トリガー →
+アクション」。**中身（ノードとワイヤー）は名前付きの「イベントアセット」で、
+オブジェクトかシーン全体に付けて初めて動く**（Unity のスクリプト資産と同じ
+関係）。1 つのオブジェクトに何本でも付けられ、同じアセットを複数の
+オブジェクトに付け回せる。
 
-- **型は EditorTypes.h**（`NodeKind` / `NodeDesc` / `WireDesc`）。トリガーは
-  衝突（OnCollision）・開始（OnSimStart）・タイマー（OnTimer）、アクションは
-  色（SetColor）・力（ApplyImpulse）・固定（SetFixed）・ライトの色/強さ
-  （SetLight*）・カメラ注視（CameraLookAt）。ワイヤーはトリガー → アクションの
-  1 段だけ（連鎖なし）。target の指す種別は `nodeTargetKind(kind)` が唯一の
-  定義（object / light は保存で番号が詰まるので、詰め替え・掃除が全部ここで
-  分岐する）。
-- **グラフ本体は EditorState**（ジョイントと同じ mutex 流儀）。ノード id は
-  再利用しない（ワイヤーが別のノードを指し直すため）。編集は
-  edit.node.* / edit.wire.* → Op キュー経由で物理スレッドが適用。ワイヤーの
-  向き（from = トリガー、to = アクション）と重複は `addGraphWire` が検証する。
+**エンジンには「マウスで掴んだら動く」も焼き込んでいない**。掴みの計算
+（対象・カーソルの指す点）は `Scene::pointerGrab` が出すだけで、実際に
+引き寄せるのは既定シーンに付いているイベントアセット `pickup`
+（onGrab → grabPull）。外せば掴んでも動かなくなり、差し替えれば挙動を
+ノードで書き換えられる。イベントの節を持たない文書と「🗑 全消し」は
+`Scene::resetEventsToDefaults()` がこの 2 ノードを作って付ける（ライトを
+1 灯も書かない文書が初期構成で開くのと同じ扱い）。
+
+- **型は EditorTypes.h**（`NodeKind` / `NodeDesc` / `WireDesc` /
+  `EventAssetDesc`）。トリガーは衝突（OnCollision）・開始（OnSimStart）・
+  タイマー（OnTimer）・掴み（OnGrab）、アクションは色（SetColor）・力
+  （ApplyImpulse）・固定（SetFixed）・引き寄せ（GrabPull）・ライトの色/強さ
+  （SetLight*）・カメラ注視（CameraLookAt）。ワイヤーはトリガー →
+  アクションの 1 段だけ（連鎖なし）。target の指す種別は
+  `nodeTargetKind(kind)` が唯一の定義（object / light は保存で番号が詰まるので、
+  詰め替え・掃除が全部ここで分岐する）。
+- **対象を書かない（target = -1）が既定**。実際の相手は実行時に決まる:
+  ①番号を書いてあればそれ ②トリガーが渡してきた物（OnGrab が掴んだ物・
+  OnCollision が触れた物）③そのアセットを付けたオブジェクト。定義は
+  `Scene::graphTarget` の 1 か所で、これがあるからアセットを付け回せる。
+  ライトとカメラは付け先になれない（付けるのはオブジェクトかシーン全体）
+  ので、番号を必ず明示する。
+- **アセット本体は EditorState**（ジョイントと同じ mutex 流儀）。ノード id は
+  **アセットの中で**一意で、削除しても再利用しない（ワイヤーが別のノードを
+  指し直すため）。別のアセットとは番号が重なってよいので、**編集コマンドは
+  必ずアセット名を伴う**（edit.node.* / edit.wire.* の `asset`）。作成・削除・
+  付け外しは edit.event.add / remove / attach / detach。付け先はオブジェクト側が
+  `BodyDesc::events`（Scene が持つ = 保存で番号が詰まっても付け替え不要）、
+  シーン全体は `EditorState::worldEvents`。
 - **実行は物理スレッド**（`Scene::runEventGraph`、`physics_.step()` の直後 =
-  そのステップの接触を見る）。毎ステップのロックを避けるため、
-  `EditorState::graphVersion()`（変更ごとに進む版番号）が変わったときだけ
-  一覧をコピーする。タイマー等の実行状態は **ノード id で引く**
-  （`Scene::GraphRuntime`）ので、シミュレート中の編集で他のノードの状態が
-  リセットされない。
+  そのステップの接触を見る）。走るのは「付いているアセット」の数だけの
+  **実体**（`GraphRuntime::Instance` = アセット + 付け先）。毎ステップのロックを
+  避けるため、`EditorState::graphVersion()`（変更ごとに進む版番号。オブジェクトの
+  増減と付け外しでも `bumpGraphVersion()` で進む）が変わったときだけ一覧を
+  コピーする。タイマー等の実行状態は **（アセット名, 付け先, ノード id）で引く**
+  ので、シミュレート中の編集で他のノードの状態がリセットされない。
 - **衝突は「新しく触れたペア」だけ**。NSC は載っているだけでも毎ステップ接触が
   立つので、前ステップとの差分を取り、さらに**最初の収集パスは覚えるだけ**
   （priming）にして開始時点で触れていたぶんを発火させない。接触の列挙は
@@ -349,15 +403,39 @@ Object / Light / Camera の Inspector と、映像上のノードエディタ（
   と同じ原則）。SetColor が効くのは組み込みメッシュ描画だけ（glTF
   インスタンスは個別のベース色を持てない）。ApplyImpulse は
   F = m・Δv/dt を `applyForce` に渡す＝レート非依存で Δv がそのまま乗る。
+- **掴みトリガー（OnGrab）は毎ステップ・カメラごと**に発火し、掴んだ物と
+  カーソルの指す点を文脈として渡す。受けた GrabPull がサーボ
+  （F = m・(kp・e − kd・v)、加速度は上限で頭打ち）を毎ステップ掛け、
+  引っぱり線（`Scene::setGrabLine`）も引く。ばね定数は `BoxController::Config`
+  （SceneConfig.h）で、ノードの value はその倍率。**エディタモードの
+  置き直しは今までどおり C++**（BoxControlComponent::onEditorStep）: 配置作業は
+  シミュレートではないので、スクリプトの有無に左右させない。
 - **対象が消えたノードは掃除**（`pruneGraphForRemoved`、ジョイントの掃除と
   同じ判断）。OnCollision の相手フィルタだけが消えたときはノードを残して
-  「何でも」(-2) に戻す。
-- **文書では `<events>` 節**（`<node>` / `<wire>`。旧 JSON では version 3 の
-  nodes / wires）。保存でオブジェクト・ライトの番号を詰めるのに合わせて
-  target / other も付け替える（ライトにも remap 表が要る）。読込はジョイントと
-  同じく base / lightBase ぶんずらす。節の無い文書はグラフ無し＝空で読める。
-- **UI は /scene の `graph`**（発火回数 fired 付き＝ノードの ⚡ バッジ）を
-  ポーリングで描く。グラフと選択肢が変わったときだけ DOM を組み直し、
+  「何でも」(-2) に戻す。**番号を書いていないノード（target = -1）は触らない**:
+  付け先が消えても、アセットは他の相手に付けられる部品として残る。
+- **文書では `<asset>` の `<event name>`**（中身）と、`<body>` の
+  `<event name/>` / ルートの `<events>` の `<event name/>`（付け先）。保存で
+  オブジェクト・ライトの番号を詰めるのに合わせて target / other も付け替える
+  （ライトにも remap 表が要る）。読込はジョイントと同じく base / lightBase
+  ぶんずらす。**旧形式**（`<events>` の直下に `<node>` / `<wire>` を並べた文書、
+  旧 JSON version 3 の nodes / wires）は "events" という名前のアセットに入れて
+  ワールドへ付ける。イベントの節が 1 つも無い文書は既定構成（pickup）で開く。
+- **UI は /scene の `events`**（`{assets:[{name,nodes,wires}], world:[名前]}`。
+  発火回数 fired 付き＝ノードの ⚡ バッジ。オブジェクトに付いているぶんは
+  objects / selected の `events`）をポーリングで描く。アセットは**アセット
+  パネルの ⚡ タイル**（クリックでノードエディタがそのアセットに切り替わる）と
+  **ノードエディタ見出しの選択**で選び、**付け外しは Inspector の「イベント」**
+  （オブジェクト＝選択中の物、World 節＝シーン全体）。ライト / カメラの
+  Inspector は「そのライト / カメラを対象にしているノード」の読み取り専用一覧。
+  **作成・削除・付ける・ノードの追加は右クリック（コンテキストメニュー）**が
+  入口: アセットパネルの何もない所 =「新しいイベント」、⚡ タイルの上 =
+  開く / 付ける / 削除、ノードエディタのキャンバス = 押した場所にノードを追加
+  （トリガー / アクションの一覧）、ノードの上 = そのノードを削除、Inspector の
+  イベント行 = 開く / 外す。見出しにボタンを並べる方式は種類が増えるほど
+  読めなくなるので、置く場所で決まる操作は置きたい場所で選ぶ（実体は app.js の
+  `showContextMenu`、CSS は `#ctxMenu`）。
+  グラフと選択肢が変わったときだけ DOM を組み直し、
   **ドラッグ中とノード内入力のフォーカス中は組み直さない**（入力欄の
   「フォーカス中は触らない」と同じ理由）。線はキャンバス座標の SVG ベジェ 2 本
   （見える線 + 太い透明の当たり判定）。ポートの座標は DOM を測らず
@@ -475,7 +553,10 @@ Object / Light / Camera の Inspector と、映像上のノードエディタ（
   （GameObject: 設計値 + 物理ID + 描画ID）・ライト・カメラ・メッシュアセット
   （`MeshAsset`: 文書の宣言 + Renderer のモデル番号 + 凸包のキャッシュ）を
   持ち、文書（SceneDocument）との相互変換・編集操作の適用・スレッド間の
-  同期を行う。**シーンの中身は持たない**（配置・モデル・ジョイントは
+  同期を行う。**マウスの掴み**（`pointerGrab` = 対象とカーソルの指す点、
+  掴んだ時点の奥行きを覚える）と**引っぱり線**もここ: エディタの置き直しと
+  イベントの引き寄せで同じ答えが要るため（動かすかどうかはイベントアセット
+  次第）。**シーンの中身は持たない**（配置・モデル・ジョイントは
   assets/scenes/*.xml。`build()` は地面・ライト・カメラの初期化と
   kStartupScene の読み込みだけ）。エンジン側の既定値は `SceneConfig.h`。
 - `src/VideoStreamer.{h,cpp}` — GStreamer パイプライン。`OutputMode` で
@@ -541,8 +622,8 @@ Object / Light / Camera の Inspector と、映像上のノードエディタ（
   Filament の奥で無言終了していた問題への対処。あわせて main 全体を try/catch で包み、
   例外を表示してから Enter 待ち（Explorer 起動でコンソールが消えるため）。
 - `src/EditorTypes.h` — エディタ文書の型だけを集めたヘッダ（`AppMode` /
-  `ShapeKind` / `JointKind` / `BodyDesc` / `JointDesc` / `SimSettings` と、その
-  JSON 変換・範囲クランプ）。Chrono も Filament も出てこないので、どのスレッド
+  `ShapeKind` / `JointKind` / `BodyDesc` / `JointDesc` / `NodeDesc` /
+  `EventAssetDesc` / `SimSettings` と、その JSON 変換・範囲クランプ）。Chrono も Filament も出てこないので、どのスレッド
   からでもコピーできる。保存フォーマットとブラウザ API のキーはここが唯一の定義。
 - `src/SceneXml.{h,cpp}` — 依存の無い最小 XML DOM（読み書き）。シーン文書の
   ためだけの部分集合で、要素・属性・入れ子とコメント・実体参照まで。整形出力は
@@ -551,6 +632,8 @@ Object / Light / Camera の Inspector と、映像上のノードエディタ（
   **MuJoCo 風 XML** への変換。保存フォーマットの定義はここ 1 か所（旧 JSON の
   取り込み `fromLegacyJson` も同居）。上の「シーン文書（XML）」の章を参照。
 - `src/EditorState.{h,cpp}` — モード（atomic）、編集操作のキュー、ジョイント一覧、
+  **イベントアセット**（名前 + ノード + ワイヤー。付け先はシーン全体ぶんだけ
+  ここが持ち、オブジェクトに付いたぶんは `BodyDesc::events`）、
   シミュレート設定、`assets/scenes` の読み書き（`.xml` が正、`.json` は
   読み込みのみ）と一覧キャッシュ。オブジェクト
   そのものは持たない（実体と並べて Scene が持つ。番号がずれると黙って別の物を
@@ -671,9 +754,11 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   配置も含め、シーンの中身はコードから文書へ全面移行。scene.cpp の
   格子自動生成・kBoxModelPath プール・置物 kModelPath は廃止し、既定シーンは
   `assets/scenes/default.xml`）。
-- 済: イベントグラフ（Node-RED 風のノードエディタ。衝突・開始・タイマーの
-  トリガーと、色・力・固定・ライト・カメラ注視のアクション。上の
-  「イベントグラフ」の章を参照）。
+- 済: イベントアセット（Node-RED 風のノードエディタ。衝突・開始・タイマー・
+  掴みのトリガーと、色・力・固定・引き寄せ・ライト・カメラ注視のアクション。
+  ノードは名前付きアセットにまとめ、オブジェクト / シーン全体に何本でも
+  付けられる。マウスで掴んだ物を動かすのも既定アセット `pickup` の仕事で、
+  エンジンには焼き込んでいない。上の「イベントアセット」の章を参照）。
 - 済: ステップ3（姿勢反映）〜6（UDP配信）。
 - 未: ステップ7（クライアント→サーバーの入力・制御チャネル。カメラ操作を
   UDP/TCP で受けて `Renderer` にカメラ更新 API を追加）。

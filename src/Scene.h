@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -80,6 +81,29 @@ public:
     BoxController& boxController(std::size_t cameraIndex = 0) {
         return *controllers_[cameraIndex];
     }
+
+    // ---- マウスで掴んでいる状態（PHYSICS スレッド）--------------------------
+    // 「どの物を、カーソルのどの点へ」。掴んだ時点の奥行きを覚えておき、その
+    // 平面上でカーソルの指す点を返すので、カメラを回しても物が寄って来ない。
+    // 使い道は 2 つ: エディタモードの置き直し（BoxControlComponent）と、
+    // シミュレート中の引き寄せ（イベントグラフの onGrab / grabPull）。
+    // **掴んだら勝手に動く、という配線はエンジンには無い**: 動かすかどうかは
+    // イベントアセット次第（既定シーンに付いている "pickup" がそれ）。
+    struct PointerGrab {
+        bool valid = false;
+        std::size_t camera = 0;
+        std::size_t index = 0;   // オブジェクト番号
+        std::size_t physId = 0;
+        double objX = 0.0, objY = 0.0, objZ = 0.0;  // 物のいまの位置
+        double tgtX = 0.0, tgtY = 0.0, tgtZ = 0.0;  // カーソルが指す点
+    };
+    bool pointerGrab(std::size_t cameraIndex, PointerGrab& out);
+    // 引っぱり線（カメラごと）。物理スレッドが書き、描画スレッドが読む。
+    // シーンの中の線として描くので、どのカメラから見ても同じフレームに乗る。
+    void setGrabLine(std::size_t cameraIndex, bool on, double ax, double ay,
+                     double az, double bx, double by, double bz);
+    void clearGrabLines();
+    bool grabLine(std::size_t cameraIndex, double* from3, double* to3) const;
 
     // ---- ライト ------------------------------------------------------------
     // GameObject と同じ「設計値 + 実体番号」の対。書くのは物理スレッド
@@ -241,11 +265,35 @@ private:
     void buildJoints();
 
     // ---- イベントグラフの実行（PHYSICS スレッド）--------------------------
-    // シミュレートの 1 サブステップごとに、トリガー（衝突・開始・タイマー）を
-    // 判定し、ワイヤーで繋がったアクションを実行する。stepPhysics から呼ぶ。
+    // シミュレートの 1 サブステップごとに、**付いているイベントアセット**の
+    // トリガー（衝突・開始・タイマー・掴み）を判定し、ワイヤーで繋がった
+    // アクションを実行する。stepPhysics から呼ぶ。
     void runEventGraph(double dt);
+    // 実行の文脈。「そのトリガーがどの物に対して起きたか」をアクションへ
+    // 渡すためのもので、対象を書いていないノード（target = -1）の既定になる。
+    struct GraphContext {
+        int self = -1;    // アセットが付いているオブジェクト（-1 = ワールド）
+        int object = -1;  // トリガーが指した物（掴んだ物・触れた物）
+        std::size_t camera = 0;              // OnGrab: 掴んでいるカメラ
+        bool hasPoint = false;               // OnGrab: カーソルの指す点
+        double px = 0.0, py = 0.0, pz = 0.0;
+    };
     // 発火したトリガーから繋がった 1 個のアクションを実行する。
-    void runGraphAction(const wizengine::editor::NodeDesc& node, double dt);
+    void runGraphAction(const wizengine::editor::NodeDesc& node,
+                        const GraphContext& ctx, double dt);
+    // オブジェクトを対象にするノードの実際の対象番号。番号を書いてあれば
+    // それ、書いていなければトリガーが渡してきた物、それも無ければ付いて
+    // いる相手（ワールド付けなら -1 = 対象なし）。
+    static int graphTarget(const wizengine::editor::NodeDesc& node,
+                           const GraphContext& ctx);
+    // 付いているアセットの一覧（実行の単位）を作り直す。
+    void rebuildGraphInstances();
+    // イベントアセットを既定の構成（マウス操作スクリプト）へ戻す。
+    // 節を持たない文書の読み込みと「全消し」で使う - ライトを 1 灯も書かない
+    // 文書が初期構成で開くのと同じ扱い（掴んでも動かないシーンで始めない）。
+    void resetEventsToDefaults();
+    // そのアセットをオブジェクトから全部外す（アセットを消したとき）。
+    void detachEventFromObjects(const std::string& name);
     // 実行状態（タイマー・接触の記憶・発火カウント）と、アクションが加えた
     // 実行時の上書き（色・ライト・固定）を捨てて設計値へ戻す。
     // シミュレートの開始・停止・Reset で呼ぶ。
@@ -318,11 +366,22 @@ private:
         // 取り込んだグラフの版。EditorState::graphVersion と食い違ったら
         // 一覧をコピーし直す（毎ステップのロックを避けるための番号）。
         std::uint64_t version = ~std::uint64_t(0);
-        std::vector<wizengine::editor::NodeDesc> nodes;
-        std::vector<wizengine::editor::WireDesc> wires;
-        // OnTimer の経過秒。ノード id で引く（グラフ編集で他のノードの
-        // タイマーがリセットされないように、位置ではなく id）。
-        std::map<int, double> timers;
+        std::vector<wizengine::editor::EventAssetDesc> assets;
+        // 実行の単位 =「付いているアセット 1 個」。同じアセットを複数の
+        // オブジェクトに付ければ、その数だけ実体ができる。
+        struct Instance {
+            std::size_t asset = 0;  // assets の位置
+            int owner = -1;         // オブジェクト番号（-1 = ワールド）
+        };
+        std::vector<Instance> instances;
+        // 実体ごとの実行状態。キーは（アセット名, owner）で、一覧を作り
+        // 直しても残る - 編集のたびにタイマーが振り出しに戻らないように、
+        // 位置ではなく名前で引く（ノードを id で引くのと同じ理由）。
+        struct InstanceState {
+            // OnTimer の経過秒（ノード id で引く）。
+            std::map<int, double> timers;
+        };
+        std::map<std::pair<std::string, int>, InstanceState> state;
         bool startFired = false;  // OnSimStart は最初のステップで 1 回だけ
         // 前サブステップの接触ペア（オブジェクト番号、-1 = 地面）。
         // 今回あって前回無いペアだけが「新しくぶつかった」。
@@ -335,4 +394,24 @@ private:
         std::set<std::size_t> fixedTouched;
     };
     GraphRuntime graphRt_;
+
+    // ---- マウスの掴み（PHYSICS スレッド）----------------------------------
+    // 掴んだ時点のカメラからの奥行き。掴み直すたびに測り直す（held）ので、
+    // 選択が残ったままカメラを回しても破綻しない。
+    struct GrabDepth {
+        bool valid = false;
+        bool held = false;
+        std::size_t sel = BoxController::kNone;
+        double z = 0.0;
+    };
+    std::vector<GrabDepth> grabDepths_;
+    // 引っぱり線（物理スレッドが書き、描画スレッドが読む）。
+    struct GrabLine {
+        std::atomic<bool> on{false};
+        std::atomic<double> ax{0.0}, ay{0.0}, az{0.0};  // 物
+        std::atomic<double> bx{0.0}, by{0.0}, bz{0.0};  // カーソルの指す点
+    };
+    std::vector<std::unique_ptr<GrabLine>> grabLines_;
+    // カメラ台数ぶんの掴み用の配列を用意する（最初の 1 回）。
+    void ensureGrabState();
 };

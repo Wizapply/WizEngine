@@ -10,6 +10,19 @@
      file は assets/ からの相対パス。ライト・カメラ・<option>・<ground>・
      <environment> を書かない文書は初期構成（既定値）で開く。 -->
 <wizengine model="default" version="4">
+  <!-- イベントアセット（ノードで組む「スクリプト」）。中身はここに置き、
+       <body> の <event name="..."/> か、下の <events> でワールドに「付ける」
+       ことで初めて動く。1 つのオブジェクトに何本でも付けられる。 -->
+  <asset>
+    <!-- マウスで掴んだ物をカーソルへ引き寄せる。エンジン側には「掴んだら
+         動く」を焼き込んでいないので、これを外すと掴んでも動かなくなる。
+         target を書いていない（-1）ノードは「掴んだ物」に働く。 -->
+    <event name="pickup">
+      <node id="1" type="onGrab" pos="40 40" target="-1"/>
+      <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+      <wire from="1" to="2"/>
+    </event>
+  </asset>
   <worldbody>
     <environment hdr="studio.hdr" intensity="30000"/>
     <ground size="10" visual="8" texture="textures/ground.png" tile="2" rgba="1 1 1 1"/>
@@ -167,4 +180,8 @@
       <geom type="sphere" size="0.15" mass="0.4" rgba="0.29 0.56 0.85 1"/>
     </body>
   </worldbody>
+  <!-- ワールド（シーン全体）に付いているイベントアセット。 -->
+  <events>
+    <event name="pickup"/>
+  </events>
 </wizengine>

@@ -10,12 +10,14 @@
 <body>
 <div id="app">
   <aside id="sidebar">
+    <!-- サイドバーの見出しは名前と版だけ。表示 / 非表示は映像ヘッダーの ☰
+         （と Tab キー）に一本化した - 畳む口が 2 つあっても片方は必ず
+         サイドバーと一緒に消えるので、常に見える方だけを残す。 -->
     <div class="sbHead">
       <span class="sbTitle">WizEngine</span>
       <!-- バージョンはソースコードが正（src/Versions.cpp の engineVersion）。
            /stats の versions.WizEngine を受けて app.js が書き換える。 -->
       <span id="appVer" class="sbSub">Version</span>
-      <button id="sbClose" onclick="toggleSidebar()" title="Hide sidebar (Tab)">‹</button>
     </div>
 
     <!-- エディタ / シミュレートの切り替えは映像ヘッダー（#viewHead）に
@@ -37,11 +39,13 @@
     <div id="simTime" title="Simulated time (resets with ⟲)">t = 0.00 s</div>
 
     <section class="sbSec" data-sec="cameras">
+      <!-- カメラの一覧。エディタモード中はクリック = 選択（ギズモで移動 /
+           回転）・ダブルクリック = ページ移動・目アイコン = 小窓プレビュー、
+           見出しの ＋ で追加。それ以外ではクリック = ページ移動。削除は
+           選択して Inspector の「選択カメラ」節から。見出しクリックの
+           折りたたみと同居するので ＋ には stopPropagation が要る。 -->
       <div class="sbSecHead" onclick="toggleSection('cameras')">
         <span><span class="caret"></span>Cameras</span>
-        <!-- カメラの追加（＋）。削除は一覧の各行の 🗑。エディタモード中の
-             Editor Camera ページにだけ出る（renderCameras() が制御）。見出し
-             クリックの折りたたみと同居するので stopPropagation が要る。 -->
         <span id="camAddDel" class="secBtns" hidden>
           <button id="camAdd" title="カメラを追加"
                   onclick="event.stopPropagation(); addCamera()">＋</button>
@@ -174,6 +178,16 @@
         <div class="edHint">地面と環境光はシーンの一部（XML の
           &lt;ground&gt; / &lt;environment&gt;）として保存されます。HDR の
           差し替えは一瞬固まります（GPU で変換するため）。</div>
+        <!-- シーン全体に付いているイベントアセット（XML の &lt;events&gt;）。
+             既定の「pickup」がマウスで掴んだ物を引き寄せるスクリプトで、
+             外すと掴んでも動かなくなる。 -->
+        <div class="edLabel">イベント（シーン全体）</div>
+        <div id="edWorldEvents" class="ndList"></div>
+        <div class="edRow">
+          <select id="edWorldEventPick" class="strSel"></select>
+          <button onclick="attachEventFrom('edWorldEventPick', -1)"
+                  title="このシーン全体にイベントアセットを付ける">＋ 付ける</button>
+        </div>
       </section>
 
       <section class="sbSec" id="secObj">
@@ -232,20 +246,17 @@
             <button onclick="send('edit.duplicate')">⧉ 複製</button>
             <button class="danger" onclick="send('edit.remove')">🗑 削除</button>
           </div>
-          <!-- このオブジェクトが関わるイベントノード（Node-RED 風の設計）。
-               ＋ は選択中のオブジェクトを対象にしたノードを作り、詳細な配線は
-               ノードエディタ（映像上のオーバーレイ）で行う。 -->
+          <!-- このオブジェクトに付いているイベントアセット（Unity の
+               スクリプト欄と同じ位置づけ）。アセットの中身はアセットパネル
+               の ⚡ タイル、または下のボタンからノードエディタで編集する。
+               同じアセットを何本でも、複数のオブジェクトにも付けられる。 -->
           <div class="edLabel">イベント</div>
           <div id="edObjEvents" class="ndList"></div>
           <div class="edRow">
-            <select id="edObjNodeKind" class="strSel">
-              <option value="onCollision">⚡ 衝突したら（トリガー）</option>
-              <option value="setColor">🎨 色を変える（アクション）</option>
-              <option value="impulse">🚀 力を加える（アクション）</option>
-              <option value="setFixed">📌 固定する（アクション）</option>
-            </select>
-            <button onclick="addInspectorNode('edObjNodeKind')"
-                    title="選択中のオブジェクトを対象にノードを追加">＋</button>
+            <select id="edObjEventPick" class="strSel"></select>
+            <button onclick="attachEventFrom('edObjEventPick', 'sel')"
+                    title="選択中のオブジェクトにイベントアセットを付ける"
+                    >＋ 付ける</button>
           </div>
           <button class="wide" onclick="openNodeEditor()">⚡&#xFE0E; ノードエディタを開く</button>
         </div>
@@ -256,7 +267,7 @@
            作成時に固定（Filament のライト実体を決めるため。変えるときは
            削除して置き直し）。 -->
       <section class="sbSec" id="secLight" hidden>
-        <div class="sbSecHead">ライト</div>
+        <div class="sbSecHead">選択ライト</div>
         <div id="ltKind" class="edStatus">light</div>
         <div class="edRow">
           <span>名前</span>
@@ -326,7 +337,7 @@
            アイコンか Cameras 一覧の ✎ で選ばれる。Editor Camera 自身は
            選べない（自分の目はオービット操作で動かす）。 -->
       <section class="sbSec" id="secCam" hidden>
-        <div class="sbSecHead">カメラ</div>
+        <div class="sbSecHead">選択カメラ</div>
         <div id="cmLabel" class="edStatus">camera</div>
         <div class="edLabel">Transform</div>
         <div class="trRow" title="位置 (m) — 視点の位置">
@@ -348,7 +359,16 @@
             <input id="cmRZ" class="num" type="number" value="0" disabled></label>
         </div>
         <div class="edRow btnRow">
-          <button onclick="openCamPage()">▶ このカメラを見る</button>
+          <!-- 目のアイコンは SVG（絵文字はフォントによって出ないため）。 -->
+          <button class="eyeBtn" onclick="previewCamera()"
+                  title="このカメラの映像を別ウィンドウで表示（シミュレートに
+切り替えると閉じる）"><svg viewBox="0 0 24 24" width="13" height="13"
+                  fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linejoin="round"><path
+                  d="M1.5 12S5.5 5 12 5s10.5 7 10.5 7-4 7-10.5 7S1.5 12 1.5 12z"/>
+                  <circle cx="12" cy="12" r="3.2"/></svg> プレビュー</button>
+          <button onclick="openCamPage()"
+                  title="このカメラのページへ移動する">▶ 見る</button>
           <button class="danger" onclick="removeCamera()">🗑 削除</button>
         </div>
         <!-- このカメラを対象にしたイベントノード。 -->
@@ -592,26 +612,17 @@
       <div class="ndWin">
       <div class="ndHead">
         <span class="ndTitle">⚡&#xFE0E; イベント設計</span>
+        <!-- どのイベントアセットを編集しているか。ノードはアセットの中に
+             属するので、まずここで選ぶ（アセットパネルの ⚡ タイルを
+             クリックしても切り替わる）。 -->
+        <select id="ndAssetSel" class="strSel" onchange="ndSelectAsset(this.value)"
+                title="編集するイベントアセット"></select>
+        <!-- ノードの追加・イベントの作成 / 削除はキャンバスの右クリック
+             （コンテキストメニュー）に一本化した。見出しに並べたボタンは
+             種類が増えるほど読めなくなるので、置く場所で決まる操作は
+             置きたい場所で選ぶ。 -->
         <span class="ndPalette">
-          <button onclick="paletteAdd('onCollision')"
-                  title="対象が何かに新しく触れたら発火">＋衝突</button>
-          <button onclick="paletteAdd('onStart')"
-                  title="シミュレート開始で 1 回発火">＋開始</button>
-          <button onclick="paletteAdd('onTimer')"
-                  title="一定間隔で繰り返し発火">＋タイマー</button>
-          <span class="gzSep"></span>
-          <button onclick="paletteAdd('setColor')"
-                  title="オブジェクトの色を変える（停止で元に戻る）">＋色</button>
-          <button onclick="paletteAdd('impulse')"
-                  title="オブジェクトに速度を与える">＋力</button>
-          <button onclick="paletteAdd('setFixed')"
-                  title="オブジェクトを固定 / 解除する">＋固定</button>
-          <button onclick="paletteAdd('lightColor')"
-                  title="ライトの色を変える（停止で元に戻る）">＋ライト色</button>
-          <button onclick="paletteAdd('lightIntensity')"
-                  title="ライトの強さを変える（停止で元に戻る）">＋ライト強</button>
-          <button onclick="paletteAdd('cameraLookAt')"
-                  title="カメラの注視点をオブジェクトへ向ける">＋注視</button>
+          <span class="ndHeadHint">キャンバスを右クリックでノードを追加</span>
         </span>
         <button id="ndClose" onclick="closeNodeEditor()" title="閉じる">✕</button>
       </div>
@@ -621,7 +632,12 @@
       </div>
       <div class="ndHint">トリガー（橙）右の ● からアクション（青）へドラッグで
         接続 ／ 線をクリックで切断 ／ ノードは見出しをドラッグで移動、✕ で削除。
-        アクションの色・力はシミュレート中だけ効き、停止で設計値に戻ります。</div>
+        アクションの色・力はシミュレート中だけ効き、停止で設計値に戻ります。
+        対象が「(付けた相手)」のノードは、このアセットを付けたオブジェクト
+        （またはトリガーが掴んだ / 触れた物）に働きます。アセットは
+        Inspector の「イベント」から付けて初めて動きます。
+        <b>右クリック</b>: 何もない所でノードの追加とイベントの作成 / 削除、
+        ノードの上でそのノードの削除。</div>
       </div><!-- /.ndWin -->
     </div>
     <!-- シーン XML エディタ。ノードエディタと同じモーダルの流儀（.ndBack /
@@ -677,7 +693,8 @@
     <div class="asHead" onclick="toggleAssets()">
       <span><span class="caret"></span>Assets</span>
       <span class="asHint">クリック: プリミティブを配置 ／
-        ダブルクリック: シーンを読込 ／ 右下で高さ変更</span>
+        ダブルクリック: シーンを読込 ／ <b>右クリック: メニュー（イベントの
+        作成・削除・付ける）</b> ／ 右下で高さ変更</span>
     </div>
     <!-- 操作列。Inspector を「選択オブジェクトの内容」だけに絞ったので、
          新規オブジェクトの初期値とシーンの保存/全消しはここが受け持つ

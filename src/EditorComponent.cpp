@@ -25,6 +25,14 @@ ed::Vec3d placeInFrontOf(Scene& scene, std::size_t camIndex, double halfHeight) 
     return {p.x(), std::max(0.0, p.y()) + halfHeight, p.z()};
 }
 
+// リクエストが指しているイベントアセットの名前（正規化済み。無ければ空）。
+// ノード・ワイヤーの操作は必ずこれを伴う - 名前が空なら Scene 側で
+// 「イベントが見つかりません」になって何も起きない。
+std::string eventAssetName(const nlohmann::json& msg) {
+    if (!msg.contains("asset") || !msg["asset"].is_string()) return std::string();
+    return ed::sanitizeEventName(msg["asset"].get<std::string>());
+}
+
 // そのカメラが今つかんでいるオブジェクト番号（無ければ -1）。
 int selectionOf(Scene& scene, std::size_t camIndex) {
     const std::size_t sel = scene.boxController(camIndex).selected();
@@ -216,9 +224,47 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         return true;
     }
 
-    // ---- イベントグラフ（ノードエディタ）----------------------------------
+    // ---- イベントアセット（ノードエディタ）--------------------------------
     // edit.set と同じくモードは問わない: シミュレートを回しながらトリガーや
     // アクションを調整して発火を確かめる、という使い方を許す。
+    // ノード / ワイヤーの操作は必ず「どのアセットか」を伴う（同じ id が別の
+    // アセットにも居るので、名前が無いと別のノードを触ってしまう）。
+    if (what == "event.add" || what == "event.remove") {
+        const std::string raw =
+            (msg.contains("name") && msg["name"].is_string())
+                ? msg["name"].get<std::string>()
+                : std::string();
+        const std::string name = ed::sanitizeEventName(raw);
+        if (name.empty()) {
+            state.setStatus("イベント名は英数字と _ - だけです");
+            return true;
+        }
+        EditorState::Op op;
+        op.kind = what;
+        op.args = {{"name", name}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    if (what == "event.attach" || what == "event.detach") {
+        const std::string name = ed::sanitizeEventName(
+            (msg.contains("name") && msg["name"].is_string())
+                ? msg["name"].get<std::string>()
+                : std::string());
+        if (name.empty()) return true;
+        // 付け先: -1（既定）= ワールド、0 以上 = オブジェクト番号。省略時は
+        // 「いま選んでいるオブジェクト」（Inspector の付けるボタン）。
+        int target = ed::jsonInt(msg, "target", -2);
+        if (target == -2) target = selectionOf(scene, camIndex);
+        EditorState::Op op;
+        op.kind = what;
+        op.args = {{"name", name}, {"target", target}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
     if (what == "node.add") {
         // kind も型を確かめてから読む（/input は生 JSON。文字列以外が来ても
         // 落とさず既定にする - jsonInt / jsonNumber と同じ理由）。
@@ -234,13 +280,13 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
             if (msg.contains(key)) args[key] = msg[key];
         }
         args["kind"] = ed::nodeKindName(kind);  // 名前の揺れはここで正規化
-        // 対象を省いたら「今選んでいるもの」。Inspector の「＋」ボタンは
-        // 選択中の対象に対するノードを作る操作なので、それが既定になる。
+        args["asset"] = eventAssetName(msg);
+        // オブジェクトを対象にするノードは、対象を省いたら -1 のまま
+        // （= 付いている相手 / トリガーが渡した物）。アセットは付け回す
+        // 部品なので、作った瞬間に特定の番号へ縛らない。ライトとカメラは
+        // 「付いている相手」を持てないので、選んでいるものを既定にする。
         if (!msg.contains("target")) {
             switch (ed::nodeTargetKind(kind)) {
-                case ed::NodeTargetKind::Object:
-                    args["target"] = selectionOf(scene, camIndex);
-                    break;
                 case ed::NodeTargetKind::Light:
                     if (state.selKind() == EditorState::SelKind::Light) {
                         args["target"] = state.selIndex();
@@ -251,6 +297,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
                         args["target"] = state.selIndex();
                     }
                     break;
+                case ed::NodeTargetKind::Object:
                 case ed::NodeTargetKind::None:
                     break;
             }
@@ -269,6 +316,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         // 送られてきたキーだけを積む（updateGraphNode が「無いキーは今の値」）。
         nlohmann::json args;
         args["id"] = id;
+        args["asset"] = eventAssetName(msg);
         for (const char* key :
              {"x", "y", "target", "other", "seconds", "color", "vec", "value"}) {
             if (msg.contains(key)) args[key] = msg[key];
@@ -284,7 +332,8 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
     if (what == "node.remove") {
         EditorState::Op op;
         op.kind = "node.remove";
-        op.args = {{"id", ed::jsonInt(msg, "id", -1)}};
+        op.args = {{"id", ed::jsonInt(msg, "id", -1)},
+                   {"asset", eventAssetName(msg)}};
         op.camera = camIndex;
         state.push(std::move(op));
         return true;
@@ -294,7 +343,8 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         EditorState::Op op;
         op.kind = what;
         op.args = {{"from", ed::jsonInt(msg, "from", -1)},
-                   {"to", ed::jsonInt(msg, "to", -1)}};
+                   {"to", ed::jsonInt(msg, "to", -1)},
+                   {"asset", eventAssetName(msg)}};
         op.camera = camIndex;
         state.push(std::move(op));
         return true;

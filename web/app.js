@@ -19,6 +19,12 @@
   // （モード切替自体はどのカメラのページからでも許可されている。）
   const wantEditorOnLoad = ['edit', 'editor'].includes(
       new URLSearchParams(location.search).get('mode'));
+  // ?popup=1 は「カメラのプレビュー窓」として開かれたページ（Inspector の
+  // 👁）。映像だけにして、サイドバー・アセットパネル・モード切替は出さない
+  // - 編集の道具は元のページにあり、こちらは見るための窓なので。
+  if (new URLSearchParams(location.search).get('popup') === '1') {
+    document.body.classList.add('popup');
+  }
   let editorModeRequested = false;
   let blockedTries = 0;
   let statsTimer = null;
@@ -121,7 +127,9 @@
   //
   // "Did I hit an object?" is decided by the SERVER: a press always sends a
   // pick, and while the drag continues the server either pulls the object it
-  // picked or, if the press hit nothing, orbits the camera instead. Deciding
+  // picked - シミュレート中に実際に引き寄せるのはシーンのイベントアセット
+  // （既定の "pickup"）で、外せば掴んでも動かない - or, if the press hit
+  // nothing, orbits the camera instead. Deciding
   // in the browser would need a round trip first, which swallows the start of
   // the gesture - very noticeable on touch.
   const ORBIT_RAD_PER_PX = 0.005;
@@ -946,9 +954,7 @@
     const el = document.getElementById('camList');
     // Every camera lives on the SAME port under its own path ("/cam0/",
     // "/cam1/", ...); the server sends the list.
-    const editing = sceneData.mode === 'editor' && isEditorCam();
     const eSel = myEditorSel();
-    const eCam = (sceneData.editorCam !== undefined) ? sceneData.editorCam : 0;
     el.innerHTML = '';
     for (const c of sceneData.cameras) {
       if (c.active === false) continue;  // 「削除」されたスロットは出さない
@@ -965,41 +971,45 @@
         '<span>' + cameraName(c.index) + (isMe ? ' (this)' : '') + '</span>' +
         '<span class="sub' + (busy && !isMe ? ' busy' : '') + '">' +
         state + '</span>';
-      // エディタ中は、行のクリック（ページ移動）とは別に ✎（エディタ選択）
-      // と 🗑（削除）を常に出す。Editor Camera 自身は選べない・消せない。
-      if (owner && editing && c.index !== eCam) {
-        const btn = document.createElement('span');
-        btn.className = 'camEdit' + (edSel ? ' on' : '');
-        btn.textContent = '✎';
-        btn.title = edSel ? '選択中（もう一度で解除）'
-                          : 'エディタで選択（位置・向きを編集）';
-        btn.onclick = (e) => {
-          e.stopPropagation();
-          selectCamera(c.index);
-          // 選択したらインスペクタを開く。編集の続き（数値・削除）が
-          // そこにあるので、タブを探させない。
-          if (!edSel) showTab('editor');
-        };
-        row.appendChild(btn);
-        const del = document.createElement('span');
-        del.className = 'camEdit del';
-        del.textContent = '🗑';
-        del.title = 'このカメラを削除';
-        del.onclick = (e) => { e.stopPropagation(); removeCameraAt(c.index); };
-        row.appendChild(del);
-      }
+      // 行クリックの意味はモードで変わる（Unity のヒエラルキーと同じ感覚）:
+      //   * エディタモード×Editor Camera のページ … **選択**。ビューに
+      //     ギズモが出て移動 / 回転できる（もう一度クリックで解除）。ページ
+      //     移動はダブルクリック、映像の確認は目アイコン（別ウィンドウ）。
+      //   * それ以外（シミュレート中・他のカメラのページ）… 従来どおり
+      //     そのカメラのページへ移動。
+      // 数値での編集・削除・追加は Inspector のカメラ節。
       if (!isMe) {
-        row.title = 'Switch to this camera';
-        // Same tab: leaving this page also releases the viewer session, so the
-        // camera we came from frees up immediately.
-        row.onclick = () => { location.href = camPath(c.index); };
+        const canEditHere =
+          owner && sceneData.mode === 'editor' && isEditorCam();
+        if (canEditHere) {
+          row.title = 'クリックで選択（ギズモで移動 / 回転）／' +
+                      'ダブルクリックでこのカメラのページへ';
+          row.onclick = () => selectCamera(c.index);
+          row.ondblclick = () => { location.href = camPath(c.index); };
+          const eye = document.createElement('span');
+          eye.className = 'camEdit eye';
+          eye.innerHTML = EYE_SVG;
+          eye.title = 'このカメラの映像を別ウィンドウで表示' +
+                      (busy ? '（いま別のブラウザが視聴中です）' : '');
+          eye.onclick = (e) => {
+            e.stopPropagation();
+            openCamPopup(c.index);
+          };
+          row.appendChild(eye);
+        } else {
+          row.title = 'Switch to this camera';
+          // Same tab: leaving this page also releases the viewer session, so
+          // the camera we came from frees up immediately.
+          row.onclick = () => { location.href = camPath(c.index); };
+        }
       }
       el.appendChild(row);
     }
     // 見出し横の ＋（追加）。エディタモード×Editor Camera のページでだけ
-    // 出す。削除は各行の 🗑（見出しに － は置かない）。
+    // 出す。削除は選択して Inspector の「選択カメラ」節から。
     const hdr = document.getElementById('camAddDel');
-    hdr.hidden = !(owner && editing);
+    const editing = owner && sceneData.mode === 'editor' && isEditorCam();
+    hdr.hidden = !editing;
     if (!hdr.hidden) {
       const anyFree = sceneData.cameras.some((c) => c.active === false);
       const add = document.getElementById('camAdd');
@@ -1064,9 +1074,13 @@
       const dot = (o.heldBy >= 0)
         ? '<span class="dot" style="background:' + colorOf(o.heldBy) + '"></span>'
         : '<span class="dot"></span>';
+      // イベントアセットが付いている物には ⚡（何本付いているかを title に）。
+      const ev = (o.events && o.events.length)
+        ? '<span class="ndFire" title="イベント: ' + o.events.join(', ') +
+          '">⚡' + o.events.length + '</span>' : '';
       html += '<div class="item' + (isMine ? ' sel' : '') +
               '" onclick="selectObject(' + o.index + ')">' + dot +
-              '<span>' + labelOf(o) + (o.fixed ? ' ⚓' : '') + '</span>' +
+              '<span>' + labelOf(o) + (o.fixed ? ' ⚓' : '') + '</span>' + ev +
               '<span class="sub">' + o.y.toFixed(2) + 'm</span></div>';
     }
     if (rows.length > shown.length) {
@@ -1316,6 +1330,198 @@
     const c = sceneData && sceneData.selectedCamera;
     if (c) location.href = camPath(c.index);
   }
+  function previewCamera() {  // 選択カメラ節の 👁（一覧の 👁 と同じ）
+    const c = sceneData && sceneData.selectedCamera;
+    if (c) openCamPopup(c.index);
+  }
+
+  // ---- カメラのプレビュー（別ウィンドウ）------------------------------------
+  // 編集中のカメラが何を映しているかは、そのカメラのページを小さく開くのが
+  // 一番確実（映像はカメラごとに別の WebRTC 受け口があり、視聴は 1 カメラ
+  // 1 ブラウザ）。?popup=1 のページはサイドバーとアセットパネルを畳んで
+  // 映像だけにする。**シミュレートへ切り替えると閉じる** - 編集のための窓
+  // なので、走らせる段になったら残さない。
+  // 目のアイコン。👁 の絵文字はフォントによって出ない・灰色に沈むので、
+  // インライン SVG で描く（currentColor なので色は .camEdit に従う）。
+  const EYE_SVG =
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linejoin="round" ' +
+    'aria-label="preview">' +
+    '<path d="M1.5 12S5.5 5 12 5s10.5 7 10.5 7-4 7-10.5 7S1.5 12 1.5 12z"/>' +
+    '<circle cx="12" cy="12" r="3.2"/></svg>';
+  const camPopups = new Map();   // カメラ番号 -> window（フォールバック経路）
+
+  // 入口。アドレスバーの無い小窓 = Document Picture-in-Picture
+  // (Chrome / Edge 116+) を優先し、無いブラウザは従来のポップアップへ。
+  // 通常のポップアップ（window.open）からアドレスバーを消すことは
+  // ブラウザの仕様上できない（なりすまし対策で URL 表示が強制される）。
+  function openCamPopup(index) {
+    if (window.documentPictureInPicture) {
+      openCamPip(index);   // クリック（ユーザー操作）から呼ばれる前提
+      return;
+    }
+    openCamWindow(index);
+  }
+
+  function openCamWindow(index) {
+    const open = camPopups.get(index);
+    if (open && !open.closed) { open.focus(); return; }
+    const w = window.open(camPath(index) + '?popup=1', 'wizcam' + index,
+                          'popup=yes,width=880,height=560');
+    if (!w) {
+      alert('ポップアップがブロックされました。このサイトのポップアップを' +
+            '許可してください。');
+      return;
+    }
+    camPopups.set(index, w);
+  }
+
+  // ---- Document PiP（アドレスバー無し・常時前面）---------------------------
+  // 小窓の中にページは開かず、**このページが** そのカメラの WHEP へ 2 本目の
+  // 接続を張り、video 要素だけを PiP ウィンドウへ入れる。視聴セッションは
+  // カメラごとに独立（トークンも別）なので、編集中のこのページの映像とは
+  // 干渉しない。PiP はブラウザ全体で同時 1 窓なので、こちらも 1 台ぶんだけ
+  // 持つ（別のカメラを開いたら前の窓を閉じて張り替える）。
+  let pip = null;  // {win, index, token, pc, ping, retry}
+
+  function closeCamPip() {
+    if (!pip) return;
+    const p = pip;
+    pip = null;   // 先に外す: close() が pagehide を呼び戻すため
+    clearInterval(p.ping);
+    clearTimeout(p.retry);
+    try { if (p.pc) p.pc.close(); } catch (e) { /* 既に閉じている */ }
+    // 視聴セッションをすぐ返す（放置しても 6 秒の無応答で解放はされる）。
+    try { navigator.sendBeacon(camPath(p.index) + 'viewer/leave', p.token); }
+    catch (e) { /* ページごと閉じる途中 */ }
+    try { if (!p.win.closed) p.win.close(); } catch (e) { /* 同上 */ }
+  }
+
+  async function openCamPip(index) {
+    if (pip && pip.index === index && !pip.win.closed) return;  // もう出ている
+    closeCamPip();
+    let win;
+    try {
+      win = await documentPictureInPicture.requestWindow(
+          { width: 640, height: 380 });
+    } catch (e) {
+      // ユーザー操作の判定切れなど。従来のポップアップへ落とす。
+      openCamWindow(index);
+      return;
+    }
+    const doc = win.document;
+    const style = doc.createElement('style');
+    style.textContent =
+      'body{margin:0;background:#000;overflow:hidden;' +
+      'font:12px system-ui,sans-serif;color:#cfd3da}' +
+      'video{width:100vw;height:100vh;object-fit:contain;background:#000}' +
+      '#st{position:fixed;left:8px;top:6px;text-shadow:0 1px 3px #000}';
+    doc.head.appendChild(style);
+    const v = doc.createElement('video');
+    v.autoplay = true;
+    v.muted = true;
+    v.playsInline = true;
+    const st = doc.createElement('div');
+    st.id = 'st';
+    st.textContent = cameraName(index) + ' - connecting…';
+    doc.body.appendChild(v);
+    doc.body.appendChild(st);
+
+    const myToken = (crypto.randomUUID && crypto.randomUUID()) ||
+        (Date.now() + '-' + Math.random().toString(16).slice(2));
+    pip = { win: win, index: index, token: myToken, pc: null, ping: null,
+            retry: null };
+    // ✕ で閉じたら接続も畳む（開いた元のページが消えるときはブラウザが
+    // PiP 窓ごと閉じる）。
+    win.addEventListener('pagehide', () => {
+      if (pip && pip.win === win) closeCamPip();
+    });
+    pipConnect(v, st);
+  }
+
+  // 2 本目の WHEP 接続。connectWebRTC と同じ握手だが、対象はカメラ index の
+  // 受け口で、失敗はページ全体ではなくこの小窓の中だけの話にする。
+  async function pipConnect(v, st) {
+    const p = pip;
+    if (!p || p.win.closed) return;
+    const again = (msg, delayMs) => {   // 小窓が開いている限り静かに再試行
+      st.textContent = cameraName(p.index) + ' - ' + msg;
+      clearTimeout(p.retry);
+      p.retry = setTimeout(() => pipConnect(v, st), delayMs);
+    };
+    try {
+      const pc = new RTCPeerConnection();
+      p.pc = pc;
+      const tx = pc.addTransceiver('video', { direction: 'recvonly' });
+      try {
+        // 提示コーデックはサーバーの実際のエンコードに絞る（本体と同じ理由）。
+        const caps = RTCRtpReceiver.getCapabilities('video');
+        if (caps && tx.setCodecPreferences) {
+          const want = 'video/' + (window.WIZ_CODEC || 'H264');
+          let picked = caps.codecs.filter(
+            (c) => c.mimeType.toUpperCase() === want.toUpperCase());
+          const pm1 = picked.filter(
+            (c) => (c.sdpFmtpLine || '').includes('packetization-mode=1'));
+          if (pm1.length) picked = pm1;
+          if (picked.length) tx.setCodecPreferences(picked);
+        }
+      } catch (e) { /* 古いブラウザ: 既定の並びのまま */ }
+      pc.ontrack = (e) => {
+        v.srcObject = e.streams[0];
+        v.play().catch(() => {});
+        st.textContent = '';
+      };
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await new Promise((resolve) => {   // ICE は 2 秒で見切る（本体と同じ）
+        if (pc.iceGatheringState === 'complete') return resolve();
+        const done = () => {
+          if (pc.iceGatheringState === 'complete') {
+            clearTimeout(t);
+            resolve();
+          }
+        };
+        const t = setTimeout(resolve, 2000);
+        pc.addEventListener('icegatheringstatechange', done);
+      });
+      if (!pip || pip !== p || p.win.closed) { pc.close(); return; }
+      const resp = await fetch(camPath(p.index) + 'whep', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/sdp',
+                   'X-Viewer-Token': p.token },
+        body: pc.localDescription.sdp
+      });
+      if (resp.status === 409) {   // そのカメラは誰かが視聴中
+        pc.close();
+        return again('別のブラウザが視聴中です。再試行します…', 2000);
+      }
+      if (!resp.ok) {
+        pc.close();
+        return again('接続に失敗 (' + resp.status + ')。再試行します…', 3000);
+      }
+      const answer = await resp.text();
+      await pc.setRemoteDescription({ type: 'answer', sdp: answer });
+      // 視聴セッションの維持（本体と同じ 2 秒間隔。切れると 6 秒で解放）。
+      clearInterval(p.ping);
+      p.ping = setInterval(() => {
+        fetch(camPath(p.index) + 'viewer/ping',
+              { method: 'POST', body: p.token }).catch(() => {});
+      }, 2000);
+    } catch (e) {
+      again('接続に失敗。再試行します…', 3000);
+    }
+  }
+
+  function closeCamPopups() {
+    closeCamPip();
+    for (const w of camPopups.values()) {
+      try { if (w && !w.closed) w.close(); } catch (e) { /* 既に閉じている */ }
+    }
+    camPopups.clear();
+  }
+  // 開いた元のページが消えるときも閉じる（残すとそのカメラの視聴権を
+  // 握ったままになる）。
+  window.addEventListener('pagehide', closeCamPopups);
 
   function setJointPartner() {
     const sel = mySelectedDesc();
@@ -1611,8 +1817,16 @@
       document.getElementById('edSZ').disabled = sphere;
     }
 
-    // Inspector のイベント節（選択中の対象が関わるノードの一覧）。
-    if (sel) renderNodesFor('object', sel.index, 'edObjEvents');
+    // シミュレートへ戻したら、編集のための窓（カメラのプレビュー）は閉じる。
+    if (!editing) closeCamPopups();
+
+    // Inspector のイベント節。オブジェクトと World は「付いているアセット」、
+    // ライト / カメラはそれを対象にしているノードの一覧（付け先になれない）。
+    renderEventAttachments('edWorldEvents', 'edWorldEventPick', worldEvents(), -1);
+    if (sel) {
+      renderEventAttachments('edObjEvents', 'edObjEventPick', sel.events || [],
+                             sel.index);
+    }
     if (lightSel) renderNodesFor('light', lightSel.index, 'edLightEvents');
     if (camSel) renderNodesFor('camera', camSel.index, 'edCamEvents');
 
@@ -1673,8 +1887,12 @@
 
     const files = sceneData.files || [];
     const meshes = sceneData.meshes || [];
+    const events = eventAssets();
+    currentAsset();  // ndAsset を今ある一覧に合わせる（タイルの選択表示用）
     const key = files.join('|') + '@' + (sceneData.sceneFile || '') + '#' +
-      meshes.map((m) => m.name).join('|');
+      meshes.map((m) => m.name).join('|') + '%' +
+      events.map((e) => e.name + ':' + (e.nodes || []).length).join('|') +
+      '&' + ndAsset;
     if (key === assetListKey) return;  // 変化が無ければ DOM を組み直さない
     assetListKey = key;
 
@@ -1710,6 +1928,20 @@
         '<span class="ico">🧊</span><span class="name">' + esc(m.name) +
         '</span><span class="kind">mesh</span></div>';
     });
+    // イベントアセット（ノードで組むスクリプト）。クリックでノードエディタが
+    // そのアセットに切り替わり、**右クリックで作成・削除・付ける**
+    // （data-event がその対象。名前はサーバー側で英数字と _ - に正規化済み
+    // なので、そのまま属性へ埋めてよい）。
+    for (const e of events) {
+      const cur = e.name === ndAsset;
+      html += '<div class="asItem' + (cur ? ' sel' : '') +
+        '" data-event="' + e.name +
+        '" title="クリック: ノードエディタで開く（' + (e.nodes || []).length +
+        ' ノード） ／ 右クリック: メニュー" onclick="openEventAsset(\'' +
+        e.name + '\')">' +
+        '<span class="ico">⚡&#xFE0E;</span><span class="name">' + esc(e.name) +
+        '</span><span class="kind">event</span></div>';
+    }
     for (const f of files) {
       const cur = f === sceneData.sceneFile;
       html += '<div class="asItem' + (cur ? ' sel' : '') +
@@ -1734,21 +1966,73 @@
     send('edit.load', { name: name });
   }
 
+  // アセットパネルの右クリック。イベントアセットの作成・削除・付けるは
+  // ここが入口（タイルの上か、何もない所か）。
+  document.getElementById('assets').addEventListener('contextmenu', (e) => {
+    if (!owner || !sceneData || sceneData.mode !== 'editor' || !isEditorCam()) {
+      return;
+    }
+    const tile = e.target.closest ? e.target.closest('[data-event]') : null;
+    const sel = mySelectedDesc();
+    if (!tile) {
+      showContextMenu(e, [{ label: '✨ 新しいイベント…', onClick: newEventAsset }]);
+      return;
+    }
+    const name = tile.dataset.event;
+    showContextMenu(e, [
+      { head: '⚡ ' + name },
+      { label: 'ノードエディタで開く', onClick: () => openEventAsset(name) },
+      { sep: true },
+      { label: '＋ シーン全体に付ける', hint: 'World',
+        onClick: () => attachEvent(name, -1) },
+      { label: '＋ 選択オブジェクトに付ける',
+        hint: sel ? ('#' + sel.index) : '未選択', disabled: !sel,
+        onClick: () => attachEvent(name, 'sel') },
+      { sep: true },
+      { label: '✨ 新しいイベント…', onClick: newEventAsset },
+      { label: '🗑 このイベントを削除', danger: true,
+        onClick: () => removeEventAsset(name) },
+    ]);
+  });
+
+  // Inspector の「イベント」一覧の右クリック（開く / 外す）。行は
+  // renderEventAttachments が data-event / data-owner を付けて出す。
+  document.getElementById('paneEditor').addEventListener('contextmenu', (e) => {
+    if (!owner || !sceneData || sceneData.mode !== 'editor') return;
+    const row = e.target.closest ? e.target.closest('[data-event]') : null;
+    if (!row) return;
+    const name = row.dataset.event;
+    const owner_ = row.dataset.owner;  // '-1' = World、数値 = オブジェクト番号
+    showContextMenu(e, [
+      { head: '⚡ ' + name },
+      { label: 'ノードエディタで開く', onClick: () => openEventAsset(name) },
+      { label: '✕ ここから外す', danger: true,
+        onClick: () => detachEvent(name, parseInt(owner_, 10)) },
+    ]);
+  });
+
   // ---- ノードエディタ（Node-RED 風のイベント設計）--------------------------
-  // グラフの実体はサーバー（/scene の graph = {nodes, wires}）。ここでやるのは
-  // 描画と、編集コマンド（edit.node.* / edit.wire.*）の送信だけ。ポーリングが
-  // 0.5 秒ごとに上書きしてくるので、ドラッグ中とノード内の入力にフォーカスが
-  // あるあいだは DOM を組み直さない（setField の「編集中の欄は触らない」と
-  // 同じ発想）。ノードの座標はキャンバス左上原点の px で、サーバーが保存する。
+  // グラフの実体はサーバー（/scene の events = {assets:[{name,nodes,wires}],
+  // world:[名前]}）。ノードは「イベントアセット」の中にあり、アセットを
+  // オブジェクトかシーン全体に**付けて**初めて動く（Unity のスクリプトと
+  // 同じ関係）。ここでやるのは描画と、編集コマンド（edit.node.* /
+  // edit.wire.* / edit.event.*）の送信だけ。編集コマンドには必ず今のアセット
+  // 名（ndAsset）を添える - 同じ id のノードが別のアセットにも居るため。
+  // ポーリングが 0.5 秒ごとに上書きしてくるので、ドラッグ中とノード内の
+  // 入力にフォーカスがあるあいだは DOM を組み直さない（setField の
+  // 「編集中の欄は触らない」と同じ発想）。ノードの座標はキャンバス左上原点の
+  // px で、サーバーが保存する。
   const NODE_W = 168;   // ノードの幅。ポート（結線の端点）の X 計算に使う
   const PORT_Y = 16;    // 見出し行にあるポートの Y（ノード上端から）
   const NODE_DEF = {
     onCollision:    { icon: '⚡', label: '衝突したら', trigger: true,  target: 'object' },
     onStart:        { icon: '▶',  label: '開始したら', trigger: true,  target: 'none' },
     onTimer:        { icon: '⏱',  label: 'タイマー',   trigger: true,  target: 'none' },
+    onGrab:         { icon: '🖱', label: '掴んでいる間', trigger: true, target: 'object' },
     setColor:       { icon: '🎨', label: '色を変える', trigger: false, target: 'object' },
     impulse:        { icon: '🚀', label: '力を加える', trigger: false, target: 'object' },
     setFixed:       { icon: '📌', label: '固定する',   trigger: false, target: 'object' },
+    grabPull:       { icon: '🧲', label: 'カーソルへ引き寄せる', trigger: false, target: 'object' },
     lightColor:     { icon: '💡', label: 'ライトの色', trigger: false, target: 'light' },
     lightIntensity: { icon: '🔆', label: 'ライトの強さ', trigger: false, target: 'light' },
     cameraLookAt:   { icon: '🎥', label: '注視する',   trigger: false, target: 'camera' },
@@ -1757,6 +2041,81 @@
   let ndGraphKey = '';   // 前回組み立てたグラフ+選択肢のキー（変化検知）
   let ndDrag = null;     // ノード移動中 {id, el, offX, offY, x, y}
   let ndWireDrag = null; // 結線中 {from, x1, y1, x2, y2}
+  let ndAsset = '';      // いま編集しているイベントアセット名
+
+  // ---- イベントアセット -----------------------------------------------------
+  // 一覧はサーバーが持つ。ndAsset が消えた / まだ決まっていないときは先頭を
+  // 選び直す（何も選ばれていない状態のまま編集コマンドを送らないため）。
+  function eventAssets() {
+    return (sceneData && sceneData.events && sceneData.events.assets) || [];
+  }
+  function worldEvents() {
+    return (sceneData && sceneData.events && sceneData.events.world) || [];
+  }
+  function currentAsset() {
+    const list = eventAssets();
+    let a = list.find((x) => x.name === ndAsset);
+    if (!a && list.length) {
+      a = list[0];
+      ndAsset = a.name;
+    }
+    if (!list.length) ndAsset = '';
+    return a || null;
+  }
+  // 描画用の空グラフ（アセットが 1 つも無いとき）。
+  function currentGraph() {
+    return currentAsset() || { name: '', nodes: [], wires: [] };
+  }
+  function ndSelectAsset(name) {
+    ndAsset = name;
+    ndGraphKey = '';
+    renderNodeEditor(true);
+  }
+  // アセットパネルの ⚡ タイル / Inspector の一覧から開く。
+  function openEventAsset(name) {
+    ndAsset = name;
+    ndGraphKey = '';
+    openNodeEditor();
+  }
+  function newEventAsset() {
+    const name = prompt('新しいイベントアセットの名前（英数字と _ -）', 'event');
+    if (name === null) return;
+    const clean = String(name).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+    if (!clean) return;
+    ndAsset = clean;   // 作られたら次のポーリングでこれが選ばれる
+    ndGraphKey = '';
+    send('edit.event.add', { name: clean });
+  }
+  // 名前を省くと今編集しているアセット。
+  function removeEventAsset(name) {
+    const target = name || (currentAsset() ? currentAsset().name : '');
+    if (!target) return;
+    if (!confirm('イベント「' + target +
+                 '」を削除します。付けてある先からも外れます。')) {
+      return;
+    }
+    send('edit.event.remove', { name: target });
+    if (target === ndAsset) ndAsset = '';
+    ndGraphKey = '';
+  }
+  // 付ける / 外す。target は -1 = シーン全体、数値 = オブジェクト番号、
+  // 'sel' = いま選んでいるオブジェクト。
+  function attachEventFrom(selectId, target) {
+    const el = document.getElementById(selectId);
+    if (!el || !el.value) return;
+    attachEvent(el.value, target);
+  }
+  function resolveEventTarget(target) {
+    if (target !== 'sel') return target;
+    const sel = mySelectedDesc();
+    return sel ? sel.index : -1;
+  }
+  function attachEvent(name, target) {
+    send('edit.event.attach', { name: name, target: resolveEventTarget(target) });
+  }
+  function detachEvent(name, target) {
+    send('edit.event.detach', { name: name, target: resolveEventTarget(target) });
+  }
 
   // 名前はユーザーの自由入力なので、innerHTML に混ぜる前に必ず通す。
   const ndEsc = (s) => String(s).replace(/[&<>"']/g, (c) => ({
@@ -1764,8 +2123,83 @@
   }[c]));
 
   function nodeById(id) {
-    const g = sceneData && sceneData.graph;
-    return g ? (g.nodes || []).find((n) => n.id === id) || null : null;
+    return (currentGraph().nodes || []).find((n) => n.id === id) || null;
+  }
+
+  // ---- 右クリックメニュー ---------------------------------------------------
+  // 「置く場所で決まる操作」は置きたい場所で選ぶのが一番短い（ノードの追加は
+  // 置きたい座標で、イベントの作成 / 付けるはそのタイルの上で）。見出しに
+  // ボタンを並べる方式は種類が増えるほど読めなくなるので、こちらへ移した。
+  // items の各要素は {label, hint, onClick, danger, disabled} / {sep:true} /
+  // {head:'見出し'}。false を混ぜてよい（条件付きの項目をそのまま書ける）。
+  let ctxEl = null;
+  function hideContextMenu() {
+    if (ctxEl) { ctxEl.remove(); ctxEl = null; }
+  }
+  function showContextMenu(ev, items) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    hideContextMenu();
+    const list = (items || []).filter(Boolean);
+    if (!list.length) return;
+    const m = document.createElement('div');
+    m.id = 'ctxMenu';
+    for (const it of list) {
+      if (it.sep) {
+        const sep = document.createElement('div');
+        sep.className = 'ctxSep';
+        m.appendChild(sep);
+        continue;
+      }
+      if (it.head) {
+        const head = document.createElement('div');
+        head.className = 'ctxHead';
+        head.textContent = it.head;
+        m.appendChild(head);
+        continue;
+      }
+      const row = document.createElement('div');
+      row.className = 'ctxItem' + (it.danger ? ' danger' : '') +
+                      (it.disabled ? ' off' : '');
+      row.innerHTML = '<span>' + ndEsc(it.label) + '</span>' +
+        (it.hint ? '<span class="hint">' + ndEsc(it.hint) + '</span>' : '');
+      if (!it.disabled && it.onClick) {
+        row.onclick = () => { hideContextMenu(); it.onClick(); };
+      }
+      m.appendChild(row);
+    }
+    // いったん置いてから測って、画面からはみ出さない位置へ寄せる。
+    // フルスクリーン中はその要素の中に置く（外に出すと描画されない）。
+    (document.fullscreenElement || document.body).appendChild(m);
+    const r = m.getBoundingClientRect();
+    m.style.left =
+      Math.max(4, Math.min(ev.clientX, window.innerWidth - r.width - 6)) + 'px';
+    m.style.top =
+      Math.max(4, Math.min(ev.clientY, window.innerHeight - r.height - 6)) + 'px';
+    ctxEl = m;
+  }
+  // 外側を押したら閉じる（capture で拾って、下の要素の操作は邪魔しない）。
+  document.addEventListener('pointerdown', (e) => {
+    if (ctxEl && !ctxEl.contains(e.target)) hideContextMenu();
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideContextMenu();
+  });
+  window.addEventListener('blur', hideContextMenu);
+
+  // ノード追加メニューの並び（NODE_DEF から見出しとラベルを作る）。
+  const NODE_MENU_TRIGGERS = ['onCollision', 'onStart', 'onTimer', 'onGrab'];
+  const NODE_MENU_ACTIONS = ['setColor', 'impulse', 'setFixed', 'grabPull',
+                             'lightColor', 'lightIntensity', 'cameraLookAt'];
+  function nodeMenuItems(x, y) {
+    const item = (kind) => {
+      const def = NODE_DEF[kind];
+      return def && { label: def.icon + ' ' + def.label,
+                      onClick: () => ndAddNodeAt(kind, x, y) };
+    };
+    return [{ head: 'トリガー' }].concat(NODE_MENU_TRIGGERS.map(item),
+                                         [{ head: 'アクション' }],
+                                         NODE_MENU_ACTIONS.map(item));
   }
 
   function openNodeEditor() { nodeEdOpen = true; renderNodeEditor(true); }
@@ -1779,23 +2213,38 @@
   // 新しいノードの置き場所: 既存の数から素朴に格子へ。重ねて置くと同じ場所に
   // 積もって見つけられないため。
   function ndNewPos() {
-    const g = (sceneData && sceneData.graph) || { nodes: [] };
-    const i = (g.nodes || []).length;
+    const i = (currentGraph().nodes || []).length;
     return { x: 40 + (i % 4) * (NODE_W + 40), y: 40 + Math.floor(i / 4) * 130 };
   }
-  function paletteAdd(kind) {
-    send('edit.node.add', Object.assign({ kind: kind }, ndNewPos()));
+  // 編集コマンドはすべて「どのアセットへ」を伴う。アセットがまだ 1 つも
+  // 無いときは送らない（サーバー側でも名前が無ければ何も起きない）。
+  function ndArgs(extra) {
+    return Object.assign({ asset: ndAsset }, extra || {});
   }
-  // Inspector の「＋」: 対象（target）を送らない = サーバーが「今の選択」を
-  // 対象として補完する（EditorComponent の node.add）。
+  // 右クリックした場所に置く（ノードの追加はコンテキストメニューが唯一の
+  // 入口。ndNewPos は Inspector の「＋」用の置き場所）。
+  function ndAddNodeAt(kind, x, y) {
+    if (!currentAsset()) { newEventAsset(); return; }
+    send('edit.node.add', ndArgs({ kind: kind,
+                                   x: Math.max(0, Math.round(x)),
+                                   y: Math.max(0, Math.round(y)) }));
+  }
+  // Inspector の「＋」: 今のアセットにノードを足す。ライト / カメラを対象に
+  // するノードは、対象を送らないとサーバーが「今の選択」で補完する
+  // （EditorComponent の node.add）。
   function addInspectorNode(selectId) {
+    if (!currentAsset()) { newEventAsset(); return; }
     const kind = document.getElementById(selectId).value;
-    send('edit.node.add', Object.assign({ kind: kind }, ndNewPos()));
+    send('edit.node.add', ndArgs(Object.assign({ kind: kind }, ndNewPos())));
     openNodeEditor();  // 追加した結果（と配線のしかた）が見える場所へ
   }
-  function ndPatch(id, patch) { send('edit.node.set', Object.assign({ id: id }, patch)); }
-  function ndRemoveNode(id) { send('edit.node.remove', { id: id }); }
-  function ndRemoveWire(from, to) { send('edit.wire.remove', { from: from, to: to }); }
+  function ndPatch(id, patch) {
+    send('edit.node.set', ndArgs(Object.assign({ id: id }, patch)));
+  }
+  function ndRemoveNode(id) { send('edit.node.remove', ndArgs({ id: id })); }
+  function ndRemoveWire(from, to) {
+    send('edit.wire.remove', ndArgs({ from: from, to: to }));
+  }
   function ndVecChange(id, el) {
     const row = el.closest('.ndVec');
     const v = {};
@@ -1856,9 +2305,10 @@
          n.id + ')">✕</span></div>';
     h += '<div class="ndBody">';
     if (def.target === 'object') {
+      // -1 は「番号を書かない」= このアセットを付けた相手（トリガーが掴んだ
+      // 物・触れた物）。アセットを付け回せるのはこの既定があるから。
       h += ndRow('対象', ndSelHtml(n.id, 'target', ndObjItems(), n.target,
-                                   def.trigger ? [[-1, '(どれでも)']]
-                                               : [[-1, '(選んでください)']]));
+                                   [[-1, '(付けた相手)']]));
     } else if (def.target === 'light') {
       h += ndRow('対象', ndSelHtml(n.id, 'target', ndLightItems(), n.target,
                                    [[-1, '(選んでください)']]));
@@ -1872,7 +2322,7 @@
     }
     if (n.kind === 'cameraLookAt') {
       h += ndRow('注視', ndSelHtml(n.id, 'other', ndObjItems(), n.other,
-                                   [[-1, '(選んでください)']]));
+                                   [[-1, '(付けた相手)']]));
     }
     if (n.kind === 'onTimer') {
       h += ndRow('間隔 s', '<input class="num" type="number" step="0.1" min="0.05" value="' +
@@ -1903,6 +2353,12 @@
                  n.value + '" onchange="ndPatch(' + n.id +
                  ',{value:parseFloat(this.value)||0})">');
     }
+    if (n.kind === 'grabPull') {
+      h += ndRow('強さ倍率', '<input class="num" type="number" step="0.1" ' +
+                 'min="0.1" max="10" title="1 = 既定のばね（SceneConfig.h）" ' +
+                 'value="' + n.value + '" onchange="ndPatch(' + n.id +
+                 ',{value:parseFloat(this.value)||1})">');
+    }
     h += '</div>';
     // ポート。トリガーは右に出力、アクションは左に入力（Node-RED の向き）。
     h += def.trigger
@@ -1921,7 +2377,7 @@
   // 線を引き直す。posOverride があれば（= ドラッグ中）、サーバー座標では
   // なく DOM の現在位置で描く - 動かしている最中も線が付いてくるように。
   function ndDrawWires(posOverride) {
-    const g = (sceneData && sceneData.graph) || { nodes: [], wires: [] };
+    const g = currentGraph();
     const pt = (id, out) => {
       const p = posOverride && posOverride[id];
       const n = nodeById(id);
@@ -1964,7 +2420,7 @@
     panel.hidden = !show;
     if (!show) { ndGraphKey = ''; return; }
 
-    const g = sceneData.graph || { nodes: [], wires: [] };
+    const g = currentGraph();
     // グラフか選択肢（名前・数）が変わったときだけ組み直す。操作中
     // （ドラッグ / ノード内の入力にフォーカス）は据え置き - キーを更新しない
     // ので、操作が終わった次のポーリングで最新版に揃う。
@@ -1973,7 +2429,8 @@
       '|' + (sceneData.lights || []).map((l) => l.index + ':' + (l.name || '')).join(',') +
       '|' + (sceneData.cameras || []).filter((c) => c.active !== false)
               .map((c) => c.index).join(',');
-    const key = JSON.stringify(g) + '@' + optKey;
+    const key = JSON.stringify(g) + '@' + optKey + '@' +
+      eventAssets().map((a) => a.name).join(',');
     if (!force && key === ndGraphKey) return;
     const canvas = document.getElementById('ndCanvas');
     if (ndDrag || ndWireDrag ||
@@ -1983,6 +2440,14 @@
     }
     ndGraphKey = key;
 
+    // 見出しのアセット選択。1 つも無ければ「＋新規」だけが意味を持つ。
+    const sel = document.getElementById('ndAssetSel');
+    sel.innerHTML = eventAssets().map((a) =>
+      '<option value="' + ndEsc(a.name) + '"' +
+      (a.name === ndAsset ? ' selected' : '') + '>' + ndEsc(a.name) +
+      '</option>').join('') ||
+      '<option value="">(イベントがありません)</option>';
+
     let h = '';
     for (const n of g.nodes || []) {
       const def = NODE_DEF[n.kind];
@@ -1990,8 +2455,10 @@
       h += ndNodeHtml(n, def);
     }
     document.getElementById('ndNodes').innerHTML = h ||
-      '<div class="ndEmpty">ノードがありません。上のパレット、または ' +
-      'Inspector の「イベント ＋」から追加してください。</div>';
+      '<div class="ndEmpty">' + (currentAsset()
+        ? 'このイベントにはノードがありません。上のパレットから追加してください。'
+        : 'イベントアセットがありません。「＋新規」で作るか、Assets パネルの ⚡ タイルから選んでください。') +
+      '</div>';
     ndDrawWires();
   }
 
@@ -2050,7 +2517,8 @@
       if (ndDrag) {
         // 動かした結果だけ送る（ドラッグ中はローカルの見た目だけ）。
         if (ndDrag.x !== undefined) {
-          send('edit.node.set', { id: ndDrag.id, x: ndDrag.x, y: ndDrag.y });
+          send('edit.node.set',
+               ndArgs({ id: ndDrag.id, x: ndDrag.x, y: ndDrag.y }));
         }
         ndDrag = null;
         ndGraphKey = '';  // 次のポーリングでサーバーの答え合わせ
@@ -2066,7 +2534,7 @@
           const n = nodeById(id);
           if (n && NODE_DEF[n.kind] && !NODE_DEF[n.kind].trigger &&
               id !== ndWireDrag.from) {
-            send('edit.wire.add', { from: ndWireDrag.from, to: id });
+            send('edit.wire.add', ndArgs({ from: ndWireDrag.from, to: id }));
           }
         }
         ndWireDrag = null;
@@ -2080,33 +2548,112 @@
       ndWireDrag = null;
       ndGraphKey = '';
     });
+
+    // 右クリック: 何もない所ならノードの追加（押した場所に置く）とイベントの
+    // 作成 / 削除、ノードの上ならそのノードの削除。ブラウザ既定のメニューは
+    // 出さない（キャンバスは作業面なので、こちらのメニューが要る）。
+    canvas.addEventListener('contextmenu', (e) => {
+      if (!owner) return;
+      const nodeEl = e.target.closest ? e.target.closest('.ndNode') : null;
+      if (nodeEl) {
+        const id = parseInt(nodeEl.dataset.id, 10);
+        const n = nodeById(id);
+        const def = n ? NODE_DEF[n.kind] : null;
+        showContextMenu(e, [
+          { head: def ? def.icon + ' ' + def.label : 'ノード' },
+          { label: '✕ このノードを削除', danger: true,
+            onClick: () => ndRemoveNode(id) },
+        ]);
+        return;
+      }
+      const p = canvasPos(e);
+      const asset = currentAsset();
+      showContextMenu(e, nodeMenuItems(p.x, p.y).concat([
+        { sep: true },
+        { label: '✨ 新しいイベント…', onClick: newEventAsset },
+        asset && { label: '🗑 「' + asset.name + '」を削除', danger: true,
+                   onClick: () => removeEventAsset(asset.name) },
+      ]));
+    });
   }
 
-  // Inspector の「イベント」節: 選択中の対象（オブジェクト / ライト /
-  // カメラ）が関わるノードだけの一覧。対象を持たないトリガー（開始・
-  // タイマー）はノードエディタで全体を見る。
+  // ---- Inspector のイベント節 -----------------------------------------------
+  // オブジェクトと World は「付いているイベントアセット」の一覧（Unity の
+  // コンポーネント欄）。付けられるのはこの 2 つだけで、ライトとカメラは
+  // 付け先になれないので「そのライト / カメラを対象にしているノード」を
+  // 読み取り専用で並べる（どのアセットの中に居るかも出す）。
+  const ndListKey = {};   // 一覧ごとの前回の中身（DOM を無駄に組み直さない）
+
+  function renderEventAttachments(listId, pickId, names, target) {
+    const list = document.getElementById(listId);
+    const pick = document.getElementById(pickId);
+    if (!list || !pick) return;
+    const assets = eventAssets();
+    const attached = names || [];
+    const free = assets.filter((a) => attached.indexOf(a.name) < 0);
+    const key = attached.join(',') + '@' + assets.map((a) => a.name).join(',') +
+                '#' + target;
+    if (ndListKey[listId] === key) return;
+    // 開いている（フォーカス中の）セレクトは触らない - 選ぼうとしている
+    // 最中に中身が入れ替わると選べない。
+    if (document.activeElement === pick) return;
+    ndListKey[listId] = key;
+
+    list.innerHTML = attached.length
+      ? attached.map((name) => {
+          const a = assets.find((x) => x.name === name);
+          const n = a ? (a.nodes || []).length : 0;
+          // data-event / data-owner は右クリックメニューの手がかり。
+          return '<div class="ndItem" data-event="' + name + '" data-owner="' +
+            (target === 'sel' ? (mySelectedDesc() ? mySelectedDesc().index : -1)
+                              : target) + '">' +
+            '<span class="link" title="ノードエディタで開く" ' +
+            'onclick="openEventAsset(\'' + name + '\')">⚡ ' + ndEsc(name) +
+            '</span><span class="sub">' + n + ' ノード</span>' +
+            '<span class="x" title="外す" onclick="detachEvent(\'' + name +
+            '\',' + (target === 'sel' ? '\'sel\'' : target) + ')">✕</span>' +
+            '</div>';
+        }).join('')
+      : '<div class="edHint">イベントは付いていません。</div>';
+
+    pick.innerHTML = free.length
+      ? free.map((a) => '<option value="' + ndEsc(a.name) + '">' +
+                        ndEsc(a.name) + '</option>').join('')
+      : '<option value="">(付けられるイベントがありません)</option>';
+    pick.disabled = free.length === 0;
+  }
+
+  // ライト / カメラを対象にしているノードの一覧（読み取り専用）。
   function renderNodesFor(targetKind, index, listId) {
     const el = document.getElementById(listId);
     if (!el) return;
-    const g = (sceneData && sceneData.graph) || { nodes: [], wires: [] };
-    const rows = (g.nodes || []).filter((n) => {
-      const def = NODE_DEF[n.kind];
-      return def && def.target === targetKind && n.target === index;
-    });
+    const rows = [];
+    for (const a of eventAssets()) {
+      for (const n of a.nodes || []) {
+        const def = NODE_DEF[n.kind];
+        if (!def || def.target !== targetKind || n.target !== index) continue;
+        const wires = (a.wires || [])
+          .filter((w) => w.from === n.id || w.to === n.id).length;
+        rows.push({ asset: a.name, node: n, def: def, wires: wires });
+      }
+    }
     el.innerHTML = rows.length
-      ? rows.map((n) => {
-          const def = NODE_DEF[n.kind];
-          const wires = (g.wires || [])
-            .filter((w) => w.from === n.id || w.to === n.id).length;
-          return '<div class="ndItem">' +
-            '<span>' + def.icon + ' ' + def.label + '</span>' +
-            (n.fired ? '<span class="ndFire" title="発火回数">⚡' + n.fired +
-                       '</span>' : '') +
-            '<span class="sub">' + wires + ' 接続</span>' +
-            '<span class="x" title="ノードを削除" onclick="ndRemoveNode(' +
-            n.id + ')">✕</span></div>';
-        }).join('')
-      : '<div class="edHint">この対象のノードはまだありません。</div>';
+      ? rows.map((r) =>
+          '<div class="ndItem">' +
+          '<span class="link" title="ノードエディタで開く" onclick="openEventAsset(\'' +
+          r.asset + '\')">' + r.def.icon + ' ' + r.def.label + '</span>' +
+          (r.node.fired ? '<span class="ndFire" title="発火回数">⚡' +
+                          r.node.fired + '</span>' : '') +
+          '<span class="sub">' + ndEsc(r.asset) + ' ／ ' + r.wires + ' 接続</span>' +
+          '<span class="x" title="ノードを削除" onclick="ndRemoveNodeIn(\'' +
+          r.asset + '\',' + r.node.id + ')">✕</span></div>').join('')
+      : '<div class="edHint">この対象のノードはまだありません。' +
+        'イベントアセットを作って「＋」から追加してください。</div>';
+  }
+  // 一覧からの削除は、その行が属するアセットに対して送る（今の編集対象とは
+  // 限らないため）。
+  function ndRemoveNodeIn(asset, id) {
+    send('edit.node.remove', { asset: asset, id: id });
   }
 
   async function pollScene() {

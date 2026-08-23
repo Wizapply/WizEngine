@@ -1,5 +1,6 @@
 #include "SceneDocument.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -260,6 +261,13 @@ xml::Element bodyElement(const BodyDesc& b) {
         geom.set("collision", geomTypeName(b.collision));
     }
     body.append(std::move(geom));
+    // 付いているイベントアセット（<asset> の <event> を名前で参照）。
+    // Unity のコンポーネント欄と同じで、順番はインスペクタの並び順。
+    for (const auto& name : b.events) {
+        xml::Element ev("event");
+        ev.set("name", name);
+        body.append(std::move(ev));
+    }
     return body;
 }
 
@@ -279,6 +287,20 @@ BodyDesc bodyFromXml(const xml::Element& e,
     for (const auto& c : e.children()) {
         if (c.name() == "geom") {
             ++geoms;
+        } else if (c.name() == "event") {
+            // 付けるイベントアセットの名前。実在するかは呼び出し側
+            // （fromXml）がアセット一覧と突き合わせて確かめる。
+            const std::string name = sanitizeEventName(c.attr("name"));
+            if (name.empty()) {
+                warn("<body name=\"" + label +
+                     "\">: <event> needs name=\"<asset name>\" - ignored");
+            } else if (std::find(b.events.begin(), b.events.end(), name) !=
+                       b.events.end()) {
+                warn("<body name=\"" + label + "\">: <event name=\"" + name +
+                     "\"> is attached twice - ignored");
+            } else {
+                b.events.push_back(name);
+            }
         } else if (c.name() == "body") {
             warn("<body name=\"" + label + "\">: nested <body> is not "
                  "supported - ignored (place bodies directly under "
@@ -476,8 +498,10 @@ xml::Element nodeElement(const NodeDesc& n) {
         setColor(e, "rgba", n.color);
     }
     if (n.kind == NodeKind::ApplyImpulse) setVec3(e, "velocity", n.vec);
-    if (n.kind == NodeKind::SetFixed ||
-        n.kind == NodeKind::SetLightIntensity) {
+    // value の意味は種類ごと（EditorTypes.h の clampNode）。GrabPull では
+    // 引き寄せる強さの倍率。
+    if (n.kind == NodeKind::SetFixed || n.kind == NodeKind::SetLightIntensity ||
+        n.kind == NodeKind::GrabPull) {
         e.setNumber("value", n.value);
     }
     return e;
@@ -506,6 +530,110 @@ NodeDesc nodeFromXml(const xml::Element& e, Warn& warn) {
     return clampNode(n);
 }
 
+// <event name="..."> 1 個ぶん（ノードとワイヤー）。ノード id はアセットの中
+// だけで一意ならよく、省略もできる（空き番号を振る）。対象番号のうち文書の
+// 中で完結して検証できるもの（範囲外の番号）はここで落とす - 読み込んだ後で
+// ずらしてからでは、どれが元から壊れていたのか分からなくなるため。
+EventAssetDesc eventAssetFromXml(const xml::Element& e,
+                                 const std::vector<BodyDesc>& bodies,
+                                 const std::vector<LightDesc>& lights,
+                                 bool hasLights, const std::string& label,
+                                 Warn& warn) {
+    EventAssetDesc asset;
+    warnUnknownChildren(e, {"node", "wire"}, label.c_str(), warn);
+
+    // ノード。重複した id は後の方を捨て、未指定（id 属性なし）は空き番号を
+    // 振る - 手書きの XML で id を省けるように。
+    std::set<int> usedIds;
+    std::vector<NodeDesc> pending;
+    for (const xml::Element* n : e.all("node")) {
+        NodeDesc nd = nodeFromXml(*n, warn);
+        const std::string nodeLabel =
+            label + " " +
+            (nd.id > 0 ? "<node id=\"" + std::to_string(nd.id) + "\">"
+                       : std::string("<node>"));
+
+        const NodeTargetKind tk = nodeTargetKind(nd.kind);
+        if (tk == NodeTargetKind::Object && nd.target >= 0 &&
+            std::size_t(nd.target) >= bodies.size()) {
+            warn(nodeLabel + " target=" + std::to_string(nd.target) +
+                 " is out of range (objects) - cleared");
+            nd.target = -1;
+        }
+        if (tk == NodeTargetKind::Light && hasLights && nd.target >= 0 &&
+            std::size_t(nd.target) >= lights.size()) {
+            warn(nodeLabel + " target=" + std::to_string(nd.target) +
+                 " is out of range (lights) - cleared");
+            nd.target = -1;
+        }
+        if (nodeOtherIsObject(nd.kind) && nd.other >= 0 &&
+            std::size_t(nd.other) >= bodies.size()) {
+            warn(nodeLabel + " other=" + std::to_string(nd.other) +
+                 " is out of range (objects)");
+            nd.other = (nd.kind == NodeKind::OnCollision) ? -2 : -1;
+        }
+
+        if (nd.id > 0) {
+            if (!usedIds.insert(nd.id).second) {
+                warn(nodeLabel + " duplicates an earlier node id - ignored");
+                continue;
+            }
+        }
+        pending.push_back(nd);
+    }
+    int nextId = usedIds.empty() ? 1 : (*usedIds.rbegin() + 1);
+    for (auto& nd : pending) {
+        if (nd.id <= 0) nd.id = nextId++;
+        asset.nodes.push_back(nd);
+    }
+
+    // ワイヤー。エディタ経由なら addGraphWire が検証するが、文書からの
+    // 読み込みはここが唯一の関所: 存在する id か・向きは
+    // トリガー → アクションか・重複していないか。
+    std::map<int, NodeKind> kindById;
+    for (const auto& nd : asset.nodes) kindById[nd.id] = nd.kind;
+    std::set<std::pair<int, int>> seen;
+    for (const xml::Element* w : e.all("wire")) {
+        WireDesc wire;
+        wire.from = w->integer("from", -1);
+        wire.to = w->integer("to", -1);
+        const std::string wireLabel = label + " <wire from=\"" +
+                                      std::to_string(wire.from) + "\" to=\"" +
+                                      std::to_string(wire.to) + "\">";
+        const auto f = kindById.find(wire.from);
+        const auto t = kindById.find(wire.to);
+        if (f == kindById.end() || t == kindById.end()) {
+            warn(wireLabel + " points at a missing node - ignored");
+            continue;
+        }
+        if (!nodeIsTrigger(f->second) || nodeIsTrigger(t->second)) {
+            warn(wireLabel + " has the wrong direction (from=trigger, "
+                 "to=action) - ignored");
+            continue;
+        }
+        if (!seen.insert({wire.from, wire.to}).second) {
+            warn(wireLabel + " duplicates an earlier wire - ignored");
+            continue;
+        }
+        asset.wires.push_back(wire);
+    }
+    return asset;
+}
+
+// イベントアセットを書き出す（<asset> の中）。
+xml::Element eventAssetElement(const EventAssetDesc& a) {
+    xml::Element e("event");
+    e.set("name", a.name);
+    for (const auto& n : a.nodes) e.append(nodeElement(n));
+    for (const auto& w : a.wires) {
+        xml::Element wire("wire");
+        wire.setInt("from", w.from);
+        wire.setInt("to", w.to);
+        e.append(std::move(wire));
+    }
+    return e;
+}
+
 }  // namespace
 
 xml::Element toXml(const SceneDocument& doc) {
@@ -514,7 +642,9 @@ xml::Element toXml(const SceneDocument& doc) {
     root.setInt("version", kSceneDocVersion);
     root.append(optionElement(doc.sim));
 
-    if (!doc.meshes.empty()) {
+    // <asset>: メッシュ（glTF）とイベントアセット（ノードの中身）。どちらも
+    // 「名前で参照される素材」なので MJCF と同じくこの節にまとめる。
+    if (!doc.meshes.empty() || !doc.eventAssets.empty()) {
         xml::Element asset("asset");
         for (const auto& m : doc.meshes) {
             xml::Element e("mesh");
@@ -522,6 +652,9 @@ xml::Element toXml(const SceneDocument& doc) {
             e.set("file", m.file);
             e.setNumber("scale", m.scale);
             asset.append(std::move(e));
+        }
+        for (const auto& a : doc.eventAssets) {
+            asset.append(eventAssetElement(a));
         }
         root.append(std::move(asset));
     }
@@ -555,13 +688,15 @@ xml::Element toXml(const SceneDocument& doc) {
         root.append(std::move(eq));
     }
 
-    if (!doc.nodes.empty() || !doc.wires.empty()) {
+    // ルートの <events> は「ワールドに付いているイベントアセット」。中身
+    // （ノード）は <asset> にあるので、ここには参照だけが並ぶ。節そのものを
+    // 書くのは hasEvents のときだけ - 節が無い文書は「指定なし」= 既定の
+    // 構成（マウス操作スクリプト）で開く、という意味になる（ライトと同じ）。
+    if (doc.hasEvents) {
         xml::Element ev("events");
-        for (const auto& n : doc.nodes) ev.append(nodeElement(n));
-        for (const auto& w : doc.wires) {
-            xml::Element e("wire");
-            e.setInt("from", w.from);
-            e.setInt("to", w.to);
+        for (const auto& name : doc.worldEvents) {
+            xml::Element e("event");
+            e.set("name", name);
             ev.append(std::move(e));
         }
         root.append(std::move(ev));
@@ -599,7 +734,10 @@ SceneDocument fromXml(const xml::Element& root,
     }
 
     if (const xml::Element* asset = root.first("asset")) {
-        warnUnknownChildren(*asset, {"mesh"}, "<asset>", warn);
+        // <event>（イベントアセット）はここでは名前だけ見て、中身は
+        // worldbody を読んだあとで取り込む（ノードの対象番号をオブジェクト
+        // 一覧と突き合わせて検証するため）。
+        warnUnknownChildren(*asset, {"mesh", "event"}, "<asset>", warn);
         for (const xml::Element* me : asset->all("mesh")) {
             MeshAssetDesc m;
             m.name = me->attr("name");
@@ -708,88 +846,97 @@ SceneDocument fromXml(const xml::Element& root,
         }
     }
 
-    if (const xml::Element* ev = root.first("events")) {
-        warnUnknownChildren(*ev, {"node", "wire"}, "<events>", warn);
-
-        // ノード。id は一意が前提（ワイヤーが id で指すため）。重複は後の方を
-        // 捨て、未指定（id 属性なし）は空き番号を振る - 手書きの XML で id を
-        // 省けるように。
-        std::set<int> usedIds;
-        std::vector<NodeDesc> pending;
-        for (const xml::Element* n : ev->all("node")) {
-            NodeDesc nd = nodeFromXml(*n, warn);
-            const std::string label =
-                nd.id > 0 ? "<node id=\"" + std::to_string(nd.id) + "\">"
-                          : std::string("<node>");
-
-            // 対象番号の範囲。文書の中で完結して検証できるものはここで
-            // 落としておく（読み込み後に base ぶんずれてからでは遅い）。
-            const NodeTargetKind tk = nodeTargetKind(nd.kind);
-            if (tk == NodeTargetKind::Object && nd.target >= 0 &&
-                std::size_t(nd.target) >= doc.bodies.size()) {
-                warn(label + " target=" + std::to_string(nd.target) +
-                     " is out of range (objects) - cleared");
-                nd.target = -1;
-            }
-            if (tk == NodeTargetKind::Light && doc.hasLights &&
-                nd.target >= 0 &&
-                std::size_t(nd.target) >= doc.lights.size()) {
-                warn(label + " target=" + std::to_string(nd.target) +
-                     " is out of range (lights) - cleared");
-                nd.target = -1;
-            }
-            if (nodeOtherIsObject(nd.kind) && nd.other >= 0 &&
-                std::size_t(nd.other) >= doc.bodies.size()) {
-                warn(label + " other=" + std::to_string(nd.other) +
-                     " is out of range (objects)");
-                nd.other = (nd.kind == NodeKind::OnCollision) ? -2 : -1;
-            }
-
-            if (nd.id > 0) {
-                if (!usedIds.insert(nd.id).second) {
-                    warn(label + " duplicates an earlier node id - ignored");
-                    continue;
-                }
-            }
-            pending.push_back(nd);
+    // ---- イベントアセットと、その付け先 ------------------------------------
+    // 中身（<asset> の <event>）はオブジェクトを読んだ後で取り込む: ノードの
+    // 対象番号を、読み終えたオブジェクト・ライトの一覧と突き合わせて検証
+    // するため（<asset> 節そのものは上で先に読んでいる - メッシュは body が
+    // 参照するので順番を入れ替えられない）。
+    auto assetExists = [&doc](const std::string& name) {
+        for (const auto& a : doc.eventAssets) {
+            if (a.name == name) return true;
         }
-        int nextId = usedIds.empty() ? 1 : (*usedIds.rbegin() + 1);
-        for (auto& nd : pending) {
-            if (nd.id <= 0) nd.id = nextId++;
-            doc.nodes.push_back(nd);
-        }
-
-        // ワイヤー。エディタ経由なら addGraphWire が検証するが、文書からの
-        // 読み込みはここが唯一の関所: 存在する id か・向きは
-        // トリガー → アクションか・重複していないか。
-        std::map<int, NodeKind> kindById;
-        for (const auto& nd : doc.nodes) kindById[nd.id] = nd.kind;
-        std::set<std::pair<int, int>> seen;
-        for (const xml::Element* w : ev->all("wire")) {
-            WireDesc wire;
-            wire.from = w->integer("from", -1);
-            wire.to = w->integer("to", -1);
-            const std::string label = "<wire from=\"" +
-                                      std::to_string(wire.from) + "\" to=\"" +
-                                      std::to_string(wire.to) + "\">";
-            const auto f = kindById.find(wire.from);
-            const auto t = kindById.find(wire.to);
-            if (f == kindById.end() || t == kindById.end()) {
-                warn(label + " points at a missing node - ignored");
+        return false;
+    };
+    if (const xml::Element* asset = root.first("asset")) {
+        for (const xml::Element* e : asset->all("event")) {
+            const std::string name = sanitizeEventName(e->attr("name"));
+            if (name.empty()) {
+                warn("<asset>: <event> needs name=\"...\" (letters, digits, "
+                     "_ and - only) - ignored");
                 continue;
             }
-            if (!nodeIsTrigger(f->second) || nodeIsTrigger(t->second)) {
-                warn(label + " has the wrong direction (from=trigger, "
-                     "to=action) - ignored");
+            if (assetExists(name)) {
+                warn("<asset>: <event name=\"" + name +
+                     "\"> duplicates an earlier one - ignored");
                 continue;
             }
-            if (!seen.insert({wire.from, wire.to}).second) {
-                warn(label + " duplicates an earlier wire - ignored");
-                continue;
-            }
-            doc.wires.push_back(wire);
+            EventAssetDesc a =
+                eventAssetFromXml(*e, doc.bodies, doc.lights, doc.hasLights,
+                                  "<event name=\"" + name + "\">", warn);
+            a.name = name;
+            doc.eventAssets.push_back(std::move(a));
+            doc.hasEvents = true;
         }
     }
+
+    // ルートの <events> は「ワールド（シーン全体）に付けるアセット」の一覧。
+    // 旧形式（<events> の直下に <node> / <wire> を並べた文書）も読めるように
+    // してある: 1 つのアセットにまとめてワールドへ付ける。
+    if (const xml::Element* ev = root.first("events")) {
+        doc.hasEvents = true;
+        warnUnknownChildren(*ev, {"event", "node", "wire"}, "<events>", warn);
+        if (ev->first("node") != nullptr || ev->first("wire") != nullptr) {
+            std::string name = "events";
+            for (int n = 2; assetExists(name); ++n) {
+                name = "events" + std::to_string(n);
+            }
+            EventAssetDesc a = eventAssetFromXml(
+                *ev, doc.bodies, doc.lights, doc.hasLights, "<events>", warn);
+            a.name = name;
+            warn("<events>: <node> / <wire> written directly here is the old "
+                 "format - imported as event asset \"" + name +
+                 "\" attached to the world");
+            doc.eventAssets.push_back(std::move(a));
+            doc.worldEvents.push_back(name);
+        }
+        for (const xml::Element* e : ev->all("event")) {
+            const std::string name = sanitizeEventName(e->attr("name"));
+            if (name.empty()) {
+                warn("<events>: <event> needs name=\"<asset name>\" - ignored");
+                continue;
+            }
+            if (std::find(doc.worldEvents.begin(), doc.worldEvents.end(),
+                          name) != doc.worldEvents.end()) {
+                warn("<events>: <event name=\"" + name +
+                     "\"> is attached twice - ignored");
+                continue;
+            }
+            doc.worldEvents.push_back(name);
+        }
+    }
+
+    // 付け先の名前がアセットに無いものは落とす（黙って何も起きないより、
+    // 打ち間違いが分かるほうがよい）。オブジェクト側も同じ。
+    auto pruneAttachments = [&](std::vector<std::string>& list,
+                                const std::string& where) {
+        for (std::size_t i = 0; i < list.size();) {
+            if (assetExists(list[i])) {
+                ++i;
+                continue;
+            }
+            warn(where + ": <event name=\"" + list[i] +
+                 "\"> is not declared in <asset> - ignored");
+            list.erase(list.begin() + std::ptrdiff_t(i));
+        }
+    };
+    pruneAttachments(doc.worldEvents, "<events>");
+    for (auto& b : doc.bodies) {
+        pruneAttachments(b.events, "<body name=\"" +
+                                       (b.name.empty() ? std::string("(unnamed)")
+                                                       : b.name) +
+                                       "\">");
+    }
+
     return doc;
 }
 
@@ -830,15 +977,26 @@ SceneDocument fromLegacyJson(const nlohmann::json& doc) {
             out.joints.push_back(jointFromJson(j, JointDesc{}));
         }
     }
-    if (doc.contains("nodes") && doc["nodes"].is_array()) {
-        for (const auto& n : doc["nodes"]) {
-            out.nodes.push_back(clampNode(nodeFromJson(n, NodeDesc{})));
+    // 旧 JSON（version 3）のイベントグラフは「シーンに 1 本」だった。
+    // いまはアセット + 付け先なので、"events" という名前のアセットに入れて
+    // ワールドへ付ける（XML の旧形式 <events><node> と同じ扱い）。
+    if ((doc.contains("nodes") && doc["nodes"].is_array()) ||
+        (doc.contains("wires") && doc["wires"].is_array())) {
+        EventAssetDesc a;
+        a.name = "events";
+        if (doc.contains("nodes") && doc["nodes"].is_array()) {
+            for (const auto& n : doc["nodes"]) {
+                a.nodes.push_back(clampNode(nodeFromJson(n, NodeDesc{})));
+            }
         }
-    }
-    if (doc.contains("wires") && doc["wires"].is_array()) {
-        for (const auto& w : doc["wires"]) {
-            out.wires.push_back(wireFromJson(w, WireDesc{}));
+        if (doc.contains("wires") && doc["wires"].is_array()) {
+            for (const auto& w : doc["wires"]) {
+                a.wires.push_back(wireFromJson(w, WireDesc{}));
+            }
         }
+        out.eventAssets.push_back(std::move(a));
+        out.worldEvents.push_back("events");
+        out.hasEvents = true;
     }
     return out;
 }
