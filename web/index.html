@@ -788,14 +788,17 @@
   <!-- 下部のアセットパネル（Unity の Project ビュー相当）。見出しはサイド
        バーの流儀（クリックで折りたたみ）、高さは textarea と同じ右下の
        つまみ（CSS の resize:vertical、つまみはブラウザが描く）。どちらも
-       localStorage に記憶。入りきらないタイルは縦スクロール。エディタ
+       localStorage に記憶。入りきらないタイルは縦スクロール（ホイールで
+       スクロールできるのはクリックしてアクティブにした間だけ。それ以外は
+       ページのスクロールに回す）。エディタ
        モード中、Editor Camera のページにだけ出る。中身は renderAssets()。 -->
   <div id="assets" hidden>
     <div class="asHead" onclick="toggleAssets()">
       <span><span class="caret"></span>Assets</span>
       <span class="asHint">クリック: プリミティブを配置 ／
         ダブルクリック: シーンを読込 ／ <b>右クリック: メニュー（イベント・
-        計算式の作成・削除・付ける）</b> ／ 右下で高さ変更</span>
+        計算式の作成・削除・付ける）</b> ／ 右下で高さ変更 ／
+        クリックしてアクティブにするとホイールで一覧をスクロール</span>
     </div>
     <!-- 操作列。Inspector を「選択オブジェクトの内容」だけに絞ったので、
          新規オブジェクトの初期値とシーンの保存/全消しはここが受け持つ

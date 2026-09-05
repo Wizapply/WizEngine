@@ -924,6 +924,25 @@
     }
   }
 
+  // アセットパネルのホイール。一覧（.asList）は overflow:auto +
+  // overscroll-behavior:contain なので、マウスを載せただけでホイールを
+  // 食い、タイルが溢れていなくてもページがスクロールできなくなっていた。
+  // そこで「クリックしてアクティブにした間だけ一覧がホイールを受け、
+  // それ以外はページのスクロールへ回す」にする。アクティブはパネルの中を
+  // 押すと立ち、外を押すと下りる（枠色で分かる。CSS の #assets.active）。
+  // ホイールそのものは JS で扱わない: 非アクティブ中は CSS が一覧を
+  // overflow:hidden にするので、ブラウザが自分でページへ流す（＝OS と
+  // ブラウザのなめらかスクロール・1 ノッチの量がそのまま効く。JS の
+  // scrollBy で動かすとアニメーションが無く、カクつく）。
+  {
+    const panel = document.getElementById('assets');
+    const setActive = (on) => panel.classList.toggle('active', on);
+    panel.addEventListener('pointerdown', () => setActive(true));
+    document.addEventListener('pointerdown', (e) => {
+      if (!panel.contains(e.target)) setActive(false);
+    }, true);
+  }
+
   // ---- Events ------------------------------------------------------------
   // A short log of what happened in the scene: who grabbed or released what,
   // and cameras being taken or freed. Derived from the /scene poll rather than
@@ -2129,7 +2148,11 @@
     const panel = document.getElementById('assets');
     const show = !!sceneData && sceneData.mode === 'editor' && isEditorCam();
     panel.hidden = !show;
-    if (!show) { assetListKey = ''; return; }
+    if (!show) {
+      assetListKey = '';
+      panel.classList.remove('active');  // 隠れたパネルにホイールを渡さない
+      return;
+    }
 
     const files = sceneData.files || [];
     const meshes = sceneData.meshes || [];

@@ -561,6 +561,23 @@
     display: flex; flex-direction: column;
   }
   #assets[hidden] { display: none; }
+  /* クリックでアクティブ（= ホイールを一覧が受ける状態。app.js が
+     クラスを付け外しする）。枠色で示す。非アクティブの間は一覧を
+     overflow:hidden にして、ホイールをブラウザ自身にページへ流させる
+     （ユーザーがスクロールできない要素はホイールの相手にならない）。
+     JS でページを動かすとブラウザのなめらかスクロールが効かないので、
+     ここは CSS だけで済ませる。scrollbar-gutter で幅を確保しておき、
+     アクティブにした瞬間にタイルが横へずれないようにする。 */
+  #assets.active { border-color: #4a70ad; }
+  #assets.active .asList {
+    overflow-y: auto; scrollbar-color: #4a70ad transparent;
+    /* 一覧の端に着いてもページへ流さない（アクティブ中は一覧がホイールを
+       独占する）。非アクティブ中に付けてはいけない: overflow:hidden も
+       仕様上スクロールコンテナなので、contain があるとホイールがそこで
+       止まり、ページも一覧も動かなくなる（Chrome / Edge / Firefox の実機で
+       起きる。ヘッドレスでは再現しない）。 */
+    overscroll-behavior: contain;
+  }
   /* 見出しはサイドバーのセクション見出しと同じ体裁（キャレット付き、
      クリックで折りたたみ）。 */
   .asHead {
@@ -593,14 +610,19 @@
   .asBar button.danger:hover:enabled { background: #4a2a2a; }
   /* タイルは折り返して並べ、入りきらなければ縦スクロール。resize は
      overflow が visible 以外の要素で効き、ドラッグ結果はブラウザが
-     inline style に書く（app.js が ResizeObserver で拾って記憶する）。 */
+     inline style に書く（app.js が ResizeObserver で拾って記憶する）。
+     overscroll-behavior: contain は「一覧の端でページへ流さない」ため
+     だが、一覧が溢れていなくてもホイールを食う（載せただけでページが
+     スクロールできなくなる）。そこで普段は overflow:hidden にしておき、
+     クリックでアクティブになった間だけ auto に切り替える（上の
+     #assets.active .asList）。hidden でも resize のつまみは効く。 */
   .asList {
     height: 132px; min-height: 56px; max-height: 60vh;
     resize: vertical;
     display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;
-    overflow-y: auto; padding: 8px 2px 2px;
+    overflow-y: hidden; scrollbar-gutter: stable; padding: 8px 2px 2px;
     scrollbar-width: thin; scrollbar-color: #3a3d45 transparent;
-    overscroll-behavior: contain;
+    /* overscroll-behavior はここに書かない（上の #assets.active .asList）。 */
   }
   .asItem {
     flex: 0 0 auto; width: 78px; padding: 8px 4px 6px; text-align: center;
