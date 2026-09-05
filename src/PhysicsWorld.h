@@ -211,6 +211,9 @@ private:
     // of which one is in use.
     // 追加したボディを逆引きマップにも登録する（activeContactPairs 用）。
     void registerBody(const std::shared_ptr<chrono::ChBody>& body);
+    // 衝突系が既に初期化済みなら、いま足したボディの衝突モデルを登録する
+    // （Chrono 9 は自動でやらない。詳細は .cpp）。
+    void bindCollision(const std::shared_ptr<chrono::ChBody>& body);
 
     std::shared_ptr<chrono::ChSystem> sys_;
     std::shared_ptr<chrono::ChContactMaterialNSC> mat_;

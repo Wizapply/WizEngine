@@ -1797,7 +1797,9 @@ void Scene::resetCamerasToDefaults() {
 
 void Scene::rebuildGroundBody() {
     // 古い床は退場（disableBody = 当たり判定を切って地面の下へ。Multicore の
-    // ボディ削除は危ないので、オブジェクトの作り直しと同じ流儀）。
+    // ボディ削除は危ないので、オブジェクトの作り直しと同じ流儀）。新しい床は
+    // 実行中の追加なので、衝突系への登録は addBox（registerBody →
+    // bindCollision）が面倒を見る。
     if (groundPhysId_ != GameObject::kInvalidId) {
         physics_.disableBody(groundPhysId_);
     }

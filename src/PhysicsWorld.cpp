@@ -236,6 +236,25 @@ void PhysicsWorld::registerBody(const std::shared_ptr<chrono::ChBody>& body) {
     bodyIndex_[body.get()] = bodies_.size();
     bodies_.push_back(body);
     active_.push_back(true);
+    bindCollision(body);
+}
+
+// Chrono 9 は衝突モデルを「衝突系の初期化（最初の DoStepDynamics）で
+// まとめて登録（BindAll）」する。それ以降に AddBody したボディは
+// ChSystem::AddBody も ChSystemMulticore::AddBody も衝突系へ渡さないので、
+// 自分で BindItem を呼ばないと**形はあるのに当たり判定が無い**ボディに
+// なる（エディタで足した箱が床を抜ける・シーン読込で作り直した床に何も
+// 乗らない、の正体。Core / Multicore どちらも同じ）。初期化前に足した
+// ぶんは BindAll が拾うので触らない（Multicore の Add は二重登録を
+// 想定していない）。
+void PhysicsWorld::bindCollision(const std::shared_ptr<chrono::ChBody>& body) {
+    auto coll = sys_->GetCollisionSystem();
+    if (!coll || !coll->IsInitialized()) return;
+    const auto model = body->GetCollisionModel();
+    if (!model || model->HasImplementation() || !body->IsCollisionEnabled()) {
+        return;
+    }
+    coll->BindItem(body);
 }
 
 std::vector<std::pair<std::size_t, std::size_t>>

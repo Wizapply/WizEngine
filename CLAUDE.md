@@ -645,6 +645,12 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
   番号は残す。**Multicore では当たり判定のフラグを触らない** - その衝突系の
   `Remove()` は未実装で、Chrono 9 は "not yet implemented" を出して例外を
   投げるため。固定 + 退避だけで無効化する）、`setGravityY`、そして `addJoint` / `removeAllJoints` を持つ。
+  **ボディの追加は必ず `registerBody` を通す**: Chrono 9 は衝突モデルを
+  最初のステップ（`Initialize` → `BindAll`）でまとめて登録し、**それ以降に
+  `AddBody` したボディは Core / Multicore とも衝突系へ渡さない**。
+  `bindCollision` が衝突系の初期化済みを見て `BindItem` を呼ぶ
+  （エディタで足した箱が床を抜ける・シーン読込で作り直した床に何も乗らない、
+  の正体だった）。
   ジョイントの `Initialize` は Chrono 9 で `ChCoordsys` → `ChFrame` に変わった
   ので、この版から既にあるスリープ/速度と同じ SFINAE の書き方で両対応にしてある。
   NSC・Bullet・`make_shared` 整列。シーンの中身は持たない。
@@ -919,6 +925,11 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
    CRT 不整合で実行時に未定義動作になり、物理だけが静かに壊れる（描画は動く）。
    実行は `build\Release\wizengine.exe`。VS の「フォルダーを開く」では構成を Release に。
    Debug でも使いたいなら Chrono を Debug でもインストールする。
+9. **最初のステップ後に追加したボディに当たり判定が無い** — Chrono 9 の
+   `ChSystem::AddBody` / `ChSystemMulticore::AddBody` は衝突モデルを衝突系に
+   登録しない（登録は初期化時の `BindAll` の 1 回だけ）。実行中に足したボディは
+   `GetCollisionSystem()->BindItem(body)` を自分で呼ぶ
+   （`PhysicsWorld::bindCollision`）。形は見えるのに床を抜ける、が症状。
 
 ## 実装済み / 未実装
 
