@@ -28,7 +28,7 @@ Files the scene loads at runtime, copied next to the executable by the build.
 
 - `scenes/*.xml` — シーン文書（MuJoCo 風の XML）。エディタの 💾 保存が書き、
   タイルのダブルクリックが読む。`SceneConfig.h` の `kStartupScene` に名前を
-  書けば起動時に読み込む。形式の定義は `src/SceneDocument.h` の先頭と
+  書けば起動時に読み込む。形式の定義は `src/document/SceneDocument.h` の先頭と
   CLAUDE.md の「シーン文書（XML）」の章。`scenes/*.json` は旧形式で、同じ
   名前の `.xml` が無いときだけ読み込みに使う（保存は常に `.xml`）。
 - `materials/*.mat` — material sources, compiled by matc at build time into

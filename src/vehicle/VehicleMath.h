@@ -6,7 +6,7 @@
 //
 // なぜ自前か: src/vehicle/ は Chrono にも Filament にも依存しない純粋な
 // 数値ライブラリにしてある（単体で回してテストできる、どのスレッドでも
-// コピーできる）。scene_math.h は Filament の math を、PhysicsWorld は Chrono の
+// コピーできる）。SceneMath.h は Filament の math を、PhysicsWorld は Chrono の
 // ChVector3d を使うので、ここだけ独立した型を持ち、境界（VehicleComponent）で
 // 詰め替える。
 namespace wizengine {

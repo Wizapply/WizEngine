@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "SceneXml.h"
+#include "document/SceneXml.h"
 #include "vehicle/Formula.h"
 
 // ノード式の XML（<vehicle> の中の <formula>）:

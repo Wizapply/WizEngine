@@ -5,6 +5,8 @@
 #                       参照インタプリタで動く。遅いが結果は同じ）
 #   WIZ_LUAJIT_ROOT   … LuaJIT のソース（既定 third_parties/luajit）または
 #                       インストール先。src/lua.h と静的ライブラリを探す
+#                       （luajit.h は v2.1 ではビルドが生成するので、それを
+#                       探すとビルド前に「無い」と判定されて永遠に作られない）
 #   WIZ_LUAJIT_BUILD  … ライブラリが無ければ configure 時に作る（既定 ON）。
 #                       Linux/macOS は make BUILDMODE=static、Windows は
 #                       msvcbuild.bat static（VS の開発者環境 = cl が PATH に
@@ -25,7 +27,7 @@ function(_wiz_luajit_locate)
     set(inc "")
     foreach(cand "${WIZ_LUAJIT_ROOT}/src" "${WIZ_LUAJIT_ROOT}/include/luajit-2.1"
                  "${WIZ_LUAJIT_ROOT}/include")
-        if(EXISTS "${cand}/luajit.h")
+        if(EXISTS "${cand}/lua.h" AND EXISTS "${cand}/lualib.h")
             set(inc "${cand}")
             break()
         endif()

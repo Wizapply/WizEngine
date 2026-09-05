@@ -12,7 +12,7 @@ server reads it from at runtime (everything the program loads lives under
   functions must stay global because the inline `onclick=` handlers use them)
 
 - `favicon.ico` — browser tab icon. Optional; drop your own file here and
-  re-run `cmake -B build` so the copy step picks it up. Any format the browser
-  accepts works (`.ico`, `.png`, `.svg`) — if you use a different extension,
-  update `ICON_SRC` in `CMakeLists.txt` and the filename passed to
-  `HttpServer` in `src/main.cpp`.
+  rebuild so the `webui` copy step picks it up (the whole folder is copied,
+  so no CMake edit is needed). The server serves `/favicon.ico` from this
+  file; for another format keep serving it under that name or add a
+  `<link rel="icon">` to `index.html`.

@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "SceneXml.h"
+#include "document/SceneXml.h"
 #include "vehicle/VehicleTypes.h"
 
 // シーン文書の <body> の中の <vehicle> 節 ⇔ VehicleDesc。

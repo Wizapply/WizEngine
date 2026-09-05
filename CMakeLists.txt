@@ -120,9 +120,8 @@ pkg_check_modules(GST REQUIRED IMPORTED_TARGET
     gstreamer-video-1.0)  # video: force-key-unit events
 
 # ---------------------------------------------------------------------------
-# Compile the material with matc -> shaded.filamat (next to the executable)
+# Compile the materials with matc -> *.filamat (next to the executable)
 # ---------------------------------------------------------------------------
-set(MAT_SRC ${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/shaded.mat)
 # Everything the program loads at runtime is gathered under one folder, so the
 # executable has a single place to look and the whole set can be copied around
 # together.
@@ -132,30 +131,22 @@ file(MAKE_DIRECTORY ${ASSET_DIR})
 # 作られるが、初回起動前から一覧に見えるように先に用意しておく。
 file(MAKE_DIRECTORY ${ASSET_DIR}/scenes)
 
-set(MAT_OUT ${ASSET_DIR}/shaded.filamat)
-add_custom_command(
-    OUTPUT ${MAT_OUT}
-    COMMAND ${MATC} -a all -p desktop -o ${MAT_OUT} ${MAT_SRC}
-    DEPENDS ${MAT_SRC}
-    COMMENT "Compiling Filament material (matc, all shader languages)")
+# assets/materials/*.mat をすべて matc に通す。追加は .mat を置くだけ
+# （Renderer 側は assetPath("<name>.filamat") で読む）。
+file(GLOB MAT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/*.mat)
+set(MAT_OUTPUTS "")
+foreach(_mat IN LISTS MAT_SOURCES)
+    get_filename_component(_mat_name ${_mat} NAME_WE)
+    set(_mat_out ${ASSET_DIR}/${_mat_name}.filamat)
+    add_custom_command(
+        OUTPUT ${_mat_out}
+        COMMAND ${MATC} -a all -p desktop -o ${_mat_out} ${_mat}
+        DEPENDS ${_mat}
+        COMMENT "Compiling Filament material ${_mat_name}.mat (matc, all shader languages)")
+    list(APPEND MAT_OUTPUTS ${_mat_out})
+endforeach()
 
-set(MAT_SRC2 ${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/ground_lit.mat)
-set(MAT_OUT2 ${ASSET_DIR}/ground_lit.filamat)
-add_custom_command(
-    OUTPUT ${MAT_OUT2}
-    COMMAND ${MATC} -a all -p desktop -o ${MAT_OUT2} ${MAT_SRC2}
-    DEPENDS ${MAT_SRC2}
-    COMMENT "Compiling Filament ground material (matc)")
-
-set(MAT_SRC3 ${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/line.mat)
-set(MAT_OUT3 ${ASSET_DIR}/line.filamat)
-add_custom_command(
-    OUTPUT ${MAT_OUT3}
-    COMMAND ${MATC} -a all -p desktop -o ${MAT_OUT3} ${MAT_SRC3}
-    DEPENDS ${MAT_SRC3}
-    COMMENT "Compiling Filament line material (matc)")
-
-add_custom_target(materials ALL DEPENDS ${MAT_OUT} ${MAT_OUT2} ${MAT_OUT3})
+add_custom_target(materials ALL DEPENDS ${MAT_OUTPUTS})
 
 # The ground texture lives in assets/textures/ and is carried to the runtime
 # dir by the wholesale assets/ copy below (sceneassets). Drop your own PNG
@@ -269,45 +260,75 @@ endif()
 # ---------------------------------------------------------------------------
 # Executable
 # ---------------------------------------------------------------------------
-add_executable(wizengine
-    src/main.cpp
-    src/PhysicsWorld.cpp
-    src/MeshCollision.cpp
-    src/Renderer.cpp
-    src/EnvironmentLoader.cpp
-    src/scene.cpp
-    src/VideoStreamer.cpp
-    src/WebRtcStreamer.cpp
-    src/HttpServer.cpp
-    src/ImageLoader.cpp
-    src/Log.cpp
-    src/Versions.cpp
-    src/CameraObject.cpp
-    src/GltfLoader.cpp
-    src/PortScan.cpp
-    src/AssetError.cpp
-    src/EditorState.cpp
-    src/EditorComponent.cpp
-    src/SceneXml.cpp
-    src/SceneDocument.cpp
-    src/GizmoComponent.cpp
-    src/CpuAffinity.cpp
-    src/VehicleComponent.cpp
-    src/PrefabComponent.cpp
-    src/PrefabDefaults.cpp
-    src/vehicle/VehicleTypes.cpp
-    src/vehicle/WheelController.cpp
-    src/vehicle/Powertrain.cpp
-    src/vehicle/VehicleModel.cpp
-    src/vehicle/VehicleXml.cpp
+# ソースは担当ごとのフォルダに分けてある（src/ が include のルートで、
+# #include "core/Log.h" のようにフォルダ名から書く）:
+#   core/       ログ・例外・版・計測・CPU ピン留めなど、エンジン非依存の土台
+#   physics/    Chrono のラッパと glTF 凸包（当たり判定）
+#   render/     Filament のラッパと画像 / HDR / glTF の読み込み
+#   streaming/  HTTP・WebRTC・GStreamer の出力
+#   document/   シーン文書の値型と MuJoCo 風 XML（エンジン非依存）
+#   scene/      Scene の実体管理・エディタ状態・カメラ・数学の橋渡し
+#   components/ ブラウザのコマンドを受ける SceneComponent 群
+#   vehicle/    車両モデルとノード式（純粋な数値ライブラリ。tests/vehicle が使う）
+set(WIZ_CORE_SOURCES
+    src/core/AssetError.cpp
+    src/core/CpuAffinity.cpp
+    src/core/Log.cpp
+    src/core/PortScan.cpp
+    src/core/Versions.cpp)
+set(WIZ_PHYSICS_SOURCES
+    src/physics/MeshCollision.cpp
+    src/physics/PhysicsWorld.cpp)
+set(WIZ_RENDER_SOURCES
+    src/render/EnvironmentLoader.cpp
+    src/render/GltfLoader.cpp
+    src/render/ImageLoader.cpp
+    src/render/Renderer.cpp)
+set(WIZ_STREAMING_SOURCES
+    src/streaming/HttpServer.cpp
+    src/streaming/VideoStreamer.cpp
+    src/streaming/WebRtcStreamer.cpp)
+set(WIZ_DOCUMENT_SOURCES
+    src/document/SceneDocument.cpp
+    src/document/SceneXml.cpp)
+set(WIZ_SCENE_SOURCES
+    src/scene/CameraObject.cpp
+    src/scene/EditorState.cpp
+    src/scene/PrefabDefaults.cpp
+    src/scene/Scene.cpp
+    src/scene/SceneEdit.cpp
+    src/scene/SceneEvents.cpp
+    src/scene/SceneSerialize.cpp)
+set(WIZ_COMPONENT_SOURCES
+    src/components/EditorComponent.cpp
+    src/components/GizmoComponent.cpp
+    src/components/PrefabComponent.cpp
+    src/components/VehicleComponent.cpp)
+set(WIZ_VEHICLE_SOURCES
     src/vehicle/Formula.cpp
     src/vehicle/FormulaXml.cpp
     src/vehicle/LuaFormula.cpp
-    src/vehicle/TireFormula.cpp)
+    src/vehicle/Powertrain.cpp
+    src/vehicle/TireFormula.cpp
+    src/vehicle/VehicleModel.cpp
+    src/vehicle/VehicleTypes.cpp
+    src/vehicle/VehicleXml.cpp
+    src/vehicle/WheelController.cpp)
+
+add_executable(wizengine
+    src/main.cpp
+    ${WIZ_CORE_SOURCES}
+    ${WIZ_PHYSICS_SOURCES}
+    ${WIZ_RENDER_SOURCES}
+    ${WIZ_STREAMING_SOURCES}
+    ${WIZ_DOCUMENT_SOURCES}
+    ${WIZ_SCENE_SOURCES}
+    ${WIZ_COMPONENT_SOURCES}
+    ${WIZ_VEHICLE_SOURCES})
 # ノード式の実行エンジン（LuaJIT）。無ければ C++ の参照インタプリタに落ちる。
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/LuaJIT.cmake)
 wiz_link_luajit(wizengine)
-# Version pins surfaced in the browser's About section (src/Versions.cpp).
+# Version pins surfaced in the browser's About section (src/core/Versions.cpp).
 # WIZ_CGLTF_VERSION must match the third_parties/cgltf submodule pin (and the
 # wiz_download_header fallback URL above).
 target_compile_definitions(wizengine PRIVATE
@@ -321,14 +342,13 @@ add_dependencies(wizengine materials)
 # that include Filament headers as C++20. The rest of the project stays C++17
 # (CMAKE_CXX_STANDARD above).
 if(MSVC)
-    set_source_files_properties(src/Renderer.cpp src/GltfLoader.cpp
-        src/EnvironmentLoader.cpp
+    set_source_files_properties(${WIZ_RENDER_SOURCES}
         PROPERTIES COMPILE_OPTIONS "/std:c++20")
 
     # Sources (and string literals) are UTF-8. Without this MSVC reads them as
     # the system code page - on a Japanese Windows that mangles the Japanese
-    # text embedded in web_client.h and even eats the '<' of following tags,
-    # which breaks the served HTML.
+    # text in log messages and comments (and once broke the HTML that used to
+    # be embedded as a string literal).
     target_compile_options(wizengine PRIVATE /utf-8)
 endif()
 
@@ -522,4 +542,15 @@ if(WIN32)
     # Filament's GL loader (bluegl) calls into Windows OpenGL/GDI; ws2_32 for httplib.
     # shlwapi: utils::Path (pulled in by gltfio) calls PathIsRelative.
     target_link_libraries(wizengine PRIVATE opengl32 gdi32 user32 ws2_32 shlwapi)
+endif()
+
+# ---------------------------------------------------------------------------
+# Tests. tests/vehicle は Chrono も Filament も要らない単体テストで、単独でも
+# configure できる（tests/vehicle/CMakeLists.txt 参照）。本体と一緒に回すなら
+#   cmake -B build -DWIZ_BUILD_TESTS=ON && cmake --build build && ctest --test-dir build
+# ---------------------------------------------------------------------------
+option(WIZ_BUILD_TESTS "Build the vehicle unit test alongside the engine" OFF)
+if(WIZ_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests/vehicle)
 endif()

@@ -27,7 +27,7 @@ Claude Code 向けのプロジェクト前提メモ。作業開始時にまず�
 ```
 PhysicsWorld.step(dt)
   -> 箱の姿勢 (BodyTransform)
-  -> toFilament()  [math_bridge.h]  四元数/位置 -> mat4f
+  -> toFilament()  [MathBridge.h]  四元数/位置 -> mat4f
   -> Renderer.setCubeTransform()
   -> Renderer.renderFrame()  Filamentで描画 + readPixels でRGBA取得
   -> VideoStreamer.pushFrame()  appsrc -> x264enc -> rtph264pay -> udpsink
@@ -44,7 +44,7 @@ PhysicsWorld.step(dt)
   Filament）を両方持つ。シミュレートを止めると desc の姿勢へ全部戻るので、
   何度走らせても設計は壊れない。`reset()` も同じ意味になった（以前は
   `gridPos()+jitter()` で置き直していたが、いまは「置いた場所へ戻す」）。
-- **編集は必ずキュー経由**（`src/EditorState.{h,cpp}`）。ブラウザ → INPUT スレッドが
+- **編集は必ずキュー経由**（`src/scene/EditorState.{h,cpp}`）。ブラウザ → INPUT スレッドが
   `EditorState::Op`（種類 + JSON）を積み、**物理スレッドが drain して実行**する。
   Chrono を触ってよいのは物理スレッドだけ、という約束をエディタでも崩さないため。
   Op を増やしても配管（キュー・構造体・分岐）は触らなくてよい。
@@ -198,7 +198,7 @@ PhysicsWorld.step(dt)
 Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
 ```
 
-- **書式は MJCF（MuJoCo）に寄せてある**（`src/SceneDocument.h` の先頭に全体像）。
+- **書式は MJCF（MuJoCo）に寄せてある**（`src/document/SceneDocument.h` の先頭に全体像）。
 
   ```xml
   <wizengine model="sample_joints" version="4">
@@ -252,7 +252,7 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   `<environment>` が WizEngine の拡張であることと、`<worldbody>` の直下しか
   見ないこと（MJCF の入れ子 body は親からの相対姿勢なので、姿勢を合成せずに
   平らに落とすと物が別の場所に出る）。
-- **XML の実装は自前**（`src/SceneXml.{h,cpp}`、依存なし）。要素・属性・入れ子と
+- **XML の実装は自前**（`src/document/SceneXml.{h,cpp}`、依存なし）。要素・属性・入れ子と
   コメント・実体参照だけの部分集合で、テキストノードは持たない（値は全部属性）。
   属性は書いた順に出て、長い要素は要素名の下へ揃えて折り返す＝保存ファイルの
   差分が読める。**読み取りは失敗しない**（欠けた属性・型違いは既定値）。壊れた
@@ -266,7 +266,7 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   新しい文書を古い版が読んでも壊れない）。`kSceneDocVersion` を上げるのは
   **読めなくなる変更をしたときだけ**。節を足したら fromXml の「知っている節の
   一覧」（未知の節を警告する箇所）にも名前を足す。
-- **値の型は EditorTypes.h のまま**。`SceneDocument`（`src/SceneDocument.{h,cpp}`）は
+- **値の型は EditorTypes.h のまま**。`SceneDocument`（`src/document/SceneDocument.{h,cpp}`）は
   その入れ物で、XML と 1 対 1。「節が無い」と「空の節」を区別するために
   `hasSim` / `hasLights` / `hasCameras` / `hasEvents` を持つ（ライトを書かない
   文書は初期構成の 2 灯で開く＝手書きの最小 XML が真っ暗にならない。イベントを
@@ -292,10 +292,10 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
 - **起動時に読むシーンは `SceneConfig.h` の `kStartupScene`**（既定
   "default" = 同梱の `assets/scenes/default.xml`）。シーンの中身（配置・
   モデル・ジョイント・イベント）はコードではなく文書が持つ - 以前
-  scene.cpp にあった**格子の自動生成は廃止**した。読めなければ警告を出して
+  Scene.cpp にあった**格子の自動生成は廃止**した。読めなければ警告を出して
   空のシーン（地面のみ）で起動する（止めない）。空文字列 = 常に空で起動。
 
-## 車両（`src/vehicle/` + `src/VehicleComponent.{h,cpp}`）
+## 車両（`src/vehicle/` + `src/components/VehicleComponent.{h,cpp}`）
 
 NWH Vehicle Physics 2 の構成に倣った**グラフ型パワートレイン + 車輪ごとの
 WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクトが車体になり
@@ -423,7 +423,7 @@ Lua を見ない: ノード → Lua ソース → LuaJIT、はエンジンの中
 - **未**: タイヤ以外（サス・エンジン曲線）の差し替え口、vec3 型、ノードの
   値のライブ表示（デバッグバッジ）。
 
-## プレハブ（`src/PrefabComponent.{h,cpp}` + `PrefabDefaults` + `PrefabFrame.h`）
+## プレハブ（`src/components/PrefabComponent.{h,cpp}` + `scene/PrefabDefaults` + `scene/PrefabFrame.h`）
 
 Unity の prefab に相当する**見た目の部品の集合**。`EditorTypes.h` の
 `PrefabDesc`（名前 + `PartDesc` の配列）で、文書では `<asset>` の
@@ -462,7 +462,7 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
 - **未**: 部品の当たり判定（`collide`）、ビュー上のドラッグ以外の複数選択、
   部品の複製。
 
-## ギズモ（`src/GizmoComponent.{h,cpp}`）
+## ギズモ（`src/components/GizmoComponent.{h,cpp}`）
 
 選択中のオブジェクトに出る Unity 風の移動 / 回転 / 拡縮ハンドル。
 **エディタカメラ専用**: 操作はそのページからだけ受け、描画もそのビューに
@@ -484,7 +484,7 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
   混ざって発散する。
 - 回転は atan2 の折り返しを差分の積み上げで吸収する。ワールド軸の回転は
   `q_new = AngleAxis(角度, 軸) * q_start`。
-- **オイラー角と四元数の変換は `scene_math.h` に 1 か所だけ**
+- **オイラー角と四元数の変換は `SceneMath.h` に 1 か所だけ**
   （`quatFromEulerDegrees` / `eulerDegreesFromQuat`、順序は R = Rz*Ry*Rx）。
   インスペクタの数字・ギズモの回転・Chrono に渡す姿勢がここで揃う。
 - 線は `Renderer::configureLineBatches` / `setLineBatch` で色ごとに 1 個の
@@ -624,8 +624,34 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
 
 ## ファイル
 
-- **CPU コアの固定**（`src/CpuAffinity.{h,cpp}`、Windows / Linux 両対応）。設定は **exe 引数**（`--physics-cores "0-11"` / `--render-cores "12-15"` /
-  `--physics-threads N`、`--help` で一覧）。**scene.cpp には置かない**（scene はユーザーが
+**`src/` は担当ごとのフォルダに分かれ、`src/` が include のルート**
+（`#include "core/Log.h"` のようにフォルダ名から書く。同じフォルダでも省略しない）:
+
+```
+src/
+  main.cpp       起動・引数解析・2 スレッドのループ
+  core/          Log, AssetError, Versions, Stats, CpuAffinity, PortScan
+                 （エンジン非依存の土台）
+  physics/       PhysicsWorld（Chrono）, MeshCollision（glTF 凸包）, PhysicsTuning
+  render/        Renderer（Filament）, GltfLoader, EnvironmentLoader, ImageLoader
+  streaming/     HttpServer, WebRtcStreamer, VideoStreamer（GStreamer）
+  document/      EditorTypes, SceneDocument, SceneXml（シーン文書。エンジン非依存）
+  scene/         Scene（Scene.cpp / SceneEdit.cpp / SceneEvents.cpp /
+                 SceneSerialize.cpp + 私的ヘッダ SceneInternal.h）, SceneConfig,
+                 EditorState, GameObject, CameraObject, BoxController,
+                 SceneComponent, PrefabDefaults, PrefabFrame, SceneMath, MathBridge
+  components/    EditorComponent, GizmoComponent, PhysicsControlComponent,
+                 StreamControlComponent, VehicleComponent, PrefabComponent
+  vehicle/       車両モデルとノード式（純粋な数値ライブラリ。tests/vehicle が使う）
+tests/vehicle/   車両モデルの単体テスト（-DWIZ_BUILD_TESTS=ON で本体からも回せる）
+cmake/           LuaJIT.cmake（LuaJIT の検出・ビルド）
+web/             ブラウザ UI（ビルド時に assets/web/ へコピー）
+assets/          実行時に読むもの（materials / textures / scenes）
+third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, json, httplib, cgltf, stb）
+```
+
+- **CPU コアの固定**（`src/core/CpuAffinity.{h,cpp}`、Windows / Linux 両対応）。設定は **exe 引数**（`--physics-cores "0-11"` / `--render-cores "12-15"` /
+  `--physics-threads N`、`--help` で一覧）。**SceneConfig.h には置かない**（scene はユーザーが
   触るシーン内容、CPU 割り当ては実行環境の設定という分離）。オプションはモードの前後
   どこに書いてもよく、位置引数とは分けて解析される。Windows は `SetThreadAffinityMask` /
   `GetProcessAffinityMask`、Linux は `pthread_setaffinity_np` / `sched_getaffinity`。
@@ -638,7 +664,7 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
   描画スレッドはそれぞれ自分もピンする。OpenMP 無しビルドではメッセージを出して無効化。既存の外部アフィニティ（taskset /
   start /affinity）は `availableCores()` で尊重。失敗しても続行（性能の問題であって
   正しさの問題ではない）。
-- `src/PhysicsWorld.{h,cpp}` — 物理エンジン（Chrono）。重力・接触・材質の設定のみ。
+- `src/physics/PhysicsWorld.{h,cpp}` — 物理エンジン（Chrono）。重力・接触・材質の設定のみ。
   `addBox(...)` で剛体追加、`step` / `bodyTransform(id)` / `setBodyPose(id,...)`。
   エディタ用に `placeBody`（起こすための落下速度を与えない置き直し）、
   `setBodyFixed`、`disableBody`（削除相当。当たり判定を切って地面の下へ退避し、
@@ -694,7 +720,7 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
   GEN_MIPMAPPABLE/BLIT の usage を要求し、フラグ名と有無が Filament の版で変わる。
   地面テクスチャも同じ理由で自前生成）。**glTF は metallicFactor の既定が 1.0＝金属**で、金属は拡散反射を
   持たないため映り込む環境が無いと影部分が真っ黒になる。これが「glb によって真っ黒」の正体。
-- `src/Renderer.{h,cpp}` — 描画エンジン（Filament, headless Vulkan）。下地（デバイス・
+- `src/render/Renderer.{h,cpp}` — 描画エンジン（Filament, headless Vulkan）。下地（デバイス・
   カメラ・ライト2灯＋IBL・共有キューブメッシュ・マテリアル）のみ構築。中身は
   `addShape(ShapeMesh)` / `addGround(halfSize,color)` / `setCamera(eye,target)` で追加。
   箱・床とも lit（`shaded.mat`＝箱用 lit / `ground_lit.mat`＝床用）。箱は影を落とし
@@ -716,7 +742,7 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
   パスは 1 回だけ）+ `addModelInstance` / `releaseModelInstance`（実体）。
   gltfio は実体を 1 個だけ壊せないので、release は**スケール 0 で隠して
   同じモデルの空き番号として再利用**する。
-- `src/GltfLoader.{h,cpp}` — glTF/GLB 読み込み（Filament の gltfio）。
+- `src/render/GltfLoader.{h,cpp}` — glTF/GLB 読み込み（Filament の gltfio）。
   **「原型 + 実体」の 2 段**: `loadModel(path)` がファイルを 1 回だけ読んで
   モデル番号を返し（同じパスはキャッシュ）、`createInstance(model)` が実体を
   何個でも作る（メッシュ・マテリアル・テクスチャは原型と共有 =
@@ -729,8 +755,12 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
   AssetError を投げ、Scene 側が球で描いて警告する。
   Filament 1.74 Windows 版のライブラリ名は `uberz` ではなく **`uberzlib`**、また
   `shlwapi` のリンクが必要（`utils::Path`）。
-- `src/ImageLoader.{h,cpp}` — stb_image で画像を RGBA8 として読む（PNG/JPEG/TGA/BMP）。
-- `src/Scene.h` + `src/scene.cpp` — **シーンの実体管理**。オブジェクト
+- `src/render/ImageLoader.{h,cpp}` — stb_image で画像を RGBA8 として読む（PNG/JPEG/TGA/BMP）。
+- `src/scene/Scene.h` + `src/scene/Scene*.cpp` — **シーンの実体管理**。実装は担当ごとに
+  `Scene.cpp`（構築・ステップ・組み込みコンポーネント・描画への反映）・
+  `SceneEdit.cpp`（エディタ操作）・`SceneEvents.cpp`（掴みとイベントグラフ）・
+  `SceneSerialize.cpp`（文書との変換と `/scene` の JSON）に分かれ、共通の
+  下準備（インクルード・小さな変換関数）は私的ヘッダ `SceneInternal.h`。オブジェクト
   （GameObject: 設計値 + 物理ID + 描画ID）・ライト・カメラ・メッシュアセット
   （`MeshAsset`: 文書の宣言 + Renderer のモデル番号 + 凸包のキャッシュ）を
   持ち、文書（SceneDocument）との相互変換・編集操作の適用・スレッド間の
@@ -740,11 +770,11 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
   次第）。**シーンの中身は持たない**（配置・モデル・ジョイントは
   assets/scenes/*.xml。`build()` は地面・ライト・カメラの初期化と
   kStartupScene の読み込みだけ）。エンジン側の既定値は `SceneConfig.h`。
-- `src/VideoStreamer.{h,cpp}` — GStreamer パイプライン。`OutputMode` で
+- `src/streaming/VideoStreamer.{h,cpp}` — GStreamer パイプライン。`OutputMode` で
   web/None（GStreamer出力なし。ブラウザへは WebRtcStreamer が担当）/ window / stream
   （RTP/UDP）/ rtsp（rtspclientsink）を切替。
-- `src/WebRtcStreamer.{h,cpp}` — GStreamer `webrtcbin` でブラウザへ WebRTC 配信。
-  コーデックは `scene.cpp` の `kVideoCodec`（VP8 / VP9 / H264）と `kVideoBitrate` で指定。
+- `src/streaming/WebRtcStreamer.{h,cpp}` — GStreamer `webrtcbin` でブラウザへ WebRTC 配信。
+  コーデックは `SceneConfig.h` の `kVideoCodec`（VP8 / VP9 / H264）と `kVideoBitrate` で指定。
   VP9 は同画質で VP8 の約半分の帯域だがエンコードが重い（`cpu-used=8` で速度優先）。
   H264 は GPU エンコード（amfh264enc → mfh264enc → x264enc → openh264enc の順で自動選択、
   起動時に `h264 encoder: ...` と表示）。`h264parse config-interval=-1` で SPS/PPS を
@@ -755,10 +785,10 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
   ブラウザ側は `/stats` のコーデックだけを `setCodecPreferences` で提示。外部メディアサーバ不要。`handleOffer(offerSdp)` で WHEP 風シグナリング
   （SDP offer→answer、非トリクル ICE）。GLib メインループを別スレッドで実行。
   要 GStreamer webrtc/nice プラグイン。**未実機検証**（要調整の可能性）。
-- `src/Stats.h` — スレッド間で共有する性能カウンタ（atomic）。物理スレッドが Hz と
+- `src/core/Stats.h` — スレッド間で共有する性能カウンタ（atomic）。物理スレッドが Hz と
   1更新の所要 ms、描画スレッドが fps と renderFrame の ms を書き、`/stats` が JSON で
   返してブラウザ下部のオーバーレイに表示。
-- `src/HttpServer.{h,cpp}` — cpp-httplib（別スレッド）。`/` 操作ページ、`/whep` で
+- `src/streaming/HttpServer.{h,cpp}` — cpp-httplib（別スレッド）。`/` 操作ページ、`/whep` で
   WebRTC シグナリング（`setOfferHandler`）、`/input` で入力受信（`drainCommands`）。
   入力は JSON（`{"cmd":...}`、main で nlohmann/json パース）。既定ポート8080。
   `/favicon.ico` は `web/favicon.ico` をビルド時に実行フォルダへコピーして配信（起動時に
@@ -768,10 +798,12 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
   返しブラウザ側でエラー表示＋自動リトライ。`/viewer/leave`（sendBeacon）または6秒
   無応答で解放し、`setViewerGoneHandler` → `WebRtcStreamer::stopSession()` で
   パイプラインを破棄。
-- `src/web_client.h` — ブラウザ用フロント（`kIndexHtml`）。`<video>`＋WHEP クライアント
-  （`/whep` に SDP offer を POST）、操作は `/input` に JSON POST。フロントはブラウザのみ。
-- `src/math_bridge.h` — Chrono → Filament の姿勢変換（四元数から回転行列を手計算）。
-- **視聴者がいない間は完全に休む**（web モードのみ、`scene.cpp` の `kIdleWhenUnwatched`）。
+- `web/` — ブラウザ用フロント（`index.html` / `style.css` / `app.js`）。ビルドが
+  `assets/web/` にコピーし、HttpServer がそこから配信する（リロードで反映、
+  再ビルド不要）。`<video>`＋WHEP クライアント（`/whep` に SDP offer を POST）、
+  操作は `/input` に JSON POST。フロントはブラウザのみ。
+- `src/scene/MathBridge.h` — Chrono → Filament の姿勢変換（四元数から回転行列を手計算）。
+- **視聴者がいない間は完全に休む**（web モードのみ、`SceneConfig.h` の `kIdleWhenUnwatched`）。
   `HttpServer::hasViewer()`（トークン＋ハートビート）で判定し、描画スレッドは 100ms 間隔の
   ポーリングのみ、物理スレッドも停止（アキュムレータもクリアするので復帰時に一気に進まない）。
   WebRTC のパイプラインは視聴者離脱時に破棄済みなのでエンコードも止まる。window/stream/rtsp
@@ -786,10 +818,10 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
   コード側は `wizengine::assetPath()` を通して解決する（絶対パスと `assets/` 始まりは
   そのまま）。シーン文書の `<mesh file>` は **`assets/` からの相対名のみ**
   （`..` と絶対パスは読み込みで弾く - 文書は手で書けるため）。
-- **アセット読み込み失敗は例外で強制停止**（`src/AssetError.{h,cpp}`）。重要なのは
+- **アセット読み込み失敗は例外で強制停止**（`src/core/AssetError.{h,cpp}`）。重要なのは
   **チェックリストを持たない**こと: `GltfLoader::loadModel`、マテリアル読み込み、
-  テクスチャ読み込みという**読む側そのものが `AssetError` を投げる**ので、scene.cpp に
-  新しいファイルを追加しても検証漏れが起きない（変数名を列挙する方式は、追加時に
+  テクスチャ読み込みという**読む側そのものが `AssetError` を投げる**ので、シーン文書に
+  新しいファイルを足しても検証漏れが起きない（変数名を列挙する方式は、追加時に
   すり抜けるため廃止）。戻り値でのエラー報告とフォールバックも廃止（呼び出し側が
   無視できてしまうため）。main の起動時チェックに残すのは
   **どの読み込み側も検査しないもの＝`assets/web/index.html` のみ**（HTTP はリクエスト毎に
@@ -802,24 +834,24 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
   終了**（`line.filamat` と `ground.png` は警告のみ）。exe を別の場所から起動したときに
   Filament の奥で無言終了していた問題への対処。あわせて main 全体を try/catch で包み、
   例外を表示してから Enter 待ち（Explorer 起動でコンソールが消えるため）。
-- `src/EditorTypes.h` — エディタ文書の型だけを集めたヘッダ（`AppMode` /
+- `src/document/EditorTypes.h` — エディタ文書の型だけを集めたヘッダ（`AppMode` /
   `ShapeKind` / `JointKind` / `BodyDesc` / `JointDesc` / `NodeDesc` /
   `EventAssetDesc` / `SimSettings` と、その JSON 変換・範囲クランプ）。Chrono も Filament も出てこないので、どのスレッド
   からでもコピーできる。保存フォーマットとブラウザ API のキーはここが唯一の定義。
-- `src/SceneXml.{h,cpp}` — 依存の無い最小 XML DOM（読み書き）。シーン文書の
+- `src/document/SceneXml.{h,cpp}` — 依存の無い最小 XML DOM（読み書き）。シーン文書の
   ためだけの部分集合で、要素・属性・入れ子とコメント・実体参照まで。整形出力は
   属性の順を保ち、長い要素を折り返す。
-- `src/SceneDocument.{h,cpp}` — シーン文書の値型（`SceneDocument`）と、その
+- `src/document/SceneDocument.{h,cpp}` — シーン文書の値型（`SceneDocument`）と、その
   **MuJoCo 風 XML** への変換。保存フォーマットの定義はここ 1 か所（旧 JSON の
   取り込み `fromLegacyJson` も同居）。上の「シーン文書（XML）」の章を参照。
-- `src/EditorState.{h,cpp}` — モード（atomic）、編集操作のキュー、ジョイント一覧、
+- `src/scene/EditorState.{h,cpp}` — モード（atomic）、編集操作のキュー、ジョイント一覧、
   **イベントアセット**（名前 + ノード + ワイヤー。付け先はシーン全体ぶんだけ
   ここが持ち、オブジェクトに付いたぶんは `BodyDesc::events`）、
   シミュレート設定、`assets/scenes` の読み書き（`.xml` が正、`.json` は
   読み込みのみ）と一覧キャッシュ。オブジェクト
   そのものは持たない（実体と並べて Scene が持つ。番号がずれると黙って別の物を
   動かしてしまうため）。
-- `src/EditorComponent.{h,cpp}` — ブラウザの `mode` / `edit.*` コマンドを受ける
+- `src/components/EditorComponent.{h,cpp}` — ブラウザの `mode` / `edit.*` コマンドを受ける
   SceneComponent。やるのは値の正規化と検証だけで、実体の操作は EditorState の
   キューに積む。ただし物理レート系（Hz・サブステップ・反復・エンベロープ・
   リカバリ）だけは `PhysicsTuning` の atomic に直接書く（System タブと同じ口）。
@@ -858,7 +890,7 @@ CRT を変えたときは build フォルダを削除してから再 configure�
 物理バックエンドの選択は2段構え。
 1. CMake `-DWIZ_USE_MULTICORE=ON`（既定 OFF）… Multicore モジュールを**リンクして使える
    状態にする**だけ。`find_package(Chrono COMPONENTS Multicore)` になる。
-2. `scene.cpp` の `kBackend`（`PhysicsBackend::Core` / `::Multicore`）… **実際にどちらを
+2. `SceneConfig.h` の `kBackend`（`PhysicsBackend::Core` / `::Multicore`）… **実際にどちらを
    使うか**。他のシーン設定と同じ場所で切り替える。
 CMake が OFF のまま `kBackend = Multicore` にした場合は、起動時にメッセージを出して
 自動的に Core にフォールバックする。Multicore は `ChSystemMulticoreNSC`＋APGD で設定は
@@ -938,7 +970,7 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
 - 済: シーン文書の MuJoCo 風 XML 化（`assets/scenes/*.xml`、`/scene.xml`、
   `kStartupScene`。上の「シーン文書（XML）」の章を参照）。
 - 済: glTF モデルの文書化（`<asset><mesh/>` + `<geom type="mesh" mesh=...>`。
-  配置も含め、シーンの中身はコードから文書へ全面移行。scene.cpp の
+  配置も含め、シーンの中身はコードから文書へ全面移行。Scene.cpp の
   格子自動生成・kBoxModelPath プール・置物 kModelPath は廃止し、既定シーンは
   `assets/scenes/default.xml`）。
 - 済（試作）: 車両シミュレーション（グラフ型パワートレイン + レイキャスト式

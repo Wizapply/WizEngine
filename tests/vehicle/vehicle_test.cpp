@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-#include "SceneXml.h"
+#include "document/SceneXml.h"
 #include "vehicle/Formula.h"
 #include "vehicle/FormulaXml.h"
 #include "vehicle/LuaFormula.h"

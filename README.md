@@ -29,7 +29,7 @@ web UI. (Docs below are in Japanese.)
   **起動時に GPU 上でキューブマップ化・プリフィルタ**する IBL —
   ファイル差し替えは再起動だけで反映、ビルド不要
 - **シーン定義は 1 ファイル**: グリッド構成・形状・摩擦・カメラ・ライト・
-  ストリーミング・ソルバーまで全パラメータが `src/SceneConfig.h` に集約
+  ストリーミング・ソルバーまで全パラメータが `src/scene/SceneConfig.h` に集約
 - **構造化ログ**: 時刻(ms)・レベル・スレッド名・タグ付き、色分け、
   `WIZENGINE_LOG=debug|info|warn|error` でレベル制御
 - **CPU 制御**: `--physics-cores` / `--render-cores` / `--physics-threads` で
@@ -59,23 +59,28 @@ web UI. (Docs below are in Japanese.)
 
 ```
 src/
-  SceneConfig.h            シーンの全パラメータ（まずここを編集）
-  scene.cpp / Scene.h      シーン実装・階層 JSON・コンポーネント登録
-  CameraObject             カメラ（atomic なオービット状態）
-  BoxController            グラブ（掴んで引っ張る）制御
-  EditorTypes.h            エディタ文書の型（剛体・ジョイント・設定 + JSON）
-  SceneDocument            シーン文書 ⇄ MuJoCo 風 XML（保存形式の定義）
-  SceneXml                 最小 XML DOM（読み書き。外部依存なし）
-  EditorState              モード・編集キュー・ジョイント・シーンファイル
-  EditorComponent          ブラウザの編集コマンド受付（検証と既定値）
-  PhysicsControlComponent / PhysicsTuning   ブラウザからの物理チューニング
-  PhysicsWorld             Chrono ラッパ（Core / Multicore）
-  Renderer                 Filament ヘッドレス描画・ビュー/読み戻し管理
-  EnvironmentLoader        HDR → GPU プリフィルタ → IBL
-  ImageLoader              stb_image ラッパ（.hdr 診断つき）
-  WebRtcStreamer / VideoStreamer / HttpServer   配信と制御
-  Log                      構造化コンソールログ
   main.cpp                 引数解析・スレッド起動・物理/描画ループ
+  core/                    Log（構造化ログ）, AssetError, Versions, Stats,
+                           CpuAffinity, PortScan - エンジン非依存の土台
+  physics/                 PhysicsWorld（Chrono ラッパ、Core / Multicore）,
+                           MeshCollision（glTF の凸包）, PhysicsTuning
+  render/                  Renderer（Filament ヘッドレス描画・ビュー/読み戻し）,
+                           GltfLoader, EnvironmentLoader（HDR → IBL）, ImageLoader
+  streaming/               HttpServer / WebRtcStreamer / VideoStreamer（配信と制御）
+  document/                EditorTypes.h（文書の型 + JSON）, SceneDocument（⇄ MuJoCo
+                           風 XML = 保存形式の定義）, SceneXml（最小 XML DOM）
+  scene/                   SceneConfig.h（エンジン既定値。まずここを編集）,
+                           Scene（実体管理。Scene.cpp / SceneEdit.cpp /
+                           SceneEvents.cpp / SceneSerialize.cpp）, EditorState
+                           （モード・編集キュー・アセット・シーンファイル）,
+                           CameraObject, BoxController, GameObject, SceneMath,
+                           MathBridge, PrefabDefaults, PrefabFrame
+  components/              EditorComponent（編集コマンド受付）, GizmoComponent,
+                           PhysicsControlComponent, StreamControlComponent,
+                           VehicleComponent, PrefabComponent
+  vehicle/                 車両モデルとノード式（Chrono / Filament 非依存）
+tests/vehicle/             車両モデルの単体テスト（単独 configure 可）
+cmake/LuaJIT.cmake         LuaJIT の検出とビルド
 web/index.html             ブラウザ UI（ビルド時にコピー、リロードで反映）
 assets/
   materials/*.mat          matc でビルド時に .filamat へコンパイル
@@ -294,7 +299,7 @@ A →軸→ B、シミュレート中は A → B を結びます。
   壊れた XML は適用されず、行番号付きの理由がステータスに出ます。読むだけ
   なら `/cam0/scene.xml` でも見られます。
 - 起動時に読み込ませたいときは `SceneConfig.h` の `kStartupScene` にシーン名を
-  書きます（既定は空 = `scene.cpp` の既定シーン）。
+  書きます（既定は空 = `SceneConfig.h` の `kStartupScene`）。
 - 旧形式の `assets/scenes/*.json`（version 1〜3）は**読み込みのみ**対応します。
   同じ名前の `.xml` があればそちらが優先され、保存は常に `.xml` です。
 - 打ち間違いは**読み飛ばして警告**になります（未知の `type`、見つからない
@@ -412,7 +417,7 @@ textarea と同じ要領で**右下のつまみ**をドラッグすると高さ�
 物理を回していないので、スライダーやギズモを動かすたびに剛体を作り直さずに
 済みます）。
 
-起動時のモードは `src/SceneConfig.h` の `kStartMode` で変えられます（既定は
+起動時のモードは `src/scene/SceneConfig.h` の `kStartMode` で変えられます（既定は
 `Simulate` ＝従来どおりの挙動）。
 
 ## シーンをいじる
@@ -429,7 +434,7 @@ textarea と同じ要領で**右下のつまみ**をドラッグすると高さ�
   明示もできます。宣言したメッシュは Assets パネルにタイルとして出て、
   クリックで配置できます
 
-`src/SceneConfig.h` は**エンジン側の既定値**の入口です。例:
+`src/scene/SceneConfig.h` は**エンジン側の既定値**の入口です。例:
 
 - ライト初期構成: `lightConfigs()`（シーン XML が `<light>` を持たないときの
   2 灯。以後はエディタで編集し、シーンに保存されます）。地面・環境光の

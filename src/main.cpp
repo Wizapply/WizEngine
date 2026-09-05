@@ -26,26 +26,26 @@
 #include <math/mat4.h>
 #include <math/vec3.h>
 
-#include "HttpServer.h"
-#include "Log.h"
-#include "Versions.h"
-#include "AssetError.h"
-#include "CpuAffinity.h"
-#include "EditorComponent.h"
-#include "EditorTypes.h"
-#include "PortScan.h"
-#include "PhysicsControlComponent.h"
-#include "StreamControlComponent.h"
-#include "VehicleComponent.h"
-#include "PrefabComponent.h"
-#include "PhysicsTuning.h"
-#include "PhysicsWorld.h"
-#include "Renderer.h"
-#include "Scene.h"
-#include "Stats.h"
-#include "VideoStreamer.h"
-#include "WebRtcStreamer.h"
-#include "math_bridge.h"
+#include "streaming/HttpServer.h"
+#include "core/Log.h"
+#include "core/Versions.h"
+#include "core/AssetError.h"
+#include "core/CpuAffinity.h"
+#include "components/EditorComponent.h"
+#include "document/EditorTypes.h"
+#include "core/PortScan.h"
+#include "components/PhysicsControlComponent.h"
+#include "components/StreamControlComponent.h"
+#include "components/VehicleComponent.h"
+#include "components/PrefabComponent.h"
+#include "physics/PhysicsTuning.h"
+#include "physics/PhysicsWorld.h"
+#include "render/Renderer.h"
+#include "scene/Scene.h"
+#include "core/Stats.h"
+#include "streaming/VideoStreamer.h"
+#include "streaming/WebRtcStreamer.h"
+#include "scene/MathBridge.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -96,13 +96,15 @@ int main(int argc, char** argv) {
     try {
         return run(argc, argv);
     } catch (const wizengine::AssetError& e) {
-        // Something named in scene.cpp could not be loaded. Stopping is
+        // Something the scene names (a material, a model, a texture) could
+        // not be loaded. Stopping is
         // deliberate: running on with a missing model or texture produces a
         // scene that silently differs from the configured one.
         LOGE("app", "%s", e.what());
         std::printf(
-            "\nCheck the file name in src/scene.cpp and that the file sits "
-            "next to wizengine.exe.\n(press Enter to close)\n");
+            "\nCheck the file name (assets/scenes/*.xml or SceneConfig.h) and "
+            "that the file sits under assets/ next to wizengine.exe.\n"
+            "(press Enter to close)\n");
         std::getchar();
         return 1;
     } catch (const std::exception& e) {
@@ -164,7 +166,7 @@ int run(int argc, char** argv) {
     //
     // Options, accepted after the mode in any order. These are deployment
     // settings rather than scene content, which is why they live here and not
-    // in scene.cpp:
+    // in SceneConfig.h or the scene document:
     //   --physics-cores <spec>   cores the solver may use ("0-11", "0,2,4", "3")
     //   --render-cores  <spec>   cores for rendering and encoding
     //   --physics-threads <n>    solver worker threads (default: one per core)
