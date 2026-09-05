@@ -54,9 +54,10 @@ struct LightDesc {
     float spotOuterRadians = 0.6f;  // spot cone, cutoff
 };
 
-// 組み込みメッシュの種類。エディタで置けるのはこの 2 つ（glTF モデルは
-// インスタンスプール側で扱う）。
-enum class ShapeMesh { Box, Sphere };
+// 組み込みメッシュの種類。エディタで置けるのは Box / Sphere（glTF モデルは
+// インスタンスプール側で扱う）。Cylinder は車両のタイヤ用: 軸が X で、
+// 直径 1・長さ 1 の単位円柱（スケール (幅, 直径, 直径) で車輪になる）。
+enum class ShapeMesh { Box, Sphere, Cylinder };
 
 // 線バッチに詰める 1 図形。太線と塗りつぶしの面を同じ入れ物に混ぜられる。
 //
@@ -311,6 +312,11 @@ private:
     // 球メッシュ（UV球）。使うシーンだけが作る＝箱しか置かないなら費用ゼロ。
     filament::VertexBuffer* sphereVb_ = nullptr;
     filament::IndexBuffer* sphereIb_ = nullptr;
+    // 円柱（タイヤ）。球と同じく最初に使うときに作る。
+    filament::VertexBuffer* cylinderVb_ = nullptr;
+    filament::IndexBuffer* cylinderIb_ = nullptr;
+    uint32_t cylinderIndexCount_ = 0;
+    void ensureCylinderMesh();
     uint32_t sphereIndexCount_ = 0;
     void ensureSphereMesh();
 

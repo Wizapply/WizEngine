@@ -5,6 +5,7 @@
 #include <string>
 
 #include "Log.h"
+#include "PrefabFrame.h"
 #include "Renderer.h"
 #include "Scene.h"
 #include "scene_math.h"
@@ -419,17 +420,20 @@ void buildCameraIcon(Sink out, std::size_t batch, const CameraObject& cam,
 // 相手が違うだけで、ハンドルの見た目・当たり判定・ドラッグの計算は共通。
 struct Target {
     bool valid = false;
-    int type = 0;  // 0=オブジェクト 1=ライト 2=カメラ
+    int type = 0;  // 0=オブジェクト 1=ライト 2=カメラ 3=プレハブの部品
     std::size_t index = 0;
     ed::Vec3d pos, rot, size;
+    bool uniformScale = false;  // 球・モデル・球の部品: 軸を掴んでも一様に
     bool isObject() const { return type == 0; }
+    bool isPart() const { return type == 3; }
+    bool supportsScale() const { return type == 0 || type == 3; }
 };
 
 // ライト・カメラはスケールを持たないので、拡縮モードは移動として扱う
 // （Unity も非対応の対象ではツールが効かないが、何も出ないより移動できる
 // ほうが手が止まらない）。
 ed::GizmoMode effectiveMode(const Target& t, ed::GizmoMode mode) {
-    if (!t.isObject() && mode == ed::GizmoMode::Scale) {
+    if (!t.supportsScale() && mode == ed::GizmoMode::Scale) {
         return ed::GizmoMode::Translate;
     }
     return mode;
@@ -444,6 +448,30 @@ Target currentTarget(Scene& scene, std::size_t camIndex, bool lockLists) {
 
     const auto selKind = scene.editor().selKind();
     const int selIndex = scene.editor().selIndex();
+    if (selKind == EditorState::SelKind::Part) {
+        // プレハブ編集モードの部品。ワールド姿勢は設計値から組む（PrefabFrame）。
+        const int obj = scene.editor().prefabEditObject();
+        if (obj >= 0 && std::size_t(obj) < scene.objectCount() &&
+            scene.objectAlive(std::size_t(obj))) {
+            const ed::BodyDesc& body = scene.object(std::size_t(obj)).desc;
+            ed::PartDesc part;
+            if (!body.prefab.empty() &&
+                scene.editor().partDesc(body.prefab, selIndex, part)) {
+                scenemath::Vec3 wp;
+                scenemath::Quat wr;
+                prefabframe::partWorld(body, part, wp, wr);
+                const Vec3 e = scenemath::eulerDegreesFromQuat(wr);
+                t.valid = true;
+                t.type = 3;
+                t.index = std::size_t(selIndex);
+                t.pos = {wp.x(), wp.y(), wp.z()};
+                t.rot = {e.x(), e.y(), e.z()};
+                t.size = part.size;
+                t.uniformScale = part.kind != ed::PartKind::Box;
+            }
+        }
+        return t;
+    }
     if (selKind == EditorState::SelKind::Light) {
         if (selIndex >= 0 && std::size_t(selIndex) < scene.lightCount() &&
             scene.lightAlive(std::size_t(selIndex))) {
@@ -477,6 +505,7 @@ Target currentTarget(Scene& scene, std::size_t camIndex, bool lockLists) {
     t.pos = d.position;
     t.rot = d.rotation;
     t.size = d.size;
+    t.uniformScale = d.shape != ed::ShapeKind::Box;
     return t;
 }
 
@@ -613,6 +642,53 @@ IconHit pickIcon(Scene& scene, const Projector& pr, double px, double py) {
     return best;
 }
 
+// プレハブ編集モード: 部品の中心を投影して一番近いものを拾う（-1 = 無し）。
+// INPUT スレッド専用（中でオブジェクト一覧のロックを取る）。
+int pickPart(Scene& scene, const Projector& pr, double px, double py) {
+    int best = -1;
+    double bestDistance = kIconPick * 1.5;  // 部品は大きいので少し甘く
+    auto lk = scene.lockObjects();
+    const int obj = scene.editor().prefabEditObject();
+    if (obj < 0 || std::size_t(obj) >= scene.objectCount() ||
+        !scene.objectAlive(std::size_t(obj))) {
+        return -1;
+    }
+    const ed::BodyDesc& body = scene.object(std::size_t(obj)).desc;
+    ed::PrefabDesc prefab;
+    if (body.prefab.empty() || !scene.editor().prefabAsset(body.prefab, prefab)) return -1;
+    for (std::size_t i = 0; i < prefab.parts.size(); ++i) {
+        scenemath::Vec3 wp;
+        scenemath::Quat wr;
+        prefabframe::partWorld(body, prefab.parts[i], wp, wr);
+        const double d = pointDistance(pr, wp, px, py);
+        if (d < bestDistance) {
+            bestDistance = d;
+            best = int(i);
+        }
+    }
+    return best;
+}
+
+// 部品の輪郭（ワイヤーの箱）。選択中の部品がどれか見えるように。
+void buildPartOutline(const Sink& out, std::size_t batch, const Target& t,
+                      const scenemath::Basis& basis) {
+    const Vec3 c(t.pos.x, t.pos.y, t.pos.z);
+    const scenemath::Quat q = scenemath::quatFromEulerDegrees(t.rot.x, t.rot.y, t.rot.z);
+    const Vec3 h(t.size.x * 0.5, t.uniformScale ? t.size.x * 0.5 : t.size.y * 0.5,
+                 t.uniformScale ? t.size.x * 0.5 : t.size.z * 0.5);
+    Vec3 corner[8];
+    for (int i = 0; i < 8; ++i) {
+        const Vec3 l((i & 1) ? h.x() : -h.x(), (i & 2) ? h.y() : -h.y(),
+                     (i & 4) ? h.z() : -h.z());
+        corner[i] = c + q * l;
+    }
+    Sink s = out;
+    s.width = float(std::max(0.004, (c - basis.eye).norm() * 0.004));
+    const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3},
+                              {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    for (const auto& e : edges) s.line(batch, corner[e[0]], corner[e[1]]);
+}
+
 }  // namespace
 
 namespace gizmo {
@@ -734,7 +810,18 @@ bool GizmoComponent::onCommand(Scene& scene, std::size_t camIndex,
             }
         }
 
-        // 2) ライト / カメラのアイコン。当たれば選択を切り替えて消費する
+        // 2) プレハブ編集モード: 部品だけが選べる（Unity のプレハブモードと
+        //    同じ。外の物は選ばせない）。当たらなければ選択を解除して消費。
+        if (scene.editor().prefabEditObject() >= 0) {
+            const int part = pickPart(scene, pr, px, py);
+            scene.boxController(camIndex).setSelected(BoxController::kNone);
+            if (part >= 0) scene.editor().setSel(EditorState::SelKind::Part, part);
+            else scene.editor().clearSel();
+            scene.boxController(camIndex).clearPointer();
+            return true;
+        }
+
+        // 3) ライト / カメラのアイコン。当たれば選択を切り替えて消費する
         //    （オブジェクトの選択は外す - ギズモの対象は常に 1 つ）。
         const IconHit hit = pickIcon(scene, pr, px, py);
         if (hit.index >= 0) {
@@ -745,7 +832,7 @@ bool GizmoComponent::onCommand(Scene& scene, std::size_t camIndex,
             scene.boxController(camIndex).clearPointer();
             return true;
         }
-        return false;  // 3) 通常のオブジェクト選択（pickBoxAt）へ
+        return false;  // 4) 通常のオブジェクト選択（pickBoxAt）へ
     }
 
     if (cmd == "drag" && cam.handle.load() != kNone) {
@@ -889,6 +976,8 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
                 scene.moveLight(t.index, nx, ny, nz);
             } else if (t.type == 2) {
                 scene.moveCamera(t.index, nx, ny, nz);
+            } else if (t.type == 3) {
+                scene.movePart(int(t.index), nx, ny, nz);
             } else {
                 scene.moveObject(t.index, nx, ny, nz);
             }
@@ -922,20 +1011,26 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
             const scenemath::Quat start = scenemath::quatFromEulerDegrees(
                 cam.startRot.x, cam.startRot.y, cam.startRot.z);
             const scenemath::Quat turn(Eigen::AngleAxisd(applied, a));
-            const Vec3 euler = scenemath::eulerDegreesFromQuat(turn * start);
+            const scenemath::Quat world = turn * start;
+            const Vec3 euler = scenemath::eulerDegreesFromQuat(world);
             if (t.type == 1) {
                 scene.rotateLight(t.index, euler.x(), euler.y(), euler.z());
             } else if (t.type == 2) {
                 // カメラはロールを持たない（オービット）。pitch/yaw だけ渡す。
                 scene.rotateCamera(t.index, euler.x(), euler.y());
+            } else if (t.type == 3) {
+                // 部品はワールドの四元数のまま渡し、Scene が親フレームの
+                // ローカルへ直す（オイラーで往復すると親の回転で崩れる）。
+                scene.rotatePartWorld(int(t.index), world.w(), world.x(), world.y(),
+                                      world.z());
             } else {
                 scene.rotateObject(t.index, euler.x(), euler.y(), euler.z());
             }
             continue;
         }
 
-        // ---- 拡縮（オブジェクトのみ。ライト / カメラでは移動に丸めてある）--
-        if (!t.isObject()) continue;
+        // ---- 拡縮（オブジェクトと部品。ライト / カメラでは移動に丸めてある）--
+        if (!t.supportsScale()) continue;
         double factor = 1.0;
         int axis = -1;
         if (handle >= kAxisX && handle <= kAxisZ) {
@@ -964,9 +1059,7 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
 
         // 球とモデルは 1 つの寸法しか持たないので、軸を掴んでも一様に効かせる。
         ed::Vec3d size = cam.startSize;
-        const bool uniform =
-            (axis < 0) ||
-            scene.object(t.index).desc.shape != ed::ShapeKind::Box;
+        const bool uniform = (axis < 0) || t.uniformScale;
         if (uniform) {
             size.x = cam.startSize.x * factor;
             size.y = cam.startSize.y * factor;
@@ -983,7 +1076,8 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
             size.y = std::max(g.scaleStep, snapTo(size.y, g.scaleStep));
             size.z = std::max(g.scaleStep, snapTo(size.z, g.scaleStep));
         }
-        scene.resizeObject(t.index, size.x, size.y, size.z);
+        if (t.type == 3) scene.resizePart(int(t.index), size.x, size.y, size.z);
+        else scene.resizeObject(t.index, size.x, size.y, size.z);
     }
 }
 
@@ -1059,6 +1153,9 @@ void GizmoComponent::onRender(Scene& scene) {
             if (t.valid && pr.basis.valid) {
                 const ed::GizmoMode mode = effectiveMode(t, g.mode);
                 const Frame f = makeFrame(t.pos, t.rot, g.space, pr.basis);
+                // 部品は輪郭も出す（どの部品を掴んでいるか、車体の中に
+                // 埋まっていても分かるように）。
+                if (t.isPart()) buildPartOutline(sink, kBatchActive, t, pr.basis);
                 if (f.valid) {
                     // 掴んでいるあいだはそのハンドル、掴んでいなければ
                     // カーソルの下のハンドルを光らせる。押す前にどこを

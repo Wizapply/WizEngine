@@ -2,10 +2,13 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "vehicle/VehicleTypes.h"
 
 // エディタモードが編集する「シーン文書」の型。
 //
@@ -135,6 +138,66 @@ struct MeshAssetDesc {
 
 // 1個の剛体の設計値。position/rotation は「エディタで置いた姿勢」で、
 // シミュレートを止めるとここに戻る（＝オーサリング状態は壊れない）。
+// ---- プレハブ（見た目の部品の階層）------------------------------------------
+// Unity の prefab に相当する「部品の集合」。部品は物理ボディではなく、付け先の
+// オブジェクト（車体）に固定されて動く見た目の子。socket を書いた部品は
+// 車両が動かす（"wheel:<軸>:<L|R>" = その車輪の姿勢に付いていく）。
+// 文書では <asset> の <prefab name> と、<body> の <prefab name/>（付け先）。
+enum class PartKind { Box, Sphere, Cylinder, Mesh };
+
+inline const char* partKindName(PartKind k) {
+    switch (k) {
+        case PartKind::Sphere: return "sphere";
+        case PartKind::Cylinder: return "cylinder";
+        case PartKind::Mesh: return "mesh";
+        case PartKind::Box: break;
+    }
+    return "box";
+}
+inline PartKind partKindFromName(const std::string& s, PartKind fallback) {
+    if (s == "box") return PartKind::Box;
+    if (s == "sphere") return PartKind::Sphere;
+    if (s == "cylinder") return PartKind::Cylinder;
+    if (s == "mesh" || s == "model") return PartKind::Mesh;
+    return fallback;
+}
+
+struct PartDesc {
+    std::string name;
+    PartKind kind = PartKind::Box;
+    std::string mesh;             // Mesh のとき: <asset> の <mesh> の名前
+    Vec3d position{0.0, 0.0, 0.0};  // 親（車体 / ソケット）ローカル
+    Vec3d rotation{0.0, 0.0, 0.0};  // オイラー角（度）
+    // Box: 各辺の長さ。Sphere: 直径（x）。Cylinder: 長さ（x、軸は X）と
+    // 直径（y）。Mesh: 倍率（x。モデルの <mesh scale> にさらに掛かる）。
+    Vec3d size{0.5, 0.5, 0.5};
+    Color3 color;
+    std::string socket;           // "" = 車体に固定。"wheel:0:L" など
+};
+
+struct PrefabDesc {
+    std::string name;
+    std::vector<PartDesc> parts;
+};
+
+// "wheel:<軸>:<L|R>" を読む。違う書式なら false。
+inline bool parseWheelSocket(const std::string& socket, int& axle, int& side) {
+    if (socket.rfind("wheel:", 0) != 0) return false;
+    const std::size_t sep = socket.find(':', 6);
+    if (sep == std::string::npos || sep + 1 >= socket.size()) return false;
+    const std::string a = socket.substr(6, sep - 6);
+    if (a.empty()) return false;
+    for (const char c : a) {
+        if (c < '0' || c > '9') return false;
+    }
+    axle = std::atoi(a.c_str());
+    const char sc = socket[sep + 1];
+    if (sc == 'L' || sc == 'l') side = -1;
+    else if (sc == 'R' || sc == 'r') side = 1;
+    else return false;
+    return true;
+}
+
 struct BodyDesc {
     std::string name;
     ShapeKind shape = ShapeKind::Box;
@@ -157,6 +220,14 @@ struct BodyDesc {
     // 同じ名前は 1 回だけ。番号ではなく名前で持つので、保存でオブジェクトを
     // 詰めても付け替えが要らない。
     std::vector<std::string> events;
+    // 車両（<body> の中の <vehicle> 節）。hasVehicle のオブジェクトは
+    // シミュレート中に VehicleComponent が「車体」として扱い、サスと
+    // タイヤの力を掛ける。設計値は src/vehicle/VehicleTypes.h。
+    bool hasVehicle = false;
+    wizengine::vehicle::VehicleDesc vehicle;
+    // 付いているプレハブ（<asset> の <prefab> の名前）。空 = 無し（車両なら
+    // 組み込みのクルマの見た目、それ以外は形状そのもの）。
+    std::string prefab;
 
     // 形状から体積を出す。密度 = mass / volume を Chrono に渡すので、
     // 形や大きさを変えても質量は指定どおりに保たれる。見た目ではなく
@@ -530,6 +601,8 @@ inline nlohmann::json toJson(const BodyDesc& b) {
     j["fixed"] = b.fixed;
     j["color"] = colorToHex(b.color);
     j["events"] = b.events;  // 付いているイベントアセット名
+    j["vehicle"] = b.hasVehicle;  // 車両か（中身の編集は XML で）
+    j["prefab"] = b.prefab;
     return j;
 }
 
@@ -721,6 +794,167 @@ inline bool assetFileAllowed(const std::string& file) {
 
 // 地面と環境光。キーは XML の属性名と同じ（size = 物理の半寸法、visual =
 // 見える地面の半寸法）。ブラウザの World 節（Inspector）とやり取りする。
+// ---- プレハブの JSON ---------------------------------------------------------
+inline nlohmann::json toJson(const PartDesc& p) {
+    nlohmann::json j;
+    j["name"] = p.name;
+    j["type"] = partKindName(p.kind);
+    j["mesh"] = p.mesh;
+    j["position"] = toJson(p.position);
+    j["rotation"] = toJson(p.rotation);
+    j["size"] = toJson(p.size);
+    j["color"] = colorToHex(p.color);
+    j["socket"] = p.socket;
+    return j;
+}
+inline PartDesc partFromJson(const nlohmann::json& j, const PartDesc& base) {
+    PartDesc p = base;
+    if (!j.is_object()) return p;
+    if (j.contains("name") && j["name"].is_string()) p.name = j["name"];
+    if (j.contains("type") && j["type"].is_string()) {
+        p.kind = partKindFromName(j["type"], p.kind);
+    }
+    if (j.contains("mesh") && j["mesh"].is_string()) p.mesh = j["mesh"];
+    p.position = vec3FromJson(j.value("position", nlohmann::json()), p.position);
+    p.rotation = vec3FromJson(j.value("rotation", nlohmann::json()), p.rotation);
+    p.size = vec3FromJson(j.value("size", nlohmann::json()), p.size);
+    if (j.contains("color") && j["color"].is_string()) {
+        p.color = colorFromHex(j["color"], p.color);
+    }
+    if (j.contains("socket") && j["socket"].is_string()) p.socket = j["socket"];
+    return p;
+}
+inline PartDesc clampPart(PartDesc p) {
+    auto cl = [](double v, double lo, double hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
+    };
+    p.position.x = cl(p.position.x, -100.0, 100.0);
+    p.position.y = cl(p.position.y, -100.0, 100.0);
+    p.position.z = cl(p.position.z, -100.0, 100.0);
+    p.size.x = cl(p.size.x, 0.005, 50.0);
+    p.size.y = cl(p.size.y, 0.005, 50.0);
+    p.size.z = cl(p.size.z, 0.005, 50.0);
+    if (p.name.size() > 64) p.name.resize(64);
+    if (p.socket.size() > 32) p.socket.resize(32);
+    return p;
+}
+inline nlohmann::json toJson(const PrefabDesc& d) {
+    nlohmann::json j;
+    j["name"] = d.name;
+    j["parts"] = nlohmann::json::array();
+    for (const auto& p : d.parts) j["parts"].push_back(toJson(p));
+    return j;
+}
+
+// ---- ノード式（計算式アセット）の JSON --------------------------------------
+// 型は vehicle/Formula.h（Chrono も JSON も知らない側）。ここはブラウザ API
+// との変換だけ。ノードの params は数値の配列で、"1 2 3" の文字列でも受ける
+// （折れ線の点列を打ちやすいように）。
+inline std::vector<double> numberList(const nlohmann::json& j) {
+    std::vector<double> out;
+    if (j.is_array()) {
+        for (const auto& e : j) {
+            if (e.is_number()) out.push_back(e.get<double>());
+        }
+    } else if (j.is_number()) {
+        out.push_back(j.get<double>());
+    } else if (j.is_string()) {
+        const std::string s = j.get<std::string>();
+        std::size_t i = 0;
+        while (i < s.size()) {
+            while (i < s.size() && (s[i] == ' ' || s[i] == ',' || s[i] == '\t' ||
+                                    s[i] == '\n')) ++i;
+            if (i >= s.size()) break;
+            char* end = nullptr;
+            const double v = std::strtod(s.c_str() + i, &end);
+            const std::size_t used = std::size_t(end - (s.c_str() + i));
+            if (used == 0) break;
+            out.push_back(v);
+            i += used;
+        }
+    }
+    if (out.size() > 128) out.resize(128);
+    return out;
+}
+// ポート名（in / out の name）: 英数字と _ だけ、32 文字まで。
+inline std::string sanitizePortName(const std::string& name) {
+    std::string out;
+    for (const char c : name) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '_';
+        if (ok) out.push_back(c);
+        if (out.size() >= 32) break;
+    }
+    return out;
+}
+inline nlohmann::json toJson(const wizengine::vehicle::FormulaNodeDesc& n) {
+    nlohmann::json j;
+    j["id"] = n.id;
+    j["type"] = n.kind;
+    j["name"] = n.name;
+    j["params"] = n.params;
+    j["x"] = n.x;
+    j["y"] = n.y;
+    return j;
+}
+inline wizengine::vehicle::FormulaNodeDesc formulaNodeFromJson(
+    const nlohmann::json& j, const wizengine::vehicle::FormulaNodeDesc& base) {
+    wizengine::vehicle::FormulaNodeDesc n = base;
+    if (!j.is_object()) return n;
+    n.id = jsonInt(j, "id", n.id);
+    if (j.contains("type") && j["type"].is_string()) n.kind = j["type"];
+    if (j.contains("name") && j["name"].is_string()) {
+        n.name = sanitizePortName(j["name"].get<std::string>());
+    }
+    if (j.contains("params")) n.params = numberList(j["params"]);
+    if (j.contains("value") && j["value"].is_number()) {
+        n.params = {j["value"].get<double>()};
+    }
+    n.x = jsonNumber(j, "x", n.x);
+    n.y = jsonNumber(j, "y", n.y);
+    return n;
+}
+inline wizengine::vehicle::FormulaNodeDesc clampFormulaNode(
+    wizengine::vehicle::FormulaNodeDesc n) {
+    auto cl = [](double v, double lo, double hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
+    };
+    n.x = cl(n.x, 0.0, 20000.0);
+    n.y = cl(n.y, 0.0, 20000.0);
+    if (n.params.size() > 128) n.params.resize(128);
+    for (double& v : n.params) {
+        if (!(v == v)) v = 0.0;  // NaN
+        v = cl(v, -1e12, 1e12);
+    }
+    n.name = sanitizePortName(n.name);
+    return n;
+}
+inline nlohmann::json toJson(const wizengine::vehicle::FormulaWireDesc& w) {
+    nlohmann::json j;
+    j["from"] = w.from;
+    j["fromPort"] = w.fromPort;
+    j["to"] = w.to;
+    j["port"] = w.port;
+    return j;
+}
+inline wizengine::vehicle::FormulaWireDesc formulaWireFromJson(const nlohmann::json& j) {
+    wizengine::vehicle::FormulaWireDesc w;
+    w.from = jsonInt(j, "from", -1);
+    w.fromPort = jsonInt(j, "fromPort", 0);
+    w.to = jsonInt(j, "to", -1);
+    w.port = jsonInt(j, "port", 0);
+    return w;
+}
+inline nlohmann::json toJson(const wizengine::vehicle::FormulaGraphDesc& g) {
+    nlohmann::json j;
+    j["name"] = g.name;
+    j["nodes"] = nlohmann::json::array();
+    for (const auto& n : g.nodes) j["nodes"].push_back(toJson(n));
+    j["wires"] = nlohmann::json::array();
+    for (const auto& w : g.wires) j["wires"].push_back(toJson(w));
+    return j;
+}
+
 inline nlohmann::json toJson(const GroundDesc& g) {
     nlohmann::json j;
     j["size"] = g.half;

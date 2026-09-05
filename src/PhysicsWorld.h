@@ -74,6 +74,20 @@ public:
     // Linear velocity, for servo-style forces (mouse joint).
     chrono::ChVector3d bodyVelocity(std::size_t id) const;
 
+    // ---- 車両用（点に掛かる力）------------------------------------------
+    // ワールド座標の点 point に力 force を dt のあいだ掛ける = 力積 force*dt を
+    // 重心の速度と角速度に分けて足す（applyForce と同じく速度で与えるので、
+    // Chrono の力アキュムレータの版差に触らない）。角速度の変化は慣性
+    // テンソルをワールドへ回して求める。車輪ごとのサス力・タイヤ力が
+    // これを毎ステップ呼ぶ（VehicleComponent）。
+    void applyForceAtPoint(std::size_t id, const chrono::ChVector3d& force,
+                           const chrono::ChVector3d& point, double dt);
+    // 角速度（ワールド座標、rad/s）。
+    chrono::ChVector3d bodyAngularVelocity(std::size_t id) const;
+    // ボディ上のワールド座標の点の速度（v + ω × r）。
+    chrono::ChVector3d bodyPointVelocity(std::size_t id,
+                                        const chrono::ChVector3d& point) const;
+
     // Number of worker threads the solver and collision detection may use.
     // Must be called before stepping starts; Chrono sizes its thread pool from
     // this. 0 or less leaves the automatic choice in place.

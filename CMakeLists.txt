@@ -291,7 +291,22 @@ add_executable(wizengine
     src/SceneXml.cpp
     src/SceneDocument.cpp
     src/GizmoComponent.cpp
-    src/CpuAffinity.cpp)
+    src/CpuAffinity.cpp
+    src/VehicleComponent.cpp
+    src/PrefabComponent.cpp
+    src/PrefabDefaults.cpp
+    src/vehicle/VehicleTypes.cpp
+    src/vehicle/WheelController.cpp
+    src/vehicle/Powertrain.cpp
+    src/vehicle/VehicleModel.cpp
+    src/vehicle/VehicleXml.cpp
+    src/vehicle/Formula.cpp
+    src/vehicle/FormulaXml.cpp
+    src/vehicle/LuaFormula.cpp
+    src/vehicle/TireFormula.cpp)
+# ノード式の実行エンジン（LuaJIT）。無ければ C++ の参照インタプリタに落ちる。
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/LuaJIT.cmake)
+wiz_link_luajit(wizengine)
 # Version pins surfaced in the browser's About section (src/Versions.cpp).
 # WIZ_CGLTF_VERSION must match the third_parties/cgltf submodule pin (and the
 # wiz_download_header fallback URL above).

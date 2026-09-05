@@ -72,7 +72,9 @@ public:
     // オブジェクト選択と同時には立たないよう、立てる側（EditorComponent /
     // Scene）が反対側を必ず消す。kind と index は別々の atomic なので瞬間的に
     // 食い違いうるが、読む側は必ず alive / active を確かめるので実害はない。
-    enum class SelKind : int { None = 0, Light = 1, Camera = 2 };
+    // Part はプレハブ編集モード中の「部品」（index = 部品番号。どのプレハブ
+    // かは prefabEditObject() のオブジェクトに付いているもの）。
+    enum class SelKind : int { None = 0, Light = 1, Camera = 2, Part = 3 };
     void setSel(SelKind kind, int index) {
         selIndex_.store(index);
         selKind_.store(int(kind));
@@ -137,6 +139,65 @@ public:
     void noteNodeFired(const std::string& asset, int id);
     void clearNodeFireCounts();
     std::map<std::pair<std::string, int>, int> nodeFireCounts() const;
+
+    // ---- 計算式アセット（ノード式。vehicle/Formula.h）---------------------
+    // イベントアセットと同じ流儀: 名前で持ち、車両のタイヤが名前で参照する
+    // （BodyDesc::vehicle の axles[].tire.formula）。書くのは物理スレッド
+    // （Op 実行時）、読むのは HTTP スレッド（サイドバー用 JSON）と物理スレッド
+    // （車両の生成時にコンパイル）。ノード id はアセットの中で一意で、削除
+    // しても再利用しない。
+    std::vector<wizengine::vehicle::FormulaGraphDesc> formulaAssets() const;
+    bool hasFormulaAsset(const std::string& name) const;
+    void setFormulaAssets(std::vector<wizengine::vehicle::FormulaGraphDesc> assets);
+    // graph.name が空 / 重複なら false。中身ごと登録できる（テンプレート用）。
+    bool addFormulaAsset(wizengine::vehicle::FormulaGraphDesc graph);
+    bool removeFormulaAsset(const std::string& name);
+    // id を採番して追加し、その id を返す（アセットが無い・種類が不正なら -1）。
+    int addFormulaNode(const std::string& asset,
+                       wizengine::vehicle::FormulaNodeDesc node);
+    // 送られてきたキー（x y name params）だけ上書き。種類と id は変えない。
+    bool updateFormulaNode(const std::string& asset, int id,
+                           const nlohmann::json& patch);
+    bool removeFormulaNode(const std::string& asset, int id);
+    // 両端とポート番号を検証し、同じ入力ポートへの古い線は張り替える。
+    // 循環になる線は張らない（式は前進評価なので）。
+    bool addFormulaWire(const std::string& asset,
+                        const wizengine::vehicle::FormulaWireDesc& wire);
+    bool removeFormulaWire(const std::string& asset,
+                           const wizengine::vehicle::FormulaWireDesc& wire);
+    // 式（またはタイヤの参照）が変わるたびに増える版番号。VehicleComponent が
+    // 見て、変わっていたら車両モデルを作り直す（式のコンパイルは生成時）。
+    std::uint64_t formulaVersion() const { return formulaVersion_.load(); }
+    void bumpFormulaVersion() { formulaVersion_.fetch_add(1); }
+
+    // ---- プレハブ（見た目の部品の集合）------------------------------------
+    // イベント・計算式と同じ流儀のアセット。部品は番号で参照する（軸と同じ）。
+    // 書くのは物理スレッド（Op 実行時とギズモのドラッグ）、読むのは HTTP
+    // スレッド（JSON）と RENDER スレッド（部品の描画。prefabVersion で
+    // キャッシュ）と INPUT スレッド（ギズモのピック）。
+    std::vector<wizengine::editor::PrefabDesc> prefabAssets() const;
+    bool hasPrefabAsset(const std::string& name) const;
+    bool prefabAsset(const std::string& name, wizengine::editor::PrefabDesc& out) const;
+    void setPrefabAssets(std::vector<wizengine::editor::PrefabDesc> assets);
+    bool addPrefabAsset(wizengine::editor::PrefabDesc prefab);  // 名前が空 / 重複で false
+    bool removePrefabAsset(const std::string& name);
+    // 部品。追加は番号を返す（-1 = プレハブが無い）。
+    int addPart(const std::string& prefab, wizengine::editor::PartDesc part);
+    // 送られてきたキーだけ上書き（partFromJson + clampPart）。
+    bool updatePart(const std::string& prefab, int index, const nlohmann::json& patch);
+    bool setPartTransform(const std::string& prefab, int index,
+                          const wizengine::editor::Vec3d* pos,
+                          const wizengine::editor::Vec3d* rot,
+                          const wizengine::editor::Vec3d* size);
+    bool removePart(const std::string& prefab, int index);
+    bool partDesc(const std::string& prefab, int index,
+                  wizengine::editor::PartDesc& out) const;
+    std::uint64_t prefabVersion() const { return prefabVersion_.load(); }
+    void bumpPrefabVersion() { prefabVersion_.fetch_add(1); }
+    // プレハブ編集モード: 編集中のオブジェクト番号（-1 = 通常）。Unity の
+    // プレハブモードに相当し、その間はそのオブジェクトの部品だけが選べる。
+    int prefabEditObject() const { return prefabEdit_.load(); }
+    void setPrefabEditObject(int index) { prefabEdit_.store(index); }
 
     // ---- シミュレート設定 -----------------------------------------------
     wizengine::editor::SimSettings sim() const;
@@ -208,6 +269,17 @@ private:
     };
     std::vector<EventAssetState> events_;
     std::vector<std::string> worldEvents_;
+    // 計算式アセット（mutex_ の下）。
+    struct FormulaAssetState {
+        wizengine::vehicle::FormulaGraphDesc desc;
+        int nextNodeId = 1;
+    };
+    std::vector<FormulaAssetState> formulas_;
+    std::atomic<std::uint64_t> formulaVersion_{0};
+    // プレハブ（mutex_ の下）。
+    std::vector<wizengine::editor::PrefabDesc> prefabs_;
+    std::atomic<std::uint64_t> prefabVersion_{0};
+    std::atomic<int> prefabEdit_{-1};
     std::atomic<std::uint64_t> graphVersion_{0};
     std::map<std::pair<std::string, int>, int> fireCounts_;
     wizengine::editor::SimSettings sim_;

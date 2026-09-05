@@ -289,6 +289,173 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   scene.cpp にあった**格子の自動生成は廃止**した。読めなければ警告を出して
   空のシーン（地面のみ）で起動する（止めない）。空文字列 = 常に空で起動。
 
+## 車両（`src/vehicle/` + `src/VehicleComponent.{h,cpp}`）
+
+NWH Vehicle Physics 2 の構成に倣った**グラフ型パワートレイン + 車輪ごとの
+WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクトが車体になり
+（`BodyDesc::hasVehicle` / `vehicle`）、シミュレート中に VehicleComponent が
+サス力・タイヤ力・空気抵抗を Chrono の車体へ「点に掛かる力」として積む
+（`PhysicsWorld::applyForceAtPoint`）。サンプルは `assets/scenes/vehicle.xml`。
+
+- **`src/vehicle/` は Chrono も Filament も知らない純粋な数値ライブラリ**
+  （自前の `Vec3` / `Quat`）。境界の VehicleComponent だけが詰め替える。
+  だから `tests/vehicle/`（小さな 6 自由度の剛体積分器つき）で単体で回せる:
+  `cmake -S tests/vehicle -B build-vehicle-test && cmake --build build-vehicle-test
+  && ./build-vehicle-test/vehicle_test`（静置・0-100 km/h・制動・定常旋回・
+  後退・XML の往復を検査。`--csv` で時系列）。**モデルを触ったら必ずこれを回す**。
+- **車輪は剛体にしない（レイキャスト式）**。車体の取り付け点から下へレイを
+  飛ばして縮み量を決め、ばね・ダンパの力を取り付け点へ、タイヤの縦横力を
+  接地点へ掛ける（`WheelController`）。地面は物理の床と同じ **y = 0 の平面**
+  として見るので、他のオブジェクトの上には乗れない。
+- **車輪と車体の飾りの描画はプレハブ**（下の「プレハブ」の章）。
+  VehicleComponent は車輪の**車体ローカル**の姿勢（`VehicleModel::
+  wheelLocalPoses`: 取り付け点・下がり・舵・回転角）を `visMutex_` 越しに
+  渡す（`wheelLocalPoses()`）だけで、PrefabComponent が `Scene::latestPose`
+  の車体姿勢に重ねる - 物理スナップショットと同じ姿勢から組むので車体と
+  ずれない。エディタ中は設計値から静的な沈み込みを見積もった位置
+  （`designWheelPoses`）。タイヤは Renderer の `ShapeMesh::Cylinder`
+  （軸 X の単位円柱、車両のために追加）。`<tire width>` は見た目だけ。
+- **時計が 2 つ**（NWH と同じ）。接地とサス（`updateContact`）は物理 1 ステップに
+  1 回、パワートレインとタイヤ力の更新は `<vehicle ticks>`（既定 10）回の
+  反復。エンジン・クラッチの慣性は小さくトルクは大きい硬い系なので、
+  物理 60Hz で 1 回積分すると暴れる。`ticks` は SimSettings の substeps とは
+  別（前者はパワートレインの硬さ、後者は接触の精度）。
+- **クラッチとデフのロックは陰解法**（`Powertrain::tick` / `lockTorque`）:
+  2 質点の相対速度に対する粘性要素 `T = k Δω / (1 + k dt (1/J1 + 1/J2))` を
+  容量でクランプする。どんな剛性でも安定なので、Locked デフは k = 1e6 で
+  「剛結」にできる。角速度は車輪 → エンジンへ戻し（駆動輪の平均 × 総減速比）、
+  トルクはエンジン → 車輪へ流す（センターデフは bias、軸デフは半分ずつ +
+  ロック）。車輪の ω を積分するのは VehicleModel（タイヤの反作用を持つ側）。
+- **タイヤは Pacejka の簡易 Magic Formula**（B, C, E。D = μ Fz）＋摩擦楕円＋
+  緩和長（力の一次遅れ）。停車付近の振動は「滑りの向きに逆らわず、この
+  ティックで滑り速度を反転させない」範囲（`fxLo..fxHi` / `fyLo..fyHi`）で
+  消す。範囲は緩和長の前に掛ける（後に掛けると状態に逆向きの力が溜まり、
+  停車後に押し戻す）。ブレーキと転がり抵抗は
+  クーロン的に「止められるなら止める」クランプ（符号反転でばたつかせない）。
+- **滑りにくくする 3 点セット**: タイヤ既定は μ = 1.2・B = 12（ゲーム寄りに
+  高め）、**速度感応ステアリング**（`steerSpeed`、その速度で最大舵角が半分。
+  キーボードのフル舵で高速に前輪が飽和しないため）、**トラクション
+  コントロール**（`tcs`、駆動輪のスリップ比がこれを超えたらスロットルを絞る。
+  絞りは速く、戻しはゆっくり）。どれも `<vehicle>` の属性で、0 で無効。
+- **自動変速は駆動系の回転数で判断**（クラッチが滑っている間のエンジン回転は
+  当てにならない）。変速中はトルクを切り、クラッチも切る。停車が 0.3 s
+  続いた状態で S を踏み続けるとリバースに入り、その間は W / S の役割が
+  入れ替わる（キーボードで自然に運転できるように）。
+- **入力は `drive` コマンド**（`{throttle, brake, steer, handbrake}`、どのカメラ
+  からでも可 - 運転はシーンの書き換えではない）。ブラウザは W / S / A / D /
+  Space を 50ms ごとに送る（シミュレート中のみ。エディタ中は W / E / R が
+  ギズモ）。複数の車両があれば全部が同じ入力で走る。計測値は `/stats` の
+  `vehicle`（速度・rpm・ギア・クラッチ）でオーバーレイの「car」欄に出る。
+- **文書の `<vehicle>`**（`vehicle/VehicleXml.{h,cpp}`）: `<engine>` `<clutch>`
+  `<gearbox>` `<center>` と `<axle>`（左右 2 輪。`<tire>` / `<suspension>` は
+  軸ごと、`<vehicle>` 直下に書けば全軸の既定値）。座標は**前 = -Z、右 = +X**
+  で、axle の z は「前向きの距離」。読み込みは既定値付き、駆動軸が 1 本も無い・
+  未知の節は warnings。値の範囲は `clampVehicle`。Inspector の「車両」節で
+  できるのは「車両にする / やめる」とタイヤ式の付け外しだけで、サス・
+  エンジン・ギアの数値は 📄 XML で編集する。
+- **実行状態はエディタに戻ると捨てる**（`onEditorStep`）。次のシミュレート
+  開始で設計値から作り直すので、XML を適用すればそのまま効く。
+
+### ノード式（`src/vehicle/Formula.{h,cpp}` + LuaJIT）
+
+研究者が計算式をノードで組み替えるための仕組み。いま差し替えられるのは
+**タイヤの「スリップ → 力」**（`TireFormula.h` に入出力の約束）。ユーザーは
+Lua を見ない: ノード → Lua ソース → LuaJIT、はエンジンの中で閉じている。
+
+- **型は 3 つ**: `FormulaGraphDesc`（文書の値 = ノード + ワイヤー）、
+  `FormulaProgram`（検証・整列済みの線形命令列。入出力は名前で結び、lag /
+  integrate に状態スロットを割る）、`FormulaInstance`（車輪 1 本ぶんの実行口）。
+  実行口は **C++ の参照インタプリタ**（`FormulaProgram::interpret`）と
+  **LuaJIT**（`LuaFormula.h`）の 2 つで、同じ命令列から作るので結果は一致する
+  （`vehicle_test` の 7 が 3 実装の差 0 を検査）。LuaJIT の無いビルド
+  （`WIZ_HAVE_LUAJIT` 未定義）はインタプリタに落ちる（遅いが同じ結果）。
+- **語彙は全部スカラー**（`Formula.h` の冒頭に一覧）。in / out / const / dt、
+  四則と min max pow atan2 gt lt、単項の neg abs sqrt sin cos tan atan exp log
+  sign、clamp / lerp / select、折れ線 curve、状態を持つ lag / integrate、
+  車両向けの magic（Pacejka）と ellipse（摩擦楕円、出力 2）。未接続の入力は
+  0（警告）、循環はエラー（式は動かず組み込みで代用）。**陰解法の部品
+  （クラッチ・デフ）はノードに分解しない** - 不安定になるので C++ に残す。
+- **Lua の作法**（`LuaFormula.cpp`）: Lua ステートは物理スレッドに 1 つ
+  （VehicleComponent が持つ）。1 グラフ = 1 関数 `function(I, O, S, dt)` で、
+  ノードは関数のローカル変数になる = トレース JIT が境界を消す。入出力と
+  状態は Lua 側で確保した FFI の double 配列で、C++ はそのアドレス（intptr →
+  double で運ぶ）に直接読み書きする。**ティック内でテーブルも文字列も作ら
+  ない**（GC を起こさない）。呼び出しは `lua_rawgeti` × 4 + `lua_pcall`。
+  LuaJIT は `third_parties/luajit`（v2.1、サブモジュール）。`cmake/LuaJIT.cmake`
+  がライブラリを探し、無ければ configure 時にビルドする（Linux は
+  `make BUILDMODE=static`、Windows は `msvcbuild.bat static` = VS の開発者環境
+  が要る）。`-DWIZ_WITH_LUAJIT=OFF` で外せる。
+- **計算式はシーンのアセット**（イベントアセットと同じ扱い）。文書では
+  `<asset>` の `<formula name>`（`FormulaXml.h`。`<node id type name params pos>`
+  と `<wire from fromPort to port>`）で、`<tire formula="名前">` が名前で参照
+  する。`<vehicle>` の中に書いた `<formula>`（旧置き場）も読めるが、読込時に
+  シーンのアセットへ移す（次の保存で `<asset>` に出る）。本体は
+  `EditorState::formulaAssets()`（`formulaVersion()` は式かタイヤの参照が
+  変わるたびに進み、VehicleComponent がこれを見て**車両モデルを作り直す** =
+  シミュレート中の編集もすぐ効く。走行状態は一度リセットされる）。
+  既定の Magic Formula をノードで組んだものが
+  `defaultTireFormulaGraph()`（`vehicle_test --dump-formula` で XML が出る。
+  `assets/scenes/vehicle.xml` に貼ってある。`edit.formula.add` の
+  `template="tire"` で同じものが作れる）。
+- **UI**: アセットパネルの **🧮 タイル**（クリックでノードエディタ、右クリックで
+  作成 / 削除 / 選択中の車両の全軸に付ける）、**ノードエディタは ⚡ と共用**
+  （見出しの選択が「⚡ イベント」「🧮 計算式」の 2 グループ、`ndKind` で
+  切替。計算式ノードは左に入力ポート・右に出力ポートが**行ごと**に並び、
+  座標は app.js の `FPORT_Y0` / `FPORT_DY` と CSS の `.ndPortRow` の高さで
+  揃える。同じ入力に繋ぐと張り替え、循環はサーバーが弾く）、**Inspector の
+  「車両」節**（「車両として扱う」チェック = `edit.vehicle.enable`、軸ごとの
+  タイヤ式の選択 = `edit.vehicle.tire`）。コマンドは edit.formula.add /
+  remove、edit.fnode.add / set / remove、edit.fwire.add / remove で、
+  すべて EditorComponent → Op → 物理スレッド（イベントと同じ配管）。入力 `fxLo fxHi fyLo fyHi`（力の
+  許される範囲: 滑りの向きに逆らわず、滑り速度を反転させない大きさまで）は
+  緩和長の**前**にクランプする - 組み込みも同じ順序で、状態が範囲を超えて
+  溜まらない（順序を変える・符号を見ないと、制動で溜まった逆向きの力が
+  停車後に車を押し戻す）。
+- **失敗は組み込みで代用**: 式が NaN や実行時エラーを出したティックは
+  組み込みのタイヤで計算し、`formulaFailures()` に数える。VehicleComponent が
+  1 回だけ LOGW。安全のため出力にももう一度 ±cap を掛ける。
+- **未**: タイヤ以外（サス・エンジン曲線）の差し替え口、vec3 型、ノードの
+  値のライブ表示（デバッグバッジ）。
+
+## プレハブ（`src/PrefabComponent.{h,cpp}` + `PrefabDefaults` + `PrefabFrame.h`）
+
+Unity の prefab に相当する**見た目の部品の集合**。`EditorTypes.h` の
+`PrefabDesc`（名前 + `PartDesc` の配列）で、文書では `<asset>` の
+`<prefab name>` と `<body>` の `<prefab name/>`（付け先）。部品は
+**物理ボディではない**（当たり判定と質量は元の `<geom>` のまま）ので、
+Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れない。
+
+- **部品**は種類（box / sphere / cylinder / mesh）・親ローカルの位置と回転・
+  大きさ（Box は各辺、Sphere は直径 x、Cylinder は長さ x と直径 y、Mesh は
+  倍率 x）・色・**socket**を持つ。socket は `wheel:<軸>:<L|R>` で、その部品は
+  車両のその車輪の姿勢（縮み・舵・回転）に付いていく。空 = 車体に固定。
+- **描画は PrefabComponent（RENDER）**。付いていない車両は
+  `builtinCarPrefab()`（キャビン・フロントガラス・ライト・タイヤとスポーク、
+  寸法比）を**暗黙のプレハブ**として描く - 以前 VehicleComponent が直接
+  描いていた飾りはこれに移した。車輪の姿勢は VehicleComponent の
+  `wheelLocalPoses()` スナップショット。glTF の部品はシーンの `<mesh>`
+  アセットを名前で使う（`Scene::meshModelId` が遅延読込）。
+- **プレハブ編集モード**（Unity のプレハブモード）: オブジェクトを**右クリック
+  →「🧩 プレハブを編集」**（階層一覧の行でもビューでも）。プレハブが無ければ
+  いま見えている組み込みの見た目から作って付ける（`edit.prefab.open`、名前は
+  `<オブジェクト名>_prefab`）。状態は `EditorState::prefabEditObject()`
+  （-1 = 通常）で、その間は **ビューでそのオブジェクトの部品だけが選べ**
+  （GizmoComponent の pick が部品の中心を投影して拾う。外の物は選べない）、
+  選択は `SelKind::Part`（index = 部品番号）、ギズモの対象は「部品」
+  （Target type 3）。ドラッグは `Scene::movePart / rotatePartWorld / resizePart`
+  で、ワールドの姿勢を **`PrefabFrame.h` が親フレーム（車体 / ソケット）の
+  ローカルへ直す**。回転は四元数のまま渡す（オイラーで往復すると親の回転で
+  崩れる）。Inspector は他の節を隠して部品の一覧と数値（`secPrefab`）に
+  なり、映像ヘッダーに「◀ 戻る」（`edit.prefab.close`、Esc でも）。
+  シミュレートに入る・持ち主が消える・プレハブが消えると自動で抜ける。
+- コマンド: edit.prefab.open / close / attach / detach / add / remove、
+  edit.part.add / set / remove（prefab 省略時は編集中のもの）、select.part。
+  すべて EditorComponent → Op → 物理スレッド（イベントと同じ配管）。
+  アセットパネルの **🧩 タイル**は右クリックで「選択オブジェクトに付ける /
+  付けて編集 / 削除」。
+- **未**: 部品の当たり判定（`collide`）、ビュー上のドラッグ以外の複数選択、
+  部品の複製。
+
 ## ギズモ（`src/GizmoComponent.{h,cpp}`）
 
 選択中のオブジェクトに出る Unity 風の移動 / 回転 / 拡縮ハンドル。
@@ -469,7 +636,9 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   `addBox(...)` で剛体追加、`step` / `bodyTransform(id)` / `setBodyPose(id,...)`。
   エディタ用に `placeBody`（起こすための落下速度を与えない置き直し）、
   `setBodyFixed`、`disableBody`（削除相当。当たり判定を切って地面の下へ退避し、
-  番号は残す）、`setGravityY`、そして `addJoint` / `removeAllJoints` を持つ。
+  番号は残す。**Multicore では当たり判定のフラグを触らない** - その衝突系の
+  `Remove()` は未実装で、Chrono 9 は "not yet implemented" を出して例外を
+  投げるため。固定 + 退避だけで無効化する）、`setGravityY`、そして `addJoint` / `removeAllJoints` を持つ。
   ジョイントの `Initialize` は Chrono 9 で `ChCoordsys` → `ChFrame` に変わった
   ので、この版から既にあるスリープ/速度と同じ SFINAE の書き方で両対応にしてある。
   NSC・Bullet・`make_shared` 整列。シーンの中身は持たない。
@@ -527,7 +696,7 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   物理スレッドが作り直す（`Scene::rebuildGroundBody`。ジョイントの「ワールド側」
   番号もここで更新）。readPixels で RGBA 取得。
   エディタ用に**実行時に増減できる形状スロット**（`addShape` / `removeShape`、
-  箱と UV 球、削除した番号は空きとして再利用）と**オブジェクトごとの色**
+  箱と UV 球と円柱（車輪用、軸 X）、削除した番号は空きとして再利用）と**オブジェクトごとの色**
   （`setShapeColor` が初回にそのスロット専用のマテリアルインスタンスを作る。
   共有インスタンスを書き換えると全部の色が変わってしまうため）、
   **ジョイント線**（`setJointLineCount` / `setJointLine`、グラブ線と同じ
@@ -694,7 +863,8 @@ Thrust（`third_parties/thrust` = 1.17.2）はサブモジュールで取得で�
 あるフォルダ）、`EIGEN3_INCLUDE_DIR` / `Blaze_ROOT_DIR` は各サブモジュールの
 ルートを指す。
 
-cpp-httplib / nlohmann/json / cgltf / stb は **`third_parties/` の git サブモジュール**
+LuaJIT（ノード式の実行エンジン、上の「ノード式」の章）も `third_parties/luajit`
+のサブモジュール。cpp-httplib / nlohmann/json / cgltf / stb は **`third_parties/` の git サブモジュール**
 （`git clone --recursive` または `git submodule update --init` で取得。
 `.gitmodules` は shallow 指定＝nlohmann/json の巨大な履歴を引かない）。
 サブモジュール未取得のクローンでもビルドが止まらないよう、無いものは従来どおり
@@ -754,6 +924,8 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   配置も含め、シーンの中身はコードから文書へ全面移行。scene.cpp の
   格子自動生成・kBoxModelPath プール・置物 kModelPath は廃止し、既定シーンは
   `assets/scenes/default.xml`）。
+- 済（試作）: 車両シミュレーション（グラフ型パワートレイン + レイキャスト式
+  車輪、車輪の描画。上の「車両」の章。他のオブジェクトへの接地は未）。
 - 済: イベントアセット（Node-RED 風のノードエディタ。衝突・開始・タイマー・
   掴みのトリガーと、色・力・固定・引き寄せ・ライト・カメラ注視のアクション。
   ノードは名前付きアセットにまとめ、オブジェクト / シーン全体に何本でも

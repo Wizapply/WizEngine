@@ -449,6 +449,41 @@ chrono::ChVector3d PhysicsWorld::bodyVelocity(std::size_t id) const {
     return getLinVel(bodies_[id].get(), 0);
 }
 
+void PhysicsWorld::applyForceAtPoint(std::size_t id, const ChVector3d& force,
+                                     const ChVector3d& point, double dt) {
+    if (id >= bodies_.size()) return;
+    auto& b = bodies_[id];
+    const double mass = b->GetMass();
+    if (mass <= 0.0 || b->IsFixed()) return;
+    if (b->IsSleeping()) wakeUp(b.get(), 0);
+
+    const ChVector3d impulse = force * dt;
+    setLinVel(b.get(), getLinVel(b.get(), 0) + impulse / mass, 0);
+
+    // 角運動量の変化 L = r × J をワールド → ローカルへ回し、ローカルの逆慣性
+    // テンソルを掛けてからワールドへ戻す（ChBody の慣性はローカル表現）。
+    const ChVector3d r = point - b->GetPos();
+    const ChVector3d angImpulseW = r.Cross(impulse);
+    const ChQuaternion<> q = b->GetRot();
+    const ChVector3d angImpulseL = q.RotateBack(angImpulseW);
+    const ChVector3d dwL = b->GetInvInertia() * angImpulseL;
+    const ChVector3d dwW = q.Rotate(dwL);
+    setAngVel(b.get(), getAngVel(b.get(), 0) + dwW, 0);
+}
+
+chrono::ChVector3d PhysicsWorld::bodyAngularVelocity(std::size_t id) const {
+    if (id >= bodies_.size()) return chrono::ChVector3d(0, 0, 0);
+    return getAngVel(bodies_[id].get(), 0);
+}
+
+chrono::ChVector3d PhysicsWorld::bodyPointVelocity(
+    std::size_t id, const chrono::ChVector3d& point) const {
+    if (id >= bodies_.size()) return chrono::ChVector3d(0, 0, 0);
+    const auto& b = bodies_[id];
+    const ChVector3d r = point - b->GetPos();
+    return getLinVel(b.get(), 0) + getAngVel(b.get(), 0).Cross(r);
+}
+
 double PhysicsWorld::bodyMass(std::size_t id) const {
     return id < bodies_.size() ? bodies_[id]->GetMass() : 0.0;
 }
@@ -641,7 +676,14 @@ void PhysicsWorld::disableBody(std::size_t id) {
     if (id >= bodies_.size() || !active_[id]) return;
     auto& b = bodies_[id];
     b->SetFixed(true);
-    b->EnableCollision(false);
+    // Multicore の衝突系は Remove() が未実装で、Chrono 9 は
+    // "ChCollisionSystemMulticore::Remove() not yet implemented." を出して
+    // 例外を投げる（物理スレッドで捕まらず、アプリごと落ちる）。そちらでは
+    // 当たり判定のフラグを触らず、固定 + 退避だけで無効化する。退場した
+    // ボディは全部 fixed なので、同じ場所に重なっても互いに接触しない。
+    if (backend_ != PhysicsBackend::Multicore) {
+        b->EnableCollision(false);
+    }
     b->ForceToRest();
     // 地面のはるか下へ。当たり判定を切っても衝突系がまだ形状を持っている
     // 版があるので、位置でも確実に無関係にしておく。

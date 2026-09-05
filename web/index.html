@@ -190,6 +190,76 @@
         </div>
       </section>
 
+      <!-- プレハブ編集モードのとき、他の節の代わりに出る。部品の一覧（クリックで
+           選択 = ギズモの対象）と、選択中の部品の数値。中身は app.js の
+           renderPrefabEditor()。 -->
+      <section class="sbSec" id="secPrefab" hidden>
+        <div class="sbSecHead">🧩 プレハブの部品</div>
+        <div id="edPrefabInfo" class="edHint"></div>
+        <div id="edPartList" class="ndList"></div>
+        <div class="edRow">
+          <select id="edPartKind" class="strSel" title="追加する部品の種類">
+            <option value="box">Box</option>
+            <option value="sphere">Sphere</option>
+            <option value="cylinder">Cylinder（軸 X）</option>
+            <option value="mesh">Mesh（glTF）</option>
+          </select>
+          <button onclick="addPart()" title="部品を追加（選択中の部品の隣に）">＋ 部品</button>
+        </div>
+        <div id="edPartProps" hidden>
+          <div class="edLabel">選択中の部品</div>
+          <div class="edRow">
+            <span>名前</span>
+            <input id="edPartName" class="txt" type="text" onchange="applyPartField('name', this.value)">
+          </div>
+          <div class="edRow">
+            <span>種類</span>
+            <select id="edPartType" class="strSel" onchange="applyPartField('type', this.value)">
+              <option value="box">Box</option>
+              <option value="sphere">Sphere</option>
+              <option value="cylinder">Cylinder</option>
+              <option value="mesh">Mesh</option>
+            </select>
+          </div>
+          <div class="edRow" id="edPartMeshRow">
+            <span>メッシュ</span>
+            <select id="edPartMesh" class="strSel" onchange="applyPartField('mesh', this.value)"></select>
+          </div>
+          <div class="edRow">
+            <span>ソケット</span>
+            <select id="edPartSocket" class="strSel" title="車輪に付ける（wheel:軸:左右）。無し = 車体に固定"
+                    onchange="applyPartField('socket', this.value)"></select>
+          </div>
+          <div class="trRow" title="親（車体 / ソケット）からの位置 (m)">
+            <span class="trLabel">位置</span>
+            <span class="trAxis x">X</span><input id="edPPX" class="num" type="number" step="0.01" onchange="applyPartVec('position')">
+            <span class="trAxis y">Y</span><input id="edPPY" class="num" type="number" step="0.01" onchange="applyPartVec('position')">
+            <span class="trAxis z">Z</span><input id="edPPZ" class="num" type="number" step="0.01" onchange="applyPartVec('position')">
+          </div>
+          <div class="trRow" title="回転（度）">
+            <span class="trLabel">回転</span>
+            <span class="trAxis x">X</span><input id="edPRX" class="num" type="number" step="1" onchange="applyPartVec('rotation')">
+            <span class="trAxis y">Y</span><input id="edPRY" class="num" type="number" step="1" onchange="applyPartVec('rotation')">
+            <span class="trAxis z">Z</span><input id="edPRZ" class="num" type="number" step="1" onchange="applyPartVec('rotation')">
+          </div>
+          <div class="trRow" title="大きさ (m)。Sphere は直径 X、Cylinder は長さ X と直径 Y、Mesh は倍率 X">
+            <span class="trLabel">大きさ</span>
+            <span class="trAxis x">X</span><input id="edPSX" class="num" type="number" step="0.01" min="0.005" onchange="applyPartVec('size')">
+            <span class="trAxis y">Y</span><input id="edPSY" class="num" type="number" step="0.01" min="0.005" onchange="applyPartVec('size')">
+            <span class="trAxis z">Z</span><input id="edPSZ" class="num" type="number" step="0.01" min="0.005" onchange="applyPartVec('size')">
+          </div>
+          <div class="edRow">
+            <span>色</span>
+            <input id="edPartColor" class="col" type="color" onchange="applyPartField('color', this.value)">
+          </div>
+          <button class="wide" onclick="removeSelectedPart()">🗑 この部品を削除</button>
+        </div>
+        <div class="edHint">部品はビューでクリックして選び、ギズモ（✥ ⟳ ⤢）で
+          動かせます。座標は車体（ソケット付きは車輪）からの相対です。物理の
+          当たり判定は元の箱のまま（部品は見た目だけ）。◀ 戻る で通常の
+          編集に戻ります。</div>
+      </section>
+
       <section class="sbSec" id="secObj">
         <div class="sbSecHead">選択オブジェクト</div>
         <div id="edNoSel" class="edHint">ビューかリストで選択してください。</div>
@@ -259,6 +329,21 @@
                     >＋ 付ける</button>
           </div>
           <button class="wide" onclick="openNodeEditor()">⚡&#xFE0E; ノードエディタを開く</button>
+          <!-- 車両。チェックで「車両として扱う」（既定の 2 軸構成が入る）。
+               軸ごとのタイヤ式は計算式アセット（🧮）を名前で付ける。
+               サスやエンジンの数値は 📄 XML の <vehicle> で。 -->
+          <div class="edLabel">車両</div>
+          <div class="edRow">
+            <span>車両として扱う</span>
+            <input id="edVehicleOn" type="checkbox"
+                   title="この箱を車体にして、シミュレート中に走らせる（W/S/A/D）"
+                   onchange="applyVehicleEnable(this.checked)">
+          </div>
+          <div id="edVehicleAxles"></div>
+          <div id="edVehicleHint" class="edHint" hidden>タイヤの「スリップ →
+            力」は計算式アセット（🧮、Assets パネル）で差し替えられます。
+            (組み込み) = C++ の Magic Formula。サス・エンジン・ギアの数値は
+            📄 XML の &lt;vehicle&gt; で編集します。</div>
         </div>
       </section>
 
@@ -570,6 +655,12 @@
     <span id="vhTitle" class="vhTitle"
           title="シーン名（Assets パネルの 💾 保存の名前）">…</span>
     <span id="vhCam" class="vhCam"></span>
+    <!-- プレハブ編集モード（Unity のプレハブモード）。オブジェクトの右クリック
+         「プレハブを編集」で入り、◀ 戻る で出る。中は app.js が入れる。 -->
+    <span id="vhPrefab" class="vhPrefab" hidden>
+      <button onclick="closePrefabEdit()" title="プレハブの編集を終了してシーンへ戻る">◀ 戻る</button>
+      <span id="vhPrefabName">🧩 プレハブ</span>
+    </span>
     <span class="vhSpacer"></span>
     <button id="vhModeEdit" class="modeBtn" onclick="setMode('editor')"
             title="物理を止めて配置・設計する">✎ エディタ</button>
@@ -611,7 +702,7 @@
       <div class="ndBack" onclick="closeNodeEditor()" title="クリックで閉じる"></div>
       <div class="ndWin">
       <div class="ndHead">
-        <span class="ndTitle">⚡&#xFE0E; イベント設計</span>
+        <span class="ndTitle" id="ndTitle">⚡&#xFE0E; イベント設計</span>
         <!-- どのイベントアセットを編集しているか。ノードはアセットの中に
              属するので、まずここで選ぶ（アセットパネルの ⚡ タイルを
              クリックしても切り替わる）。 -->
@@ -630,7 +721,17 @@
         <svg id="ndWires"></svg>
         <div id="ndNodes"></div>
       </div>
-      <div class="ndHint">トリガー（橙）右の ● からアクション（青）へドラッグで
+      <!-- 計算式（🧮）のときの説明。イベントのものと入れ替えて出す。 -->
+      <div class="ndHint" id="ndHintFormula" hidden>右の ● （出力）から左の ●
+        （入力）へドラッグで接続 ／ 線をクリックで切断 ／ 同じ入力に繋ぐと
+        張り替え ／ ノードは見出しをドラッグで移動、✕ で削除。未接続の入力は
+        0。<b>入力</b>ノードの名前がタイヤから渡される値（kappa = スリップ比、
+        alpha = スリップ角、fz = 荷重、mu = 摩擦係数、fxLo..fyHi = 力の
+        許される範囲）、<b>出力</b>ノードの fx / fy が車体へ掛かる力です。
+        変更はシミュレート中でもすぐ効きます（車両の走行状態は作り直し）。
+        <b>右クリック</b>: 何もない所でノードの追加と計算式の作成 / 削除、
+        ノードの上でそのノードの削除。付け先は Inspector の「車両」節。</div>
+      <div class="ndHint" id="ndHintEvent">トリガー（橙）右の ● からアクション（青）へドラッグで
         接続 ／ 線をクリックで切断 ／ ノードは見出しをドラッグで移動、✕ で削除。
         アクションの色・力はシミュレート中だけ効き、停止で設計値に戻ります。
         対象が「(付けた相手)」のノードは、このアセットを付けたオブジェクト
@@ -693,8 +794,8 @@
     <div class="asHead" onclick="toggleAssets()">
       <span><span class="caret"></span>Assets</span>
       <span class="asHint">クリック: プリミティブを配置 ／
-        ダブルクリック: シーンを読込 ／ <b>右クリック: メニュー（イベントの
-        作成・削除・付ける）</b> ／ 右下で高さ変更</span>
+        ダブルクリック: シーンを読込 ／ <b>右クリック: メニュー（イベント・
+        計算式の作成・削除・付ける）</b> ／ 右下で高さ変更</span>
     </div>
     <!-- 操作列。Inspector を「選択オブジェクトの内容」だけに絞ったので、
          新規オブジェクトの初期値とシーンの保存/全消しはここが受け持つ

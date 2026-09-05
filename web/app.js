@@ -267,7 +267,14 @@
   });
   // Right-drag must not open the context menu over the video, and a long press
   // must not pop up the touch callout.
-  hitEl.addEventListener('contextmenu', (e) => e.preventDefault());
+  // 右クリック: 選択中のオブジェクトのメニュー（プレハブを編集）。Ctrl 付きは
+  // カメラ操作（パン）なのでメニューを出さない。
+  hitEl.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (e.ctrlKey || !owner || !sceneData || sceneData.mode !== 'editor' ||
+        !isEditorCam()) return;
+    showContextMenu(e, objectMenuItems(myCameraSelection()));
+  });
 
   hitEl.addEventListener('wheel', (e) => {
     if (!e.ctrlKey) return;  // plain wheel scrolls the page as usual
@@ -330,6 +337,11 @@
       closeXmlEditor();
       return;
     }
+    if (e.key === 'Escape' && prefabEdit() && owner && isEditorCam()) {
+      e.preventDefault();
+      closePrefabEdit();
+      return;
+    }
     if (!owner || !sceneData || sceneData.mode !== 'editor') return;
     if (!isEditorCam()) return;  // ギズモが出ないページで切り替えても意味がない
     const key = e.key.toLowerCase();
@@ -343,6 +355,50 @@
       applyGizmo();
     }
   });
+
+  // ---- 運転（車両があるシーンの WASD）-----------------------------------
+  // シミュレート中だけ。W / S = 前後のペダル、A / D = ハンドル、Space =
+  // ハンドブレーキ。押している間の状態を "drive" として 50ms ごとに送る
+  // （変化が無くても 250ms に 1 回は送って、取りこぼしを直す）。エディタ
+  // モードでは W / E / R がギズモの切替なので触らない。
+  const driveKeys = { w: false, s: false, a: false, d: false, space: false };
+  let driveDirty = false;
+  let driveIdleTicks = 0;
+  function driveKey(e, down) {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' ||
+               el.tagName === 'TEXTAREA')) return;
+    if (!owner || !sceneData || sceneData.mode === 'editor') return;
+    if (nodeEdOpen || xmlEdOpen) return;
+    const key = e.key === ' ' ? 'space' : e.key.toLowerCase();
+    if (!(key in driveKeys)) return;
+    e.preventDefault();
+    if (driveKeys[key] !== down) {
+      driveKeys[key] = down;
+      driveDirty = true;
+    }
+  }
+  document.addEventListener('keydown', (e) => driveKey(e, true));
+  document.addEventListener('keyup', (e) => driveKey(e, false));
+  window.addEventListener('blur', () => {
+    for (const k in driveKeys) {
+      if (driveKeys[k]) { driveKeys[k] = false; driveDirty = true; }
+    }
+  });
+  setInterval(() => {
+    const any = driveKeys.w || driveKeys.s || driveKeys.a || driveKeys.d ||
+                driveKeys.space;
+    driveIdleTicks = any ? 0 : driveIdleTicks + 1;
+    if (!driveDirty && (!any || driveIdleTicks % 5 !== 0)) return;
+    driveDirty = false;
+    send('drive', {
+      throttle: driveKeys.w ? 1 : 0,
+      brake: driveKeys.s ? 1 : 0,
+      steer: (driveKeys.a ? 1 : 0) - (driveKeys.d ? 1 : 0),
+      handbrake: driveKeys.space ? 1 : 0,
+    });
+  }, 50);
   // Software cursor over the stage (windowed and fullscreen alike): follows
   // the mouse via transform (cheap, no layout). pointer-events:none keeps it
   // from stealing clicks from the hit layer underneath. Outside the stage the
@@ -704,7 +760,13 @@
         '<span>bodies <b>' + s.bodies + '</b> (asleep <b>' + s.asleep + '</b>)</span>' +
         '<span>target <b>' + s.physicsTarget + ' Hz / ' + s.targetFps + ' fps</b></span>' +
         '<span>engine <b>' + s.engine + '</b></span>' +
-        '<span>codec <b>' + s.codec + '</b></span>';
+        '<span>codec <b>' + s.codec + '</b></span>' +
+        (s.vehicle
+          ? '<span>car <b>' + fmt(s.vehicle.speed * 3.6) + ' km/h</b> ' +
+            fmt(s.vehicle.rpm) + ' rpm gear <b>' +
+            (s.vehicle.gear < 0 ? 'R' : (s.vehicle.gear === 0 ? 'N' : s.vehicle.gear)) +
+            '</b> clutch ' + fmt(s.vehicle.clutch, 2) + ' (WASD / Space)</span>'
+          : '');
     }).catch(() => {});
   }, 500);
 
@@ -1020,6 +1082,184 @@
     }
   }
 
+  // ---- プレハブ編集モード（Unity のプレハブモード）--------------------------
+  // オブジェクトを右クリック →「プレハブを編集」で入る。サーバーが
+  // prefabEdit = {index, name, parts:[...]} を返している間がその状態で、
+  // ビューではそのオブジェクトの部品だけが選べ、Inspector は部品の一覧に
+  // 変わる。◀ 戻る（edit.prefab.close）で通常へ。
+  function prefabEdit() {
+    return (sceneData && sceneData.prefabEdit) ? sceneData.prefabEdit : null;
+  }
+  function openPrefabEdit(index) { send('edit.prefab.open', { index: index }); }
+  function closePrefabEdit() { send('edit.prefab.close'); }
+  function selectPart(i) {
+    const e = myEditorSel();
+    send('select.part', { index: (e.kind === 'part' && e.index === i) ? -1 : i });
+  }
+  function selectedPart() {
+    const pe = prefabEdit();
+    const e = myEditorSel();
+    if (!pe || e.kind !== 'part') return null;
+    return (pe.parts || [])[e.index] || null;
+  }
+  function addPart() {
+    const kind = document.getElementById('edPartKind').value;
+    const args = { type: kind, size: { x: 0.3, y: 0.3, z: 0.3 } };
+    if (kind === 'mesh') {
+      const m = (sceneData.meshes || [])[0];
+      if (m) args.mesh = m.name;
+      args.size = { x: 1, y: 1, z: 1 };
+    }
+    // 選択中の部品があれば、その隣に（同じソケット・少し上）。
+    const cur = selectedPart();
+    if (cur) {
+      args.socket = cur.socket || '';
+      args.position = { x: cur.position.x, y: cur.position.y + 0.2, z: cur.position.z };
+    }
+    send('edit.part.add', args);
+  }
+  function applyPartField(key, value) {
+    const e = myEditorSel();
+    if (e.kind !== 'part') return;
+    const patch = { part: e.index };
+    patch[key] = value;
+    send('edit.part.set', patch);
+  }
+  function applyPartVec(kind) {
+    const e = myEditorSel();
+    if (e.kind !== 'part') return;
+    const pre = { position: 'edPP', rotation: 'edPR', size: 'edPS' }[kind];
+    const v = {};
+    for (const ax of ['X', 'Y', 'Z']) {
+      v[ax.toLowerCase()] = parseFloat(document.getElementById(pre + ax).value) || 0;
+    }
+    const patch = { part: e.index };
+    patch[kind] = v;
+    send('edit.part.set', patch);
+  }
+  function removeSelectedPart() {
+    const e = myEditorSel();
+    if (e.kind !== 'part') return;
+    send('edit.part.remove', { part: e.index });
+  }
+  function removePartAt(i) { send('edit.part.remove', { part: i }); }
+  // オブジェクトの右クリックメニュー（階層一覧とビューで共通）。
+  function objectMenuItems(index) {
+    const pe = prefabEdit();
+    if (pe) {
+      const part = selectedPart();
+      return [
+        { head: '🧩 ' + pe.name },
+        part && { label: '🗑 部品「' + (part.name || '?') + '」を削除', danger: true,
+                  onClick: removeSelectedPart },
+        { label: '◀ プレハブの編集を終了', onClick: closePrefabEdit },
+      ];
+    }
+    if (index === undefined || index === null || index < 0) return [];
+    const o = (sceneData.objects || []).find((x) => x.index === index);
+    if (!o) return [];
+    const label = o.name ? o.name : ('#' + o.index);
+    return [
+      { head: label },
+      { label: '🧩 プレハブを編集', hint: o.prefab || '（新規作成）',
+        onClick: () => openPrefabEdit(index) },
+      o.prefab && { label: 'プレハブを外す', hint: o.prefab,
+                    onClick: () => send('edit.prefab.detach', { index: index }) },
+      { sep: true },
+      { label: o.index === myCameraSelection() ? '選択を解除' : '選択',
+        onClick: () => selectObject(index) },
+    ];
+  }
+  let prefabListKey = '';
+  function renderPrefabEditor() {
+    const pe = prefabEdit();
+    const editing = !!sceneData && sceneData.mode === 'editor' && isEditorCam();
+    const on = !!pe && editing;
+    document.getElementById('secPrefab').hidden = !on;
+    const banner = document.getElementById('vhPrefab');
+    banner.hidden = !on;
+    // World 節はここでしか隠さないので、抜けたら必ず戻す（secObj / secJoint は
+    // renderEditor が毎回決め直す）。
+    document.getElementById('secWorld').hidden = on;
+    if (!on) {
+      prefabListKey = '';
+      return;
+    }
+    // 通常の節は隠す（Unity のプレハブモードと同じく、中身だけを見せる）。
+    document.getElementById('secObj').hidden = true;
+    document.getElementById('secJoint').hidden = true;
+    document.getElementById('vhPrefabName').textContent =
+      '🧩 ' + pe.name + '（' + (pe.objectName || ('#' + pe.index)) + '）';
+    document.getElementById('edPrefabInfo').textContent =
+      (pe.parts || []).length + ' 部品。ビューでクリックして選択、ギズモで移動 / 回転 / 拡縮。';
+
+    const e = myEditorSel();
+    const selIdx = e.kind === 'part' ? e.index : -1;
+    const meshes = (sceneData.meshes || []).map((m) => m.name);
+    const key = JSON.stringify(pe) + '@' + selIdx + '@' + meshes.join(',');
+    const list = document.getElementById('edPartList');
+    const propsEl = document.getElementById('edPartProps');
+    if (key !== prefabListKey &&
+        !(propsEl.contains(document.activeElement) && document.activeElement !== document.body)) {
+      prefabListKey = key;
+      const KI = { box: '📦', sphere: '⚪', cylinder: '🛞', mesh: '🧊' };
+      list.innerHTML = (pe.parts || []).length
+        ? pe.parts.map((p, i) =>
+            '<div class="ndItem' + (i === selIdx ? ' sel' : '') + '" data-part="' + i +
+            '"><span class="link" onclick="selectPart(' + i + ')">' +
+            (KI[p.type] || '📦') + ' ' + ndEsc(p.name || (p.type + ' ' + i)) + '</span>' +
+            (p.socket ? '<span class="sub">' + ndEsc(p.socket) + '</span>'
+                      : '<span class="sub"></span>') +
+            '<span class="x" title="部品を削除" onclick="removePartAt(' + i + ')">✕</span>' +
+            '</div>').join('')
+        : '<div class="edHint">部品がありません。「＋ 部品」で追加してください。</div>';
+    }
+    const part = selectedPart();
+    propsEl.hidden = !part;
+    if (!part) return;
+    setField('edPartName', part.name || '');
+    setField('edPartType', part.type);
+    document.getElementById('edPartMeshRow').hidden = part.type !== 'mesh';
+    const meshSel = document.getElementById('edPartMesh');
+    if (meshSel !== document.activeElement) {
+      let found = false;
+      meshSel.innerHTML = meshes.map((m) => {
+        if (m === part.mesh) found = true;
+        return '<option value="' + ndEsc(m) + '"' + (m === part.mesh ? ' selected' : '') +
+               '>' + ndEsc(m) + '</option>';
+      }).join('') + (found ? '' : '<option value="' + ndEsc(part.mesh || '') +
+                                  '" selected>' + (part.mesh ? '? ' + ndEsc(part.mesh)
+                                                              : '(メッシュを選ぶ)') +
+                                  '</option>');
+    }
+    const sockSel = document.getElementById('edPartSocket');
+    if (sockSel !== document.activeElement) {
+      let opts = '<option value=""' + (!part.socket ? ' selected' : '') + '>(車体に固定)</option>';
+      let found = !part.socket;
+      for (let a = 0; a < (pe.axles || 0); ++a) {
+        for (const sd of ['L', 'R']) {
+          const v = 'wheel:' + a + ':' + sd;
+          if (v === part.socket) found = true;
+          opts += '<option value="' + v + '"' + (v === part.socket ? ' selected' : '') +
+                  '>車輪 軸' + a + ' ' + (sd === 'L' ? '左' : '右') + '</option>';
+        }
+      }
+      if (!found) opts += '<option value="' + ndEsc(part.socket) + '" selected>? ' +
+                          ndEsc(part.socket) + '</option>';
+      sockSel.innerHTML = opts;
+    }
+    setField('edPPX', part.position.x.toFixed(3));
+    setField('edPPY', part.position.y.toFixed(3));
+    setField('edPPZ', part.position.z.toFixed(3));
+    setField('edPRX', part.rotation.x.toFixed(1));
+    setField('edPRY', part.rotation.y.toFixed(1));
+    setField('edPRZ', part.rotation.z.toFixed(1));
+    setField('edPSX', part.size.x.toFixed(3));
+    setField('edPSY', part.size.y.toFixed(3));
+    setField('edPSZ', part.size.z.toFixed(3));
+    setField('edPartColor', part.color);
+  }
+
   function renderHierarchy() {
     if (!sceneData || !sceneData.objects) return;
     const all = sceneData.objects;
@@ -1078,9 +1318,13 @@
       const ev = (o.events && o.events.length)
         ? '<span class="ndFire" title="イベント: ' + o.events.join(', ') +
           '">⚡' + o.events.length + '</span>' : '';
-      html += '<div class="item' + (isMine ? ' sel' : '') +
+      // プレハブ付き（🧩）と車両（🚗）の目印。右クリックのメニュー用に
+      // data-index も付ける（プレハブの編集の入口）。
+      const tag = (o.vehicle ? '<span class="tag" title="車両">🚗</span>' : '') +
+        (o.prefab ? '<span class="tag" title="プレハブ: ' + o.prefab + '">🧩</span>' : '');
+      html += '<div class="item' + (isMine ? ' sel' : '') + '" data-index="' + o.index +
               '" onclick="selectObject(' + o.index + ')">' + dot +
-              '<span>' + labelOf(o) + (o.fixed ? ' ⚓' : '') + '</span>' + ev +
+              '<span>' + labelOf(o) + (o.fixed ? ' ⚓' : '') + tag + '</span>' + ev +
               '<span class="sub">' + o.y.toFixed(2) + 'm</span></div>';
     }
     if (rows.length > shown.length) {
@@ -1827,6 +2071,8 @@
       renderEventAttachments('edObjEvents', 'edObjEventPick', sel.events || [],
                              sel.index);
     }
+    renderVehicleSection(sel);
+    renderPrefabEditor();
     if (lightSel) renderNodesFor('light', lightSel.index, 'edLightEvents');
     if (camSel) renderNodesFor('camera', camSel.index, 'edCamEvents');
 
@@ -1888,11 +2134,17 @@
     const files = sceneData.files || [];
     const meshes = sceneData.meshes || [];
     const events = eventAssets();
+    const formulas = formulaAssets();
+    const prefabs = (sceneData.prefabs && sceneData.prefabs.assets) || [];
     currentAsset();  // ndAsset を今ある一覧に合わせる（タイルの選択表示用）
+    currentFormula();
     const key = files.join('|') + '@' + (sceneData.sceneFile || '') + '#' +
       meshes.map((m) => m.name).join('|') + '%' +
       events.map((e) => e.name + ':' + (e.nodes || []).length).join('|') +
-      '&' + ndAsset;
+      '&' + ndAsset + '$' +
+      formulas.map((f) => f.name + ':' + (f.nodes || []).length).join('|') +
+      '&' + ndFormula + ndKind + '^' +
+      prefabs.map((p) => p.name + ':' + p.parts).join('|');
     if (key === assetListKey) return;  // 変化が無ければ DOM を組み直さない
     assetListKey = key;
 
@@ -1942,6 +2194,26 @@
         '<span class="ico">⚡&#xFE0E;</span><span class="name">' + esc(e.name) +
         '</span><span class="kind">event</span></div>';
     }
+    // 計算式アセット（🧮）。クリックでノードエディタが開き、右クリックで
+    // 作成・削除・選択中の車両に付ける。
+    for (const f of formulas) {
+      const cur = ndKind === 'formula' && f.name === ndFormula;
+      html += '<div class="asItem' + (cur ? ' sel' : '') +
+        '" data-formula="' + f.name +
+        '" title="クリック: ノードエディタで開く（' + (f.nodes || []).length +
+        ' ノード） ／ 右クリック: メニュー" onclick="openFormulaAsset(\'' +
+        f.name + '\')">' +
+        '<span class="ico">🧮</span><span class="name">' + esc(f.name) +
+        '</span><span class="kind">formula</span></div>';
+    }
+    // プレハブ（🧩）。右クリックで選択オブジェクトに付ける / 削除。中身の
+    // 編集はオブジェクトの右クリック「プレハブを編集」から。
+    for (const p of prefabs) {
+      html += '<div class="asItem" data-prefab="' + p.name +
+        '" title="' + p.parts + ' 部品 ／ 右クリック: メニュー（選択オブジェクトに付ける）">' +
+        '<span class="ico">🧩</span><span class="name">' + esc(p.name) +
+        '</span><span class="kind">prefab</span></div>';
+    }
     for (const f of files) {
       const cur = f === sceneData.sceneFile;
       html += '<div class="asItem' + (cur ? ' sel' : '') +
@@ -1973,9 +2245,50 @@
       return;
     }
     const tile = e.target.closest ? e.target.closest('[data-event]') : null;
+    const ftile = e.target.closest ? e.target.closest('[data-formula]') : null;
+    const ptile = e.target.closest ? e.target.closest('[data-prefab]') : null;
     const sel = mySelectedDesc();
+    if (ptile) {
+      const pname = ptile.dataset.prefab;
+      showContextMenu(e, [
+        { head: '🧩 ' + pname },
+        { label: '＋ 選択オブジェクトに付ける', hint: sel ? ('#' + sel.index) : '未選択',
+          disabled: !sel,
+          onClick: () => send('edit.prefab.attach', { index: sel.index, name: pname }) },
+        sel && { label: '🧩 付けて編集', hint: sel ? ('#' + sel.index) : '',
+          onClick: () => { send('edit.prefab.attach', { index: sel.index, name: pname });
+                           setTimeout(() => openPrefabEdit(sel.index), 150); } },
+        { sep: true },
+        { label: '🧩 新しい（空の）プレハブ…', onClick: newPrefabAsset },
+        { label: '🗑 このプレハブを削除', danger: true,
+          onClick: () => { if (confirm('プレハブ「' + pname + '」を削除します。付けてある物は元の見た目に戻ります。')) {
+                             send('edit.prefab.remove', { name: pname }); } } },
+      ]);
+      return;
+    }
+    if (ftile) {
+      const fname = ftile.dataset.formula;
+      showContextMenu(e, [
+        { head: '🧮 ' + fname },
+        { label: 'ノードエディタで開く', onClick: () => openFormulaAsset(fname) },
+        { sep: true },
+        { label: '＋ 選択中の車両のタイヤに付ける（全軸）',
+          hint: sel ? (sel.vehicle ? '#' + sel.index : '車両ではない') : '未選択',
+          disabled: !sel || !sel.vehicle,
+          onClick: () => attachFormulaToVehicle(fname) },
+        { sep: true },
+        { label: '🧮 新しい計算式…', onClick: newFormulaAsset },
+        { label: '🗑 この計算式を削除', danger: true,
+          onClick: () => removeFormulaAsset(fname) },
+      ]);
+      return;
+    }
     if (!tile) {
-      showContextMenu(e, [{ label: '✨ 新しいイベント…', onClick: newEventAsset }]);
+      showContextMenu(e, [
+        { label: '✨ 新しいイベント…', onClick: newEventAsset },
+        { label: '🧮 新しい計算式…', onClick: newFormulaAsset },
+        { label: '🧩 新しい（空の）プレハブ…', onClick: newPrefabAsset },
+      ]);
       return;
     }
     const name = tile.dataset.event;
@@ -1993,6 +2306,14 @@
       { label: '🗑 このイベントを削除', danger: true,
         onClick: () => removeEventAsset(name) },
     ]);
+  });
+
+  // 階層一覧のオブジェクト行の右クリック: プレハブを編集 / 外す / 選択。
+  document.getElementById('objList').addEventListener('contextmenu', (e) => {
+    if (!owner || !sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
+    const row = e.target.closest ? e.target.closest('[data-index]') : null;
+    if (!row) return;
+    showContextMenu(e, objectMenuItems(parseInt(row.dataset.index, 10)));
   });
 
   // Inspector の「イベント」一覧の右クリック（開く / 外す）。行は
@@ -2052,6 +2373,125 @@
   function worldEvents() {
     return (sceneData && sceneData.events && sceneData.events.world) || [];
   }
+  // ---- 計算式アセット（🧮）-------------------------------------------------
+  // ノード式（タイヤの「スリップ → 力」）。イベントと同じくサーバーが持ち、
+  // /scene の formulas = {assets:[{name,nodes,wires}], tireInputs, tireOutputs}。
+  // ノードエディタは 1 つで、ndKind が「いまどちらを見ているか」。
+  function formulaAssets() {
+    return (sceneData && sceneData.formulas && sceneData.formulas.assets) || [];
+  }
+  function tireInputs() {
+    return (sceneData && sceneData.formulas && sceneData.formulas.tireInputs) || [];
+  }
+  function tireOutputs() {
+    return (sceneData && sceneData.formulas && sceneData.formulas.tireOutputs) || [];
+  }
+  let ndKind = 'event';   // 'event' | 'formula'
+  let ndFormula = '';     // いま編集している計算式の名前
+  function currentFormula() {
+    const list = formulaAssets();
+    let a = list.find((x) => x.name === ndFormula);
+    if (!a && list.length) {
+      a = list[0];
+      ndFormula = a.name;
+    }
+    if (!list.length) ndFormula = '';
+    return a || null;
+  }
+  function currentFormulaGraph() {
+    return currentFormula() || { name: '', nodes: [], wires: [] };
+  }
+  function fNodeById(id) {
+    return (currentFormulaGraph().nodes || []).find((n) => n.id === id) || null;
+  }
+  function openFormulaAsset(name) {
+    ndKind = 'formula';
+    ndFormula = name;
+    ndGraphKey = '';
+    openNodeEditor();
+  }
+  function newFormulaAsset() {
+    const name = prompt('新しい計算式の名前（英数字と _ -）', 'tire');
+    if (name === null) return;
+    const clean = String(name).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+    if (!clean) return;
+    const tpl = confirm('既定のタイヤ式（Magic Formula + 摩擦楕円 + 緩和長）から' +
+                        '始めますか？\n（キャンセル = 空の式から）');
+    ndKind = 'formula';
+    ndFormula = clean;
+    ndGraphKey = '';
+    send('edit.formula.add', { name: clean, template: tpl ? 'tire' : '' });
+  }
+  function removeFormulaAsset(name) {
+    const target = name || ndFormula;
+    if (!target) return;
+    if (!confirm('計算式「' + target + '」を削除します。' +
+                 'これを使っているタイヤは組み込みの式に戻ります。')) {
+      return;
+    }
+    send('edit.formula.remove', { name: target });
+    if (target === ndFormula) ndFormula = '';
+    ndGraphKey = '';
+  }
+  function newPrefabAsset() {
+    const name = prompt('新しいプレハブの名前（英数字と _ -）', 'prefab');
+    if (name === null) return;
+    const clean = String(name).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+    if (!clean) return;
+    send('edit.prefab.add', { name: clean });
+  }
+  // 選択中の車両の全軸に付ける（Assets タイルの右クリック）。
+  function attachFormulaToVehicle(name) {
+    const sel = mySelectedDesc();
+    if (!sel) return;
+    send('edit.vehicle.tire', { index: sel.index, axle: -1, formula: name });
+  }
+  // Inspector の「車両」節。
+  function applyVehicleEnable(on) {
+    const sel = mySelectedDesc();
+    if (!sel) return;
+    send('edit.vehicle.enable', { index: sel.index, on: !!on });
+  }
+  function applyVehicleTire(axle, name) {
+    const sel = mySelectedDesc();
+    if (!sel) return;
+    send('edit.vehicle.tire', { index: sel.index, axle: axle, formula: name || '' });
+  }
+  let vehicleSecKey = '';
+  function renderVehicleSection(sel) {
+    const axlesEl = document.getElementById('edVehicleAxles');
+    const hint = document.getElementById('edVehicleHint');
+    if (!axlesEl) return;
+    if (!sel) { axlesEl.innerHTML = ''; vehicleSecKey = ''; return; }
+    setField('edVehicleOn', !!sel.vehicle);
+    hint.hidden = !sel.vehicle;
+    const axles = sel.vehicleAxles || [];
+    const names = formulaAssets().map((f) => f.name);
+    const key = sel.index + '|' + (sel.vehicle ? 1 : 0) + '|' +
+      axles.map((a) => a.z + ':' + a.steer + ':' + a.driven + ':' + a.formula).join(',') +
+      '|' + names.join(',');
+    if (key === vehicleSecKey) return;
+    if (axlesEl.contains(document.activeElement) &&
+        document.activeElement !== document.body) return;  // 選んでいる最中
+    vehicleSecKey = key;
+    if (!sel.vehicle) { axlesEl.innerHTML = ''; return; }
+    axlesEl.innerHTML = axles.map((a, i) => {
+      const what = (a.z >= 0 ? '前' : '後') + (a.steer > 0 ? '・操舵' : '') +
+                   (a.driven ? '・駆動' : '');
+      let opts = '<option value=""' + (!a.formula ? ' selected' : '') + '>(組み込み)</option>';
+      let found = !a.formula;
+      for (const n of names) {
+        if (n === a.formula) found = true;
+        opts += '<option value="' + ndEsc(n) + '"' + (n === a.formula ? ' selected' : '') +
+                '>🧮 ' + ndEsc(n) + '</option>';
+      }
+      if (!found) opts += '<option value="' + ndEsc(a.formula) + '" selected>? ' +
+                          ndEsc(a.formula) + '</option>';
+      return '<div class="edRow"><span>軸 ' + i + '（' + what + '）タイヤ式</span>' +
+        '<select class="strSel" title="この軸のタイヤの計算式（🧮 アセット）" ' +
+        'onchange="applyVehicleTire(' + i + ', this.value)">' + opts + '</select></div>';
+    }).join('');
+  }
   function currentAsset() {
     const list = eventAssets();
     let a = list.find((x) => x.name === ndAsset);
@@ -2066,13 +2506,44 @@
   function currentGraph() {
     return currentAsset() || { name: '', nodes: [], wires: [] };
   }
-  function ndSelectAsset(name) {
-    ndAsset = name;
+  // 見出しの選択は "e:名前"（イベント）/ "f:名前"（計算式）。
+  function ndSelectAsset(value) {
+    const v = String(value || '');
+    if (v.startsWith('f:')) {
+      ndKind = 'formula';
+      ndFormula = v.slice(2);
+    } else {
+      ndKind = 'event';
+      ndAsset = v.slice(2);
+    }
     ndGraphKey = '';
     renderNodeEditor(true);
   }
+  function ndFillAssetSelect() {
+    const sel = document.getElementById('ndAssetSel');
+    const ev = eventAssets(), fm = formulaAssets();
+    let h = '';
+    if (ev.length) {
+      h += '<optgroup label="⚡ イベント">' + ev.map((a) =>
+        '<option value="e:' + ndEsc(a.name) + '"' +
+        (ndKind === 'event' && a.name === ndAsset ? ' selected' : '') + '>' +
+        ndEsc(a.name) + '</option>').join('') + '</optgroup>';
+    }
+    if (fm.length) {
+      h += '<optgroup label="🧮 計算式">' + fm.map((a) =>
+        '<option value="f:' + ndEsc(a.name) + '"' +
+        (ndKind === 'formula' && a.name === ndFormula ? ' selected' : '') + '>' +
+        ndEsc(a.name) + '</option>').join('') + '</optgroup>';
+    }
+    sel.innerHTML = h || '<option value="">(アセットがありません)</option>';
+    document.getElementById('ndTitle').textContent =
+      ndKind === 'formula' ? '🧮 計算式' : '⚡ イベント設計';
+    document.getElementById('ndHintEvent').hidden = ndKind === 'formula';
+    document.getElementById('ndHintFormula').hidden = ndKind !== 'formula';
+  }
   // アセットパネルの ⚡ タイル / Inspector の一覧から開く。
   function openEventAsset(name) {
+    ndKind = 'event';
     ndAsset = name;
     ndGraphKey = '';
     openNodeEditor();
@@ -2239,11 +2710,199 @@
     openNodeEditor();  // 追加した結果（と配線のしかた）が見える場所へ
   }
   function ndPatch(id, patch) {
+    if (ndKind === 'formula') { fPatch(id, patch); return; }
     send('edit.node.set', ndArgs(Object.assign({ id: id }, patch)));
   }
-  function ndRemoveNode(id) { send('edit.node.remove', ndArgs({ id: id })); }
+  function ndRemoveNode(id) {
+    if (ndKind === 'formula') {
+      send('edit.fnode.remove', { asset: ndFormula, id: id });
+      return;
+    }
+    send('edit.node.remove', ndArgs({ id: id }));
+  }
   function ndRemoveWire(from, to) {
     send('edit.wire.remove', ndArgs({ from: from, to: to }));
+  }
+  // ---- 計算式ノードの語彙（サーバーの vehicle/Formula.h と同じ並び）--------
+  // ins / outs はポートの表示名（順番がポート番号）。param は本文の入力欄。
+  const FNODE_DEF = {
+    in:        { label: '入力',   ins: [],                outs: ['値'],    group: '入出力', param: 'in' },
+    out:       { label: '出力',   ins: ['値'],            outs: [],        group: '入出力', param: 'out' },
+    const:     { label: '定数',   ins: [],                outs: ['値'],    group: '入出力', param: 'value' },
+    dt:        { label: 'dt',     ins: [],                outs: ['dt'],    group: '入出力' },
+    add:       { label: '足す a + b',   ins: ['a', 'b'],  outs: ['値'],    group: '算術' },
+    sub:       { label: '引く a − b',   ins: ['a', 'b'],  outs: ['値'],    group: '算術' },
+    mul:       { label: '掛ける a × b', ins: ['a', 'b'],  outs: ['値'],    group: '算術' },
+    div:       { label: '割る a ÷ b',   ins: ['a', 'b'],  outs: ['値'],    group: '算術' },
+    min:       { label: 'min',    ins: ['a', 'b'],        outs: ['値'],    group: '算術' },
+    max:       { label: 'max',    ins: ['a', 'b'],        outs: ['値'],    group: '算術' },
+    pow:       { label: 'べき x^n', ins: ['x', 'n'],      outs: ['値'],    group: '算術' },
+    atan2:     { label: 'atan2',  ins: ['y', 'x'],        outs: ['角'],    group: '算術' },
+    gt:        { label: 'a > b',  ins: ['a', 'b'],        outs: ['1/0'],   group: '算術' },
+    lt:        { label: 'a < b',  ins: ['a', 'b'],        outs: ['1/0'],   group: '算術' },
+    neg:       { label: '符号反転', ins: ['x'],           outs: ['−x'],    group: '関数' },
+    abs:       { label: '絶対値', ins: ['x'],             outs: ['|x|'],   group: '関数' },
+    sqrt:      { label: '平方根', ins: ['x'],             outs: ['√x'],    group: '関数' },
+    sin:       { label: 'sin',    ins: ['x'],             outs: ['値'],    group: '関数' },
+    cos:       { label: 'cos',    ins: ['x'],             outs: ['値'],    group: '関数' },
+    tan:       { label: 'tan',    ins: ['x'],             outs: ['値'],    group: '関数' },
+    atan:      { label: 'atan',   ins: ['x'],             outs: ['値'],    group: '関数' },
+    exp:       { label: 'exp',    ins: ['x'],             outs: ['値'],    group: '関数' },
+    log:       { label: 'log',    ins: ['x'],             outs: ['値'],    group: '関数' },
+    sign:      { label: '符号',   ins: ['x'],             outs: ['±1'],    group: '関数' },
+    clamp:     { label: '範囲に収める', ins: ['x', 'lo', 'hi'], outs: ['値'], group: '制御' },
+    lerp:      { label: '補間 lerp', ins: ['a', 'b', 't'], outs: ['値'],   group: '制御' },
+    select:    { label: '選ぶ',   ins: ['cond', 'a', 'b'], outs: ['値'],   group: '制御' },
+    curve:     { label: '折れ線', ins: ['x'],             outs: ['y'],     group: '制御', param: 'curve' },
+    lag:       { label: '一次遅れ', ins: ['x', 'tau'],    outs: ['y'],     group: '状態' },
+    integrate: { label: '積分',   ins: ['x'],             outs: ['∫x dt'], group: '状態', param: 'range' },
+    magic:     { label: 'Magic Formula', ins: ['s', 'B', 'C', 'E'], outs: ['値'], group: '車両' },
+    ellipse:   { label: '摩擦楕円', ins: ['fx', 'fy', 'peak'], outs: ['fx', 'fy'], group: '車両' },
+  };
+  const FNODE_GROUPS = ['入出力', '算術', '関数', '制御', '状態', '車両'];
+  const FPORT_Y0 = 40;   // 1 行目のポート中心（ノード上端から）
+  const FPORT_DY = 18;   // ポート行の間隔（style.css の .ndPortRow の高さ）
+  function fArgs(extra) { return Object.assign({ asset: ndFormula }, extra || {}); }
+  function fPatch(id, patch) {
+    send('edit.fnode.set', fArgs(Object.assign({ id: id }, patch)));
+  }
+  function fAddNodeAt(type, x, y) {
+    if (!currentFormula()) { newFormulaAsset(); return; }
+    const extra = { type: type, x: Math.max(0, Math.round(x)), y: Math.max(0, Math.round(y)) };
+    // 入出力ノードは最初の名前を入れておく（空のままだと 0 を出す）。
+    if (type === 'in' && tireInputs().length) extra.name = tireInputs()[0];
+    if (type === 'out' && tireOutputs().length) extra.name = tireOutputs()[0];
+    if (type === 'const') extra.params = [1];
+    if (type === 'curve') extra.params = [0, 0, 1, 1];
+    send('edit.fnode.add', fArgs(extra));
+  }
+  function fRemoveWire(from, fromPort, to, port) {
+    send('edit.fwire.remove', fArgs({ from: from, fromPort: fromPort, to: to, port: port }));
+  }
+  function fNodeMenuItems(x, y) {
+    const items = [];
+    for (const g of FNODE_GROUPS) {
+      items.push({ head: g });
+      for (const k of Object.keys(FNODE_DEF)) {
+        const def = FNODE_DEF[k];
+        if (def.group !== g) continue;
+        items.push({ label: def.label, hint: k,
+                     onClick: () => fAddNodeAt(k, x, y) });
+      }
+    }
+    return items;
+  }
+  // 名前の選択肢（in / out）。今の値が一覧に無ければダミーで残す。
+  function fNameSelect(id, cur, names) {
+    let found = false;
+    let h = '<select class="strSel" onchange="fPatch(' + id + ',{name:this.value})">';
+    for (const n of names) {
+      if (n === cur) found = true;
+      h += '<option value="' + ndEsc(n) + '"' + (n === cur ? ' selected' : '') + '>' +
+           ndEsc(n) + '</option>';
+    }
+    if (!found) h += '<option value="' + ndEsc(cur) + '" selected>? ' + ndEsc(cur) + '</option>';
+    return h + '</select>';
+  }
+  function fNodeHtml(n, def) {
+    const rows = Math.max(def.ins.length, def.outs.length);
+    const io = n.type === 'in' || n.type === 'out';
+    const title = io ? (n.type === 'in' ? '入力 ' : '出力 ') + (n.name || '?') : def.label;
+    let h = '<div class="ndNode fml' + (io ? ' io' : '') + '" data-id="' + n.id +
+            '" style="left:' + n.x + 'px;top:' + n.y + 'px">';
+    h += '<div class="ndTitleRow" data-drag="' + n.id + '" title="ドラッグで移動（' +
+         n.type + ' #' + n.id + '）">' +
+         '<span class="ndName">' + ndEsc(title) + '</span>' +
+         '<span class="ndDel" title="ノードを削除" onclick="ndRemoveNode(' + n.id +
+         ')">✕</span></div>';
+    h += '<div class="ndPorts">';
+    for (let i = 0; i < rows; ++i) {
+      h += '<div class="ndPortRow"><span class="pl">' + (def.ins[i] || '') +
+           '</span><span class="pr">' + (def.outs[i] || '') + '</span></div>';
+    }
+    h += '</div>';
+    const p = n.params || [];
+    if (def.param === 'in' || def.param === 'out') {
+      h += '<div class="ndBody">' + ndRow('名前', fNameSelect(n.id, n.name || '',
+        def.param === 'in' ? tireInputs() : tireOutputs())) + '</div>';
+    } else if (def.param === 'value') {
+      h += '<div class="ndBody">' + ndRow('値', '<input class="num" type="number" step="any" value="' +
+           (p.length ? p[0] : 0) + '" onchange="fPatch(' + n.id +
+           ',{params:[parseFloat(this.value)||0]})">') + '</div>';
+    } else if (def.param === 'curve') {
+      h += '<div class="ndBody">' + ndRow('点 x y…', '<input class="txt" type="text" value="' +
+           ndEsc(p.join(' ')) + '" title="x y の対を空白区切りで（x 昇順）" ' +
+           'onchange="fPatch(' + n.id + ',{params:this.value})">') + '</div>';
+    } else if (def.param === 'range') {
+      h += '<div class="ndBody">' + ndRow('範囲 lo hi', '<input class="txt" type="text" value="' +
+           ndEsc(p.join(' ')) + '" placeholder="(制限なし)" ' +
+           'onchange="fPatch(' + n.id + ',{params:this.value})">') + '</div>';
+    }
+    // ポートの ●。行ごとに左（入力）と右（出力）。
+    def.ins.forEach((_, i) => {
+      h += '<span class="ndPort fin" data-fin="' + n.id + '" data-port="' + i +
+           '" style="top:' + (FPORT_Y0 + i * FPORT_DY - 6) + 'px" title="入力 ' +
+           ndEsc(def.ins[i]) + '"></span>';
+    });
+    def.outs.forEach((_, i) => {
+      h += '<span class="ndPort fout" data-fout="' + n.id + '" data-port="' + i +
+           '" style="top:' + (FPORT_Y0 + i * FPORT_DY - 6) + 'px" ' +
+           'title="出力 ' + ndEsc(def.outs[i]) + ' - ここから入力へドラッグで接続"></span>';
+    });
+    return h + '</div>';
+  }
+  function fDrawWires(posOverride) {
+    const g = currentFormulaGraph();
+    const pt = (id, out, port) => {
+      const p = posOverride && posOverride[id];
+      const n = fNodeById(id);
+      if (!p && !n) return null;
+      const x = p ? p.x : n.x, y = p ? p.y : n.y;
+      return { x: x + (out ? NODE_W : 0), y: y + FPORT_Y0 + port * FPORT_DY };
+    };
+    let h = '';
+    for (const w of g.wires || []) {
+      const p1 = pt(w.from, true, w.fromPort || 0), p2 = pt(w.to, false, w.port || 0);
+      if (!p1 || !p2) continue;
+      const d = ndWirePath(p1, p2);
+      h += '<path class="wire" d="' + d + '"/>' +
+           '<path class="wireHit" d="' + d + '" onclick="fRemoveWire(' + w.from + ',' +
+           (w.fromPort || 0) + ',' + w.to + ',' + (w.port || 0) +
+           ')"><title>クリックで切断</title></path>';
+    }
+    if (ndWireDrag) {
+      h += '<path class="wire drag" d="' +
+           ndWirePath({ x: ndWireDrag.x1, y: ndWireDrag.y1 },
+                      { x: ndWireDrag.x2, y: ndWireDrag.y2 }) + '"/>';
+    }
+    document.getElementById('ndWires').innerHTML = h;
+  }
+  function renderFormulaEditor(force) {
+    const g = currentFormulaGraph();
+    const key = 'f@' + JSON.stringify(g) + '@' + tireInputs().join(',') + '@' +
+      eventAssets().map((a) => a.name).join(',') + '@' +
+      formulaAssets().map((a) => a.name).join(',');
+    if (!force && key === ndGraphKey) return;
+    const canvas = document.getElementById('ndCanvas');
+    if (ndDrag || ndWireDrag ||
+        (canvas.contains(document.activeElement) &&
+         document.activeElement !== document.body)) {
+      return;
+    }
+    ndGraphKey = key;
+    ndFillAssetSelect();
+    let h = '';
+    for (const n of g.nodes || []) {
+      const def = FNODE_DEF[n.type];
+      if (!def) continue;
+      h += fNodeHtml(n, def);
+    }
+    document.getElementById('ndNodes').innerHTML = h ||
+      '<div class="ndEmpty">' + (currentFormula()
+        ? 'この計算式にはノードがありません。キャンバスを右クリックして追加してください。'
+        : '計算式がありません。右クリックの「新しい計算式…」で作るか、Assets パネルの 🧮 タイルから選んでください。') +
+      '</div>';
+    fDrawWires();
   }
   function ndVecChange(id, el) {
     const row = el.closest('.ndVec');
@@ -2377,6 +3036,7 @@
   // 線を引き直す。posOverride があれば（= ドラッグ中）、サーバー座標では
   // なく DOM の現在位置で描く - 動かしている最中も線が付いてくるように。
   function ndDrawWires(posOverride) {
+    if (ndKind === 'formula') { fDrawWires(posOverride); return; }
     const g = currentGraph();
     const pt = (id, out) => {
       const p = posOverride && posOverride[id];
@@ -2419,6 +3079,7 @@
     const show = nodeEdOpen && !!sceneData && isEditorCam() && owner;
     panel.hidden = !show;
     if (!show) { ndGraphKey = ''; return; }
+    if (ndKind === 'formula') { renderFormulaEditor(force); return; }
 
     const g = currentGraph();
     // グラフか選択肢（名前・数）が変わったときだけ組み直す。操作中
@@ -2429,8 +3090,9 @@
       '|' + (sceneData.lights || []).map((l) => l.index + ':' + (l.name || '')).join(',') +
       '|' + (sceneData.cameras || []).filter((c) => c.active !== false)
               .map((c) => c.index).join(',');
-    const key = JSON.stringify(g) + '@' + optKey + '@' +
-      eventAssets().map((a) => a.name).join(',');
+    const key = 'e@' + JSON.stringify(g) + '@' + optKey + '@' +
+      eventAssets().map((a) => a.name).join(',') + '@' +
+      formulaAssets().map((a) => a.name).join(',');
     if (!force && key === ndGraphKey) return;
     const canvas = document.getElementById('ndCanvas');
     if (ndDrag || ndWireDrag ||
@@ -2440,13 +3102,8 @@
     }
     ndGraphKey = key;
 
-    // 見出しのアセット選択。1 つも無ければ「＋新規」だけが意味を持つ。
-    const sel = document.getElementById('ndAssetSel');
-    sel.innerHTML = eventAssets().map((a) =>
-      '<option value="' + ndEsc(a.name) + '"' +
-      (a.name === ndAsset ? ' selected' : '') + '>' + ndEsc(a.name) +
-      '</option>').join('') ||
-      '<option value="">(イベントがありません)</option>';
+    // 見出しのアセット選択（イベントと計算式の両方）。
+    ndFillAssetSelect();
 
     let h = '';
     for (const n of g.nodes || []) {
@@ -2473,6 +3130,20 @@
     };
     nodesEl.addEventListener('pointerdown', (e) => {
       if (!owner) return;
+      const fout = e.target.closest('[data-fout]');
+      if (fout) {
+        const id = parseInt(fout.dataset.fout, 10);
+        const port = parseInt(fout.dataset.port, 10) || 0;
+        const n = fNodeById(id);
+        if (!n) return;
+        const y = n.y + FPORT_Y0 + port * FPORT_DY;
+        ndWireDrag = { kind: 'formula', from: id, fromPort: port,
+                       x1: n.x + NODE_W, y1: y, x2: n.x + NODE_W, y2: y };
+        nodesEl.setPointerCapture(e.pointerId);
+        e.preventDefault();
+        ndRedrawLocal();
+        return;
+      }
       const out = e.target.closest('[data-out]');
       if (out) {
         const id = parseInt(out.dataset.out, 10);
@@ -2517,11 +3188,51 @@
       if (ndDrag) {
         // 動かした結果だけ送る（ドラッグ中はローカルの見た目だけ）。
         if (ndDrag.x !== undefined) {
-          send('edit.node.set',
-               ndArgs({ id: ndDrag.id, x: ndDrag.x, y: ndDrag.y }));
+          if (ndKind === 'formula') {
+            fPatch(ndDrag.id, { x: ndDrag.x, y: ndDrag.y });
+          } else {
+            send('edit.node.set',
+                 ndArgs({ id: ndDrag.id, x: ndDrag.x, y: ndDrag.y }));
+          }
         }
         ndDrag = null;
         ndGraphKey = '';  // 次のポーリングでサーバーの答え合わせ
+        return;
+      }
+      if (ndWireDrag && ndWireDrag.kind === 'formula') {
+        // 入力ポートの ● の上で離す。ノードの上（● 以外）なら、離した高さに
+        // 一番近い入力ポートへ。
+        const el = document.elementFromPoint(e.clientX, e.clientY);
+        const portEl = el && el.closest ? el.closest('[data-fin]') : null;
+        let to = null, port = 0;
+        if (portEl) {
+          to = parseInt(portEl.dataset.fin, 10);
+          port = parseInt(portEl.dataset.port, 10) || 0;
+        } else {
+          const nodeEl = el && el.closest ? el.closest('.ndNode') : null;
+          if (nodeEl) {
+            const id = parseInt(nodeEl.dataset.id, 10);
+            const n = fNodeById(id);
+            const def = n ? FNODE_DEF[n.type] : null;
+            if (def && def.ins.length) {
+              const p = canvasPos(e);
+              let best = 0, bd = 1e9;
+              def.ins.forEach((_, i) => {
+                const d = Math.abs(p.y - (n.y + FPORT_Y0 + i * FPORT_DY));
+                if (d < bd) { bd = d; best = i; }
+              });
+              to = id;
+              port = best;
+            }
+          }
+        }
+        if (to !== null && to !== ndWireDrag.from) {
+          send('edit.fwire.add', fArgs({ from: ndWireDrag.from, fromPort: ndWireDrag.fromPort,
+                                         to: to, port: port }));
+        }
+        ndWireDrag = null;
+        ndGraphKey = '';
+        ndRedrawLocal();
         return;
       }
       if (ndWireDrag) {
@@ -2557,16 +3268,34 @@
       const nodeEl = e.target.closest ? e.target.closest('.ndNode') : null;
       if (nodeEl) {
         const id = parseInt(nodeEl.dataset.id, 10);
-        const n = nodeById(id);
-        const def = n ? NODE_DEF[n.kind] : null;
+        let head = 'ノード';
+        if (ndKind === 'formula') {
+          const n = fNodeById(id);
+          const def = n ? FNODE_DEF[n.type] : null;
+          if (def) head = '🧮 ' + def.label;
+        } else {
+          const n = nodeById(id);
+          const def = n ? NODE_DEF[n.kind] : null;
+          if (def) head = def.icon + ' ' + def.label;
+        }
         showContextMenu(e, [
-          { head: def ? def.icon + ' ' + def.label : 'ノード' },
+          { head: head },
           { label: '✕ このノードを削除', danger: true,
             onClick: () => ndRemoveNode(id) },
         ]);
         return;
       }
       const p = canvasPos(e);
+      if (ndKind === 'formula') {
+        const f = currentFormula();
+        showContextMenu(e, fNodeMenuItems(p.x, p.y).concat([
+          { sep: true },
+          { label: '🧮 新しい計算式…', onClick: newFormulaAsset },
+          f && { label: '🗑 「' + f.name + '」を削除', danger: true,
+                 onClick: () => removeFormulaAsset(f.name) },
+        ]));
+        return;
+      }
       const asset = currentAsset();
       showContextMenu(e, nodeMenuItems(p.x, p.y).concat([
         { sep: true },

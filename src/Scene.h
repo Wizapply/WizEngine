@@ -169,6 +169,29 @@ public:
         return std::unique_lock<std::mutex>(objectsMutex_);
     }
 
+    // desc.mesh（アセット名）→ meshes_ の番号。-1 = 無い（球で描く）。
+    // ロックは取らない（物理スレッド、または applyToRenderer の中から）。
+    int meshIndexFor(const std::string& name) const;
+    // RENDER スレッド用: メッシュアセットの Renderer モデル番号。最初に使う
+    // ときに読み込む（syncRenderables と同じ）。読めなければ kInvalidId。
+    std::size_t meshModelId(int meshIndex);
+    double meshScale(int meshIndex) const;
+
+    // ---- プレハブの部品の編集（PHYSICS thread、ギズモから）------------------
+    // 対象はプレハブ編集モードのオブジェクト（EditorState::prefabEditObject）
+    // に付いているプレハブの部品。ワールド座標を受け、親フレーム（車体 /
+    // ソケット）のローカルへ直して書く。
+    void movePart(int part, double x, double y, double z);
+    // 回転はワールドの四元数（w, x, y, z）で受ける。
+    void rotatePartWorld(int part, double qw, double qx, double qy, double qz);
+    void resizePart(int part, double sx, double sy, double sz);
+
+    // 直近のスナップショットにあるオブジェクトの姿勢（RENDER スレッド用。
+    // onRender の中で車輪など「オブジェクトに付いた見た目」を、描かれる
+    // 車体と同じ姿勢から組むための口）。poseMutex_ を取るのでロック順は
+    // objects → poses のまま。無ければ false。
+    bool latestPose(std::size_t index, BodyTransform& out);
+
     // Whiten strength for a grabbed object (kSelectedWhiten in scene.cpp).
     float selectedWhiten() const;
     // Highlight colour of the given camera's selection (scene.cpp).
@@ -250,8 +273,9 @@ private:
     void applyEditorOp(const EditorState::Op& op);
     // 設計値からオブジェクトを1個作る。番号を返す。
     std::size_t createObject(const wizengine::editor::BodyDesc& desc);
-    // desc.mesh（アセット名）→ meshes_ の番号。-1 = 無い（球で描く）。
-    int meshIndexFor(const std::string& name) const;
+    // プレハブ編集モードのオブジェクトに付いているプレハブ名（無ければ空）。
+    std::string editingPrefabName() const;
+
     // メッシュの凸包（最初に使うときに読み込む）。nullptr = 読めない。
     const std::vector<chrono::ChVector3d>* meshHull(int meshIndex);
     // 設計値から Chrono のボディを 1 個（createObject / rebuildBody 共通）。

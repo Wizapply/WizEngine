@@ -22,6 +22,9 @@
 #include "PhysicsWorld.h"
 #include "Renderer.h"
 #include "math_bridge.h"
+#include "PrefabDefaults.h"
+#include "PrefabFrame.h"
+#include "vehicle/TireFormula.h"
 
 using namespace chrono;
 namespace ed = wizengine::editor;
@@ -417,6 +420,7 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         nlohmann::json s;
         s["kind"] = selKind == EditorState::SelKind::Light    ? "light"
                     : selKind == EditorState::SelKind::Camera ? "camera"
+                    : selKind == EditorState::SelKind::Part   ? "part"
                                                               : "none";
         s["index"] = selIndex;
         j["editorSel"] = s;
@@ -497,6 +501,44 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         ev["world"] = editor_.worldEvents();
         j["events"] = ev;
     }
+    // プレハブ（ASSETS パネルの 🧩 タイル）と、プレハブ編集モードの中身
+    // （Inspector の部品一覧・映像ヘッダーの表示）。
+    {
+        nlohmann::json pf;
+        pf["assets"] = nlohmann::json::array();
+        for (const auto& d : editor_.prefabAssets()) {
+            nlohmann::json e;
+            e["name"] = d.name;
+            e["parts"] = int(d.parts.size());
+            pf["assets"].push_back(e);
+        }
+        j["prefabs"] = pf;
+        const int obj = editor_.prefabEditObject();
+        if (obj >= 0 && std::size_t(obj) < boxes_.size() && boxes_[std::size_t(obj)].alive) {
+            const ed::BodyDesc& d = boxes_[std::size_t(obj)].desc;
+            nlohmann::json e;
+            e["index"] = obj;
+            e["name"] = d.prefab;
+            e["objectName"] = d.name;
+            e["vehicle"] = d.hasVehicle;
+            e["axles"] = int(d.hasVehicle ? d.vehicle.axles.size() : 0);
+            ed::PrefabDesc pd;
+            if (editor_.prefabAsset(d.prefab, pd)) e["parts"] = ed::toJson(pd)["parts"];
+            else e["parts"] = nlohmann::json::array();
+            j["prefabEdit"] = e;
+        }
+    }
+    // 計算式アセット（ASSETS パネルの 🧮 タイル・ノードエディタ・Inspector
+    // の車両節が使う）。タイヤ式の入出力の名前も一緒に渡す（in / out ノード
+    // の選択肢）。
+    {
+        nlohmann::json f;
+        f["assets"] = nlohmann::json::array();
+        for (const auto& g : editor_.formulaAssets()) f["assets"].push_back(ed::toJson(g));
+        f["tireInputs"] = wizengine::vehicle::tireFormulaInputs();
+        f["tireOutputs"] = wizengine::vehicle::tireFormulaOutputs();
+        j["formulas"] = f;
+    }
 
     // Who (if anyone) is holding each object, so the list can colour it.
     std::vector<int> heldBy(boxes_.size(), -1);
@@ -521,6 +563,8 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         // 付いているイベントアセット（階層一覧の ⚡ バッジ）。付いていない
         // 物のほうが多いので、あるときだけ送る。
         if (!boxes_[i].desc.events.empty()) e["events"] = boxes_[i].desc.events;
+        if (!boxes_[i].desc.prefab.empty()) e["prefab"] = boxes_[i].desc.prefab;
+        if (boxes_[i].desc.hasVehicle) e["vehicle"] = true;
         j["objects"].push_back(e);
     }
     j["aliveCount"] = alive;
@@ -530,6 +574,17 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     if (sel < boxes_.size() && boxes_[sel].alive) {
         nlohmann::json d = ed::toJson(boxes_[sel].desc);
         d["index"] = int(sel);
+        // 車両なら軸ごとの要点（Inspector の車両節: タイヤ式の付け先）。
+        if (boxes_[sel].desc.hasVehicle) {
+            nlohmann::json axles = nlohmann::json::array();
+            for (const auto& a : boxes_[sel].desc.vehicle.axles) {
+                axles.push_back({{"z", a.z},
+                                 {"steer", a.steerDeg},
+                                 {"driven", a.driven},
+                                 {"formula", a.tire.formula}});
+            }
+            d["vehicleAxles"] = axles;
+        }
         if (sel < poses.size()) {
             d["px"] = poses[sel].px;
             d["py"] = poses[sel].py;
@@ -1448,7 +1503,10 @@ void Scene::enterMode(ed::AppMode target) {
     editor_.setMode(target);
     // ライト / カメラの編集はエディタモード専用なので、シミュレートに入る
     // ときは選択も畳む（アイコンも消えるため、選択だけ残ると分かりにくい）。
-    if (target == ed::AppMode::Simulate) editor_.clearSel();
+    if (target == ed::AppMode::Simulate) {
+        editor_.clearSel();
+        editor_.setPrefabEditObject(-1);  // プレハブ編集はエディタの仕事
+    }
     editor_.setStatus(target == ed::AppMode::Simulate ? "シミュレート開始"
                                                       : "エディタに戻りました");
     LOGI("editor", "mode -> %s", ed::modeName(target));
@@ -1543,6 +1601,11 @@ void Scene::destroyObject(std::size_t index) {
     if (index >= boxes_.size() || !boxes_[index].alive) return;
     if (boxes_[index].physId != GameObject::kInvalidId) {
         physics_.disableBody(boxes_[index].physId);
+    }
+    // 編集中のプレハブの持ち主が消えたら編集モードも終わる。
+    if (editor_.prefabEditObject() == int(index)) {
+        editor_.setPrefabEditObject(-1);
+        if (editor_.selKind() == EditorState::SelKind::Part) editor_.clearSel();
     }
 
     // 消えたオブジェクトを参照するジョイントも一緒に落とす。残すと次の
@@ -2084,6 +2147,247 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         return;
     }
 
+    // ---- 計算式アセット ------------------------------------------------------
+    if (op.kind == "formula.add") {
+        const std::string name = a.value("name", "");
+        if (name.empty()) return;
+        wizengine::vehicle::FormulaGraphDesc g;
+        if (a.value("template", "") == "tire") {
+            g = wizengine::vehicle::defaultTireFormulaGraph(name);
+        } else {
+            g.name = name;
+        }
+        if (!editor_.addFormulaAsset(std::move(g))) {
+            editor_.setStatus("同じ名前の計算式があります: " + name);
+            return;
+        }
+        editor_.setStatus("計算式を作成: " + name);
+        return;
+    }
+
+    if (op.kind == "formula.remove") {
+        const std::string name = a.value("name", "");
+        if (name.empty() || !editor_.removeFormulaAsset(name)) return;
+        // タイヤの参照を外す（消えた名前を指したままにしない = 組み込みへ）。
+        {
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            for (auto& o : boxes_) {
+                if (!o.desc.hasVehicle) continue;
+                for (auto& ax : o.desc.vehicle.axles) {
+                    if (ax.tire.formula == name) ax.tire.formula.clear();
+                }
+            }
+        }
+        editor_.bumpFormulaVersion();
+        editor_.setStatus("計算式を削除: " + name);
+        return;
+    }
+
+    if (op.kind == "fnode.add") {
+        const std::string asset = a.value("asset", "");
+        wizengine::vehicle::FormulaNodeDesc n =
+            ed::clampFormulaNode(ed::formulaNodeFromJson(a, wizengine::vehicle::FormulaNodeDesc{}));
+        n.kind = a.value("type", "");
+        const int id = editor_.addFormulaNode(asset, n);
+        if (id < 0) {
+            editor_.setStatus("計算式が見つかりません: " + asset);
+            return;
+        }
+        editor_.setStatus("ノードを追加: " + n.kind + " #" + std::to_string(id) +
+                          "（" + asset + "）");
+        return;
+    }
+
+    if (op.kind == "fnode.set") {
+        const std::string asset = a.value("asset", "");
+        const int id = ed::jsonInt(a, "id", -1);
+        if (id < 0) return;
+        editor_.updateFormulaNode(asset, id, a);  // ドラッグの連投なので無言
+        return;
+    }
+
+    if (op.kind == "fnode.remove") {
+        const std::string asset = a.value("asset", "");
+        const int id = ed::jsonInt(a, "id", -1);
+        if (id < 0 || !editor_.removeFormulaNode(asset, id)) return;
+        editor_.setStatus("ノードを削除: #" + std::to_string(id));
+        return;
+    }
+
+    if (op.kind == "fwire.add" || op.kind == "fwire.remove") {
+        const std::string asset = a.value("asset", "");
+        const wizengine::vehicle::FormulaWireDesc w = ed::formulaWireFromJson(a);
+        if (op.kind == "fwire.add") {
+            if (editor_.addFormulaWire(asset, w)) {
+                editor_.setStatus("ノードを接続: #" + std::to_string(w.from) + " → #" +
+                                  std::to_string(w.to));
+            } else {
+                editor_.setStatus("接続できません（ポートが無い・循環になる）");
+            }
+        } else if (editor_.removeFormulaWire(asset, w)) {
+            editor_.setStatus("接続を解除: #" + std::to_string(w.from) + " → #" +
+                              std::to_string(w.to));
+        }
+        return;
+    }
+
+    // ---- プレハブ ------------------------------------------------------------
+    if (op.kind == "prefab.open") {
+        const int index = ed::jsonInt(a, "index", -1);
+        if (index < 0 || std::size_t(index) >= boxes_.size() ||
+            !boxes_[std::size_t(index)].alive) {
+            return;
+        }
+        GameObject& obj = boxes_[std::size_t(index)];
+        if (obj.desc.prefab.empty()) {
+            // まだプレハブが無ければ、いま見えている組み込みの見た目から作る
+            // （Unity の「プレハブ化」）。名前はオブジェクト名から。
+            std::string base = ed::sanitizeEventName(obj.desc.name);
+            if (base.empty()) base = "object" + std::to_string(index);
+            std::string name = base + "_prefab";
+            for (int n = 2; editor_.hasPrefabAsset(name) && n < 1000; ++n) {
+                name = base + "_prefab" + std::to_string(n);
+            }
+            ed::PrefabDesc d = ed::builtinCarPrefab(obj.desc, name);
+            editor_.addPrefabAsset(d);
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            obj.desc.prefab = name;
+        }
+        editor_.setPrefabEditObject(index);
+        for (auto& c : controllers_) c->setSelected(BoxController::kNone);
+        editor_.clearSel();
+        editor_.setStatus("プレハブを編集: " + obj.desc.prefab);
+        return;
+    }
+
+    if (op.kind == "prefab.close") {
+        editor_.setPrefabEditObject(-1);
+        if (editor_.selKind() == EditorState::SelKind::Part) editor_.clearSel();
+        editor_.setStatus("プレハブの編集を終了");
+        return;
+    }
+
+    if (op.kind == "prefab.attach" || op.kind == "prefab.detach") {
+        const int index = ed::jsonInt(a, "index", -1);
+        if (index < 0 || std::size_t(index) >= boxes_.size() ||
+            !boxes_[std::size_t(index)].alive) {
+            return;
+        }
+        const std::string name = a.value("name", "");
+        if (op.kind == "prefab.attach" && !editor_.hasPrefabAsset(name)) {
+            editor_.setStatus("プレハブが見つかりません: " + name);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            boxes_[std::size_t(index)].desc.prefab =
+                op.kind == "prefab.attach" ? name : std::string();
+        }
+        editor_.setStatus("#" + std::to_string(index) +
+                          (op.kind == "prefab.attach" ? " に " + name + " を付けました"
+                                                       : " のプレハブを外しました"));
+        return;
+    }
+
+    if (op.kind == "prefab.add") {
+        const std::string name = a.value("name", "");
+        ed::PrefabDesc d;
+        d.name = name;
+        if (name.empty() || !editor_.addPrefabAsset(d)) {
+            editor_.setStatus("同じ名前のプレハブがあります: " + name);
+            return;
+        }
+        editor_.setStatus("プレハブを作成: " + name);
+        return;
+    }
+
+    if (op.kind == "prefab.remove") {
+        const std::string name = a.value("name", "");
+        if (name.empty() || !editor_.removePrefabAsset(name)) return;
+        {
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            for (auto& o : boxes_) {
+                if (o.desc.prefab == name) o.desc.prefab.clear();
+            }
+        }
+        if (editingPrefabName().empty()) {
+            editor_.setPrefabEditObject(-1);
+            if (editor_.selKind() == EditorState::SelKind::Part) editor_.clearSel();
+        }
+        editor_.setStatus("プレハブを削除: " + name);
+        return;
+    }
+
+    if (op.kind == "part.add" || op.kind == "part.set" || op.kind == "part.remove") {
+        // 省略時は編集中のプレハブ。
+        std::string prefab = a.value("prefab", "");
+        if (prefab.empty()) prefab = editingPrefabName();
+        if (prefab.empty()) {
+            editor_.setStatus("編集中のプレハブがありません");
+            return;
+        }
+        if (op.kind == "part.add") {
+            ed::PartDesc p = ed::partFromJson(a, ed::PartDesc{});
+            if (p.name.empty()) p.name = std::string(ed::partKindName(p.kind));
+            const int idx = editor_.addPart(prefab, p);
+            if (idx < 0) return;
+            editor_.setSel(EditorState::SelKind::Part, idx);
+            editor_.setStatus("部品を追加: " + p.name);
+            return;
+        }
+        const int part = ed::jsonInt(a, "part", -1);
+        if (op.kind == "part.set") {
+            editor_.updatePart(prefab, part, a);  // 連投なので無言
+            return;
+        }
+        if (editor_.removePart(prefab, part)) {
+            if (editor_.selKind() == EditorState::SelKind::Part) editor_.clearSel();
+            editor_.setStatus("部品を削除: #" + std::to_string(part));
+        }
+        return;
+    }
+
+    // ---- 車両 -----------------------------------------------------------------
+    if (op.kind == "vehicle.enable" || op.kind == "vehicle.tire") {
+        const int index = ed::jsonInt(a, "index", -1);
+        if (index < 0 || std::size_t(index) >= boxes_.size() ||
+            !boxes_[std::size_t(index)].alive) {
+            return;
+        }
+        GameObject& obj = boxes_[std::size_t(index)];
+        std::string status;
+        {
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            if (op.kind == "vehicle.enable") {
+                const bool on = a.value("on", true);
+                obj.desc.hasVehicle = on;
+                if (on && obj.desc.vehicle.axles.empty()) {
+                    obj.desc.vehicle = wizengine::vehicle::defaultVehicleDesc();
+                }
+                status = on ? "#" + std::to_string(index) + " を車両にしました"
+                            : "#" + std::to_string(index) + " の車両を外しました";
+            } else {
+                const int axle = ed::jsonInt(a, "axle", -1);
+                const std::string formula = a.value("formula", "");
+                if (!formula.empty() && !editor_.hasFormulaAsset(formula)) {
+                    status = "計算式が見つかりません: " + formula;
+                } else if (!obj.desc.hasVehicle) {
+                    status = "#" + std::to_string(index) + " は車両ではありません";
+                } else {
+                    auto& axles = obj.desc.vehicle.axles;
+                    for (std::size_t i = 0; i < axles.size(); ++i) {
+                        if (axle < 0 || std::size_t(axle) == i) axles[i].tire.formula = formula;
+                    }
+                    status = "#" + std::to_string(index) + " のタイヤ式: " +
+                             (formula.empty() ? "(組み込み)" : formula);
+                }
+            }
+        }
+        editor_.bumpFormulaVersion();  // 車両モデルを作り直させる
+        editor_.setStatus(status);
+        return;
+    }
+
     // ---- ライト -----------------------------------------------------------
     if (op.kind == "light.add") {
         const std::size_t index = createLight(ed::lightFromJson(a, ed::LightDesc{}));
@@ -2265,6 +2569,9 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         resetLightsToDefaults();
         resetCamerasToDefaults();
         resetEventsToDefaults();
+        editor_.setFormulaAssets({});  // 計算式もシーンの一部
+        editor_.setPrefabAssets({});
+        editor_.setPrefabEditObject(-1);
         editor_.clearSel();
         editor_.setSceneFile("");
         editor_.setStatus("シーンを空にしました");
@@ -2443,6 +2750,8 @@ ed::SceneDocument Scene::document() {
         doc.worldEvents = editor_.worldEvents();
         doc.hasEvents = true;
     }
+    doc.formulas = editor_.formulaAssets();
+    doc.prefabs = editor_.prefabAssets();
     return doc;
 }
 
@@ -2516,7 +2825,32 @@ void Scene::loadDocument(const ed::SceneDocument& doc) {
     }
 
     const std::size_t base = boxes_.size();  // 追加ぶんの先頭番号
-    for (const auto& b : doc.bodies) createObject(ed::clampBody(b));
+    // 計算式アセット。<vehicle> の中に書かれた古い置き場（<formula>）は
+    // シーンのアセットへ移す（同じ名前があればそちらを優先）。次に保存
+    // したときは <asset> に出る。
+    {
+        std::vector<wizengine::vehicle::FormulaGraphDesc> formulas = doc.formulas;
+        auto has = [&formulas](const std::string& name) {
+            for (const auto& f : formulas) {
+                if (f.name == name) return true;
+            }
+            return false;
+        };
+        for (const auto& b : doc.bodies) {
+            if (!b.hasVehicle) continue;
+            for (const auto& f : b.vehicle.formulas) {
+                if (!f.name.empty() && !has(f.name)) formulas.push_back(f);
+            }
+        }
+        editor_.setFormulaAssets(std::move(formulas));
+    }
+    editor_.setPrefabAssets(doc.prefabs);
+    editor_.setPrefabEditObject(-1);
+    for (const auto& bIn : doc.bodies) {
+        ed::BodyDesc b = ed::clampBody(bIn);
+        b.vehicle.formulas.clear();  // 置き場はシーンのアセットに統一
+        createObject(b);
+    }
 
     std::vector<ed::JointDesc> joints;
     for (const auto& jIn : doc.joints) {
@@ -2565,6 +2899,79 @@ void Scene::loadDocument(const ed::SceneDocument& doc) {
 
     if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
     snapshot();
+}
+
+std::size_t Scene::meshModelId(int meshIndex) {
+    if (meshIndex < 0 || std::size_t(meshIndex) >= meshes_.size()) {
+        return GameObject::kInvalidId;
+    }
+    MeshAsset& m = meshes_[std::size_t(meshIndex)];
+    if (m.modelId == GameObject::kInvalidId && !m.loadFailed) {
+        try {
+            m.modelId = renderer_.loadModel(m.desc.file);
+            LOGI("scene", "mesh '%s': '%s' (loaded for a prefab part)",
+                 m.desc.name.c_str(), m.desc.file.c_str());
+        } catch (const wizengine::AssetError& e) {
+            m.loadFailed = true;
+            LOGW("scene", "mesh '%s': %s", m.desc.name.c_str(), e.what());
+        }
+    }
+    return m.modelId;
+}
+
+double Scene::meshScale(int meshIndex) const {
+    if (meshIndex < 0 || std::size_t(meshIndex) >= meshes_.size()) return 1.0;
+    return meshes_[std::size_t(meshIndex)].desc.scale;
+}
+
+std::string Scene::editingPrefabName() const {
+    const int obj = editor_.prefabEditObject();
+    if (obj < 0 || std::size_t(obj) >= boxes_.size() || !boxes_[std::size_t(obj)].alive) {
+        return std::string();
+    }
+    return boxes_[std::size_t(obj)].desc.prefab;
+}
+
+void Scene::movePart(int part, double x, double y, double z) {
+    const int obj = editor_.prefabEditObject();
+    const std::string prefab = editingPrefabName();
+    ed::PartDesc p;
+    if (prefab.empty() || !editor_.partDesc(prefab, part, p)) return;
+    ed::Vec3d localPos, localRot;
+    scenemath::Vec3 wp;
+    scenemath::Quat wr;
+    prefabframe::partWorld(boxes_[std::size_t(obj)].desc, p, wp, wr);
+    prefabframe::worldToLocal(boxes_[std::size_t(obj)].desc, p, scenemath::Vec3(x, y, z), wr,
+                              localPos, localRot);
+    editor_.setPartTransform(prefab, part, &localPos, nullptr, nullptr);
+}
+
+void Scene::rotatePartWorld(int part, double qw, double qx, double qy, double qz) {
+    const int obj = editor_.prefabEditObject();
+    const std::string prefab = editingPrefabName();
+    ed::PartDesc p;
+    if (prefab.empty() || !editor_.partDesc(prefab, part, p)) return;
+    ed::Vec3d localPos, localRot;
+    scenemath::Vec3 wp;
+    scenemath::Quat wr;
+    prefabframe::partWorld(boxes_[std::size_t(obj)].desc, p, wp, wr);
+    prefabframe::worldToLocal(boxes_[std::size_t(obj)].desc, p, wp,
+                              scenemath::Quat(qw, qx, qy, qz), localPos, localRot);
+    editor_.setPartTransform(prefab, part, nullptr, &localRot, nullptr);
+}
+
+void Scene::resizePart(int part, double sx, double sy, double sz) {
+    const std::string prefab = editingPrefabName();
+    if (prefab.empty()) return;
+    const ed::Vec3d size{sx, sy, sz};
+    editor_.setPartTransform(prefab, part, nullptr, nullptr, &size);
+}
+
+bool Scene::latestPose(std::size_t index, BodyTransform& out) {
+    std::lock_guard<std::mutex> lk(poseMutex_);
+    if (index >= latestPoses_.size()) return false;
+    out = latestPoses_[index];
+    return true;
 }
 
 void Scene::snapshot() {

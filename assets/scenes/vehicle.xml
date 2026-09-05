@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 車両シミュレーションのサンプル。アセットパネルの保存済みシーンから
+     読み込み（またはコピーして起動シーンに）、シミュレートを開始して
+     W / S / A / D（前・後ろ / 左右）、Space（ハンドブレーキ）で運転する。
+     車体は箱 1 個で、車輪は剛体ではなくレイキャスト式（見た目は円柱 +
+     スポークを描画側で重ねる）。
+     <vehicle> の書式は src/vehicle/VehicleXml.h。 -->
+<wizengine model="vehicle" version="4">
+  <asset>
+    <event name="pickup">
+      <node id="1" type="onGrab" pos="40 40" target="-1"/>
+      <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+      <wire from="1" to="2"/>
+    </event>
+    <!-- 計算式アセット（🧮）: タイヤの「スリップ → 力」。組み込みの Magic
+         Formula + 摩擦楕円 + 上限 + 緩和長をそのままノードで組んだもの
+         （vehicle_test - -dump-formula の出力）。<tire formula="tire_mf"/> で
+         車両の軸から参照する。ノードエディタで開いて差し替えられる。
+         入出力の約束は src/vehicle/TireFormula.h。 -->
+    <formula name="tire_mf">
+      <node id="1" type="in" name="kappa" pos="40 40"/>
+      <node id="2" type="in" name="alpha" pos="40 100"/>
+      <node id="3" type="in" name="fz" pos="40 160"/>
+      <node id="4" type="in" name="mu" pos="40 220"/>
+      <node id="5" type="in" name="v" pos="40 280"/>
+      <node id="6" type="in" name="bx" pos="40 340"/>
+      <node id="7" type="in" name="cx" pos="40 400"/>
+      <node id="8" type="in" name="ex" pos="40 460"/>
+      <node id="9" type="in" name="by" pos="40 520"/>
+      <node id="10" type="in" name="cy" pos="40 580"/>
+      <node id="11" type="in" name="ey" pos="40 640"/>
+      <node id="12" type="in" name="relax" pos="40 700"/>
+      <node id="13" type="in" name="fxLo" pos="40 760"/>
+      <node id="14" type="in" name="fxHi" pos="40 820"/>
+      <node id="15" type="in" name="fyLo" pos="40 880"/>
+      <node id="16" type="in" name="fyHi" pos="40 940"/>
+      <node id="17" type="mul" pos="260 190"/>
+      <node id="18" type="magic" pos="260 40"/>
+      <node id="19" type="mul" pos="460 40"/>
+      <node id="20" type="magic" pos="260 520"/>
+      <node id="21" type="mul" pos="460 520"/>
+      <node id="22" type="neg" pos="620 520"/>
+      <node id="23" type="ellipse" pos="780 280"/>
+      <node id="24" type="clamp" pos="960 200"/>
+      <node id="25" type="clamp" pos="960 360"/>
+      <node id="26" type="div" pos="620 700"/>
+      <node id="27" type="lag" pos="1140 200"/>
+      <node id="28" type="lag" pos="1140 360"/>
+      <node id="29" type="out" name="fx" pos="1320 200"/>
+      <node id="30" type="out" name="fy" pos="1320 360"/>
+      <wire from="4" to="17"/>
+      <wire from="3" to="17" port="1"/>
+      <wire from="1" to="18"/>
+      <wire from="6" to="18" port="1"/>
+      <wire from="7" to="18" port="2"/>
+      <wire from="8" to="18" port="3"/>
+      <wire from="17" to="19"/>
+      <wire from="18" to="19" port="1"/>
+      <wire from="2" to="20"/>
+      <wire from="9" to="20" port="1"/>
+      <wire from="10" to="20" port="2"/>
+      <wire from="11" to="20" port="3"/>
+      <wire from="17" to="21"/>
+      <wire from="20" to="21" port="1"/>
+      <wire from="21" to="22"/>
+      <wire from="19" to="23"/>
+      <wire from="22" to="23" port="1"/>
+      <wire from="17" to="23" port="2"/>
+      <wire from="23" to="24"/>
+      <wire from="13" to="24" port="1"/>
+      <wire from="14" to="24" port="2"/>
+      <wire from="23" fromPort="1" to="25"/>
+      <wire from="15" to="25" port="1"/>
+      <wire from="16" to="25" port="2"/>
+      <wire from="12" to="26"/>
+      <wire from="5" to="26" port="1"/>
+      <wire from="24" to="27"/>
+      <wire from="26" to="27" port="1"/>
+      <wire from="25" to="28"/>
+      <wire from="26" to="28" port="1"/>
+      <wire from="27" to="29"/>
+      <wire from="28" to="30"/>
+    </formula>
+  </asset>
+  <worldbody>
+    <environment hdr="studio.hdr" intensity="30000"/>
+    <ground size="60" visual="60" texture="textures/ground.png" tile="2" rgba="1 1 1 1"/>
+    <camera name="cam0" target="0 0.7 0" azimuth="150" elevation="18" radius="9"/>
+    <!-- 車体: 1.4 × 0.5 × 4.2 m、1400 kg。重心高さ 0.72 m は静的な縮みを
+         引いた値（サスの rest 0.35 - 縮み 0.1 + 半径 0.32 - 取り付け y -0.15）。
+         トレッド 1.7 m は車体幅より広く、タイヤが横にはみ出して見える。 -->
+    <body name="car" pos="0 0.72 0" euler="0 0 0">
+      <geom type="box" size="0.7 0.25 2.1" mass="1400" rgba="0.85 0.2 0.15 1"/>
+      <vehicle ticks="10" brake="2500" drag="0.7">
+        <engine torque="300" idle="900" max="6500" inertia="0.25"/>
+        <clutch torque="500" engage="1300" full="2200"/>
+        <gearbox ratios="3.6 2.1 1.4 1 0.8" reverse="3.4" final="3.9" up="5800" down="2300"/>
+        <axle z="1.3" y="-0.15" track="1.7" steer="32" driven="false" brake="1">
+          <tire formula="tire_mf"/>
+        </axle>
+        <axle z="-1.3" y="-0.15" track="1.7" driven="true" brake="0.65" handbrake="1" diff="lsd" lock="250">
+          <tire formula="tire_mf"/>
+        </axle>
+      </vehicle>
+    </body>
+    <!-- ぶつかる物 -->
+    <body name="cone0" pos="0 0.3 -12">
+      <geom type="box" size="0.2 0.3 0.2" mass="2" rgba="1 0.6 0.1 1"/>
+    </body>
+    <body name="cone1" pos="2 0.3 -18">
+      <geom type="box" size="0.2 0.3 0.2" mass="2" rgba="1 0.6 0.1 1"/>
+    </body>
+    <body name="cone2" pos="-2 0.3 -24">
+      <geom type="box" size="0.2 0.3 0.2" mass="2" rgba="1 0.6 0.1 1"/>
+    </body>
+    <body name="wall" pos="0 0.5 -40">
+      <geom type="box" size="3 0.5 0.25" mass="200" rgba="0.5 0.5 0.55 1"/>
+    </body>
+  </worldbody>
+  <events>
+    <event name="pickup"/>
+  </events>
+</wizengine>

@@ -36,6 +36,8 @@
 #include "PortScan.h"
 #include "PhysicsControlComponent.h"
 #include "StreamControlComponent.h"
+#include "VehicleComponent.h"
+#include "PrefabComponent.h"
 #include "PhysicsTuning.h"
 #include "PhysicsWorld.h"
 #include "Renderer.h"
@@ -431,6 +433,14 @@ int run(int argc, char** argv) {
     // エディタモードの操作（配置・ジョイント・シーンの保存/読込）。物理の
     // レート系だけは PhysicsTuning を共有するので、それを渡しておく。
     scene.addComponent(std::make_unique<EditorComponent>(tuning));
+    // 車両（<vehicle> を持つオブジェクト）。ブラウザの WASD を受け、
+    // シミュレート中にサスとタイヤの力を車体へ掛ける。/stats へ計測値を
+    // 出すために生ポインタも持っておく（所有は Scene）。
+    auto vehicleOwner = std::make_unique<VehicleComponent>();
+    VehicleComponent* vehicleComp = vehicleOwner.get();
+    scene.addComponent(std::move(vehicleOwner));
+    // プレハブ（見た目の部品）の描画。車両の車輪姿勢は VehicleComponent から。
+    scene.addComponent(std::make_unique<PrefabComponent>(vehicleComp));
 
     PerfStats stats;
     stats.substeps.store(scene.substeps());
@@ -495,6 +505,13 @@ int run(int argc, char** argv) {
                 j["realtime"] = stats.realtime.load();
                 j["simTime"] = stats.simTime.load();
                 j["paused"] = tuning.paused.load();
+                // 車両の計測値（車両があるときだけ）。オーバーレイの
+                // 「car」欄がこれを出す。
+                if (const auto v = vehicleComp->snapshot(); v.present) {
+                    j["vehicle"] = {{"rpm", v.rpm},     {"gear", v.gear},
+                                    {"speed", v.speed}, {"clutch", v.clutch},
+                                    {"count", v.count}};
+                }
                 // エディタ / シミュレートのどちらで動いているか。ブラウザの
                 // 再生ボタンとタブの見た目がこれで決まる。
                 j["mode"] = wizengine::editor::modeName(scene.mode());

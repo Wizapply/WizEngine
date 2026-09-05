@@ -17,6 +17,7 @@ WizEngine のリポジトリ自体にサードパーティのコードは同梱�
 | [Blaze](https://bitbucket.org/blaze-lib/blaze) | BSD-3-Clause | サブモジュール `third_parties/blaze`（v3.8.2）。Chrono::Multicore のビルドに使用（ヘッダのみ） |
 | [Thrust](https://github.com/NVIDIA/thrust) | Apache-2.0 | サブモジュール `third_parties/thrust`（1.17.2、入れ子の cub を含む）。Chrono::Multicore のビルドに使用（ヘッダのみ） |
 | [CUB](https://github.com/NVIDIA/cub) | BSD-3-Clause | Thrust の入れ子サブモジュール（ヘッダのみ） |
+| [LuaJIT](https://luajit.org/) | MIT | サブモジュール `third_parties/luajit`（v2.1）。ノード式の実行エンジン。CMake が configure 時に静的ライブラリをビルドしてリンク（`-DWIZ_WITH_LUAJIT=OFF` で外せる） |
 
 - GStreamer は LGPL のため**動的リンクのまま**にしてください（本プロジェクトの
   既定構成は動的リンクです）。使用するプラグインによっては追加のライセンス

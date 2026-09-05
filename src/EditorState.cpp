@@ -271,6 +271,313 @@ bool EditorState::removeGraphWire(const std::string& asset, int from, int to) {
     return true;
 }
 
+// ---- 計算式アセット ---------------------------------------------------------
+namespace {
+// 型を名指ししない（FormulaAssetState は private）ようテンプレートで受ける。
+template <typename T>
+T* findFormula(std::vector<T>& list, const std::string& name) {
+    for (auto& a : list) {
+        if (a.desc.name == name) return &a;
+    }
+    return nullptr;
+}
+}  // namespace
+
+std::vector<wizengine::vehicle::FormulaGraphDesc> EditorState::formulaAssets() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    std::vector<wizengine::vehicle::FormulaGraphDesc> out;
+    out.reserve(formulas_.size());
+    for (const auto& a : formulas_) out.push_back(a.desc);
+    return out;
+}
+
+bool EditorState::hasFormulaAsset(const std::string& name) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (const auto& a : formulas_) {
+        if (a.desc.name == name) return true;
+    }
+    return false;
+}
+
+void EditorState::setFormulaAssets(
+    std::vector<wizengine::vehicle::FormulaGraphDesc> assets) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    formulas_.clear();
+    for (auto& d : assets) {
+        FormulaAssetState st;
+        for (const auto& n : d.nodes) {
+            if (n.id >= st.nextNodeId) st.nextNodeId = n.id + 1;
+        }
+        st.desc = std::move(d);
+        formulas_.push_back(std::move(st));
+    }
+    formulaVersion_.fetch_add(1);
+}
+
+bool EditorState::addFormulaAsset(wizengine::vehicle::FormulaGraphDesc graph) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (graph.name.empty() || findFormula(formulas_, graph.name) != nullptr) return false;
+    FormulaAssetState st;
+    for (const auto& n : graph.nodes) {
+        if (n.id >= st.nextNodeId) st.nextNodeId = n.id + 1;
+    }
+    st.desc = std::move(graph);
+    formulas_.push_back(std::move(st));
+    formulaVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::removeFormulaAsset(const std::string& name) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const std::size_t before = formulas_.size();
+    formulas_.erase(std::remove_if(formulas_.begin(), formulas_.end(),
+                                   [&name](const FormulaAssetState& a) {
+                                       return a.desc.name == name;
+                                   }),
+                    formulas_.end());
+    if (formulas_.size() == before) return false;
+    formulaVersion_.fetch_add(1);
+    return true;
+}
+
+int EditorState::addFormulaNode(const std::string& asset,
+                                wizengine::vehicle::FormulaNodeDesc node) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    FormulaAssetState* a = findFormula(formulas_, asset);
+    if (a == nullptr || !wizengine::vehicle::formulaKind(node.kind)) return -1;
+    node.id = a->nextNodeId++;
+    const int id = node.id;
+    a->desc.nodes.push_back(std::move(node));
+    formulaVersion_.fetch_add(1);
+    return id;
+}
+
+bool EditorState::updateFormulaNode(const std::string& asset, int id,
+                                    const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    FormulaAssetState* a = findFormula(formulas_, asset);
+    if (a == nullptr) return false;
+    for (auto& n : a->desc.nodes) {
+        if (n.id != id) continue;
+        wizengine::vehicle::FormulaNodeDesc next = wizengine::editor::clampFormulaNode(
+            wizengine::editor::formulaNodeFromJson(patch, n));
+        next.id = n.id;
+        next.kind = n.kind;  // 種類はポート数を決めるので変えさせない
+        n = next;
+        formulaVersion_.fetch_add(1);
+        return true;
+    }
+    return false;
+}
+
+bool EditorState::removeFormulaNode(const std::string& asset, int id) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    FormulaAssetState* a = findFormula(formulas_, asset);
+    if (a == nullptr) return false;
+    auto& nodes = a->desc.nodes;
+    const std::size_t before = nodes.size();
+    nodes.erase(std::remove_if(nodes.begin(), nodes.end(),
+                               [id](const wizengine::vehicle::FormulaNodeDesc& n) {
+                                   return n.id == id;
+                               }),
+                nodes.end());
+    if (nodes.size() == before) return false;
+    auto& wires = a->desc.wires;
+    wires.erase(std::remove_if(wires.begin(), wires.end(),
+                               [id](const wizengine::vehicle::FormulaWireDesc& w) {
+                                   return w.from == id || w.to == id;
+                               }),
+                wires.end());
+    formulaVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::addFormulaWire(const std::string& asset,
+                                 const wizengine::vehicle::FormulaWireDesc& w) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    FormulaAssetState* st = findFormula(formulas_, asset);
+    if (st == nullptr || w.from == w.to) return false;
+    const wizengine::vehicle::FormulaNodeDesc* a = nullptr;
+    const wizengine::vehicle::FormulaNodeDesc* b = nullptr;
+    for (const auto& n : st->desc.nodes) {
+        if (n.id == w.from) a = &n;
+        if (n.id == w.to) b = &n;
+    }
+    if (!a || !b) return false;
+    const auto* ak = wizengine::vehicle::formulaKind(a->kind);
+    const auto* bk = wizengine::vehicle::formulaKind(b->kind);
+    if (!ak || !bk) return false;
+    if (w.fromPort < 0 || w.fromPort >= ak->outputs || w.port < 0 || w.port >= bk->inputs) {
+        return false;
+    }
+    // 循環の検査: to から from へ辿り着けるなら、この線で輪になる。
+    {
+        std::vector<int> stack{w.to};
+        std::vector<int> seen;
+        while (!stack.empty()) {
+            const int cur = stack.back();
+            stack.pop_back();
+            if (cur == w.from) return false;
+            if (std::find(seen.begin(), seen.end(), cur) != seen.end()) continue;
+            seen.push_back(cur);
+            for (const auto& e : st->desc.wires) {
+                if (e.from == cur) stack.push_back(e.to);
+            }
+        }
+    }
+    auto& wires = st->desc.wires;
+    // 同じ入力ポートは 1 本だけ: 古い線は張り替える。
+    wires.erase(std::remove_if(wires.begin(), wires.end(),
+                               [&w](const wizengine::vehicle::FormulaWireDesc& e) {
+                                   return e.to == w.to && e.port == w.port;
+                               }),
+                wires.end());
+    wires.push_back(w);
+    formulaVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::removeFormulaWire(const std::string& asset,
+                                    const wizengine::vehicle::FormulaWireDesc& w) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    FormulaAssetState* st = findFormula(formulas_, asset);
+    if (st == nullptr) return false;
+    auto& wires = st->desc.wires;
+    const std::size_t before = wires.size();
+    wires.erase(std::remove_if(wires.begin(), wires.end(),
+                               [&w](const wizengine::vehicle::FormulaWireDesc& e) {
+                                   return e.from == w.from && e.fromPort == w.fromPort &&
+                                          e.to == w.to && e.port == w.port;
+                               }),
+                wires.end());
+    if (wires.size() == before) return false;
+    formulaVersion_.fetch_add(1);
+    return true;
+}
+
+// ---- プレハブ -----------------------------------------------------------------
+std::vector<wizengine::editor::PrefabDesc> EditorState::prefabAssets() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return prefabs_;
+}
+
+bool EditorState::hasPrefabAsset(const std::string& name) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (const auto& p : prefabs_) {
+        if (p.name == name) return true;
+    }
+    return false;
+}
+
+bool EditorState::prefabAsset(const std::string& name,
+                              wizengine::editor::PrefabDesc& out) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (const auto& p : prefabs_) {
+        if (p.name == name) {
+            out = p;
+            return true;
+        }
+    }
+    return false;
+}
+
+void EditorState::setPrefabAssets(std::vector<wizengine::editor::PrefabDesc> assets) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    prefabs_ = std::move(assets);
+    prefabVersion_.fetch_add(1);
+}
+
+bool EditorState::addPrefabAsset(wizengine::editor::PrefabDesc prefab) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (prefab.name.empty()) return false;
+    for (const auto& p : prefabs_) {
+        if (p.name == prefab.name) return false;
+    }
+    prefabs_.push_back(std::move(prefab));
+    prefabVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::removePrefabAsset(const std::string& name) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const std::size_t before = prefabs_.size();
+    prefabs_.erase(std::remove_if(prefabs_.begin(), prefabs_.end(),
+                                  [&name](const wizengine::editor::PrefabDesc& p) {
+                                      return p.name == name;
+                                  }),
+                   prefabs_.end());
+    if (prefabs_.size() == before) return false;
+    prefabVersion_.fetch_add(1);
+    return true;
+}
+
+namespace {
+wizengine::editor::PrefabDesc* findPrefab(std::vector<wizengine::editor::PrefabDesc>& list,
+                                          const std::string& name) {
+    for (auto& p : list) {
+        if (p.name == name) return &p;
+    }
+    return nullptr;
+}
+}  // namespace
+
+int EditorState::addPart(const std::string& prefab, wizengine::editor::PartDesc part) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    wizengine::editor::PrefabDesc* p = findPrefab(prefabs_, prefab);
+    if (!p || p->parts.size() >= 256) return -1;
+    p->parts.push_back(wizengine::editor::clampPart(std::move(part)));
+    prefabVersion_.fetch_add(1);
+    return int(p->parts.size()) - 1;
+}
+
+bool EditorState::updatePart(const std::string& prefab, int index,
+                             const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    wizengine::editor::PrefabDesc* p = findPrefab(prefabs_, prefab);
+    if (!p || index < 0 || std::size_t(index) >= p->parts.size()) return false;
+    p->parts[std::size_t(index)] = wizengine::editor::clampPart(
+        wizengine::editor::partFromJson(patch, p->parts[std::size_t(index)]));
+    prefabVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::setPartTransform(const std::string& prefab, int index,
+                                   const wizengine::editor::Vec3d* pos,
+                                   const wizengine::editor::Vec3d* rot,
+                                   const wizengine::editor::Vec3d* size) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    wizengine::editor::PrefabDesc* p = findPrefab(prefabs_, prefab);
+    if (!p || index < 0 || std::size_t(index) >= p->parts.size()) return false;
+    wizengine::editor::PartDesc& part = p->parts[std::size_t(index)];
+    if (pos) part.position = *pos;
+    if (rot) part.rotation = *rot;
+    if (size) part.size = *size;
+    part = wizengine::editor::clampPart(part);
+    prefabVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::removePart(const std::string& prefab, int index) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    wizengine::editor::PrefabDesc* p = findPrefab(prefabs_, prefab);
+    if (!p || index < 0 || std::size_t(index) >= p->parts.size()) return false;
+    p->parts.erase(p->parts.begin() + index);
+    prefabVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::partDesc(const std::string& prefab, int index,
+                           wizengine::editor::PartDesc& out) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (const auto& p : prefabs_) {
+        if (p.name != prefab) continue;
+        if (index < 0 || std::size_t(index) >= p.parts.size()) return false;
+        out = p.parts[std::size_t(index)];
+        return true;
+    }
+    return false;
+}
+
 void EditorState::noteNodeFired(const std::string& asset, int id) {
     std::lock_guard<std::mutex> lk(mutex_);
     ++fireCounts_[{asset, id}];

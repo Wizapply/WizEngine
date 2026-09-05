@@ -1,5 +1,8 @@
 #include "SceneDocument.h"
 
+#include "vehicle/FormulaXml.h"
+#include "vehicle/VehicleXml.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -268,6 +271,14 @@ xml::Element bodyElement(const BodyDesc& b) {
         ev.set("name", name);
         body.append(std::move(ev));
     }
+    // 車両の設計値（WizEngine の拡張。書式は vehicle/VehicleXml.h）。
+    if (b.hasVehicle) body.append(vehicle::vehicleElement(b.vehicle));
+    // 付いているプレハブ（<asset> の <prefab> を名前で参照）。
+    if (!b.prefab.empty()) {
+        xml::Element pf("prefab");
+        pf.set("name", b.prefab);
+        body.append(std::move(pf));
+    }
     return body;
 }
 
@@ -300,6 +311,29 @@ BodyDesc bodyFromXml(const xml::Element& e,
                      "\"> is attached twice - ignored");
             } else {
                 b.events.push_back(name);
+            }
+        } else if (c.name() == "prefab") {
+            // 付けるプレハブの名前。実在するかは fromXml が一覧と突き合わせる。
+            const std::string name = sanitizeEventName(c.attr("name"));
+            if (name.empty()) {
+                warn("<body name=\"" + label + "\">: <prefab> needs name=\"...\" - ignored");
+            } else if (!b.prefab.empty()) {
+                warn("<body name=\"" + label + "\">: extra <prefab> elements are ignored");
+            } else {
+                b.prefab = name;
+            }
+        } else if (c.name() == "vehicle") {
+            // 車両。2 個目以降は警告して無視（1 体に 1 台）。
+            if (b.hasVehicle) {
+                warn("<body name=\"" + label +
+                     "\">: extra <vehicle> elements are ignored");
+            } else {
+                std::vector<std::string> vw;
+                b.vehicle = vehicle::vehicleFromXml(c, &vw);
+                b.hasVehicle = true;
+                for (const auto& m : vw) {
+                    warn("<body name=\"" + label + "\"> " + m);
+                }
             }
         } else if (c.name() == "body") {
             warn("<body name=\"" + label + "\">: nested <body> is not "
@@ -620,6 +654,59 @@ EventAssetDesc eventAssetFromXml(const xml::Element& e,
     return asset;
 }
 
+// ---- プレハブ（書き出しと読み込みは隣り合わせ）-----------------------------
+xml::Element partElement(const PartDesc& p) {
+    xml::Element e("part");
+    if (!p.name.empty()) e.set("name", p.name);
+    e.set("type", partKindName(p.kind));
+    if (p.kind == PartKind::Mesh && !p.mesh.empty()) e.set("mesh", p.mesh);
+    setVec3(e, "pos", p.position);
+    setVec3(e, "euler", p.rotation);
+    setVec3(e, "size", p.size);
+    setColor(e, "rgba", p.color);
+    if (!p.socket.empty()) e.set("socket", p.socket);
+    return e;
+}
+PartDesc partFromXml(const xml::Element& e, const std::vector<MeshAssetDesc>& meshes,
+                     const std::string& label, Warn& warn) {
+    PartDesc p;
+    p.name = e.attr("name");
+    if (e.has("type") &&
+        unknownName(partKindFromName, e.attr("type"), PartKind::Box, PartKind::Sphere)) {
+        warn(label + ": <part type=\"" + e.attr("type") + "\"> is unknown - reading as box");
+    }
+    p.kind = partKindFromName(e.attr("type", "box"), p.kind);
+    p.mesh = e.attr("mesh");
+    if (p.kind == PartKind::Mesh) {
+        bool found = false;
+        for (const auto& m : meshes) found = found || m.name == p.mesh;
+        if (!found) {
+            warn(label + ": <part mesh=\"" + p.mesh +
+                 "\"> is not declared in <asset> - drawing a sphere");
+        }
+    }
+    p.position = getVec3(e, "pos", p.position);
+    p.rotation = getVec3(e, "euler", p.rotation);
+    p.size = getVec3(e, "size", p.size);
+    p.color = getColor(e, "rgba", p.color);
+    p.socket = e.attr("socket");
+    {
+        int axle = 0, side = 0;
+        if (!p.socket.empty() && !parseWheelSocket(p.socket, axle, side)) {
+            warn(label + ": <part socket=\"" + p.socket +
+                 "\"> is unknown (use \"wheel:<axle>:<L|R>\") - fixed to the body");
+            p.socket.clear();
+        }
+    }
+    return clampPart(p);
+}
+xml::Element prefabElement(const PrefabDesc& d) {
+    xml::Element e("prefab");
+    e.set("name", d.name);
+    for (const auto& p : d.parts) e.append(partElement(p));
+    return e;
+}
+
 // イベントアセットを書き出す（<asset> の中）。
 xml::Element eventAssetElement(const EventAssetDesc& a) {
     xml::Element e("event");
@@ -644,7 +731,8 @@ xml::Element toXml(const SceneDocument& doc) {
 
     // <asset>: メッシュ（glTF）とイベントアセット（ノードの中身）。どちらも
     // 「名前で参照される素材」なので MJCF と同じくこの節にまとめる。
-    if (!doc.meshes.empty() || !doc.eventAssets.empty()) {
+    if (!doc.meshes.empty() || !doc.eventAssets.empty() || !doc.formulas.empty() ||
+        !doc.prefabs.empty()) {
         xml::Element asset("asset");
         for (const auto& m : doc.meshes) {
             xml::Element e("mesh");
@@ -656,6 +744,8 @@ xml::Element toXml(const SceneDocument& doc) {
         for (const auto& a : doc.eventAssets) {
             asset.append(eventAssetElement(a));
         }
+        for (const auto& f : doc.formulas) asset.append(vehicle::formulaElement(f));
+        for (const auto& pf : doc.prefabs) asset.append(prefabElement(pf));
         root.append(std::move(asset));
     }
 
@@ -737,7 +827,30 @@ SceneDocument fromXml(const xml::Element& root,
         // <event>（イベントアセット）はここでは名前だけ見て、中身は
         // worldbody を読んだあとで取り込む（ノードの対象番号をオブジェクト
         // 一覧と突き合わせて検証するため）。
-        warnUnknownChildren(*asset, {"mesh", "event"}, "<asset>", warn);
+        warnUnknownChildren(*asset, {"mesh", "event", "formula", "prefab"}, "<asset>", warn);
+        // 計算式アセット。名前はイベントと同じ規則（英数字と _ -）。
+        for (const xml::Element* fe : asset->all("formula")) {
+            std::vector<std::string> fw;
+            vehicle::FormulaGraphDesc g = vehicle::formulaFromXml(*fe, &fw);
+            for (const auto& m : fw) warn("<asset>: " + m);
+            const std::string name = sanitizeEventName(g.name);
+            if (name.empty()) {
+                warn("<asset>: <formula> needs name=\"...\" (letters, digits, "
+                     "_ and - only) - ignored");
+                continue;
+            }
+            bool dup = false;
+            for (const auto& prev : doc.formulas) {
+                if (prev.name == name) dup = true;
+            }
+            if (dup) {
+                warn("<asset>: <formula name=\"" + name +
+                     "\"> duplicates an earlier one - ignored");
+                continue;
+            }
+            g.name = name;
+            doc.formulas.push_back(std::move(g));
+        }
         for (const xml::Element* me : asset->all("mesh")) {
             MeshAssetDesc m;
             m.name = me->attr("name");
@@ -765,6 +878,30 @@ SceneDocument fromXml(const xml::Element& root,
                 continue;
             }
             doc.meshes.push_back(std::move(m));
+        }
+        // プレハブ。名前の規則はイベントと同じ。メッシュ部品の参照は
+        // 上で読み終えたメッシュ一覧と突き合わせる。
+        for (const xml::Element* pe : asset->all("prefab")) {
+            const std::string name = sanitizeEventName(pe->attr("name"));
+            if (name.empty()) {
+                warn("<asset>: <prefab> needs name=\"...\" (letters, digits, "
+                     "_ and - only) - ignored");
+                continue;
+            }
+            bool dup = false;
+            for (const auto& prev : doc.prefabs) dup = dup || prev.name == name;
+            if (dup) {
+                warn("<asset>: <prefab name=\"" + name + "\"> duplicates an earlier one - ignored");
+                continue;
+            }
+            const std::string label = "<prefab name=\"" + name + "\">";
+            warnUnknownChildren(*pe, {"part"}, label.c_str(), warn);
+            PrefabDesc d;
+            d.name = name;
+            for (const xml::Element* part : pe->all("part")) {
+                d.parts.push_back(partFromXml(*part, doc.meshes, label, warn));
+            }
+            doc.prefabs.push_back(std::move(d));
         }
     }
 
@@ -843,6 +980,36 @@ SceneDocument fromXml(const xml::Element& root,
         warnUnknownChildren(*eq, {"joint"}, "<equality>", warn);
         for (const xml::Element* j : eq->all("joint")) {
             doc.joints.push_back(jointFromXml(*j, doc.bodies, warn));
+        }
+    }
+
+    // ---- プレハブの参照 ----------------------------------------------------
+    for (auto& b : doc.bodies) {
+        if (b.prefab.empty()) continue;
+        bool found = false;
+        for (const auto& pf : doc.prefabs) found = found || pf.name == b.prefab;
+        if (!found) {
+            warn("<body name=\"" + (b.name.empty() ? std::string("(unnamed)") : b.name) +
+                 "\">: <prefab name=\"" + b.prefab +
+                 "\"> is not declared in <asset> - ignored");
+            b.prefab.clear();
+        }
+    }
+
+    // ---- 車両のタイヤ式の参照（<asset> の <formula> か <vehicle> 内）------
+    for (const auto& b : doc.bodies) {
+        if (!b.hasVehicle) continue;
+        for (const auto& a : b.vehicle.axles) {
+            if (a.tire.formula.empty()) continue;
+            bool found = false;
+            for (const auto& f : doc.formulas) found = found || f.name == a.tire.formula;
+            for (const auto& f : b.vehicle.formulas) found = found || f.name == a.tire.formula;
+            if (!found) {
+                warn("<body name=\"" + (b.name.empty() ? std::string("(unnamed)") : b.name) +
+                     "\">: <tire formula=\"" + a.tire.formula +
+                     "\"> names a <formula> that does not exist - using the built-in "
+                     "tire model");
+            }
         }
     }
 

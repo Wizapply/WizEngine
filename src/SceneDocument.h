@@ -25,6 +25,12 @@
 //     <asset>
 //       <mesh name="apple" file="apple2.glb" scale="1"/>
 //       <event name="pickup"> <node .../> <wire from to/> </event>
+//       <formula name="tire_mf"> <node .../> <wire .../> </formula>
+//                                    ... 計算式アセット（vehicle/FormulaXml.h）。
+//                                        <tire formula="tire_mf"> が参照する
+//       <prefab name="sedan"> <part name type pos euler size rgba socket/> </prefab>
+//                                    ... 見た目の部品の集合（EditorTypes.h の
+//                                        PrefabDesc）。<body> の <prefab name/> で付ける
 //     </asset>
 //     <worldbody>
 //       <environment hdr="studio.hdr" intensity="30000"/>
@@ -33,6 +39,8 @@
 //       <body name pos euler fixed>
 //         <geom type size mass rgba/>
 //         <event name="blink"/>            ... このオブジェクトに付ける
+//         <vehicle ...>                    ... 車両（vehicle/VehicleXml.h）
+//         <prefab name="sedan"/>           ... 付けるプレハブ（見た目の部品）
 //       </body>
 //     </worldbody>
 //     <equality> <joint type body1 body2 anchor axis/> </equality>
@@ -103,6 +111,11 @@ struct SceneDocument {
     // （ルートの <events>）。オブジェクトに付いているぶんは BodyDesc::events。
     std::vector<EventAssetDesc> eventAssets;
     std::vector<std::string> worldEvents;
+    // 計算式アセット（<asset> の <formula>）。車両のタイヤが名前で参照する。
+    std::vector<wizengine::vehicle::FormulaGraphDesc> formulas;
+    // プレハブ（<asset> の <prefab>）。<body> の <prefab name/> が名前で参照する。
+    // 部品の size は BodyDesc と同じ「全長」（geom の半寸法とは違う）。
+    std::vector<PrefabDesc> prefabs;
     // 「節が無い」と「空の節」の区別。ライト / カメラ / イベントの節を持た
     // ない文書（旧 v1 の保存や手書きの最小 XML）は初期構成へ戻す意味に
     // なるので、空配列と同じにはできない。

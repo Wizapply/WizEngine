@@ -363,8 +363,118 @@ void Renderer::ensureSphereMesh() {
     sphereIndexCount_ = uint32_t(indexCount);
 }
 
+void Renderer::ensureCylinderMesh() {
+    if (cylinderVb_) return;
+
+    // 軸が X、半径 0.5、長さ 1 の単位円柱（x = -0.5 .. +0.5）。側面は
+    // 2 つのリング、両端は中心 + リングの扇で塞ぐ。法線は側面が放射方向、
+    // 蓋が ±X なので、蓋とリングの頂点は側面と共有しない（角が丸まらない）。
+    constexpr int sectors = kSphereSectors;
+    const std::size_t ring = std::size_t(sectors + 1);
+    // 側面 2 リング + 蓋 2 枚（中心 1 + リング）。
+    const std::size_t vertexCount = ring * 2 + (ring + 1) * 2;
+    const std::size_t indexCount =
+        std::size_t(sectors) * 6 + std::size_t(sectors) * 3 * 2;
+
+    auto* positions = new float3[vertexCount];
+    std::vector<float3> normals(vertexCount);
+    std::size_t v = 0;
+    for (int side = 0; side < 2; ++side) {
+        const float x = side == 0 ? -0.5f : 0.5f;
+        for (int s = 0; s <= sectors; ++s) {
+            const float phi = 2.0f * kPi * float(s) / float(sectors);
+            const float3 n{0.0f, std::cos(phi), std::sin(phi)};
+            normals[v] = n;
+            positions[v] = float3{x, n.y * 0.5f, n.z * 0.5f};
+            ++v;
+        }
+    }
+    const std::size_t capStart[2] = {v, v + ring + 1};
+    for (int side = 0; side < 2; ++side) {
+        const float x = side == 0 ? -0.5f : 0.5f;
+        const float3 n{x < 0.0f ? -1.0f : 1.0f, 0.0f, 0.0f};
+        normals[v] = n;
+        positions[v] = float3{x, 0.0f, 0.0f};
+        ++v;
+        for (int s = 0; s <= sectors; ++s) {
+            const float phi = 2.0f * kPi * float(s) / float(sectors);
+            normals[v] = n;
+            positions[v] = float3{x, 0.5f * std::cos(phi), 0.5f * std::sin(phi)};
+            ++v;
+        }
+    }
+
+    auto* tangents = new quatf[vertexCount];
+    auto* orient = filament::geometry::SurfaceOrientation::Builder()
+                       .vertexCount(vertexCount)
+                       .normals(normals.data())
+                       .build();
+    orient->getQuats(tangents, vertexCount);
+    delete orient;
+
+    auto* indices = new uint16_t[indexCount];
+    std::size_t k = 0;
+    for (int s = 0; s < sectors; ++s) {
+        // 側面: 左リング a, a+1 と右リング b, b+1。外向き（放射方向）が表に
+        // なる巻き方 (a, a+1, b) / (a+1, b+1, b)。
+        const uint16_t a = uint16_t(s);
+        const uint16_t b = uint16_t(ring + std::size_t(s));
+        indices[k++] = a;
+        indices[k++] = uint16_t(a + 1);
+        indices[k++] = b;
+        indices[k++] = uint16_t(a + 1);
+        indices[k++] = uint16_t(b + 1);
+        indices[k++] = b;
+    }
+    for (int side = 0; side < 2; ++side) {
+        const uint16_t c = uint16_t(capStart[side]);
+        for (int s = 0; s < sectors; ++s) {
+            const uint16_t p = uint16_t(capStart[side] + 1 + std::size_t(s));
+            indices[k++] = c;
+            if (side == 0) {  // -X の蓋は外から見て逆回り
+                indices[k++] = uint16_t(p + 1);
+                indices[k++] = p;
+            } else {
+                indices[k++] = p;
+                indices[k++] = uint16_t(p + 1);
+            }
+        }
+    }
+
+    cylinderVb_ = VertexBuffer::Builder()
+                      .vertexCount(uint32_t(vertexCount))
+                      .bufferCount(2)
+                      .attribute(VertexAttribute::POSITION, 0,
+                                 VertexBuffer::AttributeType::FLOAT3)
+                      .attribute(VertexAttribute::TANGENTS, 1,
+                                 VertexBuffer::AttributeType::FLOAT4)
+                      .build(*engine_);
+    cylinderVb_->setBufferAt(
+        *engine_, 0,
+        VertexBuffer::BufferDescriptor(
+            positions, sizeof(float3) * vertexCount,
+            [](void* p, size_t, void*) { delete[] static_cast<float3*>(p); }));
+    cylinderVb_->setBufferAt(
+        *engine_, 1,
+        VertexBuffer::BufferDescriptor(
+            tangents, sizeof(quatf) * vertexCount,
+            [](void* p, size_t, void*) { delete[] static_cast<quatf*>(p); }));
+
+    cylinderIb_ = IndexBuffer::Builder()
+                      .indexCount(uint32_t(indexCount))
+                      .bufferType(IndexBuffer::IndexType::USHORT)
+                      .build(*engine_);
+    cylinderIb_->setBuffer(
+        *engine_,
+        IndexBuffer::BufferDescriptor(
+            indices, sizeof(uint16_t) * indexCount,
+            [](void* p, size_t, void*) { delete[] static_cast<uint16_t*>(p); }));
+    cylinderIndexCount_ = uint32_t(indexCount);
+}
+
 std::size_t Renderer::addShape(ShapeMesh mesh) {
     if (mesh == ShapeMesh::Sphere) ensureSphereMesh();
+    if (mesh == ShapeMesh::Cylinder) ensureCylinderMesh();
 
     // 空きスロットがあれば再利用。エディタで置いては消してを繰り返しても
     // エンティティ番号が無限に伸びない。
@@ -382,14 +492,24 @@ std::size_t Renderer::addShape(ShapeMesh mesh) {
     slot.highlight = -1;
     slot.used = true;
 
-    const bool sphere = (mesh == ShapeMesh::Sphere);
+    VertexBuffer* meshVb = vb_;
+    IndexBuffer* meshIb = ib_;
+    uint32_t meshIndices = 36;
+    if (mesh == ShapeMesh::Sphere) {
+        meshVb = sphereVb_;
+        meshIb = sphereIb_;
+        meshIndices = sphereIndexCount_;
+    } else if (mesh == ShapeMesh::Cylinder) {
+        meshVb = cylinderVb_;
+        meshIb = cylinderIb_;
+        meshIndices = cylinderIndexCount_;
+    }
     slot.entity = EntityManager::get().create();
     RenderableManager::Builder(1)
         .boundingBox({{0, 0, 0}, {1, 1, 1}})
         .material(0, matInstance_)
-        .geometry(0, RenderableManager::PrimitiveType::TRIANGLES,
-                  sphere ? sphereVb_ : vb_, sphere ? sphereIb_ : ib_, 0,
-                  sphere ? sphereIndexCount_ : 36)
+        .geometry(0, RenderableManager::PrimitiveType::TRIANGLES, meshVb, meshIb,
+                  0, meshIndices)
         .culling(true)  // frustum-cull off-screen boxes (matters at high counts)
         .castShadows(true)
         .receiveShadows(true)
@@ -1215,6 +1335,8 @@ Renderer::~Renderer() {
     engine_->destroy(groundIb_);
     if (sphereVb_) engine_->destroy(sphereVb_);
     if (sphereIb_) engine_->destroy(sphereIb_);
+    if (cylinderVb_) engine_->destroy(cylinderVb_);
+    if (cylinderIb_) engine_->destroy(cylinderIb_);
     for (auto& slot : views_) {
         engine_->destroyCameraComponent(slot.cameraEntity);
         engine_->destroy(slot.cameraEntity);

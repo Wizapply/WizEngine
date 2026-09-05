@@ -8,6 +8,7 @@
 #include "Scene.h"
 #include "SceneDocument.h"
 #include "scene_math.h"
+#include "vehicle/Formula.h"
 
 namespace ed = wizengine::editor;
 
@@ -69,6 +70,19 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
     // ---- ライト / カメラの選択（サイドバーのクリック）----------------------
     // シーンは書き換えないが、エディタ選択はエディタモード×エディタカメラ
     // 専用の状態なので同じ縛りにする。選択の実体は EditorState の atomic。
+    // プレハブ編集モードの部品の選択（Inspector の一覧のクリック）。
+    if (cmd == "select.part") {
+        if (!isEditorCam || !state.isEditor()) return true;
+        const int index = msg.value("index", -1);
+        if (index < 0 || state.prefabEditObject() < 0) {
+            if (state.selKind() == EditorState::SelKind::Part) state.clearSel();
+            return true;
+        }
+        scene.boxController(camIndex).setSelected(BoxController::kNone);
+        state.setSel(EditorState::SelKind::Part, index);
+        return true;
+    }
+
     if (cmd == "select.light" || cmd == "select.camera") {
         if (!isEditorCam || !state.isEditor()) return true;
         const int index = msg.value("index", -1);
@@ -345,6 +359,155 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         op.args = {{"from", ed::jsonInt(msg, "from", -1)},
                    {"to", ed::jsonInt(msg, "to", -1)},
                    {"asset", eventAssetName(msg)}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- 計算式アセット（ノード式）------------------------------------------
+    // イベントと同じ流儀。名前の規則も同じ（英数字と _ -）。ノードの種類は
+    // 語彙表（vehicle/Formula.h）に無ければ積まない。
+    if (what == "formula.add" || what == "formula.remove") {
+        const std::string name = ed::sanitizeEventName(
+            (msg.contains("name") && msg["name"].is_string())
+                ? msg["name"].get<std::string>()
+                : std::string());
+        if (name.empty()) {
+            state.setStatus("計算式の名前は英数字と _ - だけです");
+            return true;
+        }
+        EditorState::Op op;
+        op.kind = what;
+        op.args = {{"name", name}};
+        // template = "tire": 既定のタイヤ式（Magic Formula）から始める。
+        if (msg.contains("template") && msg["template"].is_string()) {
+            op.args["template"] = msg["template"].get<std::string>();
+        }
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    if (what == "fnode.add" || what == "fnode.set" || what == "fnode.remove") {
+        nlohmann::json args;
+        args["asset"] = eventAssetName(msg);
+        args["id"] = ed::jsonInt(msg, "id", -1);
+        if (what == "fnode.add") {
+            const std::string type =
+                (msg.contains("type") && msg["type"].is_string())
+                    ? msg["type"].get<std::string>()
+                    : std::string();
+            if (!wizengine::vehicle::formulaKind(type)) {
+                state.setStatus("知らないノードの種類です: " + type);
+                return true;
+            }
+            args["type"] = type;
+        }
+        for (const char* key : {"x", "y", "name", "params", "value"}) {
+            if (msg.contains(key)) args[key] = msg[key];
+        }
+        EditorState::Op op;
+        op.kind = what;
+        op.args = std::move(args);
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    if (what == "fwire.add" || what == "fwire.remove") {
+        EditorState::Op op;
+        op.kind = what;
+        op.args = {{"asset", eventAssetName(msg)},
+                   {"from", ed::jsonInt(msg, "from", -1)},
+                   {"fromPort", ed::jsonInt(msg, "fromPort", 0)},
+                   {"to", ed::jsonInt(msg, "to", -1)},
+                   {"port", ed::jsonInt(msg, "port", 0)}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- プレハブ（右クリック「プレハブを編集」と Inspector の部品一覧）----
+    if (what == "prefab.open" || what == "prefab.attach" || what == "prefab.detach") {
+        int index = ed::jsonInt(msg, "index", -2);
+        if (index == -2) index = selectionOf(scene, camIndex);
+        if (index < 0) return true;
+        EditorState::Op op;
+        op.kind = what;
+        op.args = {{"index", index}};
+        if (what == "prefab.attach") {
+            op.args["name"] = ed::sanitizeEventName(
+                (msg.contains("name") && msg["name"].is_string())
+                    ? msg["name"].get<std::string>()
+                    : std::string());
+        }
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+    if (what == "prefab.close") {
+        EditorState::Op op;
+        op.kind = what;
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+    if (what == "prefab.add" || what == "prefab.remove") {
+        const std::string name = ed::sanitizeEventName(
+            (msg.contains("name") && msg["name"].is_string())
+                ? msg["name"].get<std::string>()
+                : std::string());
+        if (name.empty()) {
+            state.setStatus("プレハブの名前は英数字と _ - だけです");
+            return true;
+        }
+        EditorState::Op op;
+        op.kind = what;
+        op.args = {{"name", name}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+    if (what == "part.add" || what == "part.set" || what == "part.remove") {
+        nlohmann::json args;
+        if (msg.contains("prefab") && msg["prefab"].is_string()) {
+            args["prefab"] = ed::sanitizeEventName(msg["prefab"].get<std::string>());
+        }
+        args["part"] = ed::jsonInt(msg, "part", -1);
+        for (const char* key : {"name", "type", "mesh", "position", "rotation", "size",
+                                "color", "socket"}) {
+            if (msg.contains(key)) args[key] = msg[key];
+        }
+        EditorState::Op op;
+        op.kind = what;
+        op.args = std::move(args);
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- 車両（Inspector の「車両」節）--------------------------------------
+    // vehicle.enable: そのオブジェクトを車両にする / やめる。
+    // vehicle.tire: 軸（-1 = 全軸）のタイヤに計算式を付ける（空 = 組み込み）。
+    // 対象は index（省略時は選択中のオブジェクト）。
+    if (what == "vehicle.enable" || what == "vehicle.tire") {
+        int index = ed::jsonInt(msg, "index", -2);
+        if (index == -2) index = selectionOf(scene, camIndex);
+        if (index < 0) return true;
+        EditorState::Op op;
+        op.kind = what;
+        op.args = {{"index", index}};
+        if (what == "vehicle.enable") {
+            op.args["on"] = msg.contains("on") && msg["on"].is_boolean()
+                                ? msg["on"].get<bool>()
+                                : true;
+        } else {
+            op.args["axle"] = ed::jsonInt(msg, "axle", -1);
+            op.args["formula"] = ed::sanitizeEventName(
+                (msg.contains("formula") && msg["formula"].is_string())
+                    ? msg["formula"].get<std::string>()
+                    : std::string());
+        }
         op.camera = camIndex;
         state.push(std::move(op));
         return true;
