@@ -282,8 +282,11 @@ private:
     // メッシュの凸包（最初に使うときに読み込む）。nullptr = 読めない。
     const std::vector<chrono::ChVector3d>* meshHull(int meshIndex);
     // 設計値から Chrono のボディを 1 個（createObject / rebuildBody 共通）。
-    std::size_t createBody(const wizengine::editor::BodyDesc& desc,
-                           int meshIndex);
+    // ソフトボディ（desc.hasSoft）なら粒子の格子を作り、その設計図を lattice
+    // へ返す（剛体なら nullptr）。戻り値は physId（ソフトなら代表番号）。
+    std::size_t createBody(
+        const wizengine::editor::BodyDesc& desc, int meshIndex,
+        std::shared_ptr<const wizengine::softlattice::Lattice>& lattice);
     void destroyObject(std::size_t index);
     // 形・大きさ・質量が変わったオブジェクトの Chrono ボディを作り直す。
     // physDirty が立っているものだけが対象。
@@ -385,6 +388,12 @@ private:
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る
     std::mutex poseMutex_;
     std::vector<BodyTransform> latestPoses_;  // one per box, in box order
+    // ソフトボディの粒子位置（3 個で 1 粒子、オブジェクト番号ごと。剛体は
+    // 空）。latestPoses_ と同じく snapshot() が書き、RENDER スレッドが
+    // 表面メッシュを組むのに読む。poseMutex_ の下。
+    std::vector<std::vector<float>> latestSoft_;
+    // RENDER スレッド専用の作業領域（毎フレームの再確保を避ける）。
+    std::vector<float> softVerts_, softNormals_;
 
     // ---- イベントグラフの実行状態（PHYSICS スレッド専用）------------------
     // グラフ本体は EditorState が持ち、ここにあるのは実行のためのキャッシュと

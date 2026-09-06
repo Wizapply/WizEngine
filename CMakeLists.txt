@@ -298,7 +298,8 @@ set(WIZ_SCENE_SOURCES
     src/scene/Scene.cpp
     src/scene/SceneEdit.cpp
     src/scene/SceneEvents.cpp
-    src/scene/SceneSerialize.cpp)
+    src/scene/SceneSerialize.cpp
+    src/scene/SoftLattice.cpp)
 set(WIZ_COMPONENT_SOURCES
     src/components/EditorComponent.cpp
     src/components/GizmoComponent.cpp
@@ -309,6 +310,7 @@ set(WIZ_VEHICLE_SOURCES
     src/vehicle/FormulaXml.cpp
     src/vehicle/LuaFormula.cpp
     src/vehicle/Powertrain.cpp
+    src/vehicle/SoftTire.cpp
     src/vehicle/TireFormula.cpp
     src/vehicle/VehicleModel.cpp
     src/vehicle/VehicleTypes.cpp
@@ -549,8 +551,9 @@ endif()
 # configure できる（tests/vehicle/CMakeLists.txt 参照）。本体と一緒に回すなら
 #   cmake -B build -DWIZ_BUILD_TESTS=ON && cmake --build build && ctest --test-dir build
 # ---------------------------------------------------------------------------
-option(WIZ_BUILD_TESTS "Build the vehicle unit test alongside the engine" OFF)
+option(WIZ_BUILD_TESTS "Build the unit tests (vehicle, soft body) alongside the engine" OFF)
 if(WIZ_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests/vehicle)
+    add_subdirectory(tests/softbody)
 endif()

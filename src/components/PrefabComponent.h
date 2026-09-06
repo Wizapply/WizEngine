@@ -3,11 +3,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "document/EditorTypes.h"
 #include "scene/SceneComponent.h"
+#include "vehicle/SoftTire.h"
 
 class VehicleComponent;
 
@@ -33,6 +35,12 @@ private:
     struct Slot {
         std::size_t id = 0;
         bool model = false;  // glTF 実体（true）か形状スロット（false）か
+        // ソフトタイヤ（<tire soft> の車輪に付いた円柱の部品）: 形状スロット
+        // だが自前の変形メッシュ（Renderer::addSoftShape）で、頂点は毎フレーム
+        // VehicleComponent のスナップショット（WheelLocalPose::softMesh）から組む。
+        bool soft = false;
+        std::shared_ptr<const wizengine::vehicle::SoftTireTopology> topology;
+        double softRadius = 0.0;
     };
     struct Instance {
         std::string key;  // 何を描いているか（プレハブ名 + 版、または組み込みの寸法）
@@ -45,4 +53,6 @@ private:
     // プレハブアセットのキャッシュ（版が変わったときだけ取り直す）。
     std::uint64_t cachedVersion_ = ~std::uint64_t(0);
     std::vector<wizengine::editor::PrefabDesc> cache_;
+    // ソフトタイヤの頂点を組む作業領域（毎フレームの再確保を避ける）。
+    std::vector<float> softVerts_, softNormals_, softRest_;
 };

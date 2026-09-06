@@ -198,6 +198,46 @@ inline bool parseWheelSocket(const std::string& socket, int& axle, int& side) {
     return true;
 }
 
+// ---- ソフトボディ -----------------------------------------------------------
+// 質点ばね方式のソフトボディ（<body> の中の <soft> 節）。hasSoft の
+// オブジェクトは剛体 1 個ではなく、形（箱 / 球）を 1 軸 resolution 個の
+// 粒子（Chrono の小さな剛体）で埋め、隣どうしをばねで結んだ集合になる。
+// 質量は粒子へ等分、当たり判定は粒子の球、見た目は表面粒子を結んだ
+// 変形メッシュ。格子の作り方は scene/SoftLattice.h、ばねの解き方は
+// PhysicsWorld::addSoftBody。
+struct SoftDesc {
+    int resolution = 4;          // 1 軸あたりの粒子数（2〜8。粒子は n^3 個）
+    double stiffness = 4000.0;   // 硬さ = 弾性率相当 (Pa)。k = stiffness × 格子間隔
+    double damping = 0.3;        // ばねの減衰比（1 = 臨界減衰）
+    double shear = 1.0;          // せん断ばね（対角線）の倍率。0 で無し
+    double bend = 0.5;           // 曲げばね（1 個おき）の倍率。0 で無し
+    int iterations = 2;          // 1 ステップあたりのばね反復（ガウス・ザイデル）
+};
+
+// ソフトボディの常識的な範囲。粒子数は n^3 で効くので上限を低めに置く
+// （8 で 512 粒子）。
+inline SoftDesc clampSoft(SoftDesc s) {
+    auto cl = [](double v, double lo, double hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
+    };
+    if (s.resolution < 2) s.resolution = 2;
+    if (s.resolution > 8) s.resolution = 8;
+    s.stiffness = cl(s.stiffness, 1.0, 1.0e7);
+    s.damping = cl(s.damping, 0.0, 5.0);
+    s.shear = cl(s.shear, 0.0, 4.0);
+    s.bend = cl(s.bend, 0.0, 4.0);
+    if (s.iterations < 1) s.iterations = 1;
+    if (s.iterations > 10) s.iterations = 10;
+    return s;
+}
+
+inline bool operator==(const SoftDesc& a, const SoftDesc& b) {
+    return a.resolution == b.resolution && a.stiffness == b.stiffness &&
+           a.damping == b.damping && a.shear == b.shear && a.bend == b.bend &&
+           a.iterations == b.iterations;
+}
+inline bool operator!=(const SoftDesc& a, const SoftDesc& b) { return !(a == b); }
+
 struct BodyDesc {
     std::string name;
     ShapeKind shape = ShapeKind::Box;
@@ -228,6 +268,11 @@ struct BodyDesc {
     // 付いているプレハブ（<asset> の <prefab> の名前）。空 = 無し（車両なら
     // 組み込みのクルマの見た目、それ以外は形状そのもの）。
     std::string prefab;
+    // ソフトボディ（<body> の中の <soft> 節）。hasSoft なら剛体ではなく
+    // 粒子の格子として作られる（上の SoftDesc）。形と大きさ（size）は
+    // 格子の外形、mass は全粒子の合計。
+    bool hasSoft = false;
+    SoftDesc soft;
 
     // 形状から体積を出す。密度 = mass / volume を Chrono に渡すので、
     // 形や大きさを変えても質量は指定どおりに保たれる。見た目ではなく
@@ -588,6 +633,32 @@ inline nlohmann::json toJson(const MeshAssetDesc& m) {
     return j;
 }
 
+// ソフトボディの設定。enabled = BodyDesc::hasSoft をここに同居させる
+// （ブラウザの Inspector は 1 節でまとめて送るため）。
+inline nlohmann::json toJson(const SoftDesc& s, bool enabled) {
+    nlohmann::json j;
+    j["enabled"] = enabled;
+    j["res"] = s.resolution;
+    j["stiffness"] = s.stiffness;
+    j["damping"] = s.damping;
+    j["shear"] = s.shear;
+    j["bend"] = s.bend;
+    j["iterations"] = s.iterations;
+    return j;
+}
+// 送られてきたキーだけ上書き（部分更新）。enabled は呼び出し側が受け取る。
+inline SoftDesc softFromJson(const nlohmann::json& j, const SoftDesc& base) {
+    SoftDesc s = base;
+    if (!j.is_object()) return s;
+    s.resolution = jsonInt(j, "res", s.resolution);
+    s.stiffness = jsonNumber(j, "stiffness", s.stiffness);
+    s.damping = jsonNumber(j, "damping", s.damping);
+    s.shear = jsonNumber(j, "shear", s.shear);
+    s.bend = jsonNumber(j, "bend", s.bend);
+    s.iterations = jsonInt(j, "iterations", s.iterations);
+    return clampSoft(s);
+}
+
 inline nlohmann::json toJson(const BodyDesc& b) {
     nlohmann::json j;
     j["name"] = b.name;
@@ -603,6 +674,7 @@ inline nlohmann::json toJson(const BodyDesc& b) {
     j["events"] = b.events;  // 付いているイベントアセット名
     j["vehicle"] = b.hasVehicle;  // 車両か（中身の編集は XML で）
     j["prefab"] = b.prefab;
+    j["soft"] = toJson(b.soft, b.hasSoft);  // ソフトボディ（Inspector で編集）
     return j;
 }
 
@@ -632,6 +704,17 @@ inline BodyDesc bodyFromJson(const nlohmann::json& j, const BodyDesc& base) {
     // detach）で行うので、ここでは配列がまるごと来たときだけ受ける。
     if (j.contains("events") && j["events"].is_array()) {
         b.events = stringList(j["events"]);
+    }
+    // ソフトボディ。`"soft": true` の短縮形（有効化だけ）も受ける。
+    if (j.contains("soft")) {
+        const nlohmann::json& s = j["soft"];
+        if (s.is_boolean()) {
+            b.hasSoft = s.get<bool>();
+        } else if (s.is_object()) {
+            const auto en = s.find("enabled");
+            if (en != s.end() && en->is_boolean()) b.hasSoft = en->get<bool>();
+            b.soft = softFromJson(s, b.soft);
+        }
     }
     return b;
 }
@@ -1105,6 +1188,7 @@ inline BodyDesc clampBody(BodyDesc b) {
     b.position.x = cl(b.position.x, -500.0, 500.0);
     b.position.y = cl(b.position.y, -500.0, 500.0);
     b.position.z = cl(b.position.z, -500.0, 500.0);
+    b.soft = clampSoft(b.soft);
     return b;
 }
 

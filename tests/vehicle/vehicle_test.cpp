@@ -23,6 +23,7 @@
 #include "vehicle/Formula.h"
 #include "vehicle/FormulaXml.h"
 #include "vehicle/LuaFormula.h"
+#include "vehicle/SoftTire.h"
 #include "vehicle/TireFormula.h"
 #include "vehicle/VehicleModel.h"
 #include "vehicle/VehicleXml.h"
@@ -535,6 +536,116 @@ int main(int argc, char** argv) {
             check(maxPos < 1e-6, "formula-driven car follows the same path");
             check(sim.model.formulaFailures() == 0, "no formula failures while driving");
         }
+    }
+
+    // ---- 8. ソフトタイヤ ---------------------------------------------------
+    // a) メッシュ単体: 潰した高さで接地させると底の粒子が地面に揃い、上側は
+    //    丸いまま。浮かせると丸に戻る。回しながらでも発散しない。
+    // b) 直列ばね: ソフトタイヤの車は潰れのぶん低く座り、荷重は変わらない。
+    //    走らせても粒子が有限のまま。XML の往復で属性が残る。
+    std::printf("8. soft tire\n");
+    {
+        TireDesc tire;
+        tire.soft = true;
+        tire.stiffness = 60000.0;
+        SoftTire st(tire);
+        const double r = tire.radius;
+        const double rp = st.radius();
+        const double defl = 0.04;
+        const Vec3 center{0.0, r - defl, 0.0};
+        const double dt = 1.0 / 120.0;
+        double spin = 0.0;
+        Quat rot;
+        for (int i = 0; i < 240; ++i) {
+            spin += 40.0 * dt;  // 40 rad/s ≈ 46 km/h
+            rot = Quat::fromAxisAngle(Vec3{-1.0, 0.0, 0.0}, spin);
+            st.step(center, rot, true, Vec3{}, Vec3{0.0, 1.0, 0.0}, dt);
+        }
+        auto scan = [&](double& minY, double& maxY, bool& finite) {
+            minY = 1e9;
+            maxY = -1e9;
+            finite = true;
+            for (const Vec3& p : st.particles()) {
+                if (!std::isfinite(p.x + p.y + p.z)) finite = false;
+                minY = std::min(minY, p.y);
+                maxY = std::max(maxY, p.y);
+            }
+        };
+        double minY, maxY;
+        bool finite;
+        scan(minY, maxY, finite);
+        std::printf("  loaded: particles %zu, bottom %.4f (expect %.4f), top %.4f (expect %.4f)\n",
+                    st.particleCount(), minY, rp, maxY, center.y + r - rp);
+        check(finite, "soft tire mesh stays finite while rolling");
+        check(std::fabs(minY - rp) < 0.003, "tread bottom sits on the ground");
+        check(std::fabs(maxY - (center.y + r - rp)) < 0.01, "tread top keeps the radius");
+        const SoftTireTopology topo = SoftTire::topology(tire);
+        check(topo.vertexCount == st.particleCount() && topo.indices.size() % 3 == 0 &&
+                  topo.indices.size() == std::size_t(topo.rows + 1) * std::size_t(topo.segments) * 6,
+              "topology matches the particle count");
+        for (int i = 0; i < 240; ++i) {
+            st.step(center + Vec3{0.0, 0.3, 0.0}, rot, false, Vec3{}, Vec3{0.0, 1.0, 0.0}, dt);
+        }
+        double maxErr = 0.0;
+        for (std::size_t k = 0; k < st.particleCount(); ++k) {
+            const Vec3 local = rot.rotateBack(st.particles()[k] - (center + Vec3{0.0, 0.3, 0.0}));
+            const double rad = std::sqrt(local.y * local.y + local.z * local.z);
+            if (k >= std::size_t(topo.segments) &&
+                k < std::size_t(topo.segments) * std::size_t(topo.rows + 1)) {
+                maxErr = std::max(maxErr, std::fabs(rad - (r - rp)));
+            }
+        }
+        std::printf("  airborne: max tread radius error %.4f m\n", maxErr);
+        check(maxErr < 0.05 * r, "tread returns to round in the air");
+
+        VehicleDesc sd = desc;
+        for (AxleDesc& a : sd.axles) {
+            a.tire.soft = true;
+            a.tire.stiffness = 60000.0;
+        }
+        Sim sim(sd);
+        sim.place(h + 0.05);
+        sim.run(4.0);
+        const double perWheel = 1400.0 * 9.81 / 4.0;
+        const double expectDefl = perWheel / 60000.0;
+        double loadSum = 0.0;
+        for (const auto& w : sim.model.telemetry().wheels) loadSum += w.load;
+        std::printf("  soft car: y=%.3f (rigid %.3f, expect %.3f) deflection=%.4f (expect %.4f) "
+                    "loadSum=%.0f\n",
+                    sim.body.pos.y, h, h - expectDefl, sim.model.telemetry().wheels[0].deflection,
+                    expectDefl, loadSum);
+        check(std::fabs(sim.body.pos.y - (h - expectDefl)) < 0.02,
+              "sits lower by the tire deflection");
+        check(std::fabs(sim.model.telemetry().wheels[0].deflection - expectDefl) < 0.2 * expectDefl,
+              "reported deflection matches load / stiffness");
+        check(std::fabs(loadSum - 1400.0 * 9.81) < 200.0, "wheel loads still carry the mass");
+        const auto poses = sim.model.wheelLocalPoses();
+        check(poses.size() == 4 && poses[0].softMesh &&
+                  poses[0].softMesh->size() == topo.vertexCount * 3 && poses[0].softRadius > 0.0,
+              "wheel poses carry the soft mesh snapshot");
+        const auto design = VehicleModel::designWheelPoses(sd, 1400.0);
+        check(design.size() == 4 && design[0].deflection > 0.0 && !design[0].softMesh,
+              "design poses estimate the static deflection");
+        VehicleInput in;
+        in.throttle = 1.0;
+        sim.model.setInput(in);
+        sim.run(3.0);
+        bool meshFinite = true;
+        for (const auto& p : sim.model.wheelLocalPoses()) {
+            for (const float v : *p.softMesh) meshFinite = meshFinite && std::isfinite(v);
+        }
+        std::printf("  soft car after 3 s full throttle: v=%.2f m/s\n", sim.speed());
+        check(meshFinite && sim.speed() > 5.0, "soft-tire car drives with a finite mesh");
+        const std::string text = wizengine::xml::write(vehicleElement(sd));
+        wizengine::xml::Element parsed;
+        std::string err;
+        std::vector<std::string> warnings;
+        check(wizengine::xml::parse(text, parsed, err), "soft tire xml parses back");
+        const VehicleDesc back = vehicleFromXml(parsed, &warnings);
+        check(warnings.empty() && back.axles.size() == 2 && back.axles[0].tire.soft &&
+                  std::fabs(back.axles[0].tire.stiffness - 60000.0) < 1e-6 &&
+                  back.axles[0].tire.segments == 24 && back.axles[0].tire.rows == 3,
+              "soft tire attributes survive the xml round trip");
     }
 
     std::printf("%s (%d failure%s)\n", g_failures == 0 ? "ALL PASSED" : "FAILED",

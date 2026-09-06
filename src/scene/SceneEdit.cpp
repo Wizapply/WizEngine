@@ -8,9 +8,42 @@ using namespace scene_detail;
 
 // 設計値から Chrono のボディを 1 個作る（createObject / rebuildBody 共通）。
 // 当たり判定の Model は「メッシュの凸包」で、点群が無ければ球へ。
-std::size_t Scene::createBody(const ed::BodyDesc& desc, int meshIndex) {
+// ソフトボディは粒子の格子（scene/SoftLattice.h）を PhysicsWorld に渡し、
+// 代表番号を physId として使う。
+std::size_t Scene::createBody(
+    const ed::BodyDesc& desc, int meshIndex,
+    std::shared_ptr<const wizengine::softlattice::Lattice>& lattice) {
     const ChVector3d pos(desc.position.x, desc.position.y, desc.position.z);
     const ChQuaternion<> rot = quatFromEuler(desc.rotation);
+    lattice.reset();
+    if (desc.hasSoft) {
+        auto l = std::make_shared<const wizengine::softlattice::Lattice>(
+            wizengine::softlattice::build(desc));
+        PhysicsWorld::SoftBodySpec spec;
+        spec.rest.reserve(l->rest.size());
+        for (const auto& r : l->rest) spec.rest.emplace_back(r[0], r[1], r[2]);
+        spec.radius = l->radius;
+        spec.particleMass = l->particleMass;
+        spec.springs.reserve(l->springs.size());
+        for (const auto& s : l->springs) {
+            PhysicsWorld::SoftBodySpec::Spring sp;
+            sp.a = std::size_t(s.a);
+            sp.b = std::size_t(s.b);
+            sp.rest = s.rest;
+            sp.k = s.k;
+            sp.c = s.c;
+            spec.springs.push_back(sp);
+        }
+        spec.iterations = desc.soft.iterations;
+        spec.fixed = desc.fixed;
+        const std::size_t physId = physics_.addSoftBody(spec, pos, rot);
+        if (physId != GameObject::kInvalidId) {
+            lattice = l;
+            return physId;
+        }
+        LOGW("scene", "object '%s': soft body could not be created - rigid",
+             desc.name.c_str());
+    }
     if (desc.collision == ed::ShapeKind::Model) {
         if (const auto* hull = meshHull(meshIndex)) {
             const std::size_t physId =
@@ -44,7 +77,7 @@ std::size_t Scene::createObject(const ed::BodyDesc& descIn) {
     }
 
     GameObject obj;
-    obj.physId = createBody(desc, meshIndex);
+    obj.physId = createBody(desc, meshIndex, obj.lattice);
     obj.meshIndex = meshIndex;
     obj.desc = desc;
     obj.alive = true;
@@ -136,6 +169,9 @@ void Scene::resizeObject(std::size_t index, double sx, double sy, double sz) {
         // （renderDirty は「メッシュそのものが変わった」ときだけ）。剛体の
         // ほうは形を変えられないので作り直しが要る＝エディタ中は遅らせる。
         boxes_[index].physDirty = true;
+        // ソフトボディは見た目も粒子から組むので、作り直すまで大きさが
+        // 変わらない。ドラッグが落ち着いたら stepEditor が作り直す。
+        if (boxes_[index].desc.hasSoft) boxes_[index].softRebuildTimer = 0.35;
     }
     if (editor_.mode() == ed::AppMode::Simulate) rebuildBody(index);
 }
@@ -150,10 +186,13 @@ void Scene::rebuildBody(std::size_t index) {
     // 溜まるが、動かないし当たらないのでステップ時間には効かない。
     if (obj.physId != GameObject::kInvalidId) physics_.disableBody(obj.physId);
 
-    const std::size_t physId = createBody(obj.desc, obj.meshIndex);
+    std::shared_ptr<const wizengine::softlattice::Lattice> lattice;
+    const std::size_t physId = createBody(obj.desc, obj.meshIndex, lattice);
 
     std::lock_guard<std::mutex> lk(objectsMutex_);
     obj.physId = physId;
+    obj.lattice = lattice;
+    obj.softRebuildTimer = 0.0;
     obj.physDirty = false;
     obj.renderDirty = true;  // メッシュも作り直す（球↔箱が変わりうる）
 }
@@ -378,15 +417,30 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         const bool colorChanged = next.color.r != before.color.r ||
                                   next.color.g != before.color.g ||
                                   next.color.b != before.color.b;
+        // ソフトボディの切替と設定は格子の作り直し（粒子数・ばねが変わる）。
+        const bool softChanged = next.hasSoft != before.hasSoft ||
+                                 (next.hasSoft && next.soft != before.soft);
+        if (next.hasSoft && next.shape == ed::ShapeKind::Model) {
+            // 格子は箱か球。メッシュ形状のままソフトにはできない。
+            next.shape = ed::ShapeKind::Box;
+            next.collision = ed::ShapeKind::Box;
+            next.mesh.clear();
+        }
         {
             std::lock_guard<std::mutex> lk(objectsMutex_);
             obj.desc = next;
             if (colorChanged) obj.colorDirty = true;
-            if (shapeChanged || sizeChanged || massChanged) obj.physDirty = true;
+            if (shapeChanged || sizeChanged || massChanged || softChanged) {
+                obj.physDirty = true;
+            }
             // レンダラブルを作り直すのは、メッシュが別物になるとき（箱↔球）
             // だけ。大きさはスケール行列で毎フレーム効くので作り直さない。
-            if (shapeChanged) obj.renderDirty = true;
+            if (shapeChanged || softChanged) obj.renderDirty = true;
         }
+        // ソフトボディは見た目も粒子から組むので、Inspector の変更はその場で
+        // 作り直す（スライダーの連投はギズモ側 = resizeObject が遅らせる）。
+        const bool softNow = next.hasSoft || before.hasSoft;
+        if (obj.physDirty && softNow) rebuildBody(std::size_t(index));
         if (next.fixed != before.fixed && obj.physId != GameObject::kInvalidId) {
             physics_.setBodyFixed(obj.physId, next.fixed);
         }
@@ -785,19 +839,37 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                 status = on ? "#" + std::to_string(index) + " を車両にしました"
                             : "#" + std::to_string(index) + " の車両を外しました";
             } else {
+                // 軸（-1 = 全軸）のタイヤ設定。送られてきたキーだけ変える:
+                // formula（計算式）・soft（ソフトタイヤ）・stiffness（径方向剛性）。
                 const int axle = ed::jsonInt(a, "axle", -1);
-                const std::string formula = a.value("formula", "");
-                if (!formula.empty() && !editor_.hasFormulaAsset(formula)) {
+                const bool hasFormula = a.contains("formula") && a["formula"].is_string();
+                const bool hasSoft = a.contains("soft") && a["soft"].is_boolean();
+                const bool hasStiffness = a.contains("stiffness") && a["stiffness"].is_number();
+                const std::string formula = hasFormula ? a["formula"].get<std::string>() : "";
+                if (hasFormula && !formula.empty() && !editor_.hasFormulaAsset(formula)) {
                     status = "計算式が見つかりません: " + formula;
                 } else if (!obj.desc.hasVehicle) {
                     status = "#" + std::to_string(index) + " は車両ではありません";
                 } else {
                     auto& axles = obj.desc.vehicle.axles;
                     for (std::size_t i = 0; i < axles.size(); ++i) {
-                        if (axle < 0 || std::size_t(axle) == i) axles[i].tire.formula = formula;
+                        if (axle >= 0 && std::size_t(axle) != i) continue;
+                        if (hasFormula) axles[i].tire.formula = formula;
+                        if (hasSoft) axles[i].tire.soft = a["soft"].get<bool>();
+                        if (hasStiffness) {
+                            axles[i].tire.stiffness = a["stiffness"].get<double>();
+                        }
                     }
-                    status = "#" + std::to_string(index) + " のタイヤ式: " +
-                             (formula.empty() ? "(組み込み)" : formula);
+                    obj.desc.vehicle = wizengine::vehicle::clampVehicle(obj.desc.vehicle);
+                    if (hasFormula) {
+                        status = "#" + std::to_string(index) + " のタイヤ式: " +
+                                 (formula.empty() ? "(組み込み)" : formula);
+                    } else if (hasSoft) {
+                        status = "#" + std::to_string(index) + " のタイヤ: " +
+                                 (a["soft"].get<bool>() ? "ソフト（変形メッシュ）" : "剛");
+                    } else {
+                        status = "#" + std::to_string(index) + " のタイヤ剛性を更新";
+                    }
                 }
             }
         }

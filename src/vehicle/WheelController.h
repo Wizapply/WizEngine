@@ -74,7 +74,11 @@ public:
     // ---- 出力（finishStep の後）------------------------------------------
     bool grounded() const { return grounded_; }
     double load() const { return load_; }                // Fz N
-    double compression() const { return compression_; }  // m
+    double compression() const { return compression_; }  // m（サスの縮み）
+    // ソフトタイヤの径方向の潰れ (m)。接地点は車輪中心から radius - deflection
+    // の距離にある（剛タイヤなら 0）。
+    double deflection() const { return deflection_; }
+    const Vec3& contactNormal() const { return normal_; }
     Vec3 suspensionForce() const;   // 取り付け点に掛ける（ストラット軸方向）
     Vec3 suspensionPoint() const { return attachWorld_; }
     Vec3 tireForce() const;         // 接地点に掛ける（前後 + 横）
@@ -102,6 +106,7 @@ private:
     // updateContact が決める（ステップ内で不変）。
     bool grounded_ = false;
     double compression_ = 0.0;
+    double deflection_ = 0.0;
     double load_ = 0.0;
     double steerRad_ = 0.0;
     double stepDt_ = 1.0 / 60.0;

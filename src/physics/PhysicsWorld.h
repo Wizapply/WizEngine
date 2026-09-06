@@ -157,6 +157,44 @@ public:
                               double density, const chrono::ChVector3d& pos,
                               const chrono::ChQuaternion<>& rot);
 
+    // ---- ソフトボディ（質点ばね）------------------------------------------
+    // 小さな球の剛体（粒子）の集合を、ばねで結んで 1 つの柔らかい物にする。
+    // 戻り値は**代表番号**（最初の粒子の physId）で、この番号への既存の
+    // 操作はそのまま粒子全体に広がる: bodyTransform は粒子群に当てはめた
+    // 剛体姿勢（重心 + 最小二乗の回転）、placeBody / setBodyPose は静止
+    // 形状のまま置き直し、setBodyFixed / disableBody は全粒子、applyForce は
+    // 全体の質量で速度変化を等しく配る、bodyMass は合計、bodyVelocity は
+    // 平均、activeContactPairs は粒子の接触を代表番号で報告する。Scene 側は
+    // 剛体と同じ physId 1 個で扱えばよい。
+    //
+    // ばねは step() の中で DoStepDynamics の前に解く（vehicle と同じく速度に
+    // 直接足す）。1 本ずつ implicit Euler で解いた速度変化をガウス・ザイデル
+    // で回すので、どんなに硬くしても発散しない（硬さが dt に対して大きい
+    // ときは「自然長へ射影する拘束」に近づく）。同じソフトボディの粒子
+    // どうしは衝突しない（衝突ファミリで除外。粒子は眠らない）。
+    struct SoftBodySpec {
+        std::vector<chrono::ChVector3d> rest;  // 粒子の静止位置（ローカル）
+        double radius = 0.05;                  // 粒子の当たり半径
+        double particleMass = 0.01;            // 粒子 1 個の質量
+        struct Spring {
+            std::size_t a = 0, b = 0;
+            double rest = 0.0;  // 自然長
+            double k = 0.0;     // ばね定数 (N/m)
+            double c = 0.0;     // 減衰係数 (N·s/m)
+        };
+        std::vector<Spring> springs;
+        int iterations = 2;
+        bool fixed = false;
+    };
+    std::size_t addSoftBody(const SoftBodySpec& spec, const chrono::ChVector3d& pos,
+                            const chrono::ChQuaternion<>& rot);
+    // id がソフトボディの代表番号か。
+    bool isSoftBody(std::size_t id) const;
+    // 粒子のワールド位置を 3 個ずつ out へ詰める（代表番号で。無ければ空）。
+    // 描画スレッドへ渡すスナップショットのために float で返す。
+    void softParticlePositions(std::size_t id, std::vector<float>& out) const;
+    std::size_t softParticleCount(std::size_t id) const;
+
     std::size_t bodyCount() const;
     BodyTransform bodyTransform(std::size_t id) const;
 
@@ -215,6 +253,30 @@ private:
     // （Chrono 9 は自動でやらない。詳細は .cpp）。
     void bindCollision(const std::shared_ptr<chrono::ChBody>& body);
 
+    // ---- ソフトボディの内部 ----------------------------------------------
+    struct SoftBody {
+        std::size_t root = 0;                   // 代表 = 最初の粒子の physId
+        std::vector<std::size_t> particles;     // 粒子の physId（root が先頭）
+        std::vector<chrono::ChVector3d> rest;   // 静止位置（ローカル）
+        chrono::ChVector3d restCentroid;        // rest の重心
+        std::vector<SoftBodySpec::Spring> springs;
+        int iterations = 2;
+        bool active = true;
+    };
+    static constexpr std::size_t kNoSoft = static_cast<std::size_t>(-1);
+    // ばねを解いて粒子の速度を書き換える（step の先頭）。
+    void solveSoftSprings(SoftBody& soft, double dt);
+    // 粒子群に当てはめた剛体姿勢（重心 + 最小二乗の回転）。
+    BodyTransform softTransform(const SoftBody& soft) const;
+    // 静止形状のまま pos / rot へ置き直す（全粒子を止める）。
+    void placeSoftBody(SoftBody& soft, const chrono::ChVector3d& pos,
+                       const chrono::ChQuaternion<>& rot);
+    // その番号が代表するソフトボディ（代表番号でなければ nullptr）。
+    const SoftBody* softOfRoot(std::size_t id) const;
+    SoftBody* softOfRoot(std::size_t id);
+    // 粒子ならその属するソフトボディの代表番号、剛体ならそのまま。
+    std::size_t representative(std::size_t id) const;
+
     std::shared_ptr<chrono::ChSystem> sys_;
     std::shared_ptr<chrono::ChContactMaterialNSC> mat_;
     std::vector<std::shared_ptr<chrono::ChBody>> bodies_;
@@ -223,6 +285,10 @@ private:
     std::unordered_map<const chrono::ChBody*, std::size_t> bodyIndex_;
     // disableBody() で退場させたボディは false。番号は詰めない。
     std::vector<bool> active_;
+    // bodies_ と並ぶ: この番号の粒子が属するソフトボディ（softBodies_ の
+    // 位置）。剛体は kNoSoft。
+    std::vector<std::size_t> softOf_;
+    std::vector<SoftBody> softBodies_;
     // シミュレート中だけ存在する拘束。エディタへ戻るときに全部外す。
     std::vector<std::shared_ptr<chrono::ChLinkBase>> joints_;
     PhysicsBackend backend_ = PhysicsBackend::Core;

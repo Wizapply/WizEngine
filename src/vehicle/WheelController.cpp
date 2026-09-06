@@ -49,6 +49,7 @@ void WheelController::reset() {
     if (formula_) formula_->reset();
     grounded_ = false;
     compression_ = 0.0;
+    deflection_ = 0.0;
     load_ = 0.0;
     forceX_ = forceY_ = 0.0;
     relaxX_ = relaxY_ = 0.0;
@@ -78,6 +79,7 @@ void WheelController::updateContact(const ChassisState& chassis, double steerRad
     if (!hit.hit) {
         grounded_ = false;
         compression_ = 0.0;
+        deflection_ = 0.0;
         load_ = 0.0;
         // 浮いている間はタイヤ力を残さない（緩和長の状態も含めて）。
         forceX_ = forceY_ = 0.0;
@@ -90,7 +92,24 @@ void WheelController::updateContact(const ChassisState& chassis, double steerRad
     grounded_ = true;
     normal_ = hit.normal.normalized();
     contactPoint_ = hit.point;
-    compression_ = clampd(reach - hit.distance, 0.0, sus_.restLength);
+    // ソフトタイヤ: サスとタイヤの径方向ばねが直列に縮む。同じ力を分け合う
+    // ので、縮みは剛性の逆比（サス側 = 全体 × k_t / (k_s + k_t)）。タイヤの
+    // 潰れは半径の 45% で頭打ち（残りはサスが受ける）。剛タイヤなら全部サス。
+    const double total = std::max(reach - hit.distance, 0.0);
+    if (tire_.soft && tire_.stiffness > 0.0) {
+        const double maxDefl = 0.45 * tire_.radius;
+        const double share = tire_.stiffness / (sus_.stiffness + tire_.stiffness);
+        double xs = total * share;
+        deflection_ = total - xs;
+        if (deflection_ > maxDefl) {
+            deflection_ = maxDefl;
+            xs = total - deflection_;
+        }
+        compression_ = clampd(xs, 0.0, sus_.restLength);
+    } else {
+        deflection_ = 0.0;
+        compression_ = clampd(total, 0.0, sus_.restLength);
+    }
 
     // 縮み速度 = 取り付け点が地面へ向かう速度（地面は静止とみなす）。
     const Vec3 rAttach = attachWorld_ - chassis.position;
@@ -245,6 +264,7 @@ WheelTelemetry WheelController::telemetry() const {
     t.forceY = avgY_;
     t.steerDeg = radToDeg(steerRad_);
     t.spinAngle = spinAngle_;
+    t.deflection = deflection_;
     t.grounded = grounded_;
     return t;
 }

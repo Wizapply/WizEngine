@@ -421,6 +421,14 @@ void Scene::stepPhysics(double dt) {
 // 姿勢スナップショットの更新だけを行う。物理スレッドから呼ぶこと。
 void Scene::stepEditor(double dt) {
     for (auto& c : components_) c->onEditorStep(*this, dt);
+    // ソフトボディの拡縮は粒子の作り直しなので、ギズモのドラッグが落ち着く
+    // まで待ってからまとめて反映する（resizeObject がタイマーを積む）。
+    for (std::size_t i = 0; i < boxes_.size(); ++i) {
+        GameObject& obj = boxes_[i];
+        if (!obj.alive || obj.softRebuildTimer <= 0.0) continue;
+        obj.softRebuildTimer -= dt;
+        if (obj.softRebuildTimer <= 0.0 && obj.physDirty) rebuildBody(i);
+    }
     snapshot();
 }
 
@@ -637,15 +645,25 @@ bool Scene::latestPose(std::size_t index, BodyTransform& out) {
 void Scene::snapshot() {
     std::vector<BodyTransform> poses;
     poses.reserve(boxes_.size());
-    for (const auto& obj : boxes_) {
+    // ソフトボディの粒子位置も一緒に。オブジェクト番号で引けるように
+    // 全オブジェクトぶんの外側の配列を持つ（剛体のぶんは空のまま = 確保
+    // しない）。
+    std::vector<std::vector<float>> soft(boxes_.size());
+    for (std::size_t i = 0; i < boxes_.size(); ++i) {
+        const GameObject& obj = boxes_[i];
         if (obj.physId == GameObject::kInvalidId) {
             poses.push_back(BodyTransform{0, 0, 0, 1, 0, 0, 0});
             continue;
         }
+        // ソフトボディの代表番号なら、粒子群に当てはめた剛体姿勢が返る。
         poses.push_back(physics_.bodyTransform(obj.physId));
+        if (obj.alive && obj.lattice) {
+            physics_.softParticlePositions(obj.physId, soft[i]);
+        }
     }
     std::lock_guard<std::mutex> lk(poseMutex_);
     latestPoses_.swap(poses);
+    latestSoft_.swap(soft);
 }
 
 // RENDER スレッド。まだ実体の無いオブジェクトのレンダラブルを作り、消された
@@ -670,12 +688,21 @@ void Scene::syncRenderables() {
         if (!obj.alive) continue;
 
         if (obj.renderId == GameObject::kInvalidId) {
+            // ソフトボディ: 表面粒子を結んだ変形メッシュ（頂点は毎フレーム
+            // applyToRenderer が粒子のスナップショットから組む）。形状
+            // スロットの 1 つなので色・ハイライトは組み込み形状と同じ口。
+            if (obj.lattice) {
+                obj.renderId = renderer_.addSoftShape(obj.lattice->surface.size(),
+                                                      obj.lattice->indices);
+                obj.modelDraw = false;
+            }
             // メッシュ指定があればモデルの実体を作る。原型はここで最初に
             // 使うときに読み込む（Filament を触れるのはこのスレッドだけ）。
             // 読めないファイルはシーンを止めず、組み込みの球で描いて警告に
             // 留める - 起動時の一括検証と違い、実行中のシーン読込から来る
             // ため（文書の他の部分は生かす）。
-            if (obj.desc.shape == ed::ShapeKind::Model && obj.meshIndex >= 0 &&
+            if (obj.renderId == GameObject::kInvalidId &&
+                obj.desc.shape == ed::ShapeKind::Model && obj.meshIndex >= 0 &&
                 std::size_t(obj.meshIndex) < meshes_.size()) {
                 MeshAsset& m = meshes_[std::size_t(obj.meshIndex)];
                 if (m.modelId == GameObject::kInvalidId && !m.loadFailed) {
@@ -730,9 +757,11 @@ void Scene::applyToRenderer() {
     for (auto& c : components_) c->onRender(*this);
 
     std::vector<BodyTransform> poses;
+    std::vector<std::vector<float>> softPts;
     {
         std::lock_guard<std::mutex> pl(poseMutex_);
         poses = latestPoses_;
+        softPts = latestSoft_;
     }
 
     // The cube/sphere meshes are unit-sized; scale them to the object's size
@@ -743,6 +772,20 @@ void Scene::applyToRenderer() {
         GameObject& obj = boxes_[k];
         if (!obj.alive || obj.renderId == GameObject::kInvalidId) continue;
         const ed::BodyDesc& d = obj.desc;
+        if (obj.lattice) {
+            // ソフトボディ: 粒子のスナップショットから表面を組んで、頂点を
+            // ワールド座標のまま流す（姿勢行列は使わない）。スナップショット
+            // がまだ無い（作った直後）フレームは前回の頂点のまま。
+            if (k < softPts.size() &&
+                softPts[k].size() == obj.lattice->particleCount() * 3) {
+                wizengine::softlattice::buildSurface(*obj.lattice, softPts[k].data(),
+                                                     softVerts_, softNormals_);
+                renderer_.setSoftShapeVertices(obj.renderId, softVerts_.data(),
+                                               softNormals_.data(),
+                                               obj.lattice->surface.size());
+            }
+            continue;
+        }
         filament::math::float3 s;
         if (obj.modelDraw) {
             // モデルの見た目の大きさは <mesh scale>（アセット単位 → m）。

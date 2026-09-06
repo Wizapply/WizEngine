@@ -1,6 +1,7 @@
 #include "render/Renderer.h"
 #include "core/Log.h"
 
+#include <filament/Box.h>
 #include <filament/Camera.h>
 #include <filament/Color.h>
 #include <filament/Engine.h>
@@ -27,6 +28,7 @@
 #include <math/vec3.h>
 #include <math/vec4.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -530,9 +532,155 @@ void Renderer::removeShape(std::size_t id) {
         engine_->destroy(slot.mi);
         slot.mi = nullptr;
     }
+    // ソフトボディの自前バッファ（Filament の destroy は GPU が使い終わる
+    // まで遅延するので、前フレームが参照していても構わない）。
+    if (slot.vb) {
+        engine_->destroy(slot.vb);
+        slot.vb = nullptr;
+    }
+    if (slot.ib) {
+        engine_->destroy(slot.ib);
+        slot.ib = nullptr;
+    }
+    slot.vertexCount = 0;
     slot.highlight = -1;
     slot.used = false;
     freeShapes_.push_back(id);
+}
+
+std::size_t Renderer::addSoftShape(std::size_t vertexCount,
+                                   const std::vector<uint32_t>& indices) {
+    std::size_t id;
+    if (!freeShapes_.empty()) {
+        id = freeShapes_.back();
+        freeShapes_.pop_back();
+    } else {
+        shapes_.push_back(ShapeSlot{});
+        id = shapes_.size() - 1;
+    }
+    ShapeSlot& slot = shapes_[id];
+    // 変形メッシュは両面を描く（法線は頂点から作るので、たまたま裏を向いた
+    // 三角形や、まだ閉じていない面が背面カリングで抜けないように）。専用の
+    // マテリアルインスタンスをここで作っておけば setShapeColor はそれを使う。
+    slot.mi = material_->createInstance();
+    slot.mi->setParameter("baseColor", RgbType::LINEAR, float3{0.80f, 0.36f, 0.18f});
+    slot.mi->setCullingMode(MaterialInstance::CullingMode::NONE);
+    slot.highlight = -1;
+    slot.used = true;
+    slot.vertexCount = uint32_t(std::max<std::size_t>(vertexCount, 1));
+    const std::size_t indexCount = std::max<std::size_t>(indices.size(), 3);
+
+    // 頂点は毎フレーム setSoftShapeVertices が書き換える。最初は原点に
+    // 潰しておく（未初期化のバッファを描かせない）。
+    slot.vb = VertexBuffer::Builder()
+                  .vertexCount(slot.vertexCount)
+                  .bufferCount(2)
+                  .attribute(VertexAttribute::POSITION, 0,
+                             VertexBuffer::AttributeType::FLOAT3)
+                  .attribute(VertexAttribute::TANGENTS, 1,
+                             VertexBuffer::AttributeType::FLOAT4)
+                  .build(*engine_);
+    {
+        auto* pos = new float3[slot.vertexCount];
+        auto* tan = new quatf[slot.vertexCount];
+        for (uint32_t i = 0; i < slot.vertexCount; ++i) {
+            pos[i] = float3{0.0f};
+            tan[i] = quatf{1.0f, 0.0f, 0.0f, 0.0f};  // (w, x, y, z) = 単位
+        }
+        slot.vb->setBufferAt(
+            *engine_, 0,
+            VertexBuffer::BufferDescriptor(
+                pos, sizeof(float3) * slot.vertexCount,
+                [](void* p, size_t, void*) { delete[] static_cast<float3*>(p); }));
+        slot.vb->setBufferAt(
+            *engine_, 1,
+            VertexBuffer::BufferDescriptor(
+                tan, sizeof(quatf) * slot.vertexCount,
+                [](void* p, size_t, void*) { delete[] static_cast<quatf*>(p); }));
+    }
+    // インデックスは固定（表面の位相は変わらない）。頂点数は小さいが
+    // 一般性のために 32 ビットにしておく。
+    {
+        auto* idx = new uint32_t[indexCount];
+        for (std::size_t i = 0; i < indexCount; ++i) {
+            idx[i] = i < indices.size() ? std::min<uint32_t>(indices[i], slot.vertexCount - 1)
+                                        : 0u;
+        }
+        slot.ib = IndexBuffer::Builder()
+                      .indexCount(uint32_t(indexCount))
+                      .bufferType(IndexBuffer::IndexType::UINT)
+                      .build(*engine_);
+        slot.ib->setBuffer(
+            *engine_,
+            IndexBuffer::BufferDescriptor(
+                idx, sizeof(uint32_t) * indexCount,
+                [](void* p, size_t, void*) { delete[] static_cast<uint32_t*>(p); }));
+    }
+
+    slot.entity = EntityManager::get().create();
+    // フラスタムカリングは切る: 頂点は毎フレーム書き換わり、AABB も追いかけて
+    // 更新するが、車輪のように速く動く物が境界で一瞬消えるのを避ける
+    // （数個の物なので描画コストの差は無い。AABB は影の範囲のために保つ）。
+    RenderableManager::Builder(1)
+        .boundingBox({{0, 0, 0}, {1, 1, 1}})  // setSoftShapeVertices が毎回更新
+        .material(0, slot.mi)
+        .geometry(0, RenderableManager::PrimitiveType::TRIANGLES, slot.vb, slot.ib,
+                  0, indexCount)
+        .culling(false)
+        .castShadows(true)
+        .receiveShadows(true)
+        .build(*engine_, slot.entity);
+    scene_->addEntity(slot.entity);
+    return id;
+}
+
+void Renderer::setSoftShapeVertices(std::size_t id, const float* positions,
+                                    const float* normals, std::size_t vertexCount) {
+    if (id >= shapes_.size() || !shapes_[id].used) return;
+    ShapeSlot& slot = shapes_[id];
+    if (!slot.vb || !positions || !normals) return;
+    const std::size_t n = slot.vertexCount;
+    if (vertexCount != n) return;  // 位相が変わったら作り直す約束（Scene 側）
+
+    // 位置。バッファは Filament が非同期にコピーするのでヒープに置き、
+    // 完了コールバックで解放する（線バッチと同じ流儀）。
+    auto* pos = new float3[n];
+    float3 lo{1e30f}, hi{-1e30f};
+    for (std::size_t i = 0; i < n; ++i) {
+        pos[i] = float3{positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]};
+        lo = min(lo, pos[i]);
+        hi = max(hi, pos[i]);
+    }
+    slot.vb->setBufferAt(
+        *engine_, 0,
+        VertexBuffer::BufferDescriptor(
+            pos, sizeof(float3) * n,
+            [](void* p, size_t, void*) { delete[] static_cast<float3*>(p); }));
+
+    // 法線 → 接空間の四元数（lit マテリアルは TANGENTS で法線を受ける）。
+    std::vector<float3> nrm(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        nrm[i] = float3{normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]};
+    }
+    auto* tan = new quatf[n];
+    auto* orient = filament::geometry::SurfaceOrientation::Builder()
+                       .vertexCount(n)
+                       .normals(nrm.data())
+                       .build();
+    orient->getQuats(tan, n);
+    delete orient;
+    slot.vb->setBufferAt(
+        *engine_, 1,
+        VertexBuffer::BufferDescriptor(
+            tan, sizeof(quatf) * n,
+            [](void* p, size_t, void*) { delete[] static_cast<quatf*>(p); }));
+
+    // バウンディングボックスは頂点から（影の範囲とカリングがこれを見る）。
+    auto& rm = engine_->getRenderableManager();
+    const float3 center = (lo + hi) * 0.5f;
+    const float3 half = max((hi - lo) * 0.5f, float3{0.01f});
+    rm.setAxisAlignedBoundingBox(rm.getInstance(slot.entity),
+                                 filament::Box{center, half});
 }
 
 void Renderer::setShapeColor(std::size_t id, const float3& color) {
@@ -1287,6 +1435,8 @@ Renderer::~Renderer() {
         scene_->remove(slot.entity);
         engine_->destroy(slot.entity);
         if (slot.mi) engine_->destroy(slot.mi);
+        if (slot.vb) engine_->destroy(slot.vb);  // ソフトボディの自前バッファ
+        if (slot.ib) engine_->destroy(slot.ib);
     }
     shapes_.clear();
     scene_->remove(groundEntity_);

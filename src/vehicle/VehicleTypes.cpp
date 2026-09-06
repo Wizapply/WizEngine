@@ -99,6 +99,15 @@ VehicleDesc clampVehicle(VehicleDesc d) {
         cl(t.ey, -10.0, 1.0);
         cl(t.relaxation, 0.0, 5.0);
         cl(t.rollingResistance, 0.0, 1.0);
+        // ソフトタイヤ。分割は見た目と描画コストの範囲で。
+        cl(t.stiffness, 1000.0, 1.0e8);
+        cl(t.damping, 0.0, 5.0);
+        if (t.segments < 8) t.segments = 8;
+        if (t.segments > 64) t.segments = 64;
+        if (t.rows < 1) t.rows = 1;
+        if (t.rows > 8) t.rows = 8;
+        if (t.iterations < 1) t.iterations = 1;
+        if (t.iterations > 10) t.iterations = 10;
     };
     auto clampSus = [&](SuspensionDesc& s) {
         cl(s.restLength, 0.01, 5.0);

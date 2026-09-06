@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ソフトボディのサンプル。<body> に <soft .../> を書くと、その箱 / 球が
+     粒子の格子（1 軸 res 個、全部で res^3 個の小さな剛体）とばねで作られる
+     質点ばね方式のソフトボディになる。書式は CLAUDE.md の「ソフトボディ」
+     の章と EditorTypes.h の SoftDesc を参照。
+       res        1 軸あたりの粒子数（2〜8）
+       stiffness  硬さ = 弾性率相当 (Pa)。数百でぷるぷる、数万で硬いゴム
+       damping    ばねの減衰比（1 で臨界減衰）
+       shear      せん断ばね（対角線）の倍率、bend 曲げばね（1 個おき）の倍率
+       iterations 1 ステップあたりのばね反復
+     質量（mass）は粒子へ等分される。掴む（pickup）・力・固定・衝突トリガーは
+     剛体と同じに効く。物理レートは 60Hz × 2 サブステップにしてある
+     （柔らかい物は小さな時間刻みのほうが素直に動く）。 -->
+<wizengine model="softbody" version="4">
+  <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60" envelope="0.002"
+          recovery="0.2" friction="0.7" restitution="0" lineardamping="0.1"
+          angulardamping="0.6" sleeping="true"/>
+  <asset>
+    <event name="pickup">
+      <node id="1" type="onGrab" pos="40 40" target="-1"/>
+      <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+      <wire from="1" to="2"/>
+    </event>
+  </asset>
+  <worldbody>
+    <environment hdr="studio.hdr" intensity="30000"/>
+    <ground size="10" visual="8" texture="textures/ground.png" tile="2" rgba="1 1 1 1"/>
+
+    <!-- ぷるぷるのゼリー: 落ちて弾み、床でつぶれてから形に戻る。 -->
+    <body name="jelly" pos="0 1.6 0" euler="0 20 0">
+      <geom type="box" size="0.3 0.3 0.3" mass="1.5" rgba="0.35 0.85 0.45 1"/>
+      <soft res="5" stiffness="2500" damping="0.25" shear="1" bend="0.5" iterations="2"/>
+    </body>
+
+    <!-- 柔らかいボール: 斜面に落ちて転がる。球は同じ格子を球へ写したもの。 -->
+    <body name="ball" pos="1.6 2.4 0.4" euler="0 0 0">
+      <geom type="sphere" size="0.25" mass="1" rgba="0.9 0.35 0.55 1"/>
+      <soft res="4" stiffness="6000" damping="0.3" shear="1" bend="0.5" iterations="2"/>
+    </body>
+    <body name="ramp" pos="1.6 0.35 0.4" euler="0 0 -18" fixed="true">
+      <geom type="box" size="0.9 0.05 0.6" mass="50" rgba="0.6 0.63 0.67 1"/>
+    </body>
+
+    <!-- クッション: 平たい柔らかい板に重い箱が落ちて沈む。 -->
+    <body name="cushion" pos="-1.6 0.16 0" euler="0 0 0">
+      <geom type="box" size="0.6 0.15 0.6" mass="2" rgba="0.3 0.55 0.9 1"/>
+      <soft res="5" stiffness="3000" damping="0.35" shear="1" bend="0.6" iterations="2"/>
+    </body>
+    <body name="weight" pos="-1.6 1.8 0" euler="0 15 0">
+      <geom type="box" size="0.15 0.15 0.15" mass="3" rgba="0.8 0.36 0.18 1"/>
+    </body>
+
+    <!-- 硬めのゴムの箱: 同じ仕組みで硬さだけ上げると、ほぼ剛体のように振る舞う。 -->
+    <body name="rubber" pos="0 0.9 -1.6" euler="0 -30 0">
+      <geom type="box" size="0.25 0.2 0.25" mass="2" rgba="0.95 0.8 0.3 1"/>
+      <soft res="4" stiffness="40000" damping="0.4" shear="1" bend="0.5" iterations="3"/>
+    </body>
+  </worldbody>
+  <events>
+    <event name="pickup"/>
+  </events>
+</wizengine>

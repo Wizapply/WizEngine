@@ -344,6 +344,48 @@
             力」は計算式アセット（🧮、Assets パネル）で差し替えられます。
             (組み込み) = C++ の Magic Formula。サス・エンジン・ギアの数値は
             📄 XML の &lt;vehicle&gt; で編集します。</div>
+          <!-- ソフトボディ。チェックで箱 / 球が粒子の格子 + ばねになる
+               （質点ばね方式）。数値を変えると粒子を作り直す。 -->
+          <div class="edLabel">ソフトボディ</div>
+          <div class="edRow">
+            <span>ソフトボディにする</span>
+            <input id="edSoftOn" type="checkbox"
+                   title="箱 / 球を粒子の格子とばねで作った柔らかい物にする"
+                   onchange="applySoft()">
+          </div>
+          <div id="edSoftProps" hidden>
+            <div class="edRow" title="1 軸あたりの粒子数（2〜8）。粒子は 3 乗で増える">
+              <span>粒子数 / 軸</span>
+              <input id="edSoftRes" class="num" type="number" step="1" min="2" max="8"
+                     onchange="applySoft()">
+            </div>
+            <div class="edRow" title="硬さ = 弾性率相当 (Pa)。数百でぷるぷる、数万で硬いゴム">
+              <span>硬さ (Pa)</span>
+              <input id="edSoftStiff" class="num" type="number" step="500" min="1"
+                     onchange="applySoft()">
+            </div>
+            <div class="edRow" title="ばねの減衰比。0 で揺れ続け、1 で臨界減衰">
+              <span>減衰比</span>
+              <input id="edSoftDamp" class="num" type="number" step="0.05" min="0" max="5"
+                     onchange="applySoft()">
+            </div>
+            <div class="edRow" title="せん断ばね（対角線）の倍率。0 で無し = 崩れやすい">
+              <span>せん断 ×</span>
+              <input id="edSoftShear" class="num" type="number" step="0.1" min="0" max="4"
+                     onchange="applySoft()">
+            </div>
+            <div class="edRow" title="曲げばね（1 個おき）の倍率。0 で無し">
+              <span>曲げ ×</span>
+              <input id="edSoftBend" class="num" type="number" step="0.1" min="0" max="4"
+                     onchange="applySoft()">
+            </div>
+            <div class="edRow" title="1 ステップあたりのばね反復。増やすと硬さが効くが重い">
+              <span>反復</span>
+              <input id="edSoftIter" class="num" type="number" step="1" min="1" max="10"
+                     onchange="applySoft()">
+            </div>
+            <div id="edSoftHint" class="edHint"></div>
+          </div>
         </div>
       </section>
 

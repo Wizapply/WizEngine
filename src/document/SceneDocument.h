@@ -41,6 +41,9 @@
 //         <event name="blink"/>            ... このオブジェクトに付ける
 //         <vehicle ...>                    ... 車両（vehicle/VehicleXml.h）
 //         <prefab name="sedan"/>           ... 付けるプレハブ（見た目の部品）
+//         <soft res="4" stiffness="4000" damping="0.3" shear="1" bend="0.5"
+//               iterations="2"/>           ... ソフトボディ（粒子の格子 +
+//                                              ばね。EditorTypes.h の SoftDesc）
 //       </body>
 //     </worldbody>
 //     <equality> <joint type body1 body2 anchor axis/> </equality>

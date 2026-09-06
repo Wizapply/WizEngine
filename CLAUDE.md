@@ -361,6 +361,38 @@ WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクト�
   エンジン・ギアの数値は 📄 XML で編集する。
 - **実行状態はエディタに戻ると捨てる**（`onEditorStep`）。次のシミュレート
   開始で設計値から作り直すので、XML を適用すればそのまま効く。
+- **ソフトタイヤ**（`src/vehicle/SoftTire.{h,cpp}`、`<tire soft="true"
+  stiffness damping segments rows iterations>`）: 車輪は剛体ではない
+  （レイキャスト）ので、シーンのソフトボディ（Chrono の粒子）は車輪に
+  使えない。代わりに **タイヤの見た目（円柱の部品）を質点ばねの変形
+  メッシュにする**: ハブ（半径 35%、皿状にへこむ）・リムのフランジ
+  （70%）・中心のキャップは運動学的（車輪の姿勢そのもの）で、トレッドの
+  粒子は空気圧（リムへの径方向）・周方向・幅方向・対角線・曲げのばねで
+  結ばれ、接地点の平面に押し戻される（摩擦なし = トレッドは地面の上を
+  滑る。潰れだけが要る）。**メッシュは閉じた面**（帯 + 両側の扇）にして
+  ある - 穴が開いていると向こう側の内面が背面カリングで透けて見える。
+  ソフト形状のマテリアルは両面描画（`setCullingMode(NONE)`）で、フラスタム
+  カリングも切ってある（`addSoftShape`）。ばねは PhysicsWorld の
+  ソフトボディと同じ陰解法（1 本ずつ implicit Euler をガウス・ザイデル）
+  なので発散せず、静止位置から半径の 50% を超えるずれは引き戻す（安全弁）。
+  **メッシュは車体に力を返さない**（見た目）。物理への影響は
+  WheelController の**径方向ばね**だけ: サスと直列に縮み（同じ力を分け
+  合うので縮みは剛性の逆比、`deflection()`。上限は半径の 45%）、接地点は
+  車輪中心から `radius − deflection` の距離になる = 車体がそのぶん低く座る。
+  VehicleModel が step の末尾で各輪の `SoftTire::step`（中心・回転 =
+  `wheelRotation`・接地面）を回し、`WheelLocalPose::softMesh`（粒子の
+  ワールド位置、shared_ptr）と `deflection` で描画側へ渡す。**描画は
+  PrefabComponent**: 円柱 + 車輪ソケットの部品は、その軸の `<tire soft>`
+  なら `Renderer::addSoftShape` の変形メッシュになり（部品の寸法・位置は
+  使わず、タイヤの半径・幅・分割と車輪の姿勢で描く。色は部品の色）、毎
+  フレーム `softlattice::buildSurfaceMesh`（任意の位相版）で頂点と法線を
+  組む。走らせていないとき（softMesh が null）は `SoftTire::restParticles`
+  の静止形状を車輪の姿勢に置く。Inspector の「車両」節に軸ごとの
+  「ソフトタイヤ」チェックと「タイヤ剛性」があり、`edit.vehicle.tire` の
+  `soft` / `stiffness` キー（formula と同じく送られたキーだけ変える）。
+  サンプルの `assets/scenes/vehicle.xml` は両軸とも soft。テストは
+  `vehicle_test` の 8（接地で底が地面に揃う・浮くと丸に戻る・直列ばねで
+  潰れのぶん低く座る・XML 往復）。
 
 ### ノード式（`src/vehicle/Formula.{h,cpp}` + LuaJIT）
 
@@ -422,6 +454,75 @@ Lua を見ない: ノード → Lua ソース → LuaJIT、はエンジンの中
   1 回だけ LOGW。安全のため出力にももう一度 ±cap を掛ける。
 - **未**: タイヤ以外（サス・エンジン曲線）の差し替え口、vec3 型、ノードの
   値のライブ表示（デバッグバッジ）。
+
+## ソフトボディ（`src/scene/SoftLattice.{h,cpp}` + `PhysicsWorld::addSoftBody` + `Renderer::addSoftShape`）
+
+**質点ばね方式**。Chrono の FEA モジュールは使わず、小さな球の剛体
+（粒子）を格子状に並べて隣どうしをばねで結ぶ。`<body>` に `<soft .../>`
+を書いたオブジェクト（`BodyDesc::hasSoft` / `soft` = `ed::SoftDesc`）が
+対象で、形（箱 / 球）と大きさ（size）が格子の外形、mass が全粒子の合計。
+サンプルは `assets/scenes/softbody.xml`、UI はアセットパネルの **🫧 Soft
+Box / Soft Ball** タイルと Inspector の「ソフトボディ」節（チェックで
+剛体⇄ソフトを切替、数値は edit.set の `soft` キー 1 個で部分更新）。
+
+- **格子は `softlattice::build(desc)` の純粋な計算**（Chrono も Filament も
+  知らない）。1 軸 `res` 個（2〜8 = 8〜512 粒子）で、箱は各辺を n 等分した
+  セルの中心、球は同じ格子を殻ごとに球へ写したもの（spherified cube。殻
+  |u|∞ = c が半径 c の球殻へ - 内側の点にそのまま表面用の式を使うと角が
+  はみ出る）。当たり半径はセルの半分より少し小さく（0.46 h）、一番外の
+  粒子の中心は外形から半径ぶん内側 = **粒子の球の外側がちょうど外形**。
+  ばねは構造（隣）・せん断（面と立方体の対角線）・曲げ（1 個おき）の 3 種。
+  **硬さは弾性率相当 E (Pa)** で持ち、k = E × 格子間隔にするので解像度を
+  変えても材料の硬さが変わらない。減衰は減衰比 ζ（c = 2ζ√(k m/2)）。
+  表面は「どれかの添字が端」の粒子を頂点にした 6 面の三角形メッシュ
+  （頂点は面をまたいで共有、法線は隣接面の平均 = 角が少し丸い）。
+- **PhysicsWorld は粒子を普通のボディとして持ち、代表番号 1 個で操作を
+  受ける**（`addSoftBody` の戻り値 = 最初の粒子の physId）。`bodyTransform`
+  は粒子群に当てはめた剛体姿勢（重心 + 相関行列の SVD による最小二乗の
+  回転）、`placeBody` / `setBodyPose` は静止形状のまま置き直し、
+  `setBodyFixed` / `disableBody` は全粒子、`applyForce` は合計質量で速度変化
+  を出して全粒子へ等しく、`bodyMass` は合計、`bodyVelocity` は平均、
+  `activeContactPairs` は粒子の接触を代表番号で報告。**Scene 側は剛体と同じ
+  physId 1 個で扱う**（掴む・イベントの力・固定・衝突トリガー・ギズモ・
+  選択の当たり判定がそのまま効く）。ジョイントは代表粒子に付く（限界）。
+  `GameObject::lattice`（shared_ptr<const Lattice>）が「ソフトである」印で、
+  `snapshot()` が `latestSoft_` に粒子位置を積む。
+- **ばねは `step()` の先頭で速度に織り込む**（`solveSoftSprings`。車両の
+  「点に掛かる力」と同じく DoStepDynamics の前に速度を直接書く）。1 本ずつ
+  implicit Euler で解く: v' = (v − dt k x / m) / (1 + dt (c + dt k) / m)、
+  m は換算質量。これをガウス・ザイデルで `iterations` 回。1 本ずつが無条件
+  安定なので**どんな硬さでも発散しない**（硬さが dt に対して大きいときは
+  「自然長へ射影する拘束」に近づき、反復不足で形が崩れることはある =
+  硬くするなら rate / substeps / iterations を上げる）。Chrono の ChLinkTSDA
+  を使わないのは、BB / APGD の反復ソルバは剛性行列を持たず結局陽解法に
+  なるのと、Core / Multicore で同じ結果にするため。
+- **同じソフトボディの粒子どうしは衝突しない**（衝突ファミリ 1〜14 を順に
+  割り当て、`SetFamily` + `DisallowCollisionsWith`。旧 API 名にも SFINAE で
+  落ち、無ければ粒子どうしも当たるが半径を小さくしてあるので静止では
+  触れない）。**粒子は眠らせない**（一部だけ眠るとばねの相手が動いても
+  起きず形が固まる。`setSleepingEnabled` が粒子を飛ばす）。
+- **描画は形状スロットの 1 つ**（`Renderer::addSoftShape` = 自前の頂点 /
+  インデックスバッファを持つ ShapeSlot。色・ハイライト・削除は
+  `setShapeColor` / `setBoxHighlighted` / `removeShape` の同じ口）。
+  `applyToRenderer` が毎フレーム `softlattice::buildSurface`（粒子中心 +
+  法線 × 半径）で頂点と法線を組み、ワールド座標のまま
+  `setSoftShapeVertices` へ（姿勢行列は使わない。AABB も頂点から毎回）。
+- **作り直しのタイミング**: Inspector の変更（soft の切替・数値・寸法・
+  質量）はその場で `rebuildBody`（見た目も粒子から組むので、遅らせると
+  大きさが変わらない）。ギズモの拡縮ドラッグ（`resizeObject`）は
+  `softRebuildTimer`（0.35 s）で落ち着いてから `stepEditor` が作り直す
+  （ドラッグごとに粒子を捨てると退場ボディが溜まる）。
+- **文書**: `<soft res stiffness damping shear bend iterations/>`（全部既定値
+  付き、`<soft/>` だけでも有効）。メッシュ形状に書くと箱として読む（警告）。
+  ブラウザ API は objects[] の `soft: true` と selected の `soft {enabled,
+  res, ...}` + `softParticles` / `softSprings`。
+- **テストは `tests/softbody/`**（Chrono / Filament 不要。`cmake -S
+  tests/softbody -B build-softbody-test && cmake --build build-softbody-test
+  && ./build-softbody-test/softbody_test`）: 格子の整合性と法線の向き、
+  `<soft>` の XML / JSON 往復、陰解法ばねの安定性。**格子や式を触ったら
+  必ず回す**（車両の `vehicle_test` と同じ扱い）。
+- **未**: 部分的な固定（上面だけ留める等）、粒子以外の当たり形状、
+  破断・塑性、他のソフトボディへのジョイント、四面体メッシュ。
 
 ## プレハブ（`src/components/PrefabComponent.{h,cpp}` + `scene/PrefabDefaults` + `scene/PrefabFrame.h`）
 

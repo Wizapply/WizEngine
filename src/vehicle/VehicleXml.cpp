@@ -44,6 +44,15 @@ xml::Element tireElement(const TireDesc& t) {
     e.setNumber("relax", t.relaxation);
     e.setNumber("rolling", t.rollingResistance);
     if (!t.formula.empty()) e.set("formula", t.formula);
+    // ソフトタイヤの一群は有効なときだけ書く（無効な軸に毎回並べない）。
+    if (t.soft) {
+        e.setBool("soft", true);
+        e.setNumber("stiffness", t.stiffness);
+        e.setNumber("damping", t.damping);
+        e.setInt("segments", t.segments);
+        e.setInt("rows", t.rows);
+        e.setInt("iterations", t.iterations);
+    }
     return e;
 }
 TireDesc tireFromXml(const xml::Element& e, const TireDesc& base) {
@@ -61,6 +70,12 @@ TireDesc tireFromXml(const xml::Element& e, const TireDesc& base) {
     t.relaxation = e.number("relax", t.relaxation);
     t.rollingResistance = e.number("rolling", t.rollingResistance);
     if (e.has("formula")) t.formula = e.attr("formula");
+    t.soft = e.boolean("soft", t.soft);
+    t.stiffness = e.number("stiffness", t.stiffness);
+    t.damping = e.number("damping", t.damping);
+    t.segments = e.integer("segments", t.segments);
+    t.rows = e.integer("rows", t.rows);
+    t.iterations = e.integer("iterations", t.iterations);
     return t;
 }
 

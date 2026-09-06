@@ -96,6 +96,17 @@ struct TireDesc {
     // 「スリップ → 力」をノード式で置き換えるときの名前（VehicleDesc::formulas
     // の中の <formula name>）。空 = 組み込みの Magic Formula。
     std::string formula;
+    // ---- ソフトタイヤ（vehicle/SoftTire.h）---------------------------------
+    // soft = true でタイヤの見た目が質点ばねの変形メッシュになり、物理では
+    // 径方向ばね（サスと直列。潰れ = 荷重 / stiffness、上限は半径の 45%）が
+    // 効く。damping はメッシュのばねの減衰比、segments / rows はメッシュの
+    // 分割（周方向 / 幅方向のトレッド列）、iterations はばね反復。
+    bool soft = false;
+    double stiffness = 150000.0;  // N/m
+    double damping = 0.4;
+    int segments = 24;
+    int rows = 3;
+    int iterations = 3;
 };
 
 // サスペンション（レイキャスト式）。restLength は伸びきった長さ、travel は
@@ -176,6 +187,7 @@ struct WheelTelemetry {
     double forceX = 0.0, forceY = 0.0;  // N（タイヤ座標）
     double steerDeg = 0.0;
     double spinAngle = 0.0;     // 見た目の回転角（rad、積算）
+    double deflection = 0.0;    // ソフトタイヤの径方向の潰れ (m)
     bool grounded = false;
 };
 

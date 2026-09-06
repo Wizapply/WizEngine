@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "document/EditorTypes.h"
+#include "scene/SoftLattice.h"
 
 class PhysicsWorld;
 struct GameObject;
@@ -62,4 +63,14 @@ struct GameObject {
     bool hasRuntimeColor = false;
     wizengine::editor::Color3 runtimeColor;
     std::vector<std::unique_ptr<ObjectAction>> actions;
+    // ソフトボディの格子（desc.hasSoft のときだけ）。physId はその「代表」
+    // （最初の粒子）の番号で、PhysicsWorld はその番号への操作を粒子全体に
+    // 広げる（姿勢の当てはめ・置き直し・固定・力）。描画側は latestSoft_
+    // （粒子位置のスナップショット）とこの格子から表面メッシュを組む。
+    // 物理スレッドが作り、objectsMutex_ の下で差し替える（不変なので
+    // shared_ptr<const> で持つ）。
+    std::shared_ptr<const wizengine::softlattice::Lattice> lattice;
+    // ギズモの拡縮ドラッグ中に粒子を作り直し続けないための遅延（秒）。
+    // resizeObject が積み、stepEditor が減らして 0 になったら作り直す。
+    double softRebuildTimer = 0.0;
 };

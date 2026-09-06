@@ -200,6 +200,7 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         if (!boxes_[i].desc.events.empty()) e["events"] = boxes_[i].desc.events;
         if (!boxes_[i].desc.prefab.empty()) e["prefab"] = boxes_[i].desc.prefab;
         if (boxes_[i].desc.hasVehicle) e["vehicle"] = true;
+        if (boxes_[i].desc.hasSoft) e["soft"] = true;  // 階層一覧の 🫧
         j["objects"].push_back(e);
     }
     j["aliveCount"] = alive;
@@ -216,9 +217,16 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
                 axles.push_back({{"z", a.z},
                                  {"steer", a.steerDeg},
                                  {"driven", a.driven},
-                                 {"formula", a.tire.formula}});
+                                 {"formula", a.tire.formula},
+                                 {"soft", a.tire.soft},
+                                 {"stiffness", a.tire.stiffness}});
             }
             d["vehicleAxles"] = axles;
+        }
+        // ソフトボディなら実際の粒子数・ばね数（Inspector の説明に出す）。
+        if (boxes_[sel].lattice) {
+            d["softParticles"] = int(boxes_[sel].lattice->particleCount());
+            d["softSprings"] = int(boxes_[sel].lattice->springs.size());
         }
         if (sel < poses.size()) {
             d["px"] = poses[sel].px;

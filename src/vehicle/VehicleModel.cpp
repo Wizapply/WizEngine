@@ -56,11 +56,12 @@ VehicleModel::VehicleModel(const VehicleDesc& descIn, LuaRuntime* lua,
         for (int side = -1; side <= 1; side += 2) {
             Wheel w{WheelController(axle.tire, axle.suspension,
                                     Vec3{axle.halfTrack * side, axle.y, -axle.z}),
-                    WheelSpec{}, 0.0, 0.0, 0.0};
+                    WheelSpec{}, 0.0, 0.0, 0.0, nullptr};
             w.spec.axle = int(a);
             w.spec.side = side;
             w.spec.inertia = axle.tire.inertia;
             w.spec.driven = axle.driven;
+            if (axle.tire.soft) w.soft = std::make_unique<SoftTire>(axle.tire);
             if (!axle.tire.formula.empty()) {
                 if (auto prog = programFor(axle.tire.formula)) {
                     std::unique_ptr<FormulaInstance> inst;
@@ -117,6 +118,7 @@ void VehicleModel::reset() {
         w.omega = 0.0;
         w.brakeTorque = 0.0;
         w.driveTorque = 0.0;
+        if (w.soft) w.soft->reset();
     }
     target_ = VehicleInput{};
     smoothed_ = VehicleInput{};
@@ -256,6 +258,14 @@ const std::vector<ForceAtPoint>& VehicleModel::step(const ChassisState& chassis,
     // ---- 5. 車体へ掛ける力 -------------------------------------------------
     for (Wheel& w : wheels_) {
         w.controller.finishStep(ticks);
+        // ソフトタイヤの見た目: 車輪の姿勢と接地面で変形メッシュを 1 ステップ
+        // 進める（力は返さない）。接地していなければ丸に戻っていく。
+        if (w.soft) {
+            w.soft->step(w.controller.wheelCenter(),
+                         wheelRotation(chassis.rotation, w.controller),
+                         w.controller.grounded(), w.controller.contactPoint(),
+                         w.controller.contactNormal(), dt);
+        }
         if (!w.controller.grounded()) continue;
         forces_.push_back({w.controller.suspensionForce(), w.controller.suspensionPoint()});
         forces_.push_back({w.controller.tireForce(), w.controller.contactPoint()});
@@ -293,9 +303,23 @@ std::vector<WheelLocalPose> VehicleModel::wheelLocalPoses() const {
         p.spinAngle = w.controller.spinAngle();
         p.radius = axle.tire.radius;
         p.width = axle.tire.width;
+        p.deflection = w.controller.deflection();
+        if (w.soft) {
+            auto mesh = std::make_shared<std::vector<float>>();
+            w.soft->particlesAsFloats(*mesh);
+            p.softMesh = mesh;
+            p.softRadius = w.soft->radius();
+        }
         out.push_back(p);
     }
     return out;
+}
+
+Quat VehicleModel::wheelRotation(const Quat& chassis, const WheelController& w) {
+    // 舵（車体の上向きまわり）× 回転（車軸まわり。前へ転がる = -X まわりの正）。
+    const Quat steer = Quat::fromAxisAngle(Vec3{0.0, 1.0, 0.0}, w.steerRad());
+    const Quat spin = Quat::fromAxisAngle(Vec3{-1.0, 0.0, 0.0}, w.spinAngle());
+    return (chassis * steer * spin).normalized();
 }
 
 std::vector<WheelLocalPose> VehicleModel::designWheelPoses(const VehicleDesc& descIn,
@@ -314,6 +338,13 @@ std::vector<WheelLocalPose> VehicleModel::designWheelPoses(const VehicleDesc& de
             p.drop = axle.suspension.restLength - sag;
             p.radius = axle.tire.radius;
             p.width = axle.tire.width;
+            // ソフトタイヤの静的な潰れ（見た目の目安。メッシュは null =
+            // 描画側が静止形状を組む）。
+            if (axle.tire.soft && wheels > 0.0) {
+                p.deflection = clampd(chassisMass * 9.81 / (wheels * axle.tire.stiffness),
+                                      0.0, 0.45 * axle.tire.radius);
+                p.softRadius = SoftTire::particleRadius(axle.tire);
+            }
             out.push_back(p);
         }
     }
@@ -328,10 +359,7 @@ std::vector<WheelPose> VehicleModel::wheelPoses(const ChassisState& chassis) con
         p.radius = w.controller.radius();
         p.width = desc_.axles[std::size_t(w.spec.axle)].tire.width;
         p.center = w.controller.wheelCenter();
-        // 舵（車体の上向きまわり）× 回転（車軸まわり。前へ転がる = -X まわりの正）。
-        const Quat steer = Quat::fromAxisAngle(Vec3{0.0, 1.0, 0.0}, w.controller.steerRad());
-        const Quat spin = Quat::fromAxisAngle(Vec3{-1.0, 0.0, 0.0}, w.controller.spinAngle());
-        p.rotation = (chassis.rotation * steer * spin).normalized();
+        p.rotation = wheelRotation(chassis.rotation, w.controller);
         out.push_back(p);
     }
     return out;

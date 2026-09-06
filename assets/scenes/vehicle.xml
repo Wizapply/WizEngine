@@ -95,11 +95,15 @@
         <engine torque="300" idle="900" max="6500" inertia="0.25"/>
         <clutch torque="500" engage="1300" full="2200"/>
         <gearbox ratios="3.6 2.1 1.4 1 0.8" reverse="3.4" final="3.9" up="5800" down="2300"/>
+        <!-- soft="true" でタイヤが質点ばねの変形メッシュになり（接地面が潰れ、
+             転がりながら戻る）、物理では径方向ばね stiffness (N/m) がサスと
+             直列に効く（潰れ = 荷重 / stiffness。この車は 1 輪 3.4 kN で約 2.8 cm）。
+             segments / rows はメッシュの分割。剛タイヤに戻すなら soft を消す。 -->
         <axle z="1.3" y="-0.15" track="1.7" steer="32" driven="false" brake="1">
-          <tire formula="tire_mf"/>
+          <tire formula="tire_mf" soft="true" stiffness="120000" damping="0.4" segments="24" rows="3"/>
         </axle>
         <axle z="-1.3" y="-0.15" track="1.7" driven="true" brake="0.65" handbrake="1" diff="lsd" lock="250">
-          <tire formula="tire_mf"/>
+          <tire formula="tire_mf" soft="true" stiffness="120000" damping="0.4" segments="24" rows="3"/>
         </axle>
       </vehicle>
     </body>

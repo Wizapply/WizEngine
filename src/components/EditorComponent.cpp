@@ -139,6 +139,19 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         d.mass = msg.value("mass", 1.0);
         d.fixed = msg.value("fixed", false);
         d.color = ed::colorFromHex(msg.value("color", ""), d.color);
+        // ソフトボディ（アセットパネルの 🫧 タイル）。`soft: true` か
+        // `soft: {enabled, res, ...}`。中身は bodyFromJson と同じ読み方。
+        if (msg.contains("soft")) {
+            nlohmann::json only;
+            only["soft"] = msg["soft"];
+            d = ed::bodyFromJson(only, d);
+            // メッシュのソフトボディは無い（格子は箱か球）。
+            if (d.hasSoft && d.shape == ed::ShapeKind::Model) {
+                d.shape = ed::ShapeKind::Box;
+                d.collision = ed::ShapeKind::Box;
+                d.mesh.clear();
+            }
+        }
         d = ed::clampBody(d);
 
         if (msg.contains("x") && msg.contains("y") && msg.contains("z")) {
@@ -177,7 +190,8 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         nlohmann::json args;
         args["index"] = index;
         for (const char* key : {"name", "shape", "collision", "mass", "fixed",
-                                "color", "size", "position", "rotation"}) {
+                                "color", "size", "position", "rotation",
+                                "soft"}) {
             if (msg.contains(key)) args[key] = msg[key];
         }
         EditorState::Op op;
@@ -502,11 +516,18 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
                                 ? msg["on"].get<bool>()
                                 : true;
         } else {
+            // 送られてきたキーだけ積む（Scene 側も同じ約束で部分更新）。
             op.args["axle"] = ed::jsonInt(msg, "axle", -1);
-            op.args["formula"] = ed::sanitizeEventName(
-                (msg.contains("formula") && msg["formula"].is_string())
-                    ? msg["formula"].get<std::string>()
-                    : std::string());
+            if (msg.contains("formula") && msg["formula"].is_string()) {
+                op.args["formula"] =
+                    ed::sanitizeEventName(msg["formula"].get<std::string>());
+            }
+            if (msg.contains("soft") && msg["soft"].is_boolean()) {
+                op.args["soft"] = msg["soft"].get<bool>();
+            }
+            if (msg.contains("stiffness") && msg["stiffness"].is_number()) {
+                op.args["stiffness"] = msg["stiffness"].get<double>();
+            }
         }
         op.camera = camIndex;
         state.push(std::move(op));

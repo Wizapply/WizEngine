@@ -279,6 +279,17 @@ xml::Element bodyElement(const BodyDesc& b) {
         pf.set("name", b.prefab);
         body.append(std::move(pf));
     }
+    // ソフトボディ（WizEngine の拡張。書式は EditorTypes.h の SoftDesc）。
+    if (b.hasSoft) {
+        xml::Element soft("soft");
+        soft.setInt("res", b.soft.resolution);
+        soft.setNumber("stiffness", b.soft.stiffness);
+        soft.setNumber("damping", b.soft.damping);
+        soft.setNumber("shear", b.soft.shear);
+        soft.setNumber("bend", b.soft.bend);
+        soft.setInt("iterations", b.soft.iterations);
+        body.append(std::move(soft));
+    }
     return body;
 }
 
@@ -335,6 +346,27 @@ BodyDesc bodyFromXml(const xml::Element& e,
                     warn("<body name=\"" + label + "\"> " + m);
                 }
             }
+        } else if (c.name() == "soft") {
+            // ソフトボディ。属性は全部既定値付き（<soft/> だけでも有効になる）。
+            if (b.hasSoft) {
+                warn("<body name=\"" + label +
+                     "\">: extra <soft> elements are ignored");
+            } else {
+                b.hasSoft = true;
+                b.soft.resolution = c.integer("res", b.soft.resolution);
+                b.soft.stiffness = c.number("stiffness", b.soft.stiffness);
+                b.soft.damping = c.number("damping", b.soft.damping);
+                b.soft.shear = c.number("shear", b.soft.shear);
+                b.soft.bend = c.number("bend", b.soft.bend);
+                b.soft.iterations = c.integer("iterations", b.soft.iterations);
+                const SoftDesc clamped = clampSoft(b.soft);
+                if (clamped.resolution != b.soft.resolution) {
+                    warn("<body name=\"" + label + "\">: <soft res=\"" +
+                         std::to_string(b.soft.resolution) +
+                         "\"> is out of range (2-8) - clamped");
+                }
+                b.soft = clamped;
+            }
         } else if (c.name() == "body") {
             warn("<body name=\"" + label + "\">: nested <body> is not "
                  "supported - ignored (place bodies directly under "
@@ -348,6 +380,11 @@ BodyDesc bodyFromXml(const xml::Element& e,
         warn("<body name=\"" + label +
              "\">: extra <geom> elements are ignored (one shape per body)");
     }
+
+    // ソフトボディは箱か球の格子（メッシュ形状は箱として扱う）。
+    // ここで警告し、下の geom 読み込みが済んでから倒す（mesh の警告と
+    // 二重に出さないため、形の判定は最後に行う）。
+    const bool softBody = b.hasSoft;
 
     // MJCF は 1 つの body に複数 geom を書けるが、こちらの剛体は 1 形状。
     // 先頭の geom だけを見る。
@@ -405,6 +442,14 @@ BodyDesc bodyFromXml(const xml::Element& e,
     } else {
         warn("<body name=\"" + label +
              "\"> has no <geom> - using a default box");
+    }
+    if (softBody && b.shape == ShapeKind::Model) {
+        warn("<body name=\"" + label +
+             "\">: <soft> needs a box or sphere geom - the mesh is drawn as "
+             "a soft box of its size");
+        b.shape = ShapeKind::Box;
+        b.collision = ShapeKind::Box;
+        b.mesh.clear();
     }
     return clampBody(b);
 }

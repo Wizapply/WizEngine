@@ -99,6 +99,18 @@ public:
     // オブジェクトごとの色。最初の呼び出しでそのスロット専用のマテリアル
     // インスタンスを作る（共有インスタンスを書き換えると全部の色が変わる）。
     void setShapeColor(std::size_t id, const filament::math::float3& color);
+
+    // ---- ソフトボディ（毎フレーム頂点を書き換える三角メッシュ）----------
+    // 形状スロットの 1 つとして作るので、色・ハイライト・削除は addShape と
+    // 同じ口（setShapeColor / setBoxHighlighted / removeShape）。頂点は
+    // **ワールド座標**で渡す（姿勢行列は使わない - 変形する物に 1 個の
+    // 姿勢は無い）。indices は 3 個で 1 三角形、外から見て反時計回り。
+    // 位置と法線の配列は 3 個で 1 頂点・vertexCount ぶん。バウンディング
+    // ボックスは頂点から毎回作り直す（影とカリングのため）。RENDER スレッド。
+    std::size_t addSoftShape(std::size_t vertexCount,
+                             const std::vector<uint32_t>& indices);
+    void setSoftShapeVertices(std::size_t id, const float* positions,
+                              const float* normals, std::size_t vertexCount);
     // ---- Lights ----------------------------------------------------------
     // ライトの設計値はシーン側（Scene のライト一覧、保存文書に入る）。ここが
     // 持つのは Filament のエンティティだけ。addLight / removeLight / updateLight
@@ -331,6 +343,11 @@ private:
         filament::MaterialInstance* mi = nullptr;  // 個別色。null = 共有
         int highlight = -1;                        // -1 = ハイライト無し
         bool used = false;
+        // ソフトボディだけが持つ自前のバッファ（組み込み形状は共有メッシュ
+        // なので null）。removeShape が一緒に壊す。
+        filament::VertexBuffer* vb = nullptr;
+        filament::IndexBuffer* ib = nullptr;
+        uint32_t vertexCount = 0;
     };
     std::vector<ShapeSlot> shapes_;
     std::vector<std::size_t> freeShapes_;

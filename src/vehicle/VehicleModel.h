@@ -1,10 +1,12 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "vehicle/LuaFormula.h"
 #include "vehicle/Powertrain.h"
+#include "vehicle/SoftTire.h"
 #include "vehicle/VehicleMath.h"
 #include "vehicle/VehicleTypes.h"
 #include "vehicle/WheelController.h"
@@ -48,6 +50,12 @@ struct WheelLocalPose {
     double spinAngle = 0.0;  // rad、前へ転がるほど増える
     double radius = 0.3;
     double width = 0.2;
+    // ソフトタイヤ（<tire soft>）: 径方向の潰れと、変形メッシュの粒子位置
+    // （ワールド、3 個で 1 粒子、並びは SoftTire::topology）。走らせていない
+    // とき（設計値からの姿勢）は null で、描画側が静止形状を組む。
+    double deflection = 0.0;
+    std::shared_ptr<const std::vector<float>> softMesh;
+    double softRadius = 0.0;  // 粒子の当たり半径（表面の押し出し量）
 };
 
 class VehicleModel {
@@ -90,7 +98,12 @@ private:
         double omega = 0.0;
         double brakeTorque = 0.0;
         double driveTorque = 0.0;
+        // ソフトタイヤの変形メッシュ（<tire soft> のときだけ）。見た目専用で、
+        // 車体へ力は返さない（物理は controller の径方向ばね）。
+        std::unique_ptr<SoftTire> soft;
     };
+    // 車輪のワールド姿勢（中心と回転。X = 車軸）。wheelPoses と SoftTire が使う。
+    static Quat wheelRotation(const Quat& chassis, const WheelController& w);
 
     // この軸の舵角（rad、左右別）。アッカーマンは後軸までの距離から。
     double wheelSteer(const AxleDesc& axle, int side) const;

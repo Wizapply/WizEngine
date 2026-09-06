@@ -12,6 +12,8 @@
 #include "components/VehicleComponent.h"
 #include "scene/MathBridge.h"
 #include "scene/SceneMath.h"
+#include "scene/SoftLattice.h"
+#include "vehicle/SoftTire.h"
 #include "vehicle/VehicleModel.h"
 
 namespace ed = wizengine::editor;
@@ -37,6 +39,15 @@ filament::math::mat4f rotationEuler(const ed::Vec3d& deg) {
     const scenemath::Quat q = scenemath::quatFromEulerDegrees(deg.x, deg.y, deg.z);
     BodyTransform t{0, 0, 0, q.w(), q.x(), q.y(), q.z()};
     return toFilament(t);
+}
+
+// この部品がソフトタイヤとして描く車輪か（円柱 + 車輪ソケット + その軸の
+// <tire soft>）。そうなら axle / side を返す。
+bool softTirePart(const ed::BodyDesc& desc, const ed::PartDesc& p, int& axle, int& side) {
+    if (p.kind != ed::PartKind::Cylinder || !desc.hasVehicle) return false;
+    if (!ed::parseWheelSocket(p.socket, axle, side)) return false;
+    if (axle < 0 || std::size_t(axle) >= desc.vehicle.axles.size()) return false;
+    return desc.vehicle.axles[std::size_t(axle)].tire.soft;
 }
 
 }  // namespace
@@ -100,6 +111,15 @@ void PrefabComponent::onRender(Scene& scene) {
                 key += ";" + std::to_string(a.tire.radius) + "/" + std::to_string(a.tire.width);
             }
         }
+        // ソフトタイヤの有無と分割はスロットの種類（円柱 / 変形メッシュ）を
+        // 決めるので、どちらのプレハブでもキーに含める。
+        if (prefab && desc.hasVehicle) {
+            for (const auto& a : desc.vehicle.axles) {
+                key += a.tire.soft ? ";soft" + std::to_string(a.tire.segments) + "x" +
+                                         std::to_string(a.tire.rows)
+                                   : ";rigid";
+            }
+        }
         auto it = instances_.find(i);
         if (!prefab) {
             if (it != instances_.end()) {
@@ -117,6 +137,21 @@ void PrefabComponent::onRender(Scene& scene) {
             release(scene, inst);
             for (const ed::PartDesc& p : prefab->parts) {
                 Slot s;
+                int axle = 0, side = 0;
+                if (softTirePart(desc, p, axle, side)) {
+                    // ソフトタイヤ: 円柱の代わりに変形メッシュ。部品の寸法・位置は
+                    // 使わず、タイヤの設計値（半径・幅・分割）と車輪の姿勢で描く。
+                    const veh::TireDesc& tire = desc.vehicle.axles[std::size_t(axle)].tire;
+                    auto topo = std::make_shared<const veh::SoftTireTopology>(
+                        veh::SoftTire::topology(tire));
+                    s.id = r.addSoftShape(topo->vertexCount, topo->indices);
+                    s.soft = true;
+                    s.topology = topo;
+                    s.softRadius = veh::SoftTire::particleRadius(tire);
+                    r.setShapeColor(s.id, {p.color.r, p.color.g, p.color.b});
+                    inst.slots.push_back(s);
+                    continue;
+                }
                 if (p.kind == ed::PartKind::Mesh) {
                     const int mi = scene.meshIndexFor(p.mesh);
                     const std::size_t model = scene.meshModelId(mi);
@@ -151,6 +186,47 @@ void PrefabComponent::onRender(Scene& scene) {
         const mat4f chassis = toFilament(pose);
         for (std::size_t k = 0; k < prefab->parts.size() && k < inst.slots.size(); ++k) {
             const ed::PartDesc& p = prefab->parts[k];
+            if (inst.slots[k].soft) {
+                // ソフトタイヤ: 物理スレッドのスナップショット（粒子のワールド
+                // 位置）から表面を組む。走らせていない（エディタ中・作った直後）
+                // ときは静止形状を車輪の姿勢に置いて描く。
+                const Slot& s = inst.slots[k];
+                int sAxle = 0, sSide = 0;
+                if (!ed::parseWheelSocket(p.socket, sAxle, sSide) || !s.topology) continue;
+                const std::size_t wi = std::size_t(sAxle) * 2 + (sSide > 0 ? 1 : 0);
+                if (wi >= wheels.size() ||
+                    std::size_t(sAxle) >= desc.vehicle.axles.size()) {
+                    continue;
+                }
+                const veh::WheelLocalPose& w = wheels[wi];
+                const veh::TireDesc& tire = desc.vehicle.axles[std::size_t(sAxle)].tire;
+                const float* pts = nullptr;
+                double radius = s.softRadius;
+                if (w.softMesh && w.softMesh->size() == s.topology->vertexCount * 3) {
+                    pts = w.softMesh->data();
+                    radius = w.softRadius > 0.0 ? w.softRadius : radius;
+                } else {
+                    // 静止形状: 車体の姿勢 × 車輪のローカル姿勢（PrefabComponent の
+                    // 剛タイヤと同じ合成 = VehicleModel::wheelRotation）。
+                    const veh::Quat chassisQ{pose.qw, pose.qx, pose.qy, pose.qz};
+                    const veh::Vec3 chassisP{pose.px, pose.py, pose.pz};
+                    const veh::Vec3 localCenter{w.attach.x, w.attach.y - w.drop, w.attach.z};
+                    const veh::Quat rot =
+                        (chassisQ * veh::Quat::fromAxisAngle(veh::Vec3{0.0, 1.0, 0.0}, w.steerRad) *
+                         veh::Quat::fromAxisAngle(veh::Vec3{-1.0, 0.0, 0.0}, w.spinAngle))
+                            .normalized();
+                    veh::SoftTire::restParticles(tire, chassisP + chassisQ.rotate(localCenter),
+                                                 rot, softRest_);
+                    if (softRest_.size() != s.topology->vertexCount * 3) continue;
+                    pts = softRest_.data();
+                }
+                wizengine::softlattice::buildSurfaceMesh(
+                    nullptr, s.topology->vertexCount, s.topology->indices.data(),
+                    s.topology->indices.size(), radius, pts, softVerts_, softNormals_);
+                r.setSoftShapeVertices(s.id, softVerts_.data(), softNormals_.data(),
+                                       s.topology->vertexCount);
+                continue;
+            }
             mat4f parent = chassis;
             int axle = 0, side = 0;
             if (ed::parseWheelSocket(p.socket, axle, side)) {

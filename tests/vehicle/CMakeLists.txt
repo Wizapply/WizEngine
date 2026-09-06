@@ -17,6 +17,7 @@ add_executable(vehicle_test
     ${SRC}/vehicle/VehicleTypes.cpp
     ${SRC}/vehicle/WheelController.cpp
     ${SRC}/vehicle/Powertrain.cpp
+    ${SRC}/vehicle/SoftTire.cpp
     ${SRC}/vehicle/VehicleModel.cpp
     ${SRC}/vehicle/VehicleXml.cpp
     ${SRC}/vehicle/Formula.cpp

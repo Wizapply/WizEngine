@@ -1340,6 +1340,7 @@
       // プレハブ付き（🧩）と車両（🚗）の目印。右クリックのメニュー用に
       // data-index も付ける（プレハブの編集の入口）。
       const tag = (o.vehicle ? '<span class="tag" title="車両">🚗</span>' : '') +
+        (o.soft ? '<span class="tag" title="ソフトボディ">🫧</span>' : '') +
         (o.prefab ? '<span class="tag" title="プレハブ: ' + o.prefab + '">🧩</span>' : '');
       html += '<div class="item' + (isMine ? ' sel' : '') + '" data-index="' + o.index +
               '" onclick="selectObject(' + o.index + ')">' + dot +
@@ -1362,9 +1363,10 @@
       el.textContent = 'nothing selected';
       return;
     }
-    const drawn = o.shape === 'model'
+    const drawn = (o.shape === 'model'
       ? ('Model (' + (o.mesh || '?') + ')')
-      : (o.shape === 'sphere' ? 'Sphere' : 'Box');
+      : (o.shape === 'sphere' ? 'Sphere' : 'Box')) +
+      ((o.soft && o.soft.enabled) ? ' · soft ' + (o.softParticles || 0) + 'p' : '');
     const size = o.shape === 'box'
       ? [o.size.x, o.size.y, o.size.z].map((v) => v.toFixed(2)).join(' × ')
       : ('⌀ ' + o.size.x.toFixed(2));
@@ -1456,7 +1458,7 @@
     const m = ((sceneData && sceneData.meshes) || [])[i];
     if (m) addObject('model', m.name);
   }
-  function addObject(shape, mesh) {
+  function addObject(shape, mesh, soft) {
     const msg = {
       shape: shape,
       size: num('edNewSize', 0.5),
@@ -1466,6 +1468,8 @@
     // glTF モデルの配置（アセットパネルの mesh タイル）。size は当たり判定の
     // 大きさで、見た目の大きさは文書の <mesh scale> が決める。
     if (mesh) msg.mesh = mesh;
+    // ソフトボディ（🫧 タイル）: 既定の格子設定で作る。数値は Inspector で。
+    if (soft) msg.soft = { enabled: true };
     send('edit.add', msg);
   }
 
@@ -2091,6 +2095,7 @@
                              sel.index);
     }
     renderVehicleSection(sel);
+    renderSoftSection(sel);
     renderPrefabEditor();
     if (lightSel) renderNodesFor('light', lightSel.index, 'edLightEvents');
     if (camSel) renderNodesFor('camera', camSel.index, 'edCamEvents');
@@ -2180,6 +2185,13 @@
       '<div class="asItem" title="クリックでカメラ正面に配置" ' +
       'onclick="addObject(\'sphere\')"><span class="ico">⚪</span>' +
       '<span class="name">Sphere</span><span class="kind">primitive</span></div>' +
+      // ソフトボディ（質点ばね）。箱 / 球の格子で、置いた直後から柔らかい。
+      '<div class="asItem" title="柔らかい箱を配置（粒子の格子 + ばね）" ' +
+      'onclick="addObject(\'box\', null, true)"><span class="ico">🫧</span>' +
+      '<span class="name">Soft Box</span><span class="kind">soft body</span></div>' +
+      '<div class="asItem" title="柔らかい球を配置（粒子の格子 + ばね）" ' +
+      'onclick="addObject(\'sphere\', null, true)"><span class="ico">🫧</span>' +
+      '<span class="name">Soft Ball</span><span class="kind">soft body</span></div>' +
       // ライト。クリックでカメラ正面（Sun は原点上空）に追加され、そのまま
       // 選択されるので、置いた直後にギズモ / Inspector で調整できる。
       '<div class="asItem" title="点光源を追加（全方向に光る）" ' +
@@ -2480,6 +2492,48 @@
     if (!sel) return;
     send('edit.vehicle.tire', { index: sel.index, axle: axle, formula: name || '' });
   }
+  // ---- ソフトボディ（Inspector の節）----------------------------------------
+  // 設定は edit.set の "soft" キー 1 個にまとめて送る（部分更新なので、触った
+  // 欄の値だけが変わる）。サーバー側は変更があれば粒子を作り直す。
+  function applySoft() {
+    const sel = mySelectedDesc();
+    if (!sel) return;
+    const on = document.getElementById('edSoftOn').checked;
+    const cur = sel.soft || {};
+    applyEdit({ soft: {
+      enabled: on,
+      res: Math.round(num('edSoftRes', cur.res || 4)),
+      stiffness: num('edSoftStiff', cur.stiffness || 4000),
+      damping: num('edSoftDamp', cur.damping !== undefined ? cur.damping : 0.3),
+      shear: num('edSoftShear', cur.shear !== undefined ? cur.shear : 1),
+      bend: num('edSoftBend', cur.bend !== undefined ? cur.bend : 0.5),
+      iterations: Math.round(num('edSoftIter', cur.iterations || 2))
+    } });
+  }
+  function renderSoftSection(sel) {
+    const props = document.getElementById('edSoftProps');
+    if (!props) return;
+    if (!sel) { props.hidden = true; return; }
+    const s = sel.soft || {};
+    const on = !!s.enabled;
+    setField('edSoftOn', on);
+    props.hidden = !on;
+    if (!on) return;
+    setField('edSoftRes', s.res);
+    setField('edSoftStiff', round2(s.stiffness));
+    setField('edSoftDamp', round2(s.damping));
+    setField('edSoftShear', round2(s.shear));
+    setField('edSoftBend', round2(s.bend));
+    setField('edSoftIter', s.iterations);
+    const n = s.res || 0;
+    document.getElementById('edSoftHint').textContent =
+      (sel.shape === 'sphere' ? '球' : '箱') + 'を ' + n + '×' + n + '×' + n +
+      ' = ' + (sel.softParticles || n * n * n) + ' 粒子とばね ' +
+      (sel.softSprings || 0) + ' 本で作ります。大きさ・質量は上の欄のまま' +
+      '（質量は粒子へ等分）。掴む・力・固定・衝突トリガーは剛体と同じに' +
+      '効きます。ジョイントは代表粒子（最初の 1 個）に付きます。';
+  }
+
   let vehicleSecKey = '';
   function renderVehicleSection(sel) {
     const axlesEl = document.getElementById('edVehicleAxles');
@@ -2491,7 +2545,8 @@
     const axles = sel.vehicleAxles || [];
     const names = formulaAssets().map((f) => f.name);
     const key = sel.index + '|' + (sel.vehicle ? 1 : 0) + '|' +
-      axles.map((a) => a.z + ':' + a.steer + ':' + a.driven + ':' + a.formula).join(',') +
+      axles.map((a) => a.z + ':' + a.steer + ':' + a.driven + ':' + a.formula +
+                       ':' + (a.soft ? 1 : 0) + ':' + a.stiffness).join(',') +
       '|' + names.join(',');
     if (key === vehicleSecKey) return;
     if (axlesEl.contains(document.activeElement) &&
@@ -2510,10 +2565,34 @@
       }
       if (!found) opts += '<option value="' + ndEsc(a.formula) + '" selected>? ' +
                           ndEsc(a.formula) + '</option>';
+      // ソフトタイヤ: 見た目が質点ばねの変形メッシュになり、物理では径方向
+      // ばね（サスと直列）が効く。剛性は潰れ = 荷重 / 剛性。
+      const stiff = (a.stiffness !== undefined) ? Math.round(a.stiffness) : 150000;
       return '<div class="edRow"><span>軸 ' + i + '（' + what + '）タイヤ式</span>' +
         '<select class="strSel" title="この軸のタイヤの計算式（🧮 アセット）" ' +
-        'onchange="applyVehicleTire(' + i + ', this.value)">' + opts + '</select></div>';
+        'onchange="applyVehicleTire(' + i + ', this.value)">' + opts + '</select></div>' +
+        '<div class="edRow"><span>軸 ' + i + ' ソフトタイヤ</span>' +
+        '<input type="checkbox"' + (a.soft ? ' checked' : '') +
+        ' title="タイヤを質点ばねの変形メッシュで描き、径方向ばねをサスと直列に効かせる"' +
+        ' onchange="applyVehicleSoft(' + i + ', this.checked)"></div>' +
+        (a.soft
+          ? '<div class="edRow" title="径方向剛性 (N/m)。潰れ = 荷重 / 剛性（上限は半径の 45%）">' +
+            '<span>軸 ' + i + ' タイヤ剛性 (N/m)</span>' +
+            '<input class="num" type="number" step="10000" min="1000" value="' + stiff + '"' +
+            ' onchange="applyVehicleTireStiffness(' + i + ', this.value)"></div>'
+          : '');
     }).join('');
+  }
+  function applyVehicleSoft(axle, on) {
+    const sel = mySelectedDesc();
+    if (!sel) return;
+    send('edit.vehicle.tire', { index: sel.index, axle: axle, soft: !!on });
+  }
+  function applyVehicleTireStiffness(axle, value) {
+    const sel = mySelectedDesc();
+    const v = parseFloat(value);
+    if (!sel || !Number.isFinite(v)) return;
+    send('edit.vehicle.tire', { index: sel.index, axle: axle, stiffness: v });
   }
   function currentAsset() {
     const list = eventAssets();

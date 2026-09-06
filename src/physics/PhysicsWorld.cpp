@@ -16,11 +16,16 @@
 #include <chrono_multicore/physics/ChSystemMulticore.h>
 #endif
 
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
+#include <Eigen/SVD>
+
 #include <algorithm>
 #include <cmath>
 #include <memory>
 #include <cstdio>
 #include <thread>
+#include <type_traits>
 
 using namespace chrono;
 
@@ -135,6 +140,41 @@ auto wakeUp(T* obj, long) -> decltype(obj->WakeUp(), void()) {
     obj->WakeUp();
 }
 
+// 衝突ファミリ: 同じソフトボディの粒子どうしを当てない（ばねで結んだ隣が
+// 接触で押し合うと硬さが二重になる）。Chrono 9 は SetFamily +
+// DisallowCollisionsWith、旧版は SetFamilyMaskNoCollisionWithFamily。
+// どちらも無い版では粒子どうしも当たる（半径をセルより小さくしてあるので
+// 静止状態では触れない）。
+template <typename M>
+auto setNoSelfCollision(M* model, int family, int)
+    -> decltype(model->SetFamily(family), model->DisallowCollisionsWith(family),
+                void()) {
+    model->SetFamily(family);
+    model->DisallowCollisionsWith(family);
+}
+template <typename M>
+auto setNoSelfCollision(M* model, int family, long)
+    -> decltype(model->SetFamily(family),
+                model->SetFamilyMaskNoCollisionWithFamily(family), void()) {
+    model->SetFamily(family);
+    model->SetFamilyMaskNoCollisionWithFamily(family);
+}
+template <typename M>
+bool setNoSelfCollision(M*, int, ...) {
+    return false;
+}
+// 上の 2 つは void を返すので、戻り値で「できたか」を判定できるように包む。
+template <typename M>
+bool applyNoSelfCollision(M* model, int family) {
+    using R = decltype(setNoSelfCollision(model, family, 0));
+    if constexpr (std::is_same<R, bool>::value) {
+        return setNoSelfCollision(model, family, 0);
+    } else {
+        setNoSelfCollision(model, family, 0);
+        return true;
+    }
+}
+
 // ChLinkLock 系の Initialize は Chrono 9 で ChCoordsys<> から ChFrame<> に
 // 変わった。どちらでも通るように、コンパイルできるほうを選ぶ（この
 // ファイルで既に使っている sleeping/velocity の書き方と同じ手口）。
@@ -236,7 +276,197 @@ void PhysicsWorld::registerBody(const std::shared_ptr<chrono::ChBody>& body) {
     bodyIndex_[body.get()] = bodies_.size();
     bodies_.push_back(body);
     active_.push_back(true);
+    softOf_.push_back(kNoSoft);  // addSoftBody が粒子ぶんを後から書き換える
     bindCollision(body);
+}
+
+// ---- ソフトボディ -----------------------------------------------------------
+
+std::size_t PhysicsWorld::representative(std::size_t id) const {
+    if (id >= softOf_.size() || softOf_[id] == kNoSoft) return id;
+    return softBodies_[softOf_[id]].root;
+}
+
+const PhysicsWorld::SoftBody* PhysicsWorld::softOfRoot(std::size_t id) const {
+    if (id >= softOf_.size() || softOf_[id] == kNoSoft) return nullptr;
+    const SoftBody& s = softBodies_[softOf_[id]];
+    return s.root == id ? &s : nullptr;
+}
+
+PhysicsWorld::SoftBody* PhysicsWorld::softOfRoot(std::size_t id) {
+    if (id >= softOf_.size() || softOf_[id] == kNoSoft) return nullptr;
+    SoftBody& s = softBodies_[softOf_[id]];
+    return s.root == id ? &s : nullptr;
+}
+
+bool PhysicsWorld::isSoftBody(std::size_t id) const {
+    return softOfRoot(id) != nullptr;
+}
+
+std::size_t PhysicsWorld::softParticleCount(std::size_t id) const {
+    const SoftBody* s = softOfRoot(id);
+    return s ? s->particles.size() : 0;
+}
+
+void PhysicsWorld::softParticlePositions(std::size_t id,
+                                         std::vector<float>& out) const {
+    out.clear();
+    const SoftBody* s = softOfRoot(id);
+    if (!s) return;
+    out.reserve(s->particles.size() * 3);
+    for (const std::size_t p : s->particles) {
+        const ChVector3d v = bodies_[p]->GetPos();
+        out.push_back(float(v.x()));
+        out.push_back(float(v.y()));
+        out.push_back(float(v.z()));
+    }
+}
+
+std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec,
+                                      const ChVector3d& pos,
+                                      const ChQuaternion<>& rot) {
+    if (spec.rest.empty()) return static_cast<std::size_t>(-1);
+
+    SoftBody soft;
+    soft.rest = spec.rest;
+    soft.springs = spec.springs;
+    soft.iterations = std::max(1, spec.iterations);
+    soft.restCentroid = ChVector3d(0, 0, 0);
+    for (const auto& r : soft.rest) soft.restCentroid += r;
+    soft.restCentroid *= 1.0 / double(soft.rest.size());
+
+    // 衝突ファミリは 1〜14 を順に使う（0 は普通の剛体）。15 個目以降は
+    // 番号を使い回すので、その組は互いに当たらない - 現実的な数では起きない。
+    const int family = 1 + int(softBodies_.size() % 14);
+    const std::size_t softIndex = softBodies_.size();
+    const double radius = std::max(spec.radius, 1e-4);
+    const double volume = (4.0 / 3.0) * 3.14159265358979323846 * radius * radius * radius;
+    const double density = std::max(spec.particleMass, 1e-9) / volume;
+
+    bool familyOk = true;
+    for (std::size_t i = 0; i < spec.rest.size(); ++i) {
+        auto b = chrono_types::make_shared<ChBodyEasySphere>(
+            radius, density, /*visualize*/ false, /*collide*/ true, mat_);
+        b->SetPos(pos + rot.Rotate(spec.rest[i]));
+        b->SetRot(rot);
+        b->SetFixed(spec.fixed);
+        b->EnableCollision(true);
+        // 粒子は眠らせない: 一部だけ眠ると、ばねの相手が動いても起きずに
+        // 形が固まる（起こすのは接触だけ、という Chrono の約束のため）。
+        allowSleeping(b.get(), false, 0);
+        if (auto model = b->GetCollisionModel()) {
+            if (!applyNoSelfCollision(&*model, family)) familyOk = false;
+        }
+        sys_->AddBody(b);
+        registerBody(b);
+        const std::size_t id = bodies_.size() - 1;
+        softOf_[id] = softIndex;
+        soft.particles.push_back(id);
+    }
+    soft.root = soft.particles.front();
+    softBodies_.push_back(std::move(soft));
+    if (!familyOk && softIndex == 0) {
+        LOGW("physics",
+             "soft body: this Chrono has no collision family API - particles of "
+             "the same body also collide with each other");
+    }
+    LOGI("physics", "soft body #%zu: %zu particles, %zu springs (root body %zu)",
+         softIndex, spec.rest.size(), spec.springs.size(),
+         softBodies_.back().root);
+    return softBodies_.back().root;
+}
+
+void PhysicsWorld::placeSoftBody(SoftBody& soft, const ChVector3d& pos,
+                                 const ChQuaternion<>& rot) {
+    for (std::size_t i = 0; i < soft.particles.size(); ++i) {
+        auto& b = bodies_[soft.particles[i]];
+        b->SetPos(pos + rot.Rotate(soft.rest[i]));
+        b->SetRot(rot);
+        b->ForceToRest();
+        wakeUp(b.get(), 0);
+    }
+}
+
+// 粒子群に「剛体だったらどこにあるか」を当てはめる。重心はそのまま平均、
+// 回転は静止形状との相関行列の極分解（SVD で U V^T）= 最小二乗の回転。
+// 選択の当たり判定・ギズモ・引っぱり線・保存される姿勢がこれを使う。
+BodyTransform PhysicsWorld::softTransform(const SoftBody& soft) const {
+    const std::size_t n = soft.particles.size();
+    ChVector3d c(0, 0, 0);
+    for (const std::size_t p : soft.particles) c += bodies_[p]->GetPos();
+    c *= 1.0 / double(n);
+
+    Eigen::Matrix3d A = Eigen::Matrix3d::Zero();
+    for (std::size_t i = 0; i < n; ++i) {
+        const ChVector3d p = bodies_[soft.particles[i]]->GetPos() - c;
+        const ChVector3d q = soft.rest[i] - soft.restCentroid;
+        const Eigen::Vector3d pv(p.x(), p.y(), p.z());
+        const Eigen::Vector3d qv(q.x(), q.y(), q.z());
+        A += pv * qv.transpose();
+    }
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(A, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Matrix3d U = svd.matrixU();
+    const Eigen::Matrix3d V = svd.matrixV();
+    Eigen::Matrix3d R = U * V.transpose();
+    if (R.determinant() < 0.0) {  // 鏡映になったら最小の特異値の軸を反転
+        U.col(2) *= -1.0;
+        R = U * V.transpose();
+    }
+    const Eigen::Quaterniond q(R);
+    // 粒子 ≈ pos + R * rest なので、pos = 重心 - R * 静止重心。
+    const Eigen::Vector3d c0(soft.restCentroid.x(), soft.restCentroid.y(),
+                             soft.restCentroid.z());
+    const Eigen::Vector3d pos = Eigen::Vector3d(c.x(), c.y(), c.z()) - R * c0;
+    return {pos.x(), pos.y(), pos.z(), q.w(), q.x(), q.y(), q.z()};
+}
+
+// ばね 1 本を implicit Euler で解いて速度を直す（vehicle のクラッチと同じ
+// 「陰解法の粘性要素」の考え方をばねに広げたもの）:
+//   相対座標 x（伸び）、相対速度 v、換算質量 m とすると
+//   m v' = v - dt (k (x + dt v') + c v')
+//   → v' = (v - dt k x / m) / (1 + dt (c + dt k) / m)
+// 1 本ずつは無条件安定で、ガウス・ザイデルで回すと網全体も暴れない。
+// 位置はステップ開始時の値、速度は直しながら読む。
+void PhysicsWorld::solveSoftSprings(SoftBody& soft, double dt) {
+    if (!soft.active || dt <= 0.0 || soft.springs.empty()) return;
+    const std::size_t n = soft.particles.size();
+    std::vector<ChVector3d> pos(n), vel(n);
+    std::vector<double> invMass(n, 0.0);
+    bool anyFree = false;
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& b = bodies_[soft.particles[i]];
+        pos[i] = b->GetPos();
+        vel[i] = getLinVel(b.get(), 0);
+        const double m = b->GetMass();
+        invMass[i] = (b->IsFixed() || m <= 0.0) ? 0.0 : 1.0 / m;
+        if (invMass[i] > 0.0) anyFree = true;
+    }
+    if (!anyFree) return;  // 固定されたソフトボディは動かない
+
+    for (int iter = 0; iter < soft.iterations; ++iter) {
+        for (const auto& s : soft.springs) {
+            const std::size_t a = s.a, b = s.b;
+            if (a >= n || b >= n) continue;
+            const double w = invMass[a] + invMass[b];
+            if (w <= 0.0) continue;
+            const ChVector3d d = pos[b] - pos[a];
+            const double len = d.Length();
+            if (len < 1e-9) continue;
+            const ChVector3d dir = d * (1.0 / len);
+            const double meff = 1.0 / w;
+            const double vrel = (vel[b] - vel[a]).Dot(dir);
+            const double x = len - s.rest;
+            const double denom = 1.0 + dt * (s.c + dt * s.k) / meff;
+            const double vNew = (vrel - dt * s.k * x / meff) / denom;
+            const double impulse = meff * (vNew - vrel);
+            vel[a] -= dir * (impulse * invMass[a]);
+            vel[b] += dir * (impulse * invMass[b]);
+        }
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        if (invMass[i] <= 0.0) continue;
+        setLinVel(bodies_[soft.particles[i]].get(), vel[i], 0);
+    }
 }
 
 // Chrono 9 は衝突モデルを「衝突系の初期化（最初の DoStepDynamics）で
@@ -265,6 +495,19 @@ PhysicsWorld::activeContactPairs() const {
     auto collector =
         chrono_types::make_shared<ContactPairCollector>(bodyIndex_, pairs);
     container->ReportAllContacts(collector);
+    // ソフトボディの粒子は代表番号に寄せる（Scene はその番号しか知らない）。
+    // 同じソフトボディの粒子どうしは代表が一致するので落ちる。
+    if (!softBodies_.empty()) {
+        std::size_t kept = 0;
+        for (auto& pr : pairs) {
+            std::size_t a = representative(pr.first);
+            std::size_t b = representative(pr.second);
+            if (a == b) continue;
+            if (a > b) std::swap(a, b);
+            pairs[kept++] = {a, b};
+        }
+        pairs.resize(kept);
+    }
     // 1 ペアに接触点は複数あるのが普通（箱同士は最大 4 点）。ここで 1 本化。
     std::sort(pairs.begin(), pairs.end());
     pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
@@ -374,7 +617,13 @@ void PhysicsWorld::setSleepingEnabled(bool enabled, float seconds,
     sleepMinAngVel_ = minAngVel;
 
     allowSleeping(sys_.get(), enabled, 0);
-    for (auto& b : bodies_) {
+    for (std::size_t i = 0; i < bodies_.size(); ++i) {
+        auto& b = bodies_[i];
+        // ソフトボディの粒子は常に起きている（addSoftBody 参照）。
+        if (softOf_[i] != kNoSoft) {
+            allowSleeping(b.get(), false, 0);
+            continue;
+        }
         allowSleeping(b.get(), enabled, 0);
         if (!enabled) {
             wakeUp(b.get(), 0);
@@ -451,6 +700,19 @@ void PhysicsWorld::setContactRecoverySpeed(double recoverySpeed) {
 void PhysicsWorld::applyForce(std::size_t id, const ChVector3d& force,
                               double dt) {
     if (id >= bodies_.size()) return;
+    if (SoftBody* soft = softOfRoot(id)) {
+        // 全体の質量で速度変化を出し、全粒子へ同じだけ足す（剛体に力を
+        // 掛けたときと同じ並進になる）。
+        const double total = bodyMass(id);
+        if (total <= 0.0) return;
+        const ChVector3d dv = force * (dt / total);
+        for (const std::size_t p : soft->particles) {
+            auto& pb = bodies_[p];
+            if (pb->IsFixed()) continue;
+            setLinVel(pb.get(), getLinVel(pb.get(), 0) + dv, 0);
+        }
+        return;
+    }
     auto& b = bodies_[id];
     const double mass = b->GetMass();
     if (mass <= 0.0) return;
@@ -465,12 +727,23 @@ void PhysicsWorld::applyForce(std::size_t id, const ChVector3d& force,
 
 chrono::ChVector3d PhysicsWorld::bodyVelocity(std::size_t id) const {
     if (id >= bodies_.size()) return chrono::ChVector3d(0, 0, 0);
+    if (const SoftBody* soft = softOfRoot(id)) {
+        ChVector3d v(0, 0, 0);
+        for (const std::size_t p : soft->particles) v += getLinVel(bodies_[p].get(), 0);
+        return v * (1.0 / double(soft->particles.size()));
+    }
     return getLinVel(bodies_[id].get(), 0);
 }
 
 void PhysicsWorld::applyForceAtPoint(std::size_t id, const ChVector3d& force,
                                      const ChVector3d& point, double dt) {
     if (id >= bodies_.size()) return;
+    if (isSoftBody(id)) {
+        // ソフトボディに「点」の力は無い（回転は粒子の配置が決める）。
+        // 並進だけ全体へ。
+        applyForce(id, force, dt);
+        return;
+    }
     auto& b = bodies_[id];
     const double mass = b->GetMass();
     if (mass <= 0.0 || b->IsFixed()) return;
@@ -492,19 +765,27 @@ void PhysicsWorld::applyForceAtPoint(std::size_t id, const ChVector3d& force,
 
 chrono::ChVector3d PhysicsWorld::bodyAngularVelocity(std::size_t id) const {
     if (id >= bodies_.size()) return chrono::ChVector3d(0, 0, 0);
+    if (isSoftBody(id)) return chrono::ChVector3d(0, 0, 0);
     return getAngVel(bodies_[id].get(), 0);
 }
 
 chrono::ChVector3d PhysicsWorld::bodyPointVelocity(
     std::size_t id, const chrono::ChVector3d& point) const {
     if (id >= bodies_.size()) return chrono::ChVector3d(0, 0, 0);
+    if (isSoftBody(id)) return bodyVelocity(id);
     const auto& b = bodies_[id];
     const ChVector3d r = point - b->GetPos();
     return getLinVel(b.get(), 0) + getAngVel(b.get(), 0).Cross(r);
 }
 
 double PhysicsWorld::bodyMass(std::size_t id) const {
-    return id < bodies_.size() ? bodies_[id]->GetMass() : 0.0;
+    if (id >= bodies_.size()) return 0.0;
+    if (const SoftBody* soft = softOfRoot(id)) {
+        double total = 0.0;
+        for (const std::size_t p : soft->particles) total += bodies_[p]->GetMass();
+        return total;
+    }
+    return bodies_[id]->GetMass();
 }
 
 void PhysicsWorld::setNumThreads(int threads) {
@@ -536,6 +817,10 @@ void PhysicsWorld::setSolverIterations(int iterations) {
 }
 
 void PhysicsWorld::step(double dt) {
+    // ソフトボディのばね: 積分の前に粒子の速度へ織り込む（接触ソルバは
+    // この速度を見て解く）。
+    for (auto& soft : softBodies_) solveSoftSprings(soft, dt);
+
     sys_->DoStepDynamics(dt);
 
     // Damping after the solve: scale each body's velocity towards zero. exp()
@@ -644,6 +929,7 @@ std::size_t PhysicsWorld::bodyCount() const {
 }
 
 BodyTransform PhysicsWorld::bodyTransform(std::size_t id) const {
+    if (const SoftBody* soft = softOfRoot(id)) return softTransform(*soft);
     const auto& b = bodies_[id];
     const ChVector3d p = b->GetPos();
     const ChQuaternion<> q = b->GetRot();
@@ -652,6 +938,11 @@ BodyTransform PhysicsWorld::bodyTransform(std::size_t id) const {
 
 void PhysicsWorld::setBodyPose(std::size_t id, const ChVector3d& pos,
                                const ChQuaternion<>& rot) {
+    if (SoftBody* soft = softOfRoot(id)) {
+        // 静止形状のまま置き直す。粒子は眠らないので落下速度は要らない。
+        placeSoftBody(*soft, pos, rot);
+        return;
+    }
     bodies_[id]->SetPos(pos);
     bodies_[id]->SetRot(rot);
     bodies_[id]->ForceToRest();  // zero linear + angular velocity and accel
@@ -676,6 +967,10 @@ void PhysicsWorld::setGravityY(double gravityY) {
 void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
                              const ChQuaternion<>& rot) {
     if (id >= bodies_.size()) return;
+    if (SoftBody* soft = softOfRoot(id)) {
+        placeSoftBody(*soft, pos, rot);
+        return;
+    }
     auto& b = bodies_[id];
     b->SetPos(pos);
     b->SetRot(rot);
@@ -687,12 +982,33 @@ void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
 
 void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
     if (id >= bodies_.size()) return;
+    if (SoftBody* soft = softOfRoot(id)) {
+        // 全粒子を固定 = 形を保ったまま動かない土台になる。
+        for (const std::size_t p : soft->particles) {
+            bodies_[p]->SetFixed(fixed);
+            if (!fixed) wakeUp(bodies_[p].get(), 0);
+        }
+        return;
+    }
     bodies_[id]->SetFixed(fixed);
     if (!fixed) wakeUp(bodies_[id].get(), 0);
 }
 
 void PhysicsWorld::disableBody(std::size_t id) {
     if (id >= bodies_.size() || !active_[id]) return;
+    if (SoftBody* soft = softOfRoot(id)) {
+        // 粒子を全部退場させ、ばねも解かない。
+        soft->active = false;
+        for (const std::size_t p : soft->particles) {
+            if (p == id) continue;  // 代表は下の通常経路で
+            auto& pb = bodies_[p];
+            pb->SetFixed(true);
+            if (backend_ != PhysicsBackend::Multicore) pb->EnableCollision(false);
+            pb->ForceToRest();
+            pb->SetPos(ChVector3d(0, -1000.0, 0));
+            active_[p] = false;
+        }
+    }
     auto& b = bodies_[id];
     b->SetFixed(true);
     // Multicore の衝突系は Remove() が未実装で、Chrono 9 は
