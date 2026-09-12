@@ -9,6 +9,9 @@ web UI. (Docs below are in Japanese.)
 実行し、フレームを **GStreamer** で H.264 エンコードして **WebRTC** でブラウザへ
 配信する、リモートレンダリング／ピクセルストリーミングのプロトタイプです。
 
+現在の版: **1.0.0 “Charon”**（版番号とコードネームの定義は `src/core/Versions.h`
+の 1 か所。起動ログの 1 行目とブラウザの About 節に出ます）。
+
 ## 特徴
 
 - **エディタモード / シミュレートモード**: 物理を止めて配置・設計する
@@ -28,6 +31,12 @@ web UI. (Docs below are in Japanese.)
 - **描画**: Filament ヘッドレス（Vulkan / OpenGL）。HDR パノラマ（Radiance .hdr）を
   **起動時に GPU 上でキューブマップ化・プリフィルタ**する IBL —
   ファイル差し替えは再起動だけで反映、ビルド不要
+- **フォトリアル描画**: PBR 材質（粗さ・金属・クリアコート・自己発光）、
+  PCSS のやわらかい影、SSAO、スクリーン空間反射、ブルーム、被写界深度、
+  MSAA / TAA、**物理カメラの露出**（F 値・シャッター・ISO）と ACES などの
+  トーンマップ。すべてシーン文書の `<visual>` に入り、ブラウザから
+  Draft / Standard / Photo のプリセットで切り替えられる
+  （見本: `assets/scenes/photoreal.xml`、解説: `docs/photorealism.md`）
 - **シーン定義は 1 ファイル**: グリッド構成・形状・摩擦・カメラ・ライト・
   ストリーミング・ソルバーまで全パラメータが `src/scene/SceneConfig.h` に集約
 - **構造化ログ**: 時刻(ms)・レベル・スレッド名・タグ付き、色分け、
@@ -306,6 +315,31 @@ A →軸→ B、シミュレート中は A → B を結びます。
   `body1`、入れ子の `<body>`、零ベクトルの `axis` など）。読込時にステータスへ
   件数、コンソールへ内容が出るので、手書きの XML はそこで答え合わせできます。
   `<node>` の `id` は省略でき、読み込みが空き番号を振ります。
+
+### 描画（フォトリアル）
+
+Inspector の「描画」節がシーンの `<visual>` を編集します。**Draft / Standard /
+Photo** の 3 ボタンで一括切替、下の欄で個別調整（影の種類と解像度・MSAA・
+AO・ブルーム・反射・ビネット・被写界深度・露出・トーンマップ）。オブジェクトの
+材質（粗さ / 金属 / 反射率 / クリアコート / 自己発光）は選択オブジェクトの
+「材質」欄、地面の粗さと「背景にも出す」（スカイボックス）は World 節です。
+
+```xml
+<visual>
+  <quality shadowMap="2048" cascades="3" shadow="pcss" msaa="4" fxaa="true"/>
+  <postprocess ssao="true" bloom="0.08" ssr="true" vignette="0.25"/>
+  <exposure aperture="16" shutter="125" sensitivity="100"/>
+  <grading tonemap="aces" contrast="1.05" saturation="1.02"/>
+</visual>
+...
+<geom type="sphere" size="0.22" mass="3" rgba="0.95 0.96 0.97 1"
+      roughness="0.05" metallic="1"/>
+```
+
+いちばん効くのは**環境マップ**です。`assets/` に .hdr を置いて
+`<environment hdr="studio.hdr" intensity="25000" skybox="true"/>` と書くと、
+映り込みと背景が一致して一気に写真らしくなります。何がどこまでできるか
+（と Filament の限界）は `docs/photorealism.md` にまとめてあります。
 
 ### ギズモ
 

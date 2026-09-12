@@ -11,6 +11,7 @@
 #include "scene/Scene.h"
 #include "components/VehicleComponent.h"
 #include "scene/MathBridge.h"
+#include "scene/RenderBridge.h"
 #include "scene/SceneMath.h"
 #include "scene/SoftLattice.h"
 #include "vehicle/SoftTire.h"
@@ -149,6 +150,7 @@ void PrefabComponent::onRender(Scene& scene) {
                     s.topology = topo;
                     s.softRadius = veh::SoftTire::particleRadius(tire);
                     r.setShapeColor(s.id, {p.color.r, p.color.g, p.color.b});
+                    r.setShapeMaterial(s.id, wizengine::toRendererMaterial(p.material));
                     inst.slots.push_back(s);
                     continue;
                 }
@@ -169,6 +171,8 @@ void PrefabComponent::onRender(Scene& scene) {
                     }
                     s.id = r.addShape(mesh);
                     r.setShapeColor(s.id, {p.color.r, p.color.g, p.color.b});
+                    // 部品の材質（車の塗装なら clearCoat、ホイールなら金属）。
+                    r.setShapeMaterial(s.id, wizengine::toRendererMaterial(p.material));
                 }
                 inst.slots.push_back(s);
             }

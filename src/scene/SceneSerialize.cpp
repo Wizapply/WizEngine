@@ -105,6 +105,8 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     // 地面と環境光（Inspector の World 節が編集する）。
     j["ground"] = ed::toJson(ground_);
     j["environment"] = ed::toJson(environment_);
+    // 描画設定（Inspector の「描画」節）。文書の <visual> と同じ値。
+    j["render"] = ed::toJson(render_);
     j["objects"] = nlohmann::json::array();
     j["joints"] = nlohmann::json::array();
     {
@@ -264,6 +266,8 @@ ed::SceneDocument Scene::document() {
     doc.hasGround = true;
     doc.environment = environment_;
     doc.hasEnvironment = true;
+    doc.render = render_;
+    doc.hasVisual = true;
 
     // ライト（削除済みは詰める。イベントノードがライト番号を参照するので、
     // オブジェクトと同じく詰めた先への対応表を持つ）。
@@ -401,6 +405,8 @@ void Scene::loadDocument(const ed::SceneDocument& doc) {
     setGroundAndEnvironment(
         doc.hasGround ? doc.ground : ed::GroundDesc{},
         doc.hasEnvironment ? doc.environment : ed::EnvironmentDesc{});
+    // 描画設定（<visual>）も同じ。書いていない文書は既定値 = 従来の絵。
+    setRenderDesc(doc.hasVisual ? doc.render : ed::RenderDesc{});
 
     // ライト。文書がライトを 1 つも持たなければ初期構成へ戻す（旧 v1 の保存や、
     // 手で書いた最小の XML）。読み込んだシーンが保存時と同じ見た目になるのが

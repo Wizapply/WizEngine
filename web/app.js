@@ -694,16 +694,20 @@
       if (s.versions && !versionsShown) {
         versionsShown = true;
         const v = s.versions;
-        // サイドバーのバージョン表記。正はソースコード（engineVersion）で、
-        // ここは受け取って埋めるだけ。
+        // サイドバーのバージョン表記。正はソースコード（engineVersion /
+        // engineCodename）で、ここは受け取って埋めるだけ。コードネームは
+        // 版番号の後ろに添える（"Version 1.0.0 (Charon)"）。
+        const code = v['Codename'] ? ' (' + v['Codename'] + ')' : '';
         if (v['WizEngine']) {
           document.getElementById('appVer').textContent =
-            'Version ' + v['WizEngine'];
+            'Version ' + v['WizEngine'] + code;
         }
         let html = '<div class="vTitle">WizEngine ' + (v['WizEngine'] || '') +
-                   '</div>';
+                   code + '</div>';
         for (const name of Object.keys(v)) {
-          if (name === 'WizEngine') continue;
+          // 自分の版とコードネームは見出しに出したので、ライブラリの一覧
+          // には並べない。
+          if (name === 'WizEngine' || name === 'Codename') continue;
           html += '<div class="vLib"><span>' + name + '</span><span>' +
                   v[name] + '</span></div>';
         }
@@ -1197,9 +1201,10 @@
     document.getElementById('secPrefab').hidden = !on;
     const banner = document.getElementById('vhPrefab');
     banner.hidden = !on;
-    // World 節はここでしか隠さないので、抜けたら必ず戻す（secObj / secJoint は
-    // renderEditor が毎回決め直す）。
+    // World 節と描画節はここでしか隠さないので、抜けたら必ず戻す
+    // （secObj / secJoint は renderEditor が毎回決め直す）。
     document.getElementById('secWorld').hidden = on;
+    document.getElementById('secRender').hidden = on;
     if (!on) {
       prefabListKey = '';
       return;
@@ -1510,6 +1515,16 @@
   }
   function applyColor() {
     applyEdit({ color: document.getElementById('edColor').value });
+  }
+  // 材質（PBR）。送られたキーだけ変わるので、まとめて 1 回で送る。
+  function applyMaterial() {
+    applyEdit({ material: {
+      roughness: num('edRough', 0.75),
+      metallic: num('edMetal', 0),
+      reflectance: num('edReflect', 0.5),
+      clearcoat: num('edCoat', 0),
+      emissive: num('edEmissive', 0)
+    } });
   }
   function applyName() {
     applyEdit({ name: document.getElementById('edName').value });
@@ -1845,15 +1860,50 @@
       visual: num('edGroundVisual', 8),
       texture: document.getElementById('edGroundTex').value.trim(),
       tile: num('edGroundTile', 2),
-      color: document.getElementById('edGroundColor').value
+      color: document.getElementById('edGroundColor').value,
+      roughness: num('edGroundRough', 0.9),
+      metallic: num('edGroundMetal', 0)
     });
   }
   function applyEnvironment() {
     send('edit.environment', {
       hdr: document.getElementById('edEnvHdr').value.trim(),
-      intensity: num('edEnvIntensity', 30000)
+      intensity: num('edEnvIntensity', 30000),
+      skybox: document.getElementById('edEnvSkybox').checked
     });
   }
+  // 描画設定（XML の <visual>）。欄の値をまとめて送る＝サーバー側は部分更新
+  // なので、他の値を消さずに済む。
+  function applyRender() {
+    const pick = (id) => document.getElementById(id).value;
+    const on = (id) => document.getElementById(id).checked;
+    send('edit.render', {
+      shadow: pick('rnShadow'),
+      shadowMap: parseInt(pick('rnShadowMap'), 10),
+      cascades: num('rnCascades', 1),
+      contactShadows: on('rnContact'),
+      msaa: parseInt(pick('rnMsaa'), 10),
+      fxaa: on('rnFxaa'),
+      taa: on('rnTaa'),
+      ssao: on('rnSsao'),
+      ssaoIntensity: num('rnSsaoI', 1),
+      bloom: num('rnBloom', 0),
+      ssr: on('rnSsr'),
+      vignette: num('rnVignette', 0),
+      dof: num('rnDof', 0),
+      dofBlur: num('rnDofBlur', 1),
+      aperture: num('rnAperture', 16),
+      shutter: num('rnShutter', 125),
+      sensitivity: num('rnIso', 100),
+      tonemap: pick('rnTonemap'),
+      contrast: num('rnContrast', 1),
+      saturation: num('rnSaturation', 1),
+      temperature: num('rnTemperature', 0),
+      tint: num('rnTint', 0)
+    });
+  }
+  // プリセットは名前だけ送る（中身の定義はサーバーが持つ = UI とずれない）。
+  function applyRenderPreset(name) { send('edit.render', { preset: name }); }
 
   function saveScene() {
     const name = document.getElementById('edSceneName').value.trim();
@@ -2004,10 +2054,40 @@
       setField('edGroundTex', g.texture);
       setField('edGroundTile', round2(g.tile));
       setField('edGroundColor', g.color);
+      setField('edGroundRough', round2(g.roughness));
+      setField('edGroundMetal', round2(g.metallic));
     }
     if (sceneData.environment) {
       setField('edEnvHdr', sceneData.environment.hdr);
       setField('edEnvIntensity', Math.round(sceneData.environment.intensity));
+      setField('edEnvSkybox', sceneData.environment.skybox);
+    }
+    // 描画設定（<visual>）。select も setField で入る（フォーカス中の欄は
+    // 触らない、は入力欄と同じ扱い）。
+    if (sceneData.render) {
+      const r = sceneData.render;
+      setField('rnShadow', r.shadow);
+      setField('rnShadowMap', String(r.shadowMap));
+      setField('rnCascades', r.cascades);
+      setField('rnContact', r.contactShadows);
+      setField('rnMsaa', String(r.msaa));
+      setField('rnFxaa', r.fxaa);
+      setField('rnTaa', r.taa);
+      setField('rnSsao', r.ssao);
+      setField('rnSsaoI', round2(r.ssaoIntensity));
+      setField('rnBloom', round2(r.bloom));
+      setField('rnSsr', r.ssr);
+      setField('rnVignette', round2(r.vignette));
+      setField('rnDof', round2(r.dof));
+      setField('rnDofBlur', round2(r.dofBlur));
+      setField('rnAperture', round2(r.aperture));
+      setField('rnShutter', round2(r.shutter));
+      setField('rnIso', Math.round(r.sensitivity));
+      setField('rnTonemap', r.tonemap);
+      setField('rnContrast', round2(r.contrast));
+      setField('rnSaturation', round2(r.saturation));
+      setField('rnTemperature', round2(r.temperature));
+      setField('rnTint', round2(r.tint));
     }
     // ギズモ設定の節はツールバーの ⚙ で開閉（エディタモード中だけ意味がある）。
     document.getElementById('gzSettings')
@@ -2082,6 +2162,13 @@
       setField('edMass', round2(sel.mass));
       setField('edFixed', sel.fixed);
       setField('edColor', sel.color);
+      if (sel.material) {
+        setField('edRough', round2(sel.material.roughness));
+        setField('edMetal', round2(sel.material.metallic));
+        setField('edReflect', round2(sel.material.reflectance));
+        setField('edCoat', round2(sel.material.clearcoat));
+        setField('edEmissive', round2(sel.material.emissive));
+      }
       document.getElementById('edSizeLabel').textContent =
         sphere ? '直径' : 'スケール';
       document.getElementById('edSizeRow').title = sphere

@@ -715,11 +715,12 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         return true;
     }
 
-    // ---- 地面・環境光 -----------------------------------------------------
-    // World 節（Inspector）から。値の解釈（部分更新・クランプ・パス検証）は
-    // 物理スレッド側の適用時に行うが、キーの取り出しだけ済ませて素通しする
-    // （/input は誰でも叩けるので、JSON をそのまま運ぶ他の Op と同じ流儀）。
-    if (what == "ground" || what == "environment") {
+    // ---- 地面・環境光・描画設定 -------------------------------------------
+    // Inspector の World 節と「描画」節から。値の解釈（部分更新・クランプ・
+    // パス検証・プリセットの展開）は物理スレッド側の適用時に行うが、キーの
+    // 取り出しだけ済ませて素通しする（/input は誰でも叩けるので、JSON を
+    // そのまま運ぶ他の Op と同じ流儀）。
+    if (what == "ground" || what == "environment" || what == "render") {
         EditorState::Op op;
         op.kind = what;
         op.args = msg;

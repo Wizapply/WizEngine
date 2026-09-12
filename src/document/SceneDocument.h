@@ -22,6 +22,12 @@
 // ---- 書式（MJCF に寄せた点・違う点）----------------------------------------
 //   <wizengine model="名前" version="4">
 //     <option .../>                     ... シミュレート設定（MuJoCo の option）
+//     <visual>                          ... 描画品質（MuJoCo の visual）。
+//       <quality shadowMap cascades shadow contactShadows msaa taa fxaa/>
+//       <postprocess enabled ssao ssaoIntensity bloom ssr dof dofBlur vignette/>
+//       <exposure aperture shutter sensitivity/>   ... 物理カメラ（F 値・秒・ISO）
+//       <grading tonemap contrast saturation temperature tint/>
+//     </visual>
 //     <asset>
 //       <mesh name="apple" file="apple2.glb" scale="1"/>
 //       <event name="pickup"> <node .../> <wire from to/> </event>
@@ -61,6 +67,11 @@
 //   * <geom type="mesh" mesh="apple"> は <asset> の <mesh> を名前で参照する。
 //     file は assets/ からの相対パス（".." と絶対パスは弾く）。見た目の
 //     大きさは <mesh scale>、当たり判定の大きさは geom の size / collision。
+//   * <visual> は MuJoCo と同じ「見え方の設定」の置き場だが、中身は
+//     Filament の語彙（後処理・露出・トーンマップ）。節を書かない文書は
+//     既定値 = これまでの見た目で開く。材質は <geom> / <part> の属性
+//     （roughness / metallic / reflectance / clearcoat / emissive）で、
+//     書かなければ従来どおりの艶消しになる。
 //   * <ground> と <environment> は worldbody 直下の単一要素（WizEngine の
 //     語彙）。ground の size / visual は半分の広さ（物理の床と見える地面）、
 //     texture / hdr は assets/ 相対パス。節を書かない文書は既定値で開く。
@@ -107,6 +118,7 @@ constexpr int kSceneDocVersion = 4;
 struct SceneDocument {
     std::string model;  // <wizengine model="...">。ふつうは保存名
     SimSettings sim;
+    RenderDesc render;  // <visual>（描画品質・露出・トーンマップ）
     std::vector<MeshAssetDesc> meshes;  // <asset> の <mesh> 宣言
     GroundDesc ground;
     EnvironmentDesc environment;
@@ -127,6 +139,7 @@ struct SceneDocument {
     // ない文書（旧 v1 の保存や手書きの最小 XML）は初期構成へ戻す意味に
     // なるので、空配列と同じにはできない。
     bool hasSim = false;
+    bool hasVisual = false;
     bool hasGround = false;
     bool hasEnvironment = false;
     bool hasLights = false;

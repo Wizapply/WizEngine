@@ -125,7 +125,8 @@ PhysicsWorld.step(dt)
   このヘッダーに置き換えた）。**サイドバーを畳む口もここの ☰ だけ**
   （サイドバー内にあった ‹ ＝ #sbClose は廃止。畳んだ瞬間に一緒に消える
   ボタンなので、開く側は結局 ☰ が受け持っていた）。サイドバーのヘッダは
-  「WizEngine / Version 1.0」の表記のみで、カメラ名は映像ヘッダーが受け持つ。
+  「WizEngine / Version 1.0.0 (Charon)」の表記のみで、カメラ名は映像ヘッダーが
+  受け持つ。
 - ブラウザ側のタブは **Scene / Inspector / Physics**（`web/index.html` +
   `app.js` の `renderEditor()`。Inspector の内部 id は `tabEditor` /
   `paneEditor` のまま）。**カメラの入口は Scene タブの Cameras 一覧**で、
@@ -203,6 +204,12 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   ```xml
   <wizengine model="sample_joints" version="4">
     <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60" .../>
+    <visual>
+      <quality shadowMap="2048" cascades="3" shadow="pcss" msaa="4" .../>
+      <postprocess ssao="true" bloom="0.08" ssr="true" vignette="0.25" .../>
+      <exposure aperture="16" shutter="125" sensitivity="100"/>
+      <grading tonemap="aces" contrast="1.05" saturation="1.02" .../>
+    </visual>
     <asset>
       <mesh name="apple" file="apple2.glb" scale="1"/>
       <event name="pickup">
@@ -212,12 +219,14 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
       </event>
     </asset>
     <worldbody>
-      <environment hdr="studio.hdr" intensity="30000"/>
-      <ground size="10" visual="8" texture="textures/ground.png" tile="2"/>
+      <environment hdr="studio.hdr" intensity="30000" skybox="true"/>
+      <ground size="10" visual="8" texture="textures/ground.png" tile="2"
+              roughness="0.9"/>
       <light name="key" type="spot" pos="1.5 4 -2" euler="35 -20 0" .../>
       <camera name="cam0" target="0 1 0" azimuth="37.8" elevation="19.5" radius="12"/>
       <body name="post" pos="0 1 0" euler="0 0 0" fixed="true">
-        <geom type="box" size="0.1 1 0.1" mass="20" rgba="0.42 0.45 0.5 1"/>
+        <geom type="box" size="0.1 1 0.1" mass="20" rgba="0.42 0.45 0.5 1"
+              roughness="0.3" metallic="1"/>
       </body>
       <body name="a1" pos="1 2 0">
         <geom type="mesh" mesh="apple" size="0.1" mass="0.2"/>
@@ -294,6 +303,90 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   モデル・ジョイント・イベント）はコードではなく文書が持つ - 以前
   Scene.cpp にあった**格子の自動生成は廃止**した。読めなければ警告を出して
   空のシーン（地面のみ）で起動する（止めない）。空文字列 = 常に空で起動。
+
+## フォトリアル描画（`<visual>` と材質）
+
+**Filament は物理ベース（PBR）のレンダラなので、写実的な絵は出せる。**
+出るかどうかを決めるのは engine ではなく、渡す 3 つ: **材質**（表面が光を
+どう返すか）・**光**（実単位の強さと環境マップ）・**フィルム**（露出と
+トーンマップ）。以前はこの 3 つが全部固定値だった（roughness 0.75 の誘電体・
+背景は無地・後処理なし）ので、絵が「CG っぽい」のは当然だった。いまはどれも
+**シーン文書の値**になっている。詳しい答えと限界は `docs/photorealism.md`。
+
+```
+シーン文書 <visual> / <geom> の材質
+  -> editor::RenderDesc / MaterialDesc      （document/EditorTypes.h）
+  -> wizengine::RenderSettings / ShapeMaterial（scene/RenderBridge.h が変換）
+  -> Filament の View / Camera / ColorGrading / LightManager / MaterialInstance
+```
+
+- **`<visual>` は「どう撮るか」**（MuJoCo の `<visual>` と同じ置き場、中身は
+  Filament の語彙）。小節は 4 つ: `<quality>`（影の種類 pcf / dpcf / pcss /
+  vsm・解像度・カスケード・接地影・msaa・taa・fxaa）、`<postprocess>`
+  （ssao・bloom・ssr・dof・vignette、enabled=false で後処理ごと切る）、
+  `<exposure>`（aperture / shutter / sensitivity = 写真と同じ 3 つ）、
+  `<grading>`（tonemap・contrast・saturation・temperature・tint）。
+  **節を書かない文書は既定値 = 従来の絵**（後処理は全部オフ、露出も
+  Filament の既定と同じ f/16・1/125・ISO100、トーンマップは ACES legacy）。
+- **プリセットの定義は C++ に 1 か所**（`editor::renderPreset` の draft /
+  standard / photo）。ブラウザの Inspector「描画」のボタンは名前だけを送り
+  （`edit.render` の `preset`）、続けて個別の値を上書きできる（部分更新）。
+  UI 側に数値を持たせない = 画面とサーバーの食い違いが起きない。
+- **材質は `<geom>` / `<part>` の属性**（`rgba` の隣）: `roughness`
+  `metallic` `reflectance` `clearcoat` `clearcoatRoughness` `emissive`。
+  **既定値と同じ値は保存時に書かない** - 全部書くと、材質を触っていない
+  シーンのファイルまで 6 属性ぶん太って差分が読めなくなる。読む側は必ず
+  既定値付き（＝古い文書はそのまま従来の見た目で開く）。
+- **色と材質は別の口**（`setShapeColor` / `setShapeMaterial`）。イベントの
+  SetColor や掴んだときのハイライトは**色だけ**を差し替えるので、材質が
+  巻き込まれない。スロットごとのマテリアルインスタンスは色と材質の両方を
+  覚えていて（`ShapeSlot::color` / `material`）、作り直すときに入れ直す
+  （`.mat` にパラメータの既定値は書けないので、入れ忘れ = 真っ黒な鏡）。
+- **露出は実単位で効く**。ライトが lux（平行光）/ lumen（点・スポット）
+  なので、F 値を半分にすれば 2 段明るくなる。「暗いから intensity を上げる」
+  ではなく「露出を開ける」で合わせられる＝写真と同じ勘が使える。
+- **`<environment skybox="true">` で環境マップを背景にも出す**。背景と
+  映り込みが同じキューブマップになる（プリフィルタ済みの mip 0 を使う）＝
+  一致するので、金属や光沢のある物が「そこにある」ように見える。写真らしさが
+  いちばん安く上がるスイッチ。HDR を読み直さずに切り替えられる
+  （`Renderer::setSkyboxEnabled`）。
+- **地面も材質を持つ**（`<ground roughness metallic>`）。既定は従来どおりの
+  艶消し（0.9）。0.2 くらいにすると濡れた路面のようになり、SSR と組み合わせ
+  ると物が映り込む。
+- **適用は RENDER スレッド**。設計値を持つのは Scene（`render_` + dirty、
+  地面・環境光とまったく同じ流儀）で、Filament を触るのは
+  `applyToRenderer` の末尾、**オブジェクト一覧のロックを外してから**
+  （トーンマップの LUT を焼くことがあるため）。
+- **ビューは遅延生成される**（カメラの追加・初訪問）ので、`addView` も
+  同じ設定を当てる - でないとページを開いた順で絵が変わる。
+- **色作り（ColorGrading）は LUT を焼く**ので、関係する 5 つの値が変わった
+  ときだけ作り直す。差し替えは「全ビューへ新しい方を渡してから古い方を
+  壊す」順（使用中の LUT を消さない）。
+- **影の設定はライト側**（Filament の `LightManager::ShadowOptions`）。
+  `addLight` の生成時に入れるほか、`setRenderSettings` が
+  `setShadowOptions` で既にあるライトへも流し込む＝シーンを読み直さずに
+  影の解像度や種類を変えられる。カスケードは平行光だけの概念なので、点・
+  スポットには 1 を渡す。
+- **重さの目安**（1080p・GPU 依存）: MSAA 4x > PCSS 影 > SSR > SSAO >
+  ブルーム > FXAA。TAA は安いが**速く動く剛体に残像**が出るので Photo
+  プリセットでも既定オフ（静止した絵を撮るときだけ on）。後処理を全部
+  切りたければ `<postprocess enabled="false">`。
+- **テストは `tests/document/`**（Chrono / Filament 不要。`cmake -S
+  tests/document -B build-document-test && cmake --build build-document-test
+  && ./build-document-test/document_test`）: `<visual>` と材質の XML 往復、
+  既定値どおりに開くこと、打ち間違いが警告になること、ブラウザ API の
+  部分更新とクランプ、同梱シーンが警告 0 件で読めること。**文書に節や属性を
+  足したらここにも 1 行足す**（車両の `vehicle_test` と同じ扱い）。
+- **見本シーンは `assets/scenes/photoreal.xml`**（金属の粗さ違い・誘電体の
+  粗さ違い・クリアコートの塗装・自己発光 + Photo プリセット）。環境マップ
+  （`assets/studio.hdr`）はリポジトリに入っていないので、polyhaven などから
+  2k の .hdr を 1 つ置くと金属が「何かを映す」ようになる（無くても起動する）。
+- **未**: 材質テクスチャ（baseColor / 法線 / ラフネスマップ。いまは 1 物体
+  1 色）、ガラス（屈折・透過）、面光源、スクリーン空間を超える GI（Filament
+  はパストレーサではない）。glTF モデルは gltfio が持つ自前のマテリアルで
+  描かれるので、`<geom>` の材質属性は**組み込みメッシュ（箱・球・円柱・
+  ソフトボディ）とプレハブの部品にだけ**効く（モデル側の材質はファイルの
+  ぶんが使われる）。
 
 ## 車両（`src/vehicle/` + `src/components/VehicleComponent.{h,cpp}`）
 
@@ -810,17 +903,25 @@ src/
   scene/         Scene（Scene.cpp / SceneEdit.cpp / SceneEvents.cpp /
                  SceneSerialize.cpp + 私的ヘッダ SceneInternal.h）, SceneConfig,
                  EditorState, GameObject, CameraObject, BoxController,
-                 SceneComponent, PrefabDefaults, PrefabFrame, SceneMath, MathBridge
+                 SceneComponent, PrefabDefaults, PrefabFrame, SceneMath,
+                 MathBridge, RenderBridge
   components/    EditorComponent, GizmoComponent, PhysicsControlComponent,
                  StreamControlComponent, VehicleComponent, PrefabComponent
   vehicle/       車両モデルとノード式（純粋な数値ライブラリ。tests/vehicle が使う）
 tests/vehicle/   車両モデルの単体テスト（-DWIZ_BUILD_TESTS=ON で本体からも回せる）
+tests/document/  シーン文書の単体テスト（同上。Chrono も Filament も要らない）
 cmake/           LuaJIT.cmake（LuaJIT の検出・ビルド）
 web/             ブラウザ UI（ビルド時に assets/web/ へコピー）
 assets/          実行時に読むもの（materials / textures / scenes）
 third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, json, httplib, cgltf, stb）
 ```
 
+- **版番号とコードネームは `src/core/Versions.h` が唯一の定義**
+  （`kVersionMajor/Minor/Patch` = 1.0.0、`kCodename` = "Charon"）。CMake の
+  `project(VERSION)` には持たせない（2 か所に書くと必ずずれる）。起動ログの
+  1 行目（`WizEngine 1.0.0 "Charon"`）、`/stats` の `versions.WizEngine`（素の
+  semver）と `versions.Codename`、ブラウザのサイドバー見出しと About 節
+  （Physics タブ）がここから出る。コードネームは major 版ごと（1.x = Charon）。
 - **CPU コアの固定**（`src/core/CpuAffinity.{h,cpp}`、Windows / Linux 両対応）。設定は **exe 引数**（`--physics-cores "0-11"` / `--render-cores "12-15"` /
   `--physics-threads N`、`--help` で一覧）。**SceneConfig.h には置かない**（scene はユーザーが
   触るシーン内容、CPU 割り当ては実行環境の設定という分離）。オプションはモードの前後
@@ -974,6 +1075,10 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
   再ビルド不要）。`<video>`＋WHEP クライアント（`/whep` に SDP offer を POST）、
   操作は `/input` に JSON POST。フロントはブラウザのみ。
 - `src/scene/MathBridge.h` — Chrono → Filament の姿勢変換（四元数から回転行列を手計算）。
+- `src/scene/RenderBridge.h` — 文書の値 → レンダラの語彙（材質 `MaterialDesc`
+  → `ShapeMaterial`、描画設定 `RenderDesc` → `RenderSettings`）。Scene と
+  PrefabComponent の両方が使うので Scene の私的ヘッダには置かない
+  （同じ変換を 2 か所に書くと、値を足したとき片方だけ直して黙って食い違う）。
 - **視聴者がいない間は完全に休む**（web モードのみ、`SceneConfig.h` の `kIdleWhenUnwatched`）。
   `HttpServer::hasViewer()`（トークン＋ハートビート）で判定し、描画スレッドは 100ms 間隔の
   ポーリングのみ、物理スレッドも停止（アキュムレータもクリアするので復帰時に一気に進まない）。
@@ -1151,9 +1256,18 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   ノードは名前付きアセットにまとめ、オブジェクト / シーン全体に何本でも
   付けられる。マウスで掴んだ物を動かすのも既定アセット `pickup` の仕事で、
   エンジンには焼き込んでいない。上の「イベントアセット」の章を参照）。
+- 済: フォトリアル描画（シーン文書の `<visual>` = 影 PCSS / MSAA / TAA /
+  AO / ブルーム / スクリーン空間反射 / 被写界深度 / ビネット・物理カメラの
+  露出・トーンマップと色調整、`<geom>` / `<part>` の PBR 材質、
+  `<ground roughness metallic>`、`<environment skybox>`。上の「フォトリアル
+  描画」の章と `docs/photorealism.md`）。
 - 済: ステップ3（姿勢反映）〜6（UDP配信）。
 - 未: ステップ7（クライアント→サーバーの入力・制御チャネル。カメラ操作を
   UDP/TCP で受けて `Renderer` にカメラ更新 API を追加）。
+- 未: 材質テクスチャ（baseColor / 法線 / ラフネスマップ）、ガラス（屈折・
+  透過）、面光源。Filament はラスタライザなので、スクリーン空間を超える
+  GI（パストレース相当）は原理的に出せない - 必要ならオフラインの
+  レンダラへ文書を渡す（`docs/photorealism.md` の「限界」）。
 - 将来: ハードウェアエンコード（`nvh264enc` 等）、readPixels を避けた GPU 直結、
   物理と描画のスレッド分離（姿勢はダブル/トリプルバッファで受け渡す）。
 

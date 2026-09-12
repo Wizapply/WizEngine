@@ -2,11 +2,24 @@
 // tumbling box darkens and brightens correctly as it turns - the previous
 // unlit version baked a fixed brightness per face, which looked wrong once the
 // boxes rolled onto their sides.
+//
+// 材質（PBR）はパラメータとして外から入る（シーン文書の <geom> /
+// <part> の roughness / metallic / ... = editor::MaterialDesc）。焼き込みに
+// しないのは、同じマテリアルで鉄・プラスチック・車の塗装・発光する物を
+// 描き分けたいから。**値はインスタンスごとに必ず入れること**（.mat には
+// 既定値が書けないので、入れ忘れると 0 = 真っ黒な鏡になる。
+// Renderer::applyMaterialParams が唯一の入り口）。
 material {
     name : box_lit,
     shadingModel : lit,
     parameters : [
-        { type : float3, name : baseColor }
+        { type : float3, name : baseColor },
+        { type : float,  name : roughness },
+        { type : float,  name : metallic },
+        { type : float,  name : reflectance },
+        { type : float,  name : clearCoat },
+        { type : float,  name : clearCoatRoughness },
+        { type : float,  name : emissiveScale }
     ]
 }
 
@@ -14,7 +27,17 @@ fragment {
     void material(inout MaterialInputs material) {
         prepareMaterial(material);
         material.baseColor.rgb = materialParams.baseColor;
-        material.roughness = 0.75;
-        material.metallic = 0.0;
+        material.roughness = materialParams.roughness;
+        material.metallic = materialParams.metallic;
+        material.reflectance = materialParams.reflectance;
+        // 透明な上塗り（車の塗装・ニス・濡れた表面）。0 のときは Filament が
+        // 計算ごと飛ばすので、使わないシーンの費用はほぼ無い。
+        material.clearCoat = materialParams.clearCoat;
+        material.clearCoatRoughness = materialParams.clearCoatRoughness;
+        // 自己発光。色は baseColor と同じで、強さだけ倍率で指定する
+        // （ブルームの光源になる）。w = 1 は「露出の影響を受ける」の印で、
+        // 立てておかないと露出を変えたときに発光だけ取り残される。
+        material.emissive =
+            vec4(materialParams.baseColor * materialParams.emissiveScale, 1.0);
     }
 }

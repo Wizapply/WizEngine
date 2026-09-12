@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- フォトリアル描画の見本シーン。
+
+     アセットパネルのタイル「photoreal」をダブルクリックで読み込む
+     （または SceneConfig.h の kStartupScene を "photoreal" に）。
+
+     見どころは 3 つ:
+       1. <visual>              … 影 PCSS・MSAA 4x・AO・ブルーム・SSR・
+                                   ACES トーンマップ（= Photo プリセット）
+       2. <geom> の材質         … 金属の粗さ違い、誘電体の粗さ違い、
+                                   クリアコート（車の塗装）、自己発光
+       3. <environment skybox>  … 環境マップを背景にも出す（映り込みと
+                                   背景が一致する）
+       4. <asset><mesh>         … glTF モデル（apple.glb）の宣言と配置
+
+     **apple.glb も assets/ に置く**（リポジトリには入っていない。<mesh> の
+     file は assets/ からの相対パスのみ）。無ければ警告を出して球で描くので
+     シーンは止まらない。
+
+     環境マップ（assets/studio.hdr）はリポジトリに入っていない。
+     https://polyhaven.com/hdris などから 2k の .hdr を 1 つ置くと、
+     金属と光沢のある物が「何を映しているか」を持つようになる（無くても
+     起動はする - 警告を出して一様アンビエントで描く）。 -->
+<wizengine model="photoreal" version="4">
+  <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60"/>
+
+  <!-- 「どう撮るか」。ブラウザの Inspector →「描画」の Photo ボタンと同じ値。 -->
+  <visual>
+    <quality shadowMap="2048" cascades="3" shadow="pcss" contactShadows="true"
+             msaa="4" taa="false" fxaa="true"/>
+    <postprocess enabled="true" ssao="true" ssaoIntensity="1.2" bloom="0.08"
+                 ssr="true" dof="0" dofBlur="1" vignette="0.25"/>
+    <exposure aperture="16" shutter="125" sensitivity="100"/>
+    <grading tonemap="aces" contrast="1.05" saturation="1.02" temperature="0"
+             tint="0"/>
+  </visual>
+
+  <asset>
+    <!-- glTF モデル。scale はモデル単位 → m の倍率で**見た目だけ**を決める:
+         起動ログの
+           mesh 'apple': 'apple.glb' (model size X -> Y m at scale 1.000)
+         を見て、実物大（りんごなら 0.08m 前後）になる倍率へ直す。 -->
+    <mesh name="apple" file="apple.glb" scale="1"/>
+
+    <!-- マウスで掴んだ物を引き寄せる既定のスクリプト（default.xml と同じ）。 -->
+    <event name="pickup">
+      <node id="1" type="onGrab" pos="40 40" target="-1"/>
+      <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+      <wire from="1" to="2"/>
+    </event>
+  </asset>
+
+  <worldbody>
+    <!-- 背景にも出す = 映り込みと背景が一致する。 -->
+    <environment hdr="studio.hdr" intensity="25000" skybox="true"/>
+    <!-- 磨かれた床（roughness 0.25）。SSR が効いて物が映り込む。 -->
+    <ground size="20" visual="14" texture="textures/ground.png" tile="4"
+            rgba="0.35 0.36 0.38 1" roughness="0.25" metallic="0"/>
+
+    <light name="key" type="sun" pos="0 6 0" euler="52 -35 0"
+           diffuse="1 0.97 0.92 1" intensity="80000" castshadow="true"/>
+    <light name="fill" type="sun" pos="0 5 0" euler="28 150 0"
+           diffuse="0.80 0.87 1 1" intensity="22000" castshadow="false"/>
+    <light name="rim" type="spot" pos="-2.6 3.2 -2.2" euler="58 40 0"
+           diffuse="1 0.85 0.65 1" intensity="120000" castshadow="true"
+           falloff="12" inner="18" cutoff="34"/>
+
+    <camera name="cam0" target="0 0.55 0" azimuth="38" elevation="14" radius="6.5"/>
+    <camera name="cam1" target="0 0.6 0" azimuth="150" elevation="8" radius="4.5"/>
+
+    <!-- 台（つや消しのコンクリート風）。物を床から持ち上げて、接地影と
+         アンビエントオクルージョンが見えるようにする。 -->
+    <body name="slab" pos="0 0.1 0" fixed="true">
+      <geom type="box" size="2.6 0.1 0.9" mass="500" rgba="0.30 0.30 0.32 1"
+            roughness="0.85"/>
+    </body>
+
+    <!-- 金属の粗さ違い（左から鏡 → つや消し）。metallic=1 の物は自分の色を
+         持たず、映り込みだけで見える = 環境マップの有無がそのまま出る。 -->
+    <body name="metal_00" pos="-2.0 0.42 -0.45">
+      <geom type="sphere" size="0.22" mass="3" rgba="0.95 0.96 0.97 1"
+            roughness="0.05" metallic="1"/>
+    </body>
+    <body name="metal_25" pos="-1.2 0.42 -0.45">
+      <geom type="sphere" size="0.22" mass="3" rgba="0.95 0.80 0.45 1"
+            roughness="0.25" metallic="1"/>
+    </body>
+    <body name="metal_50" pos="-0.4 0.42 -0.45">
+      <geom type="sphere" size="0.22" mass="3" rgba="0.72 0.75 0.80 1"
+            roughness="0.50" metallic="1"/>
+    </body>
+
+    <!-- 誘電体（プラスチック）の粗さ違い。同じ色でも「てかり」で別物に見える。 -->
+    <body name="plastic_10" pos="0.4 0.42 -0.45">
+      <geom type="sphere" size="0.22" mass="1.2" rgba="0.20 0.45 0.85 1"
+            roughness="0.10"/>
+    </body>
+    <body name="plastic_40" pos="1.2 0.42 -0.45">
+      <geom type="sphere" size="0.22" mass="1.2" rgba="0.20 0.45 0.85 1"
+            roughness="0.40"/>
+    </body>
+    <body name="rubber" pos="2.0 0.42 -0.45">
+      <geom type="sphere" size="0.22" mass="1.2" rgba="0.20 0.45 0.85 1"
+            roughness="0.95"/>
+    </body>
+
+    <!-- 車の塗装: 色の付いた下地 + 透明な上塗り（clearcoat）。ハイライトが
+         2 段（塗装のてかり + コートの映り込み）になるのが本物らしさの元。 -->
+    <body name="carpaint" pos="-1.4 0.36 0.35" euler="0 18 0">
+      <geom type="box" size="0.3 0.16 0.22" mass="6" rgba="0.55 0.06 0.10 1"
+            roughness="0.35" metallic="0.1" clearcoat="1"
+            clearcoatRoughness="0.03"/>
+    </body>
+
+    <!-- 自己発光。ブルームの光源になる（<postprocess bloom>）。emissive は
+         「baseColor の何倍を足すか」なので、色は rgba が決める。 -->
+    <body name="lamp" pos="0 0.40 0.35">
+      <geom type="box" size="0.12 0.2 0.12" mass="1" rgba="0.25 0.85 0.95 1"
+            roughness="0.4" emissive="6"/>
+    </body>
+
+    <!-- 磨かれた木のような誘電体（反射率を上げてニス塗り風に）。 -->
+    <body name="varnished" pos="1.4 0.36 0.35" euler="0 -22 0">
+      <geom type="box" size="0.3 0.16 0.22" mass="4" rgba="0.42 0.26 0.14 1"
+            roughness="0.25" reflectance="0.7"/>
+    </body>
+
+    <!-- glTF モデル（apple.glb）。当たり判定は既定で**モデルの凸包**
+         （<mesh scale> 倍）で、geom の size は「半径」= 読めなかったときの
+         球の大きさと質量密度の見積もりに使う。台の天面は y=0.2 なので、
+         乗せる高さは 0.2 + size。モデルの大きさが違ったら scale / size /
+         pos の y を一緒に直す（見た目と当たり判定が食い違わないように）。
+         **glTF の材質はファイル側のものが使われる**ので、roughness などの
+         属性は効かない - 代わりに効くのが環境マップで、skybox を有効に
+         してあるので金属質のモデルも黒くならない。 -->
+    <body name="apple1" pos="-2.2 0.25 0.35" euler="0 -20 0">
+      <geom type="mesh" mesh="apple" size="0.05" mass="0.2"/>
+    </body>
+    <body name="apple2" pos="2.2 1.9 0.35" euler="0 35 0">
+      <geom type="mesh" mesh="apple" size="0.05" mass="0.2"/>
+    </body>
+
+    <!-- 落として遊ぶ用（掴んで放り投げると、AO と接地影の効き方が分かる）。 -->
+    <body name="drop0" pos="-0.6 2.2 0.9">
+      <geom type="sphere" size="0.24" mass="0.6" rgba="0.90 0.55 0.15 1"
+            roughness="0.3" metallic="1"/>
+    </body>
+    <body name="drop1" pos="0.2 2.6 1.0" euler="12 30 6">
+      <geom type="box" size="0.2 0.2 0.2" mass="0.8" rgba="0.85 0.85 0.88 1"
+            roughness="0.15" metallic="1"/>
+    </body>
+  </worldbody>
+
+  <events>
+    <event name="pickup"/>
+  </events>
+</wizengine>

@@ -338,7 +338,8 @@ int run(int argc, char** argv) {
     // Backend (core / multicore) is part of the scene configuration.
     const PhysicsBackend requested = scenePhysicsBackend();
     PhysicsWorld physics(requested);
-    LOGI("app", "WizEngine %s", wizengine::engineVersion());
+    LOGI("app", "WizEngine %s \"%s\"", wizengine::engineVersion(),
+         wizengine::engineCodename());
     LOGI("physics",
          "backend: requested=%s  compiled-in multicore=%s  using=%s",
          requested == PhysicsBackend::Multicore ? "multicore" : "core",

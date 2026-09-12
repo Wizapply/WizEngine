@@ -551,9 +551,15 @@ endif()
 # configure できる（tests/vehicle/CMakeLists.txt 参照）。本体と一緒に回すなら
 #   cmake -B build -DWIZ_BUILD_TESTS=ON && cmake --build build && ctest --test-dir build
 # ---------------------------------------------------------------------------
-option(WIZ_BUILD_TESTS "Build the unit tests (vehicle, soft body) alongside the engine" OFF)
+option(WIZ_BUILD_TESTS "Build the unit tests (vehicle, soft body, document) alongside the engine" OFF)
 if(WIZ_BUILD_TESTS)
     enable_testing()
-    add_subdirectory(tests/vehicle)
-    add_subdirectory(tests/softbody)
+    # テストは単独でも configure できる（tests/<名前>/CMakeLists.txt）。
+    # ここでは「あるものだけ」取り込む - 片方だけ持っているクローンでも
+    # -DWIZ_BUILD_TESTS=ON が configure エラーにならないように。
+    foreach(_test vehicle softbody document)
+        if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/${_test}/CMakeLists.txt)
+            add_subdirectory(tests/${_test})
+        endif()
+    endforeach()
 endif()

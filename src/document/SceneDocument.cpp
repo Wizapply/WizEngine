@@ -86,6 +86,33 @@ void setColor(xml::Element& e, const char* key, const Color3& c) {
     const double a[4] = {c.r, c.g, c.b, 1.0};
     e.setNumbers(key, a, 4, 6);  // float 由来なので 6 桁で十分
 }
+// 材質（PBR）。**既定値と同じ値は書かない** - 全部書くと、材質を触って
+// いないシーンの保存ファイルまで 6 属性ぶん太って差分が読めなくなる。
+// 読む側は既定値付きなので、書いていない属性は従来の見た目になる。
+void setMaterial(xml::Element& e, const MaterialDesc& m) {
+    const MaterialDesc d;
+    if (m.roughness != d.roughness) e.setNumber("roughness", m.roughness, 4);
+    if (m.metallic != d.metallic) e.setNumber("metallic", m.metallic, 4);
+    if (m.reflectance != d.reflectance) {
+        e.setNumber("reflectance", m.reflectance, 4);
+    }
+    if (m.clearCoat != d.clearCoat) e.setNumber("clearcoat", m.clearCoat, 4);
+    if (m.clearCoatRoughness != d.clearCoatRoughness) {
+        e.setNumber("clearcoatRoughness", m.clearCoatRoughness, 4);
+    }
+    if (m.emissive != d.emissive) e.setNumber("emissive", m.emissive, 4);
+}
+MaterialDesc getMaterial(const xml::Element& e, const MaterialDesc& base) {
+    MaterialDesc m = base;
+    m.roughness = e.number("roughness", m.roughness);
+    m.metallic = e.number("metallic", m.metallic);
+    m.reflectance = e.number("reflectance", m.reflectance);
+    m.clearCoat = e.number("clearcoat", m.clearCoat);
+    m.clearCoatRoughness = e.number("clearcoatRoughness", m.clearCoatRoughness);
+    m.emissive = e.number("emissive", m.emissive);
+    return clampMaterial(m);
+}
+
 Color3 getColor(const xml::Element& e, const char* key, const Color3& fallback) {
     double a[4] = {fallback.r, fallback.g, fallback.b, 1.0};
     if (e.numbers(key, a, 4) < 3) {
@@ -215,6 +242,101 @@ xml::Element optionElement(const SimSettings& s) {
     return o;
 }
 
+// ---- <visual>（描画品質）----------------------------------------------------
+// MuJoCo の <visual> と同じ「見え方の設定」の置き場。中身は Filament の
+// 語彙（後処理・露出・トーンマップ）で、4 つの小節に分けてある - 1 要素に
+// 20 属性を並べるより、どこを触っているかが分かる。
+xml::Element visualElement(const RenderDesc& r) {
+    xml::Element v("visual");
+
+    xml::Element q("quality");
+    q.setInt("shadowMap", r.shadowMap);
+    q.setInt("cascades", r.cascades);
+    q.set("shadow", r.shadow);
+    q.setBool("contactShadows", r.contactShadows);
+    q.setInt("msaa", r.msaa);
+    q.setBool("taa", r.taa);
+    q.setBool("fxaa", r.fxaa);
+    v.append(std::move(q));
+
+    xml::Element pp("postprocess");
+    pp.setBool("enabled", r.postProcess);
+    pp.setBool("ssao", r.ssao);
+    pp.setNumber("ssaoIntensity", r.ssaoIntensity, 4);
+    pp.setNumber("bloom", r.bloom, 4);
+    pp.setBool("ssr", r.ssr);
+    pp.setNumber("dof", r.dof, 4);
+    pp.setNumber("dofBlur", r.dofBlur, 4);
+    pp.setNumber("vignette", r.vignette, 4);
+    v.append(std::move(pp));
+
+    xml::Element ex("exposure");
+    ex.setNumber("aperture", r.aperture, 4);
+    ex.setNumber("shutter", r.shutter, 4);
+    ex.setNumber("sensitivity", r.sensitivity, 4);
+    v.append(std::move(ex));
+
+    xml::Element gr("grading");
+    gr.set("tonemap", r.tonemap);
+    gr.setNumber("contrast", r.contrast, 4);
+    gr.setNumber("saturation", r.saturation, 4);
+    gr.setNumber("temperature", r.temperature, 4);
+    gr.setNumber("tint", r.tint, 4);
+    v.append(std::move(gr));
+    return v;
+}
+
+RenderDesc visualFromXml(const xml::Element& e, const RenderDesc& base,
+                         Warn& warn) {
+    RenderDesc r = base;
+    warnUnknownChildren(e, {"quality", "postprocess", "exposure", "grading"},
+                        "<visual>", warn);
+    if (const xml::Element* q = e.first("quality")) {
+        r.shadowMap = q->integer("shadowMap", r.shadowMap);
+        r.cascades = q->integer("cascades", r.cascades);
+        const std::string sh = q->attr("shadow", r.shadow.c_str());
+        if (sh != "pcf" && sh != "dpcf" && sh != "pcss" && sh != "vsm") {
+            warn("<visual>: <quality shadow=\"" + sh +
+                 "\"> is unknown (pcf / dpcf / pcss / vsm) - reading as pcf");
+        }
+        r.shadow = sh;
+        r.contactShadows = q->boolean("contactShadows", r.contactShadows);
+        r.msaa = q->integer("msaa", r.msaa);
+        r.taa = q->boolean("taa", r.taa);
+        r.fxaa = q->boolean("fxaa", r.fxaa);
+    }
+    if (const xml::Element* pp = e.first("postprocess")) {
+        r.postProcess = pp->boolean("enabled", r.postProcess);
+        r.ssao = pp->boolean("ssao", r.ssao);
+        r.ssaoIntensity = pp->number("ssaoIntensity", r.ssaoIntensity);
+        r.bloom = pp->number("bloom", r.bloom);
+        r.ssr = pp->boolean("ssr", r.ssr);
+        r.dof = pp->number("dof", r.dof);
+        r.dofBlur = pp->number("dofBlur", r.dofBlur);
+        r.vignette = pp->number("vignette", r.vignette);
+    }
+    if (const xml::Element* ex = e.first("exposure")) {
+        r.aperture = ex->number("aperture", r.aperture);
+        r.shutter = ex->number("shutter", r.shutter);
+        r.sensitivity = ex->number("sensitivity", r.sensitivity);
+    }
+    if (const xml::Element* gr = e.first("grading")) {
+        const std::string tm = gr->attr("tonemap", r.tonemap.c_str());
+        if (tm != "aceslegacy" && tm != "aces" && tm != "filmic" &&
+            tm != "agx" && tm != "pbrneutral" && tm != "linear") {
+            warn("<visual>: <grading tonemap=\"" + tm +
+                 "\"> is unknown (aceslegacy / aces / filmic / agx / "
+                 "pbrneutral / linear) - reading as aceslegacy");
+        }
+        r.tonemap = tm;
+        r.contrast = gr->number("contrast", r.contrast);
+        r.saturation = gr->number("saturation", r.saturation);
+        r.temperature = gr->number("temperature", r.temperature);
+        r.tint = gr->number("tint", r.tint);
+    }
+    return clampRender(r);
+}
+
 SimSettings optionFromXml(const xml::Element& o, SimSettings base) {
     double gravity[3] = {0.0, base.gravity, 0.0};
     const std::size_t got = o.numbers("gravity", gravity, 3);
@@ -299,6 +421,7 @@ xml::Element bodyElement(const BodyDesc& b) {
     }
     geom.setNumber("mass", b.mass);
     setColor(geom, "rgba", b.color);
+    setMaterial(geom, b.material);  // 既定と違う値だけが属性になる
     // 当たり判定が見た目と違うときだけ書く（既存シーンの「見た目は glTF・
     // 当たりは球」のような組み合わせ）。
     if (b.collision != b.shape) {
@@ -420,6 +543,7 @@ BodyDesc bodyFromXml(const xml::Element& e,
                  "\" is unknown - using the visual shape");
         }
         b.collision = geomTypeFromName(g->attr("collision"), b.shape);
+        b.material = getMaterial(*g, b.material);
         // mesh geom はアセット参照が要る。無い・見つからないは球へ倒す
         // （読める文書は必ず描ける、を保つ。旧 JSON 由来の「名無しの model」
         // も createObject 側で同じ倒し方をする）。
@@ -732,6 +856,7 @@ xml::Element partElement(const PartDesc& p) {
     setVec3(e, "euler", p.rotation);
     setVec3(e, "size", p.size);
     setColor(e, "rgba", p.color);
+    setMaterial(e, p.material);
     if (!p.socket.empty()) e.set("socket", p.socket);
     if (p.collide) e.setBool("collide", true);
     return e;
@@ -758,6 +883,7 @@ PartDesc partFromXml(const xml::Element& e, const std::vector<MeshAssetDesc>& me
     p.rotation = getVec3(e, "euler", p.rotation);
     p.size = getVec3(e, "size", p.size);
     p.color = getColor(e, "rgba", p.color);
+    p.material = getMaterial(e, p.material);
     p.socket = e.attr("socket");
     {
         int axle = 0, side = 0;
@@ -804,6 +930,10 @@ xml::Element toXml(const SceneDocument& doc) {
     if (!doc.model.empty()) root.set("model", doc.model);
     root.setInt("version", kSceneDocVersion);
     root.append(optionElement(doc.sim));
+    // 描画品質。MJCF と同じく <option> の次（「どう解くか」の次に
+    // 「どう見せるか」）。節を持たない文書は既定値で開くので、書くのは
+    // hasVisual のときだけ。
+    if (doc.hasVisual) root.append(visualElement(doc.render));
 
     // <asset>: メッシュ（glTF）とイベントアセット（ノードの中身）。どちらも
     // 「名前で参照される素材」なので MJCF と同じくこの節にまとめる。
@@ -830,6 +960,8 @@ xml::Element toXml(const SceneDocument& doc) {
         xml::Element e("environment");
         e.set("hdr", doc.environment.hdr);
         e.setNumber("intensity", doc.environment.intensity);
+        // 背景としても出すか（光としてだけ使うのが既定）。
+        e.setBool("skybox", doc.environment.skybox);
         world.append(std::move(e));
     }
     if (doc.hasGround) {
@@ -839,6 +971,8 @@ xml::Element toXml(const SceneDocument& doc) {
         g.set("texture", doc.ground.texture);
         g.setNumber("tile", doc.ground.tile);
         setColor(g, "rgba", doc.ground.tint);
+        g.setNumber("roughness", doc.ground.roughness, 4);
+        g.setNumber("metallic", doc.ground.metallic, 4);
         world.append(std::move(g));
     }
     for (const auto& l : doc.lights) world.append(lightElement(l));
@@ -890,13 +1024,18 @@ SceneDocument fromXml(const xml::Element& root,
              ") - reading what is understood");
     }
 
-    warnUnknownChildren(root,
-                        {"option", "asset", "worldbody", "equality", "events"},
-                        "<wizengine>", warn);
+    warnUnknownChildren(
+        root, {"option", "visual", "asset", "worldbody", "equality", "events"},
+        "<wizengine>", warn);
 
     if (const xml::Element* o = root.first("option")) {
         doc.sim = clampSim(optionFromXml(*o, doc.sim));
         doc.hasSim = true;
+    }
+
+    if (const xml::Element* v = root.first("visual")) {
+        doc.render = visualFromXml(*v, doc.render, warn);
+        doc.hasVisual = true;
     }
 
     if (const xml::Element* asset = root.first("asset")) {
@@ -1004,6 +1143,8 @@ SceneDocument fromXml(const xml::Element& root,
             }
             doc.environment.intensity =
                 e.number("intensity", doc.environment.intensity);
+            doc.environment.skybox =
+                e.boolean("skybox", doc.environment.skybox);
             doc.environment = clampEnvironment(doc.environment);
             if (envs.size() > 1) {
                 warn("multiple <environment> elements - using the first");
@@ -1028,6 +1169,8 @@ SceneDocument fromXml(const xml::Element& root,
             }
             doc.ground.tile = g.number("tile", doc.ground.tile);
             doc.ground.tint = getColor(g, "rgba", doc.ground.tint);
+            doc.ground.roughness = g.number("roughness", doc.ground.roughness);
+            doc.ground.metallic = g.number("metallic", doc.ground.metallic);
             doc.ground = clampGround(doc.ground);
             if (grounds.size() > 1) {
                 warn("multiple <ground> elements - using the first");

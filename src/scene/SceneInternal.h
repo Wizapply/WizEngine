@@ -34,6 +34,7 @@
 #include "render/Renderer.h"
 #include "scene/MathBridge.h"
 #include "scene/PrefabDefaults.h"
+#include "scene/RenderBridge.h"
 #include "scene/PrefabFrame.h"
 #include "vehicle/TireFormula.h"
 

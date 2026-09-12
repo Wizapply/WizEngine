@@ -5,6 +5,10 @@
 // The checker sampler holds a 2 x 2 checkerboard used as a linear multiplier on
 // baseColor, so baseColor still tints the whole floor. UVs are tiled by the
 // renderer so one square is a fixed size in metres.
+//
+// 材質（roughness / metallic / reflectance）はシーン文書の <ground> が持つ。
+// 既定は従来どおりの艶消し（0.9）だが、0.2 くらいにすると濡れた路面のように
+// 環境と物が映り込む（スクリーン空間反射と組み合わせるとよく効く）。
 material {
     name : ground_lit,
     shadingModel : lit,
@@ -12,7 +16,10 @@ material {
     requires : [ uv0 ],
     parameters : [
         { type : float3, name : baseColor },
-        { type : sampler2d, name : checker }
+        { type : sampler2d, name : checker },
+        { type : float,  name : roughness },
+        { type : float,  name : metallic },
+        { type : float,  name : reflectance }
     ]
 }
 
@@ -21,7 +28,8 @@ fragment {
         prepareMaterial(material);
         vec3 checker = texture(materialParams_checker, getUV0()).rgb;
         material.baseColor.rgb = materialParams.baseColor * checker;
-        material.roughness = 0.9;
-        material.metallic = 0.0;
+        material.roughness = materialParams.roughness;
+        material.metallic = materialParams.metallic;
+        material.reflectance = materialParams.reflectance;
     }
 }

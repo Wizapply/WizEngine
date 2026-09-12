@@ -619,9 +619,12 @@ const std::vector<ChVector3d>* Scene::meshHull(int meshIndex) {
 void Scene::syncGround() {
     if (!groundDirty_) return;
     groundDirty_ = false;
+    wizengine::ShapeMaterial groundMat;
+    groundMat.roughness = float(ground_.roughness);
+    groundMat.metallic = float(ground_.metallic);
     renderer_.addGround(float(ground_.visualHalf),
                         {ground_.tint.r, ground_.tint.g, ground_.tint.b},
-                        float(ground_.tile), ground_.texture);
+                        float(ground_.tile), ground_.texture, groundMat);
 }
 
 // RENDER スレッド。実体の無いライトを作り、消されたもの・作り直しが要る
@@ -794,6 +797,10 @@ void Scene::syncRenderables() {
             const ed::Color3& c =
                 obj.hasRuntimeColor ? obj.runtimeColor : obj.desc.color;
             renderer_.setShapeColor(obj.renderId, {c.r, c.g, c.b});
+            // 材質（PBR）は色と同じ印で流す。イベントで色だけ変わったとき
+            // に材質を送り直しても、同じ値を入れ直すだけで害は無い。
+            renderer_.setShapeMaterial(obj.renderId,
+                                       wizengine::toRendererMaterial(obj.desc.material));
             obj.colorDirty = false;
         }
     }
@@ -916,8 +923,23 @@ void Scene::applyToRenderer() {
         envPending = environment_;
         applyEnv = true;
     }
+    // 描画設定（<visual>）も同じ扱い。色作り（トーンマップの LUT）を焼く
+    // ことがあるので、オブジェクト一覧のロックは持たずに適用する。
+    ed::RenderDesc renderPending;
+    bool applyRender = false;
+    if (renderDirty_) {
+        renderDirty_ = false;
+        renderPending = render_;
+        applyRender = true;
+    }
     lk.unlock();
+    if (applyRender) {
+        renderer_.setRenderSettings(wizengine::toRendererSettings(renderPending));
+    }
     if (applyEnv) {
+        // 背景に出すかどうかは環境マップの読み込みとは別（HDR を読み直さず
+        // 切り替えられる）。先に希望を伝えてから読み込む。
+        renderer_.setSkyboxEnabled(envPending.skybox);
         if (envPending.hdr.empty()) {
             renderer_.clearEnvironment();
             LOGI("scene", "environment: none (flat ambient)");

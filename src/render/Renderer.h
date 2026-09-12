@@ -28,6 +28,8 @@ class Material;
 class MaterialInstance;
 class IndirectLight;
 class Texture;
+class Skybox;
+class ColorGrading;
 }  // namespace filament
 
 // Headless Filament render engine. It sets up the device, camera, lights and
@@ -52,6 +54,60 @@ struct LightDesc {
     float falloffRadius = 20.0f;    // point/spot reach in metres
     float spotInnerRadians = 0.4f;  // spot cone, full brightness
     float spotOuterRadians = 0.6f;  // spot cone, cutoff
+};
+
+// 形状 1 個ぶんの材質（Filament の lit マテリアルのパラメータ）。色は
+// setShapeColor が別に持つ - 色だけを変える操作（イベントの SetColor、
+// 掴んだときのハイライト）が材質を巻き込まないようにするため。
+// 既定値は従来の見た目（艶消しの誘電体）。
+struct ShapeMaterial {
+    float roughness = 0.75f;
+    float metallic = 0.0f;
+    float reflectance = 0.5f;
+    float clearCoat = 0.0f;
+    float clearCoatRoughness = 0.03f;
+    float emissive = 0.0f;  // baseColor の何倍を自己発光として足すか
+};
+
+// 「どう撮るか」の設定。シーン文書の <visual>（editor::RenderDesc）を
+// レンダラの語彙に直したもので、Filament の View / Camera / ColorGrading と
+// ライトの影オプションへそのまま流れる。既定値は**これまでの絵**
+// （後処理はどれも切ってあり、露出も Filament の既定と同じ）。
+//
+// setRenderSettings は全ビューに一度に効く（シーンの設定であって、カメラ
+// ごとの設定ではない）。あとから作ったビュー（カメラの遅延生成）にも
+// addView が同じ設定を当てるので、ページを開いた順で絵が変わらない。
+struct RenderSettings {
+    enum class Shadow { Pcf, Dpcf, Pcss, Vsm };
+    enum class Tonemap { AcesLegacy, Aces, Filmic, Agx, PbrNeutral, Linear };
+
+    // 影とアンチエイリアス
+    uint32_t shadowMap = 1024;
+    uint8_t cascades = 1;
+    Shadow shadow = Shadow::Pcf;
+    bool contactShadows = false;
+    uint8_t msaa = 1;  // 1 = 無効
+    bool taa = false;
+    bool fxaa = true;
+    // 後処理
+    bool postProcess = true;
+    bool ssao = false;
+    float ssaoIntensity = 1.0f;
+    float bloom = 0.0f;  // 0 = 無効
+    bool ssr = false;
+    float dofFocus = 0.0f;  // 合焦距離 (m)。0 = 被写界深度なし
+    float dofBlur = 1.0f;
+    float vignette = 0.0f;  // 0 = 無効
+    // 露出（写真と同じ 3 つ）
+    float aperture = 16.0f;
+    float shutter = 125.0f;  // 1/shutter 秒
+    float sensitivity = 100.0f;  // ISO
+    // フィルム
+    Tonemap tonemap = Tonemap::AcesLegacy;
+    float contrast = 1.0f;
+    float saturation = 1.0f;
+    float temperature = 0.0f;
+    float tint = 0.0f;
 };
 
 // 組み込みメッシュの種類。エディタで置けるのは Box / Sphere（glTF モデルは
@@ -99,6 +155,10 @@ public:
     // オブジェクトごとの色。最初の呼び出しでそのスロット専用のマテリアル
     // インスタンスを作る（共有インスタンスを書き換えると全部の色が変わる）。
     void setShapeColor(std::size_t id, const filament::math::float3& color);
+    // 材質（PBR）。色と同じくスロットごとのマテリアルインスタンスに入る。
+    // 掴んでハイライトしている間は形状のインスタンスが差し替わるので見えず、
+    // 離すと戻る（色と同じ振る舞い）。RENDER スレッド。
+    void setShapeMaterial(std::size_t id, const ShapeMaterial& material);
 
     // ---- ソフトボディ（毎フレーム頂点を書き換える三角メッシュ）----------
     // 形状スロットの 1 つとして作るので、色・ハイライト・削除は addShape と
@@ -130,6 +190,13 @@ public:
         const std::vector<filament::math::float3>& colors);
     // Draw a box with the given camera's highlight colour; -1 restores it.
     void setBoxHighlighted(std::size_t id, int styleIndex);
+    // ---- 描画設定（フォトリアル）------------------------------------------
+    // 全ビューへ一度に効く。ColorGrading は指定が変わったときだけ作り直す
+    // （LUT を焼くので毎フレーム呼んでよい作りではない）。影のテクスチャ
+    // サイズなどライト側の設定も、既にあるライトへ流し込む。RENDER スレッド。
+    void setRenderSettings(const RenderSettings& settings);
+    const RenderSettings& renderSettings() const { return settings_; }
+
     // Vertical field of view in degrees - the picking code needs it to build
     // a ray through a screen position.
     float verticalFovDegrees() const;
@@ -139,7 +206,8 @@ public:
     // a checkerboard is generated instead. 2 回目以降の呼び出しは前の地面を
     // 壊して作り直す（シーン文書の <ground> の実行時反映）。RENDER スレッド。
     void addGround(float halfSize, const filament::math::float3& color,
-                   float tileMeters, const std::string& texturePath);
+                   float tileMeters, const std::string& texturePath,
+                   const ShapeMaterial& material = ShapeMaterial{0.9f});
 
     // ---- glTF モデル（シーン文書の <asset><mesh/> に対応）----------------
     // loadModel が原型（同じパスは 1 回だけ読む）、addModelInstance が実体。
@@ -168,6 +236,10 @@ public:
     // diffuse colour of their own, so without one they render black wherever
     // the direct lights do not hit them.
     bool loadEnvironment(const std::string& name, float intensity);
+    // 環境マップを背景としても出すか（シーン文書の <environment skybox>）。
+    // 光の設定ではないので HDR を読み直さずに切り替えられる。環境マップが
+    // 無いとき（一様アンビエント）は無地の背景のまま。RENDER スレッド。
+    void setSkyboxEnabled(bool enabled);
     // 環境マップを外して、起動時と同じ一様な弱いアンビエントへ戻す
     // （シーン文書の <environment hdr=""> に対応）。RENDER スレッド。
     void clearEnvironment();
@@ -280,6 +352,24 @@ public:
 private:
     // 起動時の一様アンビエントを（作り直して）張る。clearEnvironment の実体。
     void installFlatAmbient();
+    // 描画設定の適用。ビュー 1 つぶん（addView と setRenderSettings が呼ぶ）、
+    // 色作り（トーンマップ + グレーディング）の作り直し、ライトの影設定。
+    // ShadowOptions は Filament の入れ子型なので、ここ（前方宣言しか無い
+    // ヘッダ）には出さない - 組み立ては Renderer.cpp の中の関数が持つ。
+    struct ViewSlot;   // 下で定義（宣言だけ先に要る）
+    struct ShapeSlot;  // 同上
+    void applyViewSettings(ViewSlot& slot);
+    void rebuildColorGrading();
+    void applyShadowSettings();
+    // マテリアルインスタンスへ材質を入れる（共有インスタンス・ハイライト
+    // 用インスタンス・スロットごとのインスタンスで同じ既定値を使うため）。
+    void applyMaterialParams(filament::MaterialInstance* mi,
+                             const ShapeMaterial& material) const;
+    // そのスロット専用のマテリアルインスタンス（無ければ作って色と材質を
+    // 入れる）。共有インスタンスを書き換えると全部の形状の色が変わるため。
+    filament::MaterialInstance* ensureShapeInstance(ShapeSlot& slot);
+    // いまの環境マップと設定からスカイボックスを作り直す（無効なら外す）。
+    void refreshSkybox();
 
     int width_;
     int height_;
@@ -343,6 +433,11 @@ private:
         filament::MaterialInstance* mi = nullptr;  // 個別色。null = 共有
         int highlight = -1;                        // -1 = ハイライト無し
         bool used = false;
+        // スロットが自分のインスタンスを持つとき、その中身。色と材質は
+        // 別々のタイミングで来る（色はイベントでも変わる）ので、
+        // インスタンスを作り直すときに両方を入れ直せるよう覚えておく。
+        filament::math::float3 color{0.80f, 0.36f, 0.18f};
+        ShapeMaterial material;
         // ソフトボディだけが持つ自前のバッファ（組み込み形状は共有メッシュ
         // なので null）。removeShape が一緒に壊す。
         filament::VertexBuffer* vb = nullptr;
@@ -399,6 +494,15 @@ private:
     filament::MaterialInstance* groundMatInstance_ = nullptr;
     filament::IndirectLight* ibl_ = nullptr;
     filament::Texture* iblTexture_ = nullptr;  // reflections, when an IBL is loaded
+    // 環境マップを背景としても出すとき（<environment skybox="true">）の
+    // 実体。iblTexture_ を共有するので、環境を張り替えるたびに作り直す。
+    filament::Skybox* skybox_ = nullptr;
+    bool skyboxWanted_ = false;
+    float envIntensity_ = 30000.0f;  // 背景の明るさを光と揃えるため覚える
+
+    // いまの描画設定（シーン文書の <visual>）と、そこから焼いた色作り。
+    RenderSettings settings_;
+    filament::ColorGrading* colorGrading_ = nullptr;
     std::unique_ptr<GltfLoader> gltf_;
     filament::Texture* groundTexture_ = nullptr;
 

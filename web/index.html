@@ -15,8 +15,9 @@
          サイドバーと一緒に消えるので、常に見える方だけを残す。 -->
     <div class="sbHead">
       <span class="sbTitle">WizEngine</span>
-      <!-- バージョンはソースコードが正（src/Versions.cpp の engineVersion）。
-           /stats の versions.WizEngine を受けて app.js が書き換える。 -->
+      <!-- バージョンはソースコードが正（src/core/Versions.h の kVersion* と
+           kCodename）。/stats の versions.WizEngine / Codename を受けて
+           app.js が "Version 1.0.0 (Charon)" に書き換える。 -->
       <span id="appVer" class="sbSub">Version</span>
     </div>
 
@@ -164,6 +165,18 @@
           </span>
         </div>
         <div class="edRow">
+          <span>地面の粗さ / 金属</span>
+          <span>
+            <input id="edGroundRough" class="num" type="number" step="0.05"
+                   min="0.02" max="1"
+                   title="0 = 鏡のように映り込む（濡れた路面）、1 = つや消し"
+                   onchange="applyGround()">
+            <input id="edGroundMetal" class="num" type="number" step="0.1"
+                   min="0" max="1" title="0 = アスファルト・土、1 = 金属の床"
+                   onchange="applyGround()">
+          </span>
+        </div>
+        <div class="edRow">
           <span>環境光 HDR</span>
           <input id="edEnvHdr" class="txt" type="text" placeholder="studio.hdr"
                  title="assets/ からの相対パス（Radiance .hdr）。空 = 環境マップ無し"
@@ -173,6 +186,12 @@
           <span>環境光の強さ</span>
           <input id="edEnvIntensity" class="num" type="number" step="1000"
                  min="0" title="IBL の強さ（lux 相当）"
+                 onchange="applyEnvironment()">
+        </div>
+        <div class="edRow">
+          <span>背景にも出す</span>
+          <input id="edEnvSkybox" type="checkbox"
+                 title="環境マップを背景（スカイボックス）としても描く。映り込みと背景が一致する"
                  onchange="applyEnvironment()">
         </div>
         <div class="edHint">地面と環境光はシーンの一部（XML の
@@ -188,6 +207,165 @@
           <button onclick="attachEventFrom('edWorldEventPick', -1)"
                   title="このシーン全体にイベントアセットを付ける">＋ 付ける</button>
         </div>
+      </section>
+
+      <!-- 描画: シーン全体の「どう撮るか」（XML の <visual>）。World と同じく
+           選択とは無関係に常設で、変更は edit.render としてサーバーへ送る。
+           プリセットの中身はサーバー（EditorTypes.h の renderPreset）が持つ
+           ので、ここはボタンが名前を送るだけ。 -->
+      <section class="sbSec" id="secRender">
+        <div class="sbSecHead">描画（フォトリアル）</div>
+        <div class="edRow btnRow">
+          <button onclick="applyRenderPreset('draft')"
+                  title="速さ優先（影 512・後処理なし）">Draft</button>
+          <button onclick="applyRenderPreset('standard')"
+                  title="従来どおりの既定値">Standard</button>
+          <button onclick="applyRenderPreset('photo')"
+                  title="写実優先（PCSS 影・MSAA 4x・AO・ブルーム・反射・ACES）">Photo</button>
+        </div>
+
+        <div class="edLabel">影</div>
+        <div class="edRow">
+          <span>種類 / 解像度</span>
+          <span>
+            <select id="rnShadow" class="strSel" onchange="applyRender()"
+                    title="PCF = 硬い影（軽い）、PCSS = 距離で柔らかくなる影（重い）">
+              <option value="pcf">PCF</option>
+              <option value="dpcf">DPCF</option>
+              <option value="pcss">PCSS</option>
+              <option value="vsm">VSM</option>
+            </select>
+            <select id="rnShadowMap" class="strSel" onchange="applyRender()"
+                    title="影テクスチャの一辺">
+              <option value="512">512</option>
+              <option value="1024">1024</option>
+              <option value="2048">2048</option>
+              <option value="4096">4096</option>
+            </select>
+          </span>
+        </div>
+        <div class="edRow">
+          <span>カスケード</span>
+          <input id="rnCascades" class="num" type="number" step="1" min="1" max="4"
+                 title="平行光の影を距離で分割する数。近くの影が細かくなる"
+                 onchange="applyRender()">
+        </div>
+        <div class="edRow">
+          <span>接地影</span>
+          <input id="rnContact" type="checkbox"
+                 title="物と床の隙間の細かい影（スクリーン空間）。浮いて見えるのを防ぐ"
+                 onchange="applyRender()">
+        </div>
+
+        <div class="edLabel">アンチエイリアス</div>
+        <div class="edRow">
+          <span>MSAA</span>
+          <select id="rnMsaa" class="strSel" onchange="applyRender()"
+                  title="ジオメトリの縁のギザギザ取り。4x が実用の上限">
+            <option value="1">なし</option>
+            <option value="2">2x</option>
+            <option value="4">4x</option>
+            <option value="8">8x</option>
+          </select>
+        </div>
+        <div class="edRow">
+          <span>FXAA / TAA</span>
+          <span>
+            <input id="rnFxaa" type="checkbox" title="後処理の軽い AA"
+                   onchange="applyRender()">
+            <input id="rnTaa" type="checkbox"
+                   title="時間方向の AA。静止した絵は最も綺麗だが、速く動く物に残像が出る"
+                   onchange="applyRender()">
+          </span>
+        </div>
+
+        <div class="edLabel">後処理</div>
+        <div class="edRow">
+          <span>AO / 強さ</span>
+          <span>
+            <input id="rnSsao" type="checkbox"
+                   title="アンビエントオクルージョン。隅と接地部が陰る＝物が床に乗って見える"
+                   onchange="applyRender()">
+            <input id="rnSsaoI" class="num" type="number" step="0.1" min="0" max="4"
+                   onchange="applyRender()">
+          </span>
+        </div>
+        <div class="edRow">
+          <span>ブルーム</span>
+          <input id="rnBloom" class="num" type="number" step="0.02" min="0" max="1"
+                 title="明るい所のにじみ。0 = 無効、0.05〜0.2 が自然"
+                 onchange="applyRender()">
+        </div>
+        <div class="edRow">
+          <span>反射 (SSR)</span>
+          <input id="rnSsr" type="checkbox"
+                 title="スクリーン空間反射。床や金属に周りの物が映り込む（画面内のものだけ）"
+                 onchange="applyRender()">
+        </div>
+        <div class="edRow">
+          <span>ビネット</span>
+          <input id="rnVignette" class="num" type="number" step="0.05" min="0" max="1"
+                 title="周辺光量落ち。0 = 無効、0.2〜0.4 が自然"
+                 onchange="applyRender()">
+        </div>
+        <div class="edRow">
+          <span>被写界深度 (m)</span>
+          <span>
+            <input id="rnDof" class="num" type="number" step="0.5" min="0"
+                   title="合焦距離。0 = 無効" onchange="applyRender()">
+            <input id="rnDofBlur" class="num" type="number" step="0.5" min="0" max="8"
+                   title="ぼけの強さ" onchange="applyRender()">
+          </span>
+        </div>
+
+        <div class="edLabel">露出（物理カメラ）</div>
+        <div class="edRow">
+          <span>F 値 / 1/秒 / ISO</span>
+          <span>
+            <input id="rnAperture" class="num" type="number" step="0.5" min="0.5"
+                   max="64" title="絞り。小さいほど明るい" onchange="applyRender()">
+            <input id="rnShutter" class="num" type="number" step="5" min="1"
+                   title="シャッター速度の分母（125 = 1/125 秒）" onchange="applyRender()">
+            <input id="rnIso" class="num" type="number" step="50" min="10"
+                   title="感度 (ISO)" onchange="applyRender()">
+          </span>
+        </div>
+
+        <div class="edLabel">フィルム</div>
+        <div class="edRow">
+          <span>トーンマップ</span>
+          <select id="rnTonemap" class="strSel" onchange="applyRender()"
+                  title="HDR を画面の明るさへ落とす曲線。フォトリアルの見え方をいちばん左右する">
+            <option value="aceslegacy">ACES (legacy)</option>
+            <option value="aces">ACES</option>
+            <option value="filmic">Filmic</option>
+            <option value="agx">AgX</option>
+            <option value="pbrneutral">PBR Neutral</option>
+            <option value="linear">Linear</option>
+          </select>
+        </div>
+        <div class="edRow">
+          <span>コントラスト / 彩度</span>
+          <span>
+            <input id="rnContrast" class="num" type="number" step="0.05" min="0"
+                   max="2" onchange="applyRender()">
+            <input id="rnSaturation" class="num" type="number" step="0.05" min="0"
+                   max="2" onchange="applyRender()">
+          </span>
+        </div>
+        <div class="edRow">
+          <span>色温度 / ティント</span>
+          <span>
+            <input id="rnTemperature" class="num" type="number" step="0.05" min="-1"
+                   max="1" title="-1 = 青く、+1 = 暖かく" onchange="applyRender()">
+            <input id="rnTint" class="num" type="number" step="0.05" min="-1" max="1"
+                   title="-1 = 緑、+1 = マゼンタ" onchange="applyRender()">
+          </span>
+        </div>
+        <div class="edHint">ここの値はシーンの一部（XML の &lt;visual&gt;）として
+          保存され、全カメラに効きます。重いのは MSAA・PCSS 影・SSR・AO の順。
+          ライトが lux / lumen の実単位なので、露出は写真と同じ感覚で効きます
+          （F 値を半分にすると 2 段明るい）。</div>
       </section>
 
       <!-- プレハブ編集モードのとき、他の節の代わりに出る。部品の一覧（クリックで
@@ -315,6 +493,37 @@
           <div class="edRow">
             <span>色</span>
             <input id="edColor" class="col" type="color" onchange="applyColor()">
+          </div>
+          <!-- 材質（PBR）。色が「何色か」なら、こちらは「どう光るか」。
+               値は XML の <geom roughness metallic .../> として保存される。 -->
+          <div class="edLabel">材質</div>
+          <div class="edRow">
+            <span>粗さ / 金属</span>
+            <span>
+              <input id="edRough" class="num" type="number" step="0.05" min="0.02"
+                     max="1" title="0 = 鏡のように映り込む、1 = つや消し"
+                     onchange="applyMaterial()">
+              <input id="edMetal" class="num" type="number" step="0.1" min="0" max="1"
+                     title="0 = プラ・木・石・塗装、1 = 金属（中間に物理的な意味は無い）"
+                     onchange="applyMaterial()">
+            </span>
+          </div>
+          <div class="edRow">
+            <span>反射率 / コート</span>
+            <span>
+              <input id="edReflect" class="num" type="number" step="0.05" min="0"
+                     max="1" title="誘電体の反射率。0.5 = 4%（ふつうの物質）"
+                     onchange="applyMaterial()">
+              <input id="edCoat" class="num" type="number" step="0.1" min="0" max="1"
+                     title="クリアコート（車の塗装・ニス・濡れた表面）"
+                     onchange="applyMaterial()">
+            </span>
+          </div>
+          <div class="edRow">
+            <span>自己発光</span>
+            <input id="edEmissive" class="num" type="number" step="0.5" min="0"
+                   title="色そのままの光を足す（ブルームの光源になる）"
+                   onchange="applyMaterial()">
           </div>
           <div class="edRow btnRow">
             <button onclick="send('edit.duplicate')">⧉ 複製</button>

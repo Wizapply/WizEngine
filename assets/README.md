@@ -7,9 +7,12 @@ Files the scene loads at runtime, copied next to the executable by the build.
 
   ```xml
   <worldbody>
-    <environment hdr="studio.hdr" intensity="30000"/>
+    <environment hdr="studio.hdr" intensity="30000" skybox="true"/>
     ...
   ```
+
+  `skybox="true"` にすると、光としてだけでなく**背景にも**出る（映り込みと
+  背景が一致する ＝ 写真らしさがいちばん安く上がる設定。`docs/photorealism.md`）。
 
   It is converted to a cubemap and prefiltered **on the GPU at load time**, so
   changing the file needs no rebuild — only a restart. Free HDRIs:

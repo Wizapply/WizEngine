@@ -171,6 +171,54 @@ inline PartKind partKindFromName(const std::string& s, PartKind fallback) {
     return fallback;
 }
 
+// ---- 材質（フォトリアル描画のための PBR パラメータ）--------------------------
+// 色（baseColor）が「何色か」なら、ここにあるのは「どう光るか」。値は
+// Filament の lit マテリアルのパラメータそのままで、文書では <geom> /
+// <part> の属性（rgba の隣）に書く。既定値は従来の見た目（roughness 0.75 の
+// 誘電体）と同じなので、書いていない文書の見た目は変わらない。
+//
+//   roughness   0 = 鏡のようにくっきり映る、1 = つや消し。金属でも誘電体でも
+//               「反射のぼけ具合」を決める、いちばん効く値
+//   metallic    0 = 誘電体（プラ・木・石・塗装）、1 = 金属（鉄・アルミ）。
+//               中間の値に物理的な意味は無い（層構造の近似としてのみ）
+//   reflectance 誘電体の垂直反射率。0.5 = 4%（ほとんどの物質）、水 0.35、
+//               宝石 0.7 くらい。metallic=1 では使われない
+//   clearCoat   透明な上塗りの層（車の塗装・ニス・濡れた表面）。0 = 無し
+//   emissive    自己発光（baseColor の何倍を足すか）。ブルームの光源になる
+struct MaterialDesc {
+    double roughness = 0.75;
+    double metallic = 0.0;
+    double reflectance = 0.5;
+    double clearCoat = 0.0;
+    double clearCoatRoughness = 0.03;
+    double emissive = 0.0;
+};
+
+inline MaterialDesc clampMaterial(MaterialDesc m) {
+    auto cl = [](double v, double lo, double hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
+    };
+    // roughness の下限が 0 でないのは Filament と同じ理由: 完全な 0 は
+    // ハイライトが 1 ピクセルになって派手にちらつく。
+    m.roughness = cl(m.roughness, 0.02, 1.0);
+    m.metallic = cl(m.metallic, 0.0, 1.0);
+    m.reflectance = cl(m.reflectance, 0.0, 1.0);
+    m.clearCoat = cl(m.clearCoat, 0.0, 1.0);
+    m.clearCoatRoughness = cl(m.clearCoatRoughness, 0.0, 1.0);
+    m.emissive = cl(m.emissive, 0.0, 100.0);
+    return m;
+}
+
+inline bool operator==(const MaterialDesc& a, const MaterialDesc& b) {
+    return a.roughness == b.roughness && a.metallic == b.metallic &&
+           a.reflectance == b.reflectance && a.clearCoat == b.clearCoat &&
+           a.clearCoatRoughness == b.clearCoatRoughness &&
+           a.emissive == b.emissive;
+}
+inline bool operator!=(const MaterialDesc& a, const MaterialDesc& b) {
+    return !(a == b);
+}
+
 struct PartDesc {
     std::string name;
     PartKind kind = PartKind::Box;
@@ -181,6 +229,7 @@ struct PartDesc {
     // 直径（y）。Mesh: 倍率（x。モデルの <mesh scale> にさらに掛かる）。
     Vec3d size{0.5, 0.5, 0.5};
     Color3 color;
+    MaterialDesc material;        // 材質（PBR）。車の塗装（clearCoat）など
     std::string socket;           // "" = 車体に固定。"wheel:0:L" など
     // 当たり判定を持つ（付け先のボディの複合形状に足す）。箱 / 球で socket が
     // 空のものだけ有効（clampPart が他を false に落とす）。
@@ -267,6 +316,8 @@ struct BodyDesc {
     double mass = 1.0;              // kg。密度は体積から逆算する
     bool fixed = false;             // true = 動かない土台
     Color3 color;
+    // 材質（PBR）。色と違って「どう光るか」だけを決める。
+    MaterialDesc material;
     // このオブジェクトに付いているイベントアセットの名前（文書では
     // <body> の中の <event name="..."/>）。順番はインスペクタの並び順で、
     // 同じ名前は 1 回だけ。番号ではなく名前で持つので、保存でオブジェクトを
@@ -370,6 +421,10 @@ struct GroundDesc {
     std::string texture = "textures/ground.png";
     double tile = 2.0;         // テクスチャ 1 リピートが覆うメートル
     Color3 tint{1.0f, 1.0f, 1.0f};  // テクスチャに乗す色（白 = 画像のまま）
+    // 地面の材質。既定は従来どおりのつや消し。濡れたアスファルトなら
+    // roughness 0.2 前後にすると、環境と物が映り込む（SSR と相性が良い）。
+    double roughness = 0.9;
+    double metallic = 0.0;
 };
 
 // 環境光（IBL）。assets/ の Radiance .hdr を GPU 上でキューブマップ化して
@@ -377,7 +432,130 @@ struct GroundDesc {
 struct EnvironmentDesc {
     std::string hdr = "studio.hdr";
     double intensity = 30000.0;
+    // 背景としても出すか。false = 従来どおり無地の背景（HDR は光としてだけ
+    // 使う）。true にすると、映り込んでいる環境がそのまま背景に見える
+    // ＝ 写真らしさがいちばん安く上がるスイッチ。
+    bool skybox = false;
 };
+
+// ---- 描画品質（シーン文書の <visual>）---------------------------------------
+// 「どう撮るか」をシーンの一部として持つ。ライトと材質が「何がどう光るか」
+// なら、こちらはカメラとフィルム（露出・トーンマップ）と後処理（AA・AO・
+// ブルーム・反射）の設定で、Filament の View / Camera / ColorGrading に
+// そのまま渡る値。既定値は**これまでの見た目そのまま**（後処理はどれも
+// 切ってあり、露出も Filament の既定と同じ f/16・1/125・ISO100）なので、
+// <visual> を書いていない文書の絵は変わらない。
+//
+// 実際の適用は Renderer::setRenderSettings（RENDER スレッド）。ここは値の
+// 入れ物で、Chrono も Filament も出てこない。
+struct RenderDesc {
+    // ---- <quality>: 影とアンチエイリアス
+    int shadowMap = 1024;          // 影のテクスチャの一辺（512〜4096）
+    int cascades = 1;              // 平行光のカスケード分割（1〜4）
+    std::string shadow = "pcf";    // pcf / dpcf / pcss / vsm
+    bool contactShadows = false;   // 接地部の細かい影（スクリーン空間）
+    int msaa = 1;                  // 1 = 無効、2 / 4 / 8
+    bool taa = false;              // テンポラル AA（静止画は綺麗、速い動きは残像）
+    bool fxaa = true;              // 後処理の AA（軽い）
+    // ---- <postprocess>
+    bool postProcess = true;       // false = トーンマップも AA も通さない生の絵
+    bool ssao = false;             // アンビエントオクルージョン（接地影・隅の陰り）
+    double ssaoIntensity = 1.0;
+    double bloom = 0.0;            // 0 = 無効。明るい所のにじみ（0.05〜0.2 程度）
+    bool ssr = false;              // スクリーン空間反射（床の映り込み）
+    double dof = 0.0;              // 被写界深度: 合焦距離 m（0 = 無効）
+    double dofBlur = 1.0;          // ぼけの強さ（錯乱円の倍率）
+    double vignette = 0.0;         // 0 = 無効。周辺光量落ち（0.2〜0.4 が自然）
+    // ---- <exposure>: 物理カメラの露出（写真と同じ 3 つの値）
+    double aperture = 16.0;        // F 値（小さいほど明るい）
+    double shutter = 125.0;        // シャッター速度の分母（1/125 秒）
+    double sensitivity = 100.0;    // ISO
+    // ---- <grading>: フィルム（トーンマップ）と色
+    std::string tonemap = "aceslegacy";  // aceslegacy / aces / filmic / agx /
+                                         // pbrneutral / linear
+    double contrast = 1.0;
+    double saturation = 1.0;
+    double temperature = 0.0;      // -1（青く）〜 +1（暖かく）
+    double tint = 0.0;             // -1（緑）〜 +1（マゼンタ）
+};
+
+inline RenderDesc clampRender(RenderDesc r) {
+    auto cl = [](double v, double lo, double hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
+    };
+    auto cli = [](int v, int lo, int hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
+    };
+    // 影のテクスチャは 2 のべき乗に丸める（Filament は任意の値も受けるが、
+    // 端数のサイズは意味が無いうえに気付きにくい）。
+    r.shadowMap = cli(r.shadowMap, 256, 4096);
+    int pow2 = 256;
+    while (pow2 * 2 <= r.shadowMap) pow2 *= 2;
+    r.shadowMap = pow2;
+    r.cascades = cli(r.cascades, 1, 4);
+    if (r.shadow != "pcf" && r.shadow != "dpcf" && r.shadow != "pcss" &&
+        r.shadow != "vsm") {
+        r.shadow = "pcf";
+    }
+    // MSAA は 1 / 2 / 4 / 8 のみ。
+    if (r.msaa < 2) r.msaa = 1;
+    else if (r.msaa < 4) r.msaa = 2;
+    else if (r.msaa < 8) r.msaa = 4;
+    else r.msaa = 8;
+    r.ssaoIntensity = cl(r.ssaoIntensity, 0.0, 4.0);
+    r.bloom = cl(r.bloom, 0.0, 1.0);
+    r.dof = cl(r.dof, 0.0, 1000.0);
+    r.dofBlur = cl(r.dofBlur, 0.0, 8.0);
+    r.vignette = cl(r.vignette, 0.0, 1.0);
+    r.aperture = cl(r.aperture, 0.5, 64.0);
+    r.shutter = cl(r.shutter, 1.0, 16000.0);
+    r.sensitivity = cl(r.sensitivity, 10.0, 204800.0);
+    if (r.tonemap != "aceslegacy" && r.tonemap != "aces" &&
+        r.tonemap != "filmic" && r.tonemap != "agx" &&
+        r.tonemap != "pbrneutral" && r.tonemap != "linear") {
+        r.tonemap = "aceslegacy";
+    }
+    r.contrast = cl(r.contrast, 0.0, 2.0);
+    r.saturation = cl(r.saturation, 0.0, 2.0);
+    r.temperature = cl(r.temperature, -1.0, 1.0);
+    r.tint = cl(r.tint, -1.0, 1.0);
+    return r;
+}
+
+// 使い分けの分かっている 3 つの組み合わせ。ブラウザの「Draft / Standard /
+// Photo」ボタンは名前だけを送り、中身の定義は**ここ 1 か所**が持つ
+// （UI とサーバーで別々に持つと必ずずれる）。押したあと個別の値を
+// 上書きできるのは edit.render が部分更新だから。
+inline RenderDesc renderPreset(const std::string& name) {
+    RenderDesc r;
+    if (name == "draft") {
+        // 速さ優先。大量の剛体を回しながら見るとき。
+        r.shadowMap = 512;
+        r.fxaa = true;
+        return r;
+    }
+    if (name == "photo") {
+        // 写実優先。1 フレームの絵の質が欲しいとき（見た目の確認・記録用の
+        // 動画）。MSAA 4x を軸にして、TAA は既定では入れない - 速く動く
+        // 剛体で残像が出るため（静止画なら taa="true" の方が綺麗）。
+        r.shadowMap = 2048;
+        r.cascades = 3;
+        r.shadow = "pcss";
+        r.contactShadows = true;
+        r.msaa = 4;
+        r.fxaa = true;
+        r.ssao = true;
+        r.ssaoIntensity = 1.2;
+        r.bloom = 0.08;
+        r.ssr = true;
+        r.vignette = 0.25;
+        r.tonemap = "aces";
+        r.contrast = 1.05;
+        r.saturation = 1.02;
+        return r;
+    }
+    return r;  // "standard"（＝既定値。これまでの見た目）
+}
 
 // ---- カメラ -----------------------------------------------------------------
 // 1 台ぶんの姿勢。実体（CameraObject）と同じオービット表現のまま保存する。
@@ -671,6 +849,34 @@ inline SoftDesc softFromJson(const nlohmann::json& j, const SoftDesc& base) {
     return clampSoft(s);
 }
 
+// 材質（PBR）。キーは XML の属性名と同じ。ブラウザの Inspector と
+// <geom> / <part> の両方がこの名前を使う。
+inline nlohmann::json toJson(const MaterialDesc& m) {
+    nlohmann::json j;
+    j["roughness"] = m.roughness;
+    j["metallic"] = m.metallic;
+    j["reflectance"] = m.reflectance;
+    j["clearcoat"] = m.clearCoat;
+    j["clearcoatRoughness"] = m.clearCoatRoughness;
+    j["emissive"] = m.emissive;
+    return j;
+}
+
+// 送られてきたキーだけ上書き（部分更新）。
+inline MaterialDesc materialFromJson(const nlohmann::json& j,
+                                     const MaterialDesc& base) {
+    MaterialDesc m = base;
+    if (!j.is_object()) return m;
+    m.roughness = jsonNumber(j, "roughness", m.roughness);
+    m.metallic = jsonNumber(j, "metallic", m.metallic);
+    m.reflectance = jsonNumber(j, "reflectance", m.reflectance);
+    m.clearCoat = jsonNumber(j, "clearcoat", m.clearCoat);
+    m.clearCoatRoughness =
+        jsonNumber(j, "clearcoatRoughness", m.clearCoatRoughness);
+    m.emissive = jsonNumber(j, "emissive", m.emissive);
+    return clampMaterial(m);
+}
+
 inline nlohmann::json toJson(const BodyDesc& b) {
     nlohmann::json j;
     j["name"] = b.name;
@@ -683,6 +889,7 @@ inline nlohmann::json toJson(const BodyDesc& b) {
     j["mass"] = b.mass;
     j["fixed"] = b.fixed;
     j["color"] = colorToHex(b.color);
+    j["material"] = toJson(b.material);  // 材質（PBR）
     j["events"] = b.events;  // 付いているイベントアセット名
     j["vehicle"] = b.hasVehicle;  // 車両か（中身の編集は XML で）
     j["prefab"] = b.prefab;
@@ -711,6 +918,9 @@ inline BodyDesc bodyFromJson(const nlohmann::json& j, const BodyDesc& base) {
     b.fixed = j.value("fixed", b.fixed);
     if (j.contains("color") && j["color"].is_string()) {
         b.color = colorFromHex(j["color"], b.color);
+    }
+    if (j.contains("material")) {
+        b.material = materialFromJson(j["material"], b.material);
     }
     // 付けるプレハブ（名前）。置いた時点で付ける用途（🪜 Stairs など）。
     if (j.contains("prefab") && j["prefab"].is_string()) {
@@ -903,6 +1113,7 @@ inline nlohmann::json toJson(const PartDesc& p) {
     j["rotation"] = toJson(p.rotation);
     j["size"] = toJson(p.size);
     j["color"] = colorToHex(p.color);
+    j["material"] = toJson(p.material);
     j["socket"] = p.socket;
     j["collide"] = p.collide;
     return j;
@@ -921,6 +1132,9 @@ inline PartDesc partFromJson(const nlohmann::json& j, const PartDesc& base) {
     if (j.contains("color") && j["color"].is_string()) {
         p.color = colorFromHex(j["color"], p.color);
     }
+    if (j.contains("material")) {
+        p.material = materialFromJson(j["material"], p.material);
+    }
     if (j.contains("socket") && j["socket"].is_string()) p.socket = j["socket"];
     if (j.contains("collide") && j["collide"].is_boolean()) p.collide = j["collide"];
     return p;
@@ -937,6 +1151,7 @@ inline PartDesc clampPart(PartDesc p) {
     p.size.z = cl(p.size.z, 0.005, 50.0);
     if (p.name.size() > 64) p.name.resize(64);
     if (p.socket.size() > 32) p.socket.resize(32);
+    p.material = clampMaterial(p.material);
     // 当たり判定は車体に固定の箱 / 球だけ（車輪に付く部品は動くので複合形状に
     // できない。円柱 / メッシュの当たり形状は未対応）。
     if (!p.socket.empty() || (p.kind != PartKind::Box && p.kind != PartKind::Sphere)) {
@@ -1068,6 +1283,8 @@ inline nlohmann::json toJson(const GroundDesc& g) {
     j["texture"] = g.texture;
     j["tile"] = g.tile;
     j["color"] = colorToHex(g.tint);
+    j["roughness"] = g.roughness;
+    j["metallic"] = g.metallic;
     return j;
 }
 
@@ -1086,6 +1303,8 @@ inline GroundDesc groundFromJson(const nlohmann::json& j,
     if (j.contains("color") && j["color"].is_string()) {
         g.tint = colorFromHex(j["color"], g.tint);
     }
+    g.roughness = jsonNumber(j, "roughness", g.roughness);
+    g.metallic = jsonNumber(j, "metallic", g.metallic);
     return g;
 }
 
@@ -1093,6 +1312,7 @@ inline nlohmann::json toJson(const EnvironmentDesc& e) {
     nlohmann::json j;
     j["hdr"] = e.hdr;
     j["intensity"] = e.intensity;
+    j["skybox"] = e.skybox;
     return j;
 }
 
@@ -1106,7 +1326,87 @@ inline EnvironmentDesc environmentFromJson(const nlohmann::json& j,
         if (h.empty() || assetFileAllowed(h)) e.hdr = h;
     }
     e.intensity = jsonNumber(j, "intensity", e.intensity);
+    if (j.contains("skybox") && j["skybox"].is_boolean()) {
+        e.skybox = j["skybox"].get<bool>();
+    }
     return e;
+}
+
+// 描画品質。キーは XML の属性名と同じで、Inspector の「描画」節が使う。
+inline nlohmann::json toJson(const RenderDesc& r) {
+    nlohmann::json j;
+    j["shadowMap"] = r.shadowMap;
+    j["cascades"] = r.cascades;
+    j["shadow"] = r.shadow;
+    j["contactShadows"] = r.contactShadows;
+    j["msaa"] = r.msaa;
+    j["taa"] = r.taa;
+    j["fxaa"] = r.fxaa;
+    j["postprocess"] = r.postProcess;
+    j["ssao"] = r.ssao;
+    j["ssaoIntensity"] = r.ssaoIntensity;
+    j["bloom"] = r.bloom;
+    j["ssr"] = r.ssr;
+    j["dof"] = r.dof;
+    j["dofBlur"] = r.dofBlur;
+    j["vignette"] = r.vignette;
+    j["aperture"] = r.aperture;
+    j["shutter"] = r.shutter;
+    j["sensitivity"] = r.sensitivity;
+    j["tonemap"] = r.tonemap;
+    j["contrast"] = r.contrast;
+    j["saturation"] = r.saturation;
+    j["temperature"] = r.temperature;
+    j["tint"] = r.tint;
+    return j;
+}
+
+// 送られてきたキーだけ上書き（部分更新）。"preset" があれば**先に**その
+// 組み合わせへ切り替えてから、残りのキーで上書きする（ボタンを押しながら
+// 1 つだけ変える、が自然に書けるように）。
+inline RenderDesc renderFromJson(const nlohmann::json& j,
+                                 const RenderDesc& base) {
+    RenderDesc r = base;
+    if (!j.is_object()) return r;
+    if (j.contains("preset") && j["preset"].is_string()) {
+        r = renderPreset(j["preset"].get<std::string>());
+    }
+    r.shadowMap = jsonInt(j, "shadowMap", r.shadowMap);
+    r.cascades = jsonInt(j, "cascades", r.cascades);
+    if (j.contains("shadow") && j["shadow"].is_string()) {
+        r.shadow = j["shadow"].get<std::string>();
+    }
+    if (j.contains("contactShadows") && j["contactShadows"].is_boolean()) {
+        r.contactShadows = j["contactShadows"].get<bool>();
+    }
+    r.msaa = jsonInt(j, "msaa", r.msaa);
+    if (j.contains("taa") && j["taa"].is_boolean()) r.taa = j["taa"].get<bool>();
+    if (j.contains("fxaa") && j["fxaa"].is_boolean()) {
+        r.fxaa = j["fxaa"].get<bool>();
+    }
+    if (j.contains("postprocess") && j["postprocess"].is_boolean()) {
+        r.postProcess = j["postprocess"].get<bool>();
+    }
+    if (j.contains("ssao") && j["ssao"].is_boolean()) {
+        r.ssao = j["ssao"].get<bool>();
+    }
+    r.ssaoIntensity = jsonNumber(j, "ssaoIntensity", r.ssaoIntensity);
+    r.bloom = jsonNumber(j, "bloom", r.bloom);
+    if (j.contains("ssr") && j["ssr"].is_boolean()) r.ssr = j["ssr"].get<bool>();
+    r.dof = jsonNumber(j, "dof", r.dof);
+    r.dofBlur = jsonNumber(j, "dofBlur", r.dofBlur);
+    r.vignette = jsonNumber(j, "vignette", r.vignette);
+    r.aperture = jsonNumber(j, "aperture", r.aperture);
+    r.shutter = jsonNumber(j, "shutter", r.shutter);
+    r.sensitivity = jsonNumber(j, "sensitivity", r.sensitivity);
+    if (j.contains("tonemap") && j["tonemap"].is_string()) {
+        r.tonemap = j["tonemap"].get<std::string>();
+    }
+    r.contrast = jsonNumber(j, "contrast", r.contrast);
+    r.saturation = jsonNumber(j, "saturation", r.saturation);
+    r.temperature = jsonNumber(j, "temperature", r.temperature);
+    r.tint = jsonNumber(j, "tint", r.tint);
+    return clampRender(r);
 }
 
 inline nlohmann::json toJson(const SimSettings& s) {
@@ -1212,6 +1512,7 @@ inline BodyDesc clampBody(BodyDesc b) {
     b.position.y = cl(b.position.y, -500.0, 500.0);
     b.position.z = cl(b.position.z, -500.0, 500.0);
     b.soft = clampSoft(b.soft);
+    b.material = clampMaterial(b.material);
     // geom の無いボディ: 当たり判定も無し（部品だけ）。ソフトボディにはできない
     // （格子は箱か球）ので箱へ倒す。
     if (b.hasSoft && b.shape == ShapeKind::None) {
@@ -1246,6 +1547,8 @@ inline GroundDesc clampGround(GroundDesc g) {
     g.half = cl(g.half, 1.0, 1000.0);
     g.visualHalf = cl(g.visualHalf, 1.0, 1000.0);
     g.tile = cl(g.tile, 0.1, 100.0);
+    g.roughness = cl(g.roughness, 0.02, 1.0);
+    g.metallic = cl(g.metallic, 0.0, 1.0);
     return g;
 }
 inline EnvironmentDesc clampEnvironment(EnvironmentDesc e) {

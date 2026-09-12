@@ -4,6 +4,10 @@
 #include <filament/Box.h>
 #include <filament/Camera.h>
 #include <filament/Color.h>
+#include <filament/ColorGrading.h>
+#include <filament/Options.h>
+#include <filament/Skybox.h>
+#include <filament/ToneMapper.h>
 #include <filament/Engine.h>
 #include <filament/IndexBuffer.h>
 #include <filament/IndirectLight.h>
@@ -156,6 +160,26 @@ void buildTube(filament::math::float3* out, const filament::math::float3& a,
     out[7] = {b.x - vx, b.y - vy, b.z - vz};
 }
 
+// 影の設定（ライトごと）。カスケードは平行光だけの概念なので、点光源・
+// スポットには 1 を渡す（Filament は無視するが、意味の無い値を持たせない）。
+filament::LightManager::ShadowOptions shadowOptionsFrom(
+    const wizengine::RenderSettings& s, bool directional) {
+    filament::LightManager::ShadowOptions o;
+    o.mapSize = s.shadowMap;
+    o.shadowCascades = directional ? s.cascades : uint8_t(1);
+    // 接地部の細かい影。影マップの解像度では拾えない「物と床の隙間」を
+    // スクリーン空間のレイマーチで足す（浮いて見える問題への定番の処置）。
+    o.screenSpaceContactShadows = s.contactShadows;
+    // DPCF / PCSS の柔らかさは「光源の見かけの大きさ」で決まる。既定の
+    // 0.02 は小さすぎて PCF とほとんど変わらないので、少し大きくする
+    // （太陽の視半径ぶん = 現実の影の縁のぼけ方に近い）。
+    if (s.shadow == wizengine::RenderSettings::Shadow::Dpcf ||
+        s.shadow == wizengine::RenderSettings::Shadow::Pcss) {
+        o.shadowBulbRadius = 0.1f;
+    }
+    return o;
+}
+
 }  // namespace
 
 namespace wizengine {
@@ -200,6 +224,9 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
     matInstance_ = material_->createInstance();
     matInstance_->setParameter("baseColor", RgbType::LINEAR,
                                float3{0.80f, 0.36f, 0.18f});
+    // 材質のパラメータは .mat に既定値が書けないので、インスタンスを作った
+    // ところで必ず入れる（入れ忘れると 0 = 鏡のような金属になる）。
+    applyMaterialParams(matInstance_, ShapeMaterial{});
 
     // Shared cube mesh for boxes: positions + tangent frames (for lit shading).
     auto* cubeOrient = filament::geometry::SurfaceOrientation::Builder()
@@ -256,6 +283,182 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
     // loadEnvironment() when the scene names an HDR; clearEnvironment() puts
     // it back.
     installFlatAmbient();
+
+    // 描画設定（既定値 = これまでの絵）。ここで一度通しておくと、以後は
+    // シーン文書の <visual> が来たときに同じ道を通るだけになる。
+    setRenderSettings(settings_);
+}
+
+// ---- 描画設定（フォトリアル）------------------------------------------------
+// シーン文書の <visual> が変わるたびに Scene が呼ぶ。Filament 側は
+// 「ビューの後処理」「カメラの露出」「色作り（LUT）」「ライトの影」の
+// 4 か所に分かれているので、ここで配り直す。
+void Renderer::setRenderSettings(const RenderSettings& settings) {
+    const RenderSettings before = settings_;
+    settings_ = settings;
+    // 色作りは LUT を焼く（32^3 のテクスチャ）ので、関係する値が変わった
+    // ときだけ作り直す。毎フレーム呼ばれても安いままにしておきたい。
+    const bool gradingChanged =
+        !colorGrading_ || before.tonemap != settings_.tonemap ||
+        before.contrast != settings_.contrast ||
+        before.saturation != settings_.saturation ||
+        before.temperature != settings_.temperature ||
+        before.tint != settings_.tint;
+    if (gradingChanged) rebuildColorGrading();
+    for (auto& slot : views_) applyViewSettings(slot);
+    applyShadowSettings();
+}
+
+// トーンマップ（HDR → 表示）と色調整を 1 個の ColorGrading に焼く。
+// フォトリアルの見え方をいちばん左右するのがここ: 物理的に正しい HDR を
+// どうフィルムに落とすか、という段。
+void Renderer::rebuildColorGrading() {
+    ColorGrading::Builder builder;
+    // ToneMapper は build() が同期なので、この関数を抜けるときに壊れてよい
+    // （Filament のヘッダにもそう書いてある）。
+    filament::LinearToneMapper linear;
+    filament::ACESToneMapper aces;
+    filament::ACESLegacyToneMapper acesLegacy;
+    filament::FilmicToneMapper filmic;
+    filament::PBRNeutralToneMapper pbrNeutral;
+    filament::AgxToneMapper agx(filament::AgxToneMapper::AgxLook::NONE);
+    const ToneMapper* tm = &acesLegacy;
+    switch (settings_.tonemap) {
+        case RenderSettings::Tonemap::Aces: tm = &aces; break;
+        case RenderSettings::Tonemap::Filmic: tm = &filmic; break;
+        case RenderSettings::Tonemap::Agx: tm = &agx; break;
+        case RenderSettings::Tonemap::PbrNeutral: tm = &pbrNeutral; break;
+        case RenderSettings::Tonemap::Linear: tm = &linear; break;
+        case RenderSettings::Tonemap::AcesLegacy: break;
+    }
+    ColorGrading* next = builder.toneMapper(tm)
+                             .quality(ColorGrading::QualityLevel::HIGH)
+                             .contrast(settings_.contrast)
+                             .saturation(settings_.saturation)
+                             .whiteBalance(settings_.temperature, settings_.tint)
+                             .build(*engine_);
+    if (!next) {
+        // 焼けなかったときは前の設定のまま（既定のトーンマップに戻すより、
+        // 直前まで見えていた絵を保つ方が驚きが少ない）。
+        LOGW("render", "color grading could not be built - keeping the previous one");
+        return;
+    }
+    // 先に全ビューへ差し替えてから古い方を壊す（使用中の LUT を消さない）。
+    for (auto& slot : views_) slot.view->setColorGrading(next);
+    if (colorGrading_) engine_->destroy(colorGrading_);
+    colorGrading_ = next;
+}
+
+// ビュー 1 つぶん。addView（カメラの遅延生成）からも呼ぶので、あとから
+// 開いたページでも設定が揃う。
+void Renderer::applyViewSettings(ViewSlot& slot) {
+    View* v = slot.view;
+    const RenderSettings& s = settings_;
+
+    v->setPostProcessingEnabled(s.postProcess);
+    v->setColorGrading(colorGrading_);
+    v->setDithering(Dithering::TEMPORAL);  // 暗部のバンディング対策
+    v->setAntiAliasing(s.fxaa ? AntiAliasing::FXAA : AntiAliasing::NONE);
+
+    MultiSampleAntiAliasingOptions msaa;
+    msaa.enabled = s.msaa > 1;
+    msaa.sampleCount = s.msaa;
+    v->setMultiSampleAntiAliasingOptions(msaa);
+
+    TemporalAntiAliasingOptions taa;
+    taa.enabled = s.taa;
+    v->setTemporalAntiAliasingOptions(taa);
+
+    // TAA と被写界深度は画面の外の情報を使うので、縁に余白（ガードバンド）が
+    // 要る。無いと画面端に尾を引く。
+    GuardBandOptions guard;
+    guard.enabled = s.taa || s.dofFocus > 0.0f;
+    v->setGuardBandOptions(guard);
+
+    AmbientOcclusionOptions ao;
+    ao.enabled = s.ssao;
+    ao.intensity = s.ssaoIntensity;
+    ao.quality = QualityLevel::HIGH;
+    ao.upsampling = QualityLevel::HIGH;
+    ao.lowPassFilter = QualityLevel::MEDIUM;
+    v->setAmbientOcclusionOptions(ao);
+
+    BloomOptions bloom;
+    bloom.enabled = s.bloom > 0.0f;
+    bloom.strength = s.bloom;
+    bloom.quality = QualityLevel::HIGH;
+    v->setBloomOptions(bloom);
+
+    ScreenSpaceReflectionsOptions ssr;
+    ssr.enabled = s.ssr;
+    v->setScreenSpaceReflectionsOptions(ssr);
+
+    DepthOfFieldOptions dof;
+    dof.enabled = s.dofFocus > 0.0f;
+    dof.cocScale = s.dofBlur;
+    v->setDepthOfFieldOptions(dof);
+
+    VignetteOptions vignette;
+    vignette.enabled = s.vignette > 0.0f;
+    // 強さ 1 つのつまみを Filament の 3 つの値に配る。midPoint が小さいほど
+    // 中心近くまで暗くなるので、強さをそこへ写す。
+    vignette.midPoint = 1.0f - 0.5f * s.vignette;
+    vignette.roundness = 0.5f;
+    vignette.feather = 0.5f;
+    v->setVignetteOptions(vignette);
+
+    switch (s.shadow) {
+        case RenderSettings::Shadow::Dpcf:
+            v->setShadowType(ShadowType::DPCF);
+            break;
+        case RenderSettings::Shadow::Pcss:
+            v->setShadowType(ShadowType::PCSS);
+            break;
+        case RenderSettings::Shadow::Vsm: {
+            v->setShadowType(ShadowType::VSM);
+            VsmShadowOptions vsm;
+            vsm.anisotropy = 1;
+            vsm.mipmapping = true;
+            v->setVsmShadowOptions(vsm);
+            break;
+        }
+        case RenderSettings::Shadow::Pcf:
+            v->setShadowType(ShadowType::PCF);
+            break;
+    }
+    SoftShadowOptions soft;  // DPCF / PCSS のぼけ方（既定のまま）
+    v->setSoftShadowOptions(soft);
+
+    // 露出は「写真と同じ 3 つの値」。ライトが lux / lumen の実単位なので、
+    // ここを変えると現実のカメラと同じように絵の明るさが変わる。
+    slot.camera->setExposure(s.aperture, 1.0f / s.shutter, s.sensitivity);
+    if (s.dofFocus > 0.0f) slot.camera->setFocusDistance(s.dofFocus);
+}
+
+// 影の設定はライトごと（Filament の LightManager が持つ）。既にあるライトへ
+// 流し込むので、シーンを読み直さなくても品質を上げ下げできる。
+void Renderer::applyShadowSettings() {
+    auto& lm = engine_->getLightManager();
+    for (const auto& e : lightEntities_) {
+        if (e.isNull()) continue;
+        const auto li = lm.getInstance(e);
+        if (!li) continue;
+        lm.setShadowOptions(li, shadowOptionsFrom(settings_, lm.isDirectional(li)));
+    }
+}
+
+// 材質をマテリアルインスタンスへ。自己発光は baseColor を使い回すのではなく
+// 白で足す（色は baseColor 側で付く）。w = 1 は「露出の影響を受ける」の意味で、
+// これを立てておかないと露出を変えたときに発光だけ取り残される。
+void Renderer::applyMaterialParams(filament::MaterialInstance* mi,
+                                   const ShapeMaterial& m) const {
+    if (!mi) return;
+    mi->setParameter("roughness", m.roughness);
+    mi->setParameter("metallic", m.metallic);
+    mi->setParameter("reflectance", m.reflectance);
+    mi->setParameter("clearCoat", m.clearCoat);
+    mi->setParameter("clearCoatRoughness", m.clearCoatRoughness);
+    mi->setParameter("emissiveScale", m.emissive);
 }
 
 // 一様な弱いアンビエント（環境マップ無し）。起動時と、シーンが環境光を
@@ -267,6 +470,13 @@ void Renderer::installFlatAmbient() {
                                         .intensity(30000.0f)
                                         .build(*engine_);
     scene_->setIndirectLight(flat);
+    // 背景は環境マップから作るので、一様アンビエントに戻すときは一緒に外す
+    // （消えるテクスチャを参照させない）。
+    if (skybox_) {
+        scene_->setSkybox(nullptr);
+        engine_->destroy(skybox_);
+        skybox_ = nullptr;
+    }
     if (ibl_) engine_->destroy(ibl_);
     if (iblTexture_) {
         engine_->destroy(iblTexture_);
@@ -493,6 +703,9 @@ std::size_t Renderer::addShape(ShapeMesh mesh) {
     slot.mi = nullptr;      // 色は共有インスタンス（setShapeColor で個別化）
     slot.highlight = -1;
     slot.used = true;
+    // 前にこの席を使っていた物の色と材質を引き継がない。
+    slot.color = float3{0.80f, 0.36f, 0.18f};
+    slot.material = ShapeMaterial{};
 
     VertexBuffer* meshVb = vb_;
     IndexBuffer* meshIb = ib_;
@@ -683,12 +896,31 @@ void Renderer::setSoftShapeVertices(std::size_t id, const float* positions,
                                  filament::Box{center, half});
 }
 
+filament::MaterialInstance* Renderer::ensureShapeInstance(ShapeSlot& slot) {
+    if (!slot.mi) {
+        slot.mi = material_->createInstance();
+        slot.mi->setParameter("baseColor", RgbType::LINEAR, slot.color);
+        applyMaterialParams(slot.mi, slot.material);
+    }
+    return slot.mi;
+}
+
 void Renderer::setShapeColor(std::size_t id, const float3& color) {
     if (id >= shapes_.size() || !shapes_[id].used) return;
     ShapeSlot& slot = shapes_[id];
-    if (!slot.mi) slot.mi = material_->createInstance();
-    slot.mi->setParameter("baseColor", RgbType::LINEAR, color);
+    slot.color = color;
+    ensureShapeInstance(slot)->setParameter("baseColor", RgbType::LINEAR, color);
     // ハイライト中なら、掴んでいる色を上書きしない（離したときに戻る）。
+    if (slot.highlight >= 0) return;
+    auto& rm = engine_->getRenderableManager();
+    rm.setMaterialInstanceAt(rm.getInstance(slot.entity), 0, slot.mi);
+}
+
+void Renderer::setShapeMaterial(std::size_t id, const ShapeMaterial& material) {
+    if (id >= shapes_.size() || !shapes_[id].used) return;
+    ShapeSlot& slot = shapes_[id];
+    slot.material = material;
+    applyMaterialParams(ensureShapeInstance(slot), material);
     if (slot.highlight >= 0) return;
     auto& rm = engine_->getRenderableManager();
     rm.setMaterialInstanceAt(rm.getInstance(slot.entity), 0, slot.mi);
@@ -716,7 +948,9 @@ std::size_t Renderer::addLight(const LightDesc& desc) {
     builder.color(desc.color)
         .intensity(desc.intensity)
         .direction(desc.direction)
-        .castShadows(desc.castShadows);
+        .castShadows(desc.castShadows)
+        .shadowOptions(shadowOptionsFrom(
+            settings_, type == LightManager::Type::DIRECTIONAL));
     if (desc.type != LightDesc::Type::Directional) {
         builder.position(desc.position).falloff(desc.falloffRadius);
     }
@@ -792,11 +1026,52 @@ bool Renderer::loadEnvironment(const std::string& hdrName, float intensity) {
     // environment.
     const EnvironmentIBL env = loadEnvironmentIBL(*engine_, hdrName, intensity);
     scene_->setIndirectLight(env.light);
+    // 背景（スカイボックス）は古いキューブマップを参照しているので、
+    // 差し替える前に外す。
+    if (skybox_) {
+        scene_->setSkybox(nullptr);
+        engine_->destroy(skybox_);
+        skybox_ = nullptr;
+    }
     if (ibl_) engine_->destroy(ibl_);
     if (iblTexture_) engine_->destroy(iblTexture_);
     ibl_ = env.light;
     iblTexture_ = env.reflections;
+    envIntensity_ = intensity;
+    refreshSkybox();
     return true;
+}
+
+void Renderer::setSkyboxEnabled(bool enabled) {
+    if (skyboxWanted_ == enabled && (skybox_ != nullptr) == enabled) return;
+    skyboxWanted_ = enabled;
+    refreshSkybox();
+}
+
+// いまの環境マップから背景を作り直す（無効・環境マップ無しなら外す）。
+// プリフィルタ済みのキューブマップをそのまま使う: mip 0 は元のパノラマ
+// そのものなので、映り込みと背景が必ず一致する（別々に持つとずれる）。
+void Renderer::refreshSkybox() {
+    const bool want = skyboxWanted_ && iblTexture_ != nullptr;
+    if (!want) {
+        if (skybox_) {
+            scene_->setSkybox(nullptr);
+            engine_->destroy(skybox_);
+            skybox_ = nullptr;
+        }
+        return;
+    }
+    Skybox* next = Skybox::Builder()
+                       .environment(iblTexture_)
+                       .intensity(envIntensity_)
+                       .build(*engine_);
+    if (!next) {
+        LOGW("render", "skybox could not be built - keeping the flat background");
+        return;
+    }
+    scene_->setSkybox(next);
+    if (skybox_) engine_->destroy(skybox_);
+    skybox_ = next;
 }
 
 bool Renderer::ensureLineMaterial() {
@@ -1076,6 +1351,7 @@ void Renderer::configureHighlightColors(
     for (const auto& c : colors) {
         auto* mi = material_->createInstance();
         mi->setParameter("baseColor", RgbType::LINEAR, c);
+        applyMaterialParams(mi, ShapeMaterial{});
         highlightInstances_.push_back(mi);
     }
 }
@@ -1100,7 +1376,8 @@ void Renderer::setBoxHighlighted(std::size_t id, int styleIndex) {
 }
 
 void Renderer::addGround(float halfSize, const filament::math::float3& color,
-                         float tileMeters, const std::string& texturePath) {
+                         float tileMeters, const std::string& texturePath,
+                         const ShapeMaterial& material) {
     // 2 回目以降の呼び出しは作り直し（シーン文書の <ground> が実行時に
     // 変わるため）。Filament の destroy は使用中の GPU 資源を安全に遅延破棄
     // するので、前フレームが参照していても構わない。
@@ -1118,6 +1395,11 @@ void Renderer::addGround(float halfSize, const filament::math::float3& color,
     }
 
     groundMatInstance_->setParameter("baseColor", RgbType::LINEAR, color);
+    // 地面の材質（つや消しのままか、濡れた路面のように映り込ませるか）。
+    // 地面は自己発光もクリアコートも持たないので、必要な 3 つだけ。
+    groundMatInstance_->setParameter("roughness", material.roughness);
+    groundMatInstance_->setParameter("metallic", material.metallic);
+    groundMatInstance_->setParameter("reflectance", material.reflectance);
 
     // ---- Ground texture --------------------------------------------------
     // An image file (PNG/JPEG/TGA/BMP) when the scene names one. 読めない・
@@ -1295,6 +1577,10 @@ std::size_t Renderer::addView() {
     // エディタ専用レイヤ（ギズモ）は既定で見せない。見せるビューは
     // setViewEditorLayerVisible で明示的に選ぶ。
     slot.view->setVisibleLayers(kLayerEditorOnly, 0);
+    // 描画設定（後処理・露出）は全ビュー共通。あとから作ったビュー
+    // （カメラの遅延生成）にもここで当てる - ページを開いた順で絵が
+    // 変わらないため。
+    applyViewSettings(slot);
 
     for (auto& cap : slot.captures) {
         cap.pixels.resize(std::size_t(slot.width) * std::size_t(slot.height) * 4);
@@ -1446,6 +1732,16 @@ Renderer::~Renderer() {
         engine_->destroy(e);
     }
     gltf_.reset();  // models must go before the engine
+    if (skybox_) {
+        scene_->setSkybox(nullptr);
+        engine_->destroy(skybox_);
+    }
+    if (colorGrading_) {
+        // ビューが参照したまま壊さない（このあと描かないので実害は無いが、
+        // 「参照を外してから壊す」を守る方が読んで安心できる）。
+        for (auto& slot : views_) slot.view->setColorGrading(nullptr);
+        engine_->destroy(colorGrading_);
+    }
     engine_->destroy(ibl_);
     if (iblTexture_) engine_->destroy(iblTexture_);
     engine_->destroy(groundTexture_);

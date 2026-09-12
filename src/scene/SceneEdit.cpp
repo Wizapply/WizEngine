@@ -406,7 +406,9 @@ void Scene::setGroundAndEnvironment(const ed::GroundDesc& ground,
             ground.visualHalf != ground_.visualHalf ||
             ground.texture != ground_.texture || ground.tile != ground_.tile ||
             ground.tint.r != ground_.tint.r || ground.tint.g != ground_.tint.g ||
-            ground.tint.b != ground_.tint.b;
+            ground.tint.b != ground_.tint.b ||
+            ground.roughness != ground_.roughness ||
+            ground.metallic != ground_.metallic;
         groundBodyChanged = ground.half != ground_.half;
         if (groundChanged) {
             ground_ = ground;
@@ -415,12 +417,22 @@ void Scene::setGroundAndEnvironment(const ed::GroundDesc& ground,
         // 環境光は差し替えが重い（HDR デコード + GPU プリフィルタ）ので、
         // 実際に変わったときだけ dirty を立てる。
         if (env.hdr != environment_.hdr ||
-            env.intensity != environment_.intensity) {
+            env.intensity != environment_.intensity ||
+            env.skybox != environment_.skybox) {
             environment_ = env;
             envDirty_ = true;
         }
     }
     if (groundBodyChanged) rebuildGroundBody();
+}
+
+// 描画設定（文書の <visual>）。実体（Filament の View / Camera /
+// ColorGrading）を触るのは RENDER スレッドなので、ここは設計値を置いて
+// dirty を立てるだけ - 地面・環境光とまったく同じ扱い。
+void Scene::setRenderDesc(const ed::RenderDesc& render) {
+    std::lock_guard<std::mutex> lk(objectsMutex_);
+    render_ = render;
+    renderDirty_ = true;
 }
 
 void Scene::applyPendingEdits() {
@@ -500,7 +512,8 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                                  next.rotation.z != before.rotation.z;
         const bool colorChanged = next.color.r != before.color.r ||
                                   next.color.g != before.color.g ||
-                                  next.color.b != before.color.b;
+                                  next.color.b != before.color.b ||
+                                  next.material != before.material;
         // ソフトボディの切替と設定は格子の作り直し（粒子数・ばねが変わる）。
         const bool softChanged = next.hasSoft != before.hasSoft ||
                                  (next.hasSoft && next.soft != before.soft);
@@ -1135,6 +1148,16 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         return;
     }
 
+    if (op.kind == "render") {
+        // 送られてきたキーだけ上書き（edit.ground と同じ部分更新）。
+        // "preset" が入っていれば renderFromJson がそこから組み立てる。
+        // 読むときにロックが要らないのは、render_ を書くのがこのスレッド
+        // だけだから（地面・環境光と同じ約束）。
+        setRenderDesc(ed::renderFromJson(a, render_));
+        editor_.setStatus("描画設定を更新");
+        return;
+    }
+
     if (op.kind == "environment") {
         const ed::EnvironmentDesc e =
             ed::clampEnvironment(ed::environmentFromJson(a, environment_));
@@ -1179,8 +1202,9 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             std::lock_guard<std::mutex> lk(objectsMutex_);
             meshes_.clear();
         }
-        // 地面・環境光も初期値へ（ライト・カメラと同じ扱い）。
+        // 地面・環境光・描画設定も初期値へ（ライト・カメラと同じ扱い）。
         setGroundAndEnvironment(ed::GroundDesc{}, ed::EnvironmentDesc{});
+        setRenderDesc(ed::RenderDesc{});
         for (auto& c : controllers_) c->setSelected(BoxController::kNone);
         // ライトとカメラも初期状態へ（真っ暗なシーンから始めさせない）。
         // イベントアセットも同じ扱いで既定へ - マウスで掴んでも何も起きない

@@ -19,7 +19,15 @@
 
 namespace wizengine {
 
-const char* engineVersion() { return "1.0"; }
+// 数字 3 つから文字列を組む（手で "1.0.0" と書くと kVersion* と食い違う）。
+const char* engineVersion() {
+    static const std::string text = std::to_string(kVersionMajor) + "." +
+                                    std::to_string(kVersionMinor) + "." +
+                                    std::to_string(kVersionPatch);
+    return text.c_str();
+}
+
+const char* engineCodename() { return kCodename; }
 
 nlohmann::json versionsJson() {
     guint maj = 0, min = 0, mic = 0, nano = 0;
@@ -27,6 +35,9 @@ nlohmann::json versionsJson() {
 
     nlohmann::json j;
     j["WizEngine"] = engineVersion();
+    // コードネームは別キーで（"WizEngine" は素の semver のまま = 機械的に
+    // 比べられる）。ブラウザは About の見出しへ合成し、一覧には並べない。
+    j["Codename"] = engineCodename();
     j["Filament"] = WIZ_FILAMENT_VERSION;
     j["Project Chrono"] = CHRONO_VERSION;
     j["GStreamer"] = std::to_string(maj) + "." + std::to_string(min) + "." +

@@ -368,6 +368,9 @@ private:
     // その場で作り直し、見た目は dirty を立てて RENDER スレッドに任せる。
     void setGroundAndEnvironment(const wizengine::editor::GroundDesc& ground,
                                  const wizengine::editor::EnvironmentDesc& env);
+    // 描画設定（文書の <visual>）の差し替え（PHYSICS thread）。適用は
+    // RENDER スレッド（Filament を触るのはそのスレッドだけ）。
+    void setRenderDesc(const wizengine::editor::RenderDesc& render);
     // ground_.half の物理の床を作り直す（初回は新規作成）。PHYSICS thread。
     void rebuildGroundBody();
     // RENDER thread: 見える地面の作り直し（applyToRenderer のロック中）。
@@ -394,8 +397,12 @@ private:
     // 追いつく（syncGround / 環境光は applyToRenderer 末尾のロック外）。
     wizengine::editor::GroundDesc ground_;
     wizengine::editor::EnvironmentDesc environment_;
+    // 描画設定（文書の <visual>）。地面・環境光と同じ扱い: 書くのは物理
+    // スレッド、適用は RENDER スレッド（applyToRenderer 末尾のロック外）。
+    wizengine::editor::RenderDesc render_;
     bool groundDirty_ = true;  // 初回の applyToRenderer が見た目を作る
     bool envDirty_ = true;
+    bool renderDirty_ = true;
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る
     std::mutex poseMutex_;
     std::vector<BodyTransform> latestPoses_;  // one per box, in box order
