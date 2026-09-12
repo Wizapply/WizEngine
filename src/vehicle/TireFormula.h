@@ -32,5 +32,22 @@ const std::vector<std::string>& tireFormulaOutputs();
 // これを出発点にノードを差し替える。
 FormulaGraphDesc defaultTireFormulaGraph(const std::string& name = "tire_mf");
 
+// ---- ソフトタイヤの空気圧（体積 → 圧力）------------------------------------
+// SoftTire が毎ステップ、トレッドが囲む体積から「ゲージ圧の増分」を求める式。
+// 入力（順番は pressureFormulaInputs()）:
+//   ratio      … 体積比 V / V0（静止で 1、潰れると小さくなる）
+//   rate       … 体積の変化率 (dV/dt) / V0（1/s、縮む向きが負）
+//   p0         … <tire pressure>（絶対圧 Pa。既定 320000 = 2.2 bar ゲージ）
+//   load       … 荷重 Fz（N）    deflection … 物理側の潰れ (m)   radius … 半径
+// 出力: pressure（Pa。静止からの増分で、正がトレッドを外へ押す。SoftTire は
+//   各粒子の面積ベクトル × pressure を力として掛ける）。
+// 既定グラフは等温変化 p = p0 (V0/V − 1)（下限 −p0 = 真空）。潰すほど急に
+// 硬くなり、片側を潰すと反対側が膨らむ。
+const std::vector<std::string>& pressureFormulaInputs();
+const std::vector<std::string>& pressureFormulaOutputs();
+FormulaGraphDesc defaultPressureFormulaGraph(const std::string& name = "tire_air");
+// 組み込みの空気圧（既定グラフと同じ式）。式が無い / 失敗したときの代用。
+double builtinTirePressure(double ratio, double p0);
+
 }  // namespace vehicle
 }  // namespace wizengine

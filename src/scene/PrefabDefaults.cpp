@@ -87,5 +87,24 @@ PrefabDesc builtinCarPrefab(const BodyDesc& body, const std::string& name) {
     return d;
 }
 
+PrefabDesc builtinStairsPrefab(const std::string& name, int steps, double rise, double run,
+                               double width, const Color3& color) {
+    PrefabDesc d;
+    d.name = name;
+    // 原点 = 全体の外接箱の中心（床から rise*steps/2、奥行きの真ん中）。
+    // k 段目（0 始まり）は高さ rise*(k+1) の箱で、床に接するように中心を
+    // その半分の高さに、奥行きは run*(k+0.5)。
+    const double cy = rise * double(steps) * 0.5;
+    const double cz = run * double(steps) * 0.5;
+    for (int k = 0; k < steps; ++k) {
+        const double h = rise * double(k + 1);
+        PartDesc p = box("step" + std::to_string(k + 1), 0.0, h * 0.5 - cy,
+                         run * (double(k) + 0.5) - cz, width, h, run, color);
+        p.collide = true;
+        d.parts.push_back(p);
+    }
+    return d;
+}
+
 }  // namespace editor
 }  // namespace wizengine

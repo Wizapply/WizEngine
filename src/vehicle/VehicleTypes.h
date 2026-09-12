@@ -93,6 +93,11 @@ struct TireDesc {
     double by = 12.0, cy = 1.4, ey = -1.0;   // 横（スリップ角・ラジアン）
     double relaxation = 0.15;  // 緩和長 m（0 = 即時）
     double rollingResistance = 0.015;  // 転がり抵抗係数
+    // 接地のレイの本数（車輪の面内で ±60° の扇、奇数で真下を含む）。1 = 真下
+    // 1 本（旧来）。複数にすると段差の縁に「半径 r の円」として乗り上げる
+    // ので、縮みが段の高さぶん一気に飛ばない（WheelController::updateContact。
+    // vehicle_test 10: 0.12 m の段で上向き加速度のピークが 1 本 8.5 → 9 本 5 m/s²）。
+    int rays = 9;
     // 「スリップ → 力」をノード式で置き換えるときの名前（VehicleDesc::formulas
     // の中の <formula name>）。空 = 組み込みの Magic Formula。
     std::string formula;
@@ -107,6 +112,12 @@ struct TireDesc {
     int segments = 24;
     int rows = 3;
     int iterations = 3;
+    // 空気圧（メッシュの体積 → 圧力の項。TireFormula.h の pressureFormula*）。
+    // pressure は絶対圧 Pa（0 = 空気圧の項を切る）。pressureFormula は
+    // 「体積比 → 圧力」を差し替える計算式アセットの名前（空 = 組み込みの
+    // 等温変化）。
+    double pressure = 320000.0;
+    std::string pressureFormula;
 };
 
 // サスペンション（レイキャスト式）。restLength は伸びきった長さ、travel は

@@ -1,10 +1,12 @@
 #include "components/EditorComponent.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 #include "document/EditorTypes.h"
 #include "core/Log.h"
+#include "scene/PrefabDefaults.h"
 #include "scene/Scene.h"
 #include "document/SceneDocument.h"
 #include "scene/SceneMath.h"
@@ -124,6 +126,60 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
     }
 
     // ---- 追加 -------------------------------------------------------------
+    // 階段: 専用のオブジェクトは持たず、「全段を collide 付きの箱で並べた
+    // プレハブ」を geom の無い固定ボディ（原点 = 全体が収まる箱の中心）に
+    // 付けて置く。プレハブ "stairs" が無ければ作り（あれば共有 = Unity で
+    // 同じプレハブを 2 度置くのと同じ）、カメラの正面に置く。段はプレハブ
+    // 編集で動かせる。
+    if (what == "add" && msg.value("shape", "") == "stairs") {
+        const int steps = std::max(1, std::min(30, ed::jsonInt(msg, "steps", 6)));
+        const double rise = std::max(0.02, std::min(2.0, ed::jsonNumber(msg, "rise", 0.12)));
+        const double run = std::max(0.05, std::min(5.0, ed::jsonNumber(msg, "run", 0.4)));
+        const double width = std::max(0.1, std::min(20.0, ed::jsonNumber(msg, "width", 2.0)));
+        const ed::Vec3d base = placeInFrontOf(scene, camIndex, 0.0);
+        // 奥行きの向き = カメラの前向きを水平に落としたもの（無ければ -Z）。
+        const auto basis = scenemath::cameraBasis(scene.camera(camIndex));
+        double fx = 0.0, fz = -1.0;
+        if (basis.valid) {
+            const double len = std::sqrt(basis.forward.x() * basis.forward.x() +
+                                         basis.forward.z() * basis.forward.z());
+            if (len > 1e-6) {
+                fx = basis.forward.x() / len;
+                fz = basis.forward.z() / len;
+            }
+        }
+        // 箱のローカル +Z を fwd に向ける回転（R = Ry(yaw)、(0,0,1) → (sin, 0, cos)）。
+        const double yawDeg = std::atan2(fx, fz) * 180.0 / scenemath::kPi;
+        const ed::Color3 color = ed::colorFromHex(msg.value("color", ""),
+                                                 ed::Color3{0.62f, 0.64f, 0.68f});
+        std::string prefab = ed::sanitizeEventName(msg.value("prefab", "stairs"));
+        if (prefab.empty()) prefab = "stairs";
+        if (!state.hasPrefabAsset(prefab)) {
+            EditorState::Op op;
+            op.kind = "prefab.add";
+            op.args = ed::toJson(ed::builtinStairsPrefab(prefab, steps, rise, run, width, color));
+            op.camera = camIndex;
+            state.push(std::move(op));
+        }
+        ed::BodyDesc d;
+        d.name = prefab;
+        d.shape = ed::ShapeKind::None;   // 見た目も当たりも部品だけ
+        d.collision = ed::ShapeKind::None;
+        d.size = {width, rise * double(steps), run * double(steps)};  // 外接箱（表示用）
+        const double cz = run * double(steps) * 0.5;
+        d.position = {base.x + fx * cz, rise * double(steps) * 0.5, base.z + fz * cz};
+        d.rotation = {0.0, yawDeg, 0.0};
+        d.mass = 50.0;
+        d.fixed = true;
+        d.color = color;
+        d.prefab = prefab;
+        EditorState::Op op;
+        op.kind = "add";
+        op.args = ed::toJson(ed::clampBody(d));
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
     if (what == "add") {
         ed::BodyDesc d;
         d.shape = ed::shapeFromName(msg.value("shape", "box"), ed::ShapeKind::Box);
@@ -489,7 +545,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         }
         args["part"] = ed::jsonInt(msg, "part", -1);
         for (const char* key : {"name", "type", "mesh", "position", "rotation", "size",
-                                "color", "socket"}) {
+                                "color", "socket", "collide"}) {
             if (msg.contains(key)) args[key] = msg[key];
         }
         EditorState::Op op;
@@ -527,6 +583,13 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
             }
             if (msg.contains("stiffness") && msg["stiffness"].is_number()) {
                 op.args["stiffness"] = msg["stiffness"].get<double>();
+            }
+            if (msg.contains("pressure") && msg["pressure"].is_number()) {
+                op.args["pressure"] = msg["pressure"].get<double>();
+            }
+            if (msg.contains("pressureFormula") && msg["pressureFormula"].is_string()) {
+                op.args["pressureFormula"] =
+                    ed::sanitizeEventName(msg["pressureFormula"].get<std::string>());
             }
         }
         op.camera = camIndex;

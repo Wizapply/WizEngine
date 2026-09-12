@@ -311,8 +311,31 @@ WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクト�
   後退・XML の往復を検査。`--csv` で時系列）。**モデルを触ったら必ずこれを回す**。
 - **車輪は剛体にしない（レイキャスト式）**。車体の取り付け点から下へレイを
   飛ばして縮み量を決め、ばね・ダンパの力を取り付け点へ、タイヤの縦横力を
-  接地点へ掛ける（`WheelController`）。地面は物理の床と同じ **y = 0 の平面**
-  として見るので、他のオブジェクトの上には乗れない。
+  接地点へ掛ける（`WheelController`）。**レイは車輪の面内の扇**（`<tire
+  rays>`、既定 9 本、±60°）: 各当たり点に「半径 r の円が触れる」ときの
+  中心の高さ c = L cosθ − √(r² − (L sinθ)²) を縮みに直し、一番高い円を採る
+  ので、段差の縁に円として乗り上げる（真下 1 本だと中心が縁を越えた瞬間に
+  段の高さぶん縮みが飛んで車が跳ねる。`rays="1"` で旧来の 1 本）。法線は
+  当たり点 → 円の中心（縁では斜め = 乗り越える向きにタイヤ力が働く）。
+  サス力は静止荷重の 8 倍で頭打ち（1 ステップの衝撃にしない安全弁）。
+  VehicleComponent は車体（箱）が何かに触れていたら 1 秒に 1 回 LOGI
+  （"chassis is in contact with ..."）- 車輪はレイで接触しないので、出たら
+  車体が段や壁に当たっている、の切り分け用。地面は物理の床と同じ **y = 0 の平面**
+  として見るのに加え、**シーンの剛体（箱・球。ソフトボディと自分自身は
+  除く）にも当てる**（VehicleComponent が `GroundQuery` を組む。当たり判定は
+  `VehicleMath.h` の `rayHitsOrientedBox` / `rayHitsSphereSurface`、レイの
+  始点が箱の中なら無視 = 車体と重なった箱を地面と取り違えない）ので、
+  階段や坂の上を走れる。レイキャストなので乗った物に力は返さない（固定の
+  段差向き）。**プレハブの collide 部品にも当てる**（下の「プレハブ」の章。
+  物理の複合形状と同じ形なので、レイと接触で段の位置が食い違わない。
+  一覧は `prefabVersion` が変わったときだけコピー）。**階段は専用の
+  オブジェクトではなくプレハブ**: アセットパネルの **🪜 Stairs**（`edit.add`
+  の `shape="stairs"`）は、プレハブ `stairs`（`builtinStairsPrefab` = 全段を
+  `collide="true"` の箱の部品として並べたもの。原点は**全体が収まる箱の
+  中心**、各段は床から段の高さまでの中実の箱）が無ければ `prefab.add`
+  （`parts` 付き）で作り、それを付けた **geom の無い固定ボディ**
+  （`ShapeKind::None`、下記）を `add` する（`BodyDesc::prefab` を JSON でも
+  受けるようにした）。置いたあとは「プレハブを編集」で段を動かせる。
 - **車輪と車体の飾りの描画はプレハブ**（下の「プレハブ」の章）。
   VehicleComponent は車輪の**車体ローカル**の姿勢（`VehicleModel::
   wheelLocalPoses`: 取り付け点・下がり・舵・回転角）を `visMutex_` 越しに
@@ -366,10 +389,30 @@ WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクト�
   （レイキャスト）ので、シーンのソフトボディ（Chrono の粒子）は車輪に
   使えない。代わりに **タイヤの見た目（円柱の部品）を質点ばねの変形
   メッシュにする**: ハブ（半径 35%、皿状にへこむ）・リムのフランジ
-  （70%）・中心のキャップは運動学的（車輪の姿勢そのもの）で、トレッドの
-  粒子は空気圧（リムへの径方向）・周方向・幅方向・対角線・曲げのばねで
-  結ばれ、接地点の平面に押し戻される（摩擦なし = トレッドは地面の上を
-  滑る。潰れだけが要る）。**メッシュは閉じた面**（帯 + 両側の扇）にして
+  （60%）・中心のキャップは運動学的（車輪の姿勢そのもの）で、トレッドの
+  粒子は空気圧（**ハブへの**径方向。フランジへ張ると内側へ押し込まれた
+  とき鏡像の位置で釣り合ってへこんだままになる = 双安定）・周方向・幅方向・
+  対角線・曲げのばねで結ばれ、接地点の平面に押し戻される（摩擦なし =
+  トレッドは地面の上を滑る。潰れだけが要る）。**リムは硬い境界**（トレッドは
+  フランジの半径より内側へ入れない）で、物理側の潰れの上限も半径の 25%
+  （接地面がリムより内側に来ない）。だから離せば必ず丸に戻る。
+  境界と接地面が食い違ったら接地面が勝つ（順序: リム → 地面）。
+  **空気圧**（`<tire pressure="320000">`、基準の絶対圧 Pa、0 で切る）: 閉じた
+  メッシュが囲む体積 V を毎ステップ発散定理で出し、静止体積 V0 との比から
+  圧力の増分 p = p0 (V0/V − 1)（等温変化、下限 −p0）を求める。これを
+  **粒子ごとの径方向の陰解法ばね**として同じガウス・ザイデル反復に入れる:
+  剛性 k_i = p_abs A_tot / V × |A_i|（一様に膨らむモードの線形化、A_i は
+  粒子の面積ベクトル = 隣接三角形の面積 × 法線 / 3 の和）、自然長 = 静止
+  半径 + p V / (p_abs A_tot)（圧力ぶんの膨らみ）。力として陽に足すと
+  結合剛性の分母で釣り合いが縮んで膨らみがほぼ消えるので、この形にした。
+  潰すほど急に硬くなり、離せば張り戻る（ゴムの復元）。**この「体積比 →
+  圧力」はノード式で差し替えられる**（`<tire pressureFormula="名前">`、
+  入出力の約束は `TireFormula.h` の `pressureFormulaInputs / Outputs`:
+  ratio / rate / p0 / load / deflection / radius → pressure。既定グラフは
+  `defaultPressureFormulaGraph()`、`vehicle_test --dump-pressure-formula` で
+  XML が出る。`edit.formula.add` の `template="pressure"`、🧮 タイルの右
+  クリック「空気圧式に付ける」、Inspector の軸ごとの「空気圧 / 空気圧式」。
+  失敗したステップは組み込みで代用して `formulaFailures()` に数える）。**メッシュは閉じた面**（帯 + 両側の扇）にして
   ある - 穴が開いていると向こう側の内面が背面カリングで透けて見える。
   ソフト形状のマテリアルは両面描画（`setCullingMode(NONE)`）で、フラスタム
   カリングも切ってある（`addSoftShape`）。ばねは PhysicsWorld の
@@ -377,7 +420,7 @@ WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクト�
   なので発散せず、静止位置から半径の 50% を超えるずれは引き戻す（安全弁）。
   **メッシュは車体に力を返さない**（見た目）。物理への影響は
   WheelController の**径方向ばね**だけ: サスと直列に縮み（同じ力を分け
-  合うので縮みは剛性の逆比、`deflection()`。上限は半径の 45%）、接地点は
+  合うので縮みは剛性の逆比、`deflection()`。上限は半径の 25%）、接地点は
   車輪中心から `radius − deflection` の距離になる = 車体がそのぶん低く座る。
   VehicleModel が step の末尾で各輪の `SoftTire::step`（中心・回転 =
   `wheelRotation`・接地面）を回し、`WheelLocalPose::softMesh`（粒子の
@@ -529,8 +572,17 @@ Box / Soft Ball** タイルと Inspector の「ソフトボディ」節（チェ
 Unity の prefab に相当する**見た目の部品の集合**。`EditorTypes.h` の
 `PrefabDesc`（名前 + `PartDesc` の配列）で、文書では `<asset>` の
 `<prefab name>` と `<body>` の `<prefab name/>`（付け先）。部品は
-**物理ボディではない**（当たり判定と質量は元の `<geom>` のまま）ので、
+**物理ボディではない**（質量は元の `<geom>` のまま。当たり判定は既定で無く、
+`collide` を立てた箱 / 球だけ付け先の形に足される - 下記）ので、
 Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れない。
+**部品だけの物**は geom を持たないボディ（`ShapeKind::None`、文書では
+`<geom>` を書かず `<body mass="...">`。MJCF の geom 無し body）に付ける:
+自分の見た目も当たり判定も無く、`PhysicsWorld::addFrame`（質量は指定、慣性は
+collide 部品の外接箱、当たり判定は collide 部品だけ）が実体で、原点は好きな
+場所（階段は全体が収まる箱の中心）に置ける。ソフトにはできない（clampBody
+が箱へ倒す）。**ビューのクリック（`Scene::pickBoxAt`）は部品にも当たる**
+（車体に固定の箱 / 球 / 円柱。付いていない車両は組み込みの見た目）ので、
+段やキャビンをクリックしても持ち主が選べる。
 
 - **部品**は種類（box / sphere / cylinder / mesh）・親ローカルの位置と回転・
   大きさ（Box は各辺、Sphere は直径 x、Cylinder は長さ x と直径 y、Mesh は
@@ -555,13 +607,31 @@ Multicore の制約にも MJCF の入れ子 body の姿勢合成にも触れな�
   崩れる）。Inspector は他の節を隠して部品の一覧と数値（`secPrefab`）に
   なり、映像ヘッダーに「◀ 戻る」（`edit.prefab.close`、Esc でも）。
   シミュレートに入る・持ち主が消える・プレハブが消えると自動で抜ける。
+- **当たり判定 `collide`**（文書は `<part collide="true"/>`、Inspector の部品
+  の「当たり判定」チェック。箱 / 球で socket が空の部品だけ - `clampPart` が
+  他を false に落とし、読み込みは警告する）。`Scene::collisionShapes` が
+  `PhysicsWorld::ExtraShape` に直す。**固定の持ち主なら部品ごとに別の固定
+  ボディ**（`addBox / addSphere` を普通に呼ぶ = 「固定の箱を並べた階段」と
+  同じ物理で、Core / Multicore とも実績のある経路。番号は
+  `GameObject::childPhysIds`、接触ペアは `PhysicsWorld::setAlias` で持ち主の
+  番号に寄せる。持ち主を動かしたら `rebuildChildren` が physDirty で作り
+  直す）、**動く持ち主なら `addBox / addSphere / addConvexHull / addFrame` の
+  複合形状**（`ChBody::AddCollisionShape` + `ChCollisionShapeBox / Sphere`。
+  ヘッダの無い版は `__has_include` で見た目だけに落として警告）として本体の
+  形に足す。質量・慣性は本体の geom のまま（動く物に付けるなら本体の geom を
+  重心に置く）。Chrono は形を
+  後から変えられないので、collide 部品の追加 / 変更 / 削除と付け外し・
+  プレハブの削除は持ち主を `physDirty`（`markPrefabUsersDirty`。エディタ中は
+  シミュレート開始でまとめて、シミュレート中は即 `rebuildBody`）。車輪の
+  レイ（VehicleComponent）も同じ部品に当たる。`prefab.add` は `parts` 付きで
+  中身ごと作れる（🪜 Stairs が使う）。
 - コマンド: edit.prefab.open / close / attach / detach / add / remove、
   edit.part.add / set / remove（prefab 省略時は編集中のもの）、select.part。
   すべて EditorComponent → Op → 物理スレッド（イベントと同じ配管）。
   アセットパネルの **🧩 タイル**は右クリックで「選択オブジェクトに付ける /
   付けて編集 / 削除」。
-- **未**: 部品の当たり判定（`collide`）、ビュー上のドラッグ以外の複数選択、
-  部品の複製。
+- **未**: 円柱 / メッシュ / ソケット付き部品の当たり判定、ビュー上のドラッグ
+  以外の複数選択、部品の複製。
 
 ## ギズモ（`src/components/GizmoComponent.{h,cpp}`）
 
@@ -1075,7 +1145,7 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   格子自動生成・kBoxModelPath プール・置物 kModelPath は廃止し、既定シーンは
   `assets/scenes/default.xml`）。
 - 済（試作）: 車両シミュレーション（グラフ型パワートレイン + レイキャスト式
-  車輪、車輪の描画。上の「車両」の章。他のオブジェクトへの接地は未）。
+  車輪、車輪の描画、ソフトタイヤ、シーンの剛体への接地。上の「車両」の章）。
 - 済: イベントアセット（Node-RED 風のノードエディタ。衝突・開始・タイマー・
   掴みのトリガーと、色・力・固定・引き寄せ・ライト・カメラ注視のアクション。
   ノードは名前付きアセットにまとめ、オブジェクト / シーン全体に何本でも
@@ -1095,6 +1165,12 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   と名前が衝突するため）。`Renderer.cpp` では `using namespace filament;` のまま
   でよいが、`filament::Renderer` のネスト型は `filament::Renderer::ClearOptions`
   のように明示修飾する。新規クラスも衝突を避けるなら `wizengine` に入れる。
+- **出力引数を持つ関数の戻り値と、その出力引数を同じ呼び出しに並べない**
+  （`f(hits(.., dist, normal), dist, normal)` の一行書き）。引数の評価順は
+  未規定で、MSVC は右から左に評価するため、値渡しの `dist` が判定前の古い
+  値でコピーされる。GCC のテストでは通り、Windows の実機でだけ壊れる
+  （車輪のレイが前の部品の距離を使って階段で車が跳ねた）。判定の戻り値を
+  一度変数に受けてから使う。
 - C++17。外部依存の追加は最小限に。ただし Filament のヘッダが designated
   initializer を使うため、MSVC では `Renderer.cpp`（Filament を含む唯一のTU）
   だけ `/std:c++20` でビルドする（`CMakeLists.txt` で設定済み）。他は C++17。

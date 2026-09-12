@@ -125,9 +125,21 @@ public:
 
     // Add a box body. density in kg/m^3; fixed=true makes it static. Returns id.
     // Sphere body - rolls, unlike a box. Radius in metres.
+    // 本体の形に足す追加の当たり形状（プレハブの <part collide="true">）。
+    // ボディのローカル座標で、Chrono の複合形状として 1 ボディに入る。
+    // 質量・慣性には入らない（本体の geom のまま）。階段のように「固定の箱を
+    // 並べた物」を 1 オブジェクトにする用途。
+    struct ExtraShape {
+        bool sphere = false;                          // false = 箱
+        chrono::ChVector3d size{0.5, 0.5, 0.5};       // 箱: 各辺の長さ、球: x = 直径
+        chrono::ChVector3d pos{0.0, 0.0, 0.0};
+        chrono::ChQuaternion<> rot{1.0, 0.0, 0.0, 0.0};
+    };
+
     std::size_t addSphere(double radius, double density,
                           const chrono::ChVector3d& pos,
-                          const chrono::ChQuaternion<>& rot, bool fixed);
+                          const chrono::ChQuaternion<>& rot, bool fixed,
+                          const std::vector<ExtraShape>& extras = {});
 
     // Rolling/spinning friction on the shared contact material. Without any,
     // spheres roll forever on a flat floor.
@@ -146,7 +158,19 @@ public:
 
     std::size_t addBox(double sx, double sy, double sz, double density,
                        const chrono::ChVector3d& pos,
-                       const chrono::ChQuaternion<>& rot, bool fixed);
+                       const chrono::ChQuaternion<>& rot, bool fixed,
+                       const std::vector<ExtraShape>& extras = {});
+
+    // 自分の形を持たないボディ（geom の無い <body> = プレハブの部品だけ）。
+    // 当たり判定は extras（collide 部品）だけ、質量は指定、慣性は extras の
+    // 外接箱から見積もる。extras が空なら当たらないフレーム。
+    std::size_t addFrame(double mass, const chrono::ChVector3d& pos,
+                         const chrono::ChQuaternion<>& rot, bool fixed,
+                         const std::vector<ExtraShape>& extras);
+    // id のボディを owner の「子」にする: 接触ペア（activeContactPairs）では
+    // owner の番号で報告される。固定の持ち主の collide 部品を別ボディにする
+    // ときに使う（Scene::createBody。複合形状ではなく普通の箱 / 球）。
+    void setAlias(std::size_t id, std::size_t owner);
 
     // Dynamic body colliding as the convex hull of `points` (metres, already
     // scaled; see MeshCollision::loadCollisionPoints). Mass = density x hull
@@ -155,7 +179,8 @@ public:
     // collides - author models with the origin near the middle.
     std::size_t addConvexHull(const std::vector<chrono::ChVector3d>& points,
                               double density, const chrono::ChVector3d& pos,
-                              const chrono::ChQuaternion<>& rot);
+                              const chrono::ChQuaternion<>& rot,
+                              const std::vector<ExtraShape>& extras = {});
 
     // ---- ソフトボディ（質点ばね）------------------------------------------
     // 小さな球の剛体（粒子）の集合を、ばねで結んで 1 つの柔らかい物にする。
@@ -252,6 +277,8 @@ private:
     // 衝突系が既に初期化済みなら、いま足したボディの衝突モデルを登録する
     // （Chrono 9 は自動でやらない。詳細は .cpp）。
     void bindCollision(const std::shared_ptr<chrono::ChBody>& body);
+    // 追加の当たり形状を本体に足す（AddBody の前に呼ぶ）。
+    void attachExtraShapes(chrono::ChBody& body, const std::vector<ExtraShape>& extras);
 
     // ---- ソフトボディの内部 ----------------------------------------------
     struct SoftBody {
@@ -288,6 +315,8 @@ private:
     // bodies_ と並ぶ: この番号の粒子が属するソフトボディ（softBodies_ の
     // 位置）。剛体は kNoSoft。
     std::vector<std::size_t> softOf_;
+    // 子ボディ → 持ち主（setAlias）。kNoSoft = 無し。接触ペアの報告にだけ効く。
+    std::vector<std::size_t> alias_;
     std::vector<SoftBody> softBodies_;
     // シミュレート中だけ存在する拘束。エディタへ戻るときに全部外す。
     std::vector<std::shared_ptr<chrono::ChLinkBase>> joints_;

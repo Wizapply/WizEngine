@@ -81,6 +81,52 @@
       <wire from="27" to="29"/>
       <wire from="28" to="30"/>
     </formula>
+    <!-- 空気圧の式（🧮）: ソフトタイヤの「体積比 → 圧力」。閉じたメッシュが
+         囲む体積 V と静止体積 V0 から、等温変化 p = max(p0 (V0/V - 1), -p0)
+         で圧力の増分を出す（vehicle_test - -dump-pressure-formula の出力）。
+         <tire pressure="..." pressureFormula="tire_air"/> で参照する。
+         入力は ratio (V/V0), rate, p0, load, deflection, radius、出力は pressure。 -->
+    <formula name="tire_air">
+      <node id="1" type="in" name="ratio" pos="40 40"/>
+      <node id="2" type="in" name="p0" pos="40 160"/>
+      <node id="3" type="const" params="1" pos="40 280"/>
+      <node id="4" type="div" pos="260 40"/>
+      <node id="5" type="sub" pos="420 40"/>
+      <node id="6" type="mul" pos="580 40"/>
+      <node id="7" type="neg" pos="420 160"/>
+      <node id="8" type="max" pos="740 40"/>
+      <node id="9" type="out" name="pressure" pos="900 40"/>
+      <wire from="3" to="4"/>
+      <wire from="1" to="4" port="1"/>
+      <wire from="4" to="5"/>
+      <wire from="3" to="5" port="1"/>
+      <wire from="5" to="6"/>
+      <wire from="2" to="6" port="1"/>
+      <wire from="2" to="7"/>
+      <wire from="6" to="8"/>
+      <wire from="7" to="8" port="1"/>
+      <wire from="8" to="9"/>
+    </formula>
+    <!-- プレハブ（🧩）: 階段の全段。付け先（geom の無いボディ）のローカル座標で、
+         原点は全体が収まる箱（幅 3 × 高さ 0.72 × 奥行き 9 m）の中心。+Z 側から
+         -Z へ 0.5 m ごとに 0.12 m ずつ上り、踊り場（3 m）を挟んで下る。各段は
+         床から段の高さまでの中実の箱。collide="true" なので当たり判定を持つ
+         （質量は body の mass。固定なので効かない）。 -->
+    <prefab name="stairs">
+      <part name="up0" type="box" pos="0 -0.3 4.25" size="3 0.12 0.5" rgba="0.62 0.64 0.68 1" collide="true"/>
+      <part name="up1" type="box" pos="0 -0.24 3.75" size="3 0.24 0.5" rgba="0.62 0.64 0.68 1" collide="true"/>
+      <part name="up2" type="box" pos="0 -0.18 3.25" size="3 0.36 0.5" rgba="0.62 0.64 0.68 1" collide="true"/>
+      <part name="up3" type="box" pos="0 -0.12 2.75" size="3 0.48 0.5" rgba="0.62 0.64 0.68 1" collide="true"/>
+      <part name="up4" type="box" pos="0 -0.06 2.25" size="3 0.6 0.5" rgba="0.62 0.64 0.68 1" collide="true"/>
+      <part name="up5" type="box" pos="0 0 1.75" size="3 0.72 0.5" rgba="0.62 0.64 0.68 1" collide="true"/>
+      <part name="landing" type="box" pos="0 0 0" size="3 0.72 3" rgba="0.58 0.6 0.64 1" collide="true"/>
+      <part name="down0" type="box" pos="0 0 -1.75" size="3 0.72 0.5" rgba="0.62 0.64 0.68 1" collide="true"/>
+      <part name="down1" type="box" pos="0 -0.06 -2.25" size="3 0.6 0.5" rgba="0.62 0.64 0.68 1" collide="true"/>
+      <part name="down2" type="box" pos="0 -0.12 -2.75" size="3 0.48 0.5" rgba="0.62 0.64 0.68 1" collide="true"/>
+      <part name="down3" type="box" pos="0 -0.18 -3.25" size="3 0.36 0.5" rgba="0.62 0.64 0.68 1" collide="true"/>
+      <part name="down4" type="box" pos="0 -0.24 -3.75" size="3 0.24 0.5" rgba="0.62 0.64 0.68 1" collide="true"/>
+      <part name="down5" type="box" pos="0 -0.3 -4.25" size="3 0.12 0.5" rgba="0.62 0.64 0.68 1" collide="true"/>
+    </prefab>
   </asset>
   <worldbody>
     <environment hdr="studio.hdr" intensity="30000"/>
@@ -89,7 +135,7 @@
     <!-- 車体: 1.4 × 0.5 × 4.2 m、1400 kg。重心高さ 0.72 m は静的な縮みを
          引いた値（サスの rest 0.35 - 縮み 0.1 + 半径 0.32 - 取り付け y -0.15）。
          トレッド 1.7 m は車体幅より広く、タイヤが横にはみ出して見える。 -->
-    <body name="car" pos="0 0.72 0" euler="0 0 0">
+    <body name="car" pos="0 0.77 0" euler="0 0 0">
       <geom type="box" size="0.7 0.25 2.1" mass="1400" rgba="0.85 0.2 0.15 1"/>
       <vehicle ticks="10" brake="2500" drag="0.7">
         <engine torque="300" idle="900" max="6500" inertia="0.25"/>
@@ -99,11 +145,20 @@
              転がりながら戻る）、物理では径方向ばね stiffness (N/m) がサスと
              直列に効く（潰れ = 荷重 / stiffness。この車は 1 輪 3.4 kN で約 2.8 cm）。
              segments / rows はメッシュの分割。剛タイヤに戻すなら soft を消す。 -->
+        <!-- 大きめで弾むタイヤ: 半径 0.42 m・幅 0.3 m、径方向剛性 60 kN/m
+             （1 輪 3.4 kN で約 5.7 cm 潰れる）、メッシュの減衰は低めで揺れが残る。
+             pressure は空気圧（ゲージ圧 Pa。320 kPa ≒ 乗用車の 3.2 bar）で、潰れて
+             体積が減ると pressureFormula の式が圧力を上げ、ゴムのように張り戻す。
+             0 なら空気圧の項は無し。 -->
         <axle z="1.3" y="-0.15" track="1.7" steer="32" driven="false" brake="1">
-          <tire formula="tire_mf" soft="true" stiffness="120000" damping="0.4" segments="24" rows="3"/>
+          <tire radius="0.42" width="0.3" inertia="1.8" formula="tire_mf" soft="true"
+                stiffness="60000" damping="0.2" segments="28" rows="4"
+                pressure="320000" pressureFormula="tire_air"/>
         </axle>
         <axle z="-1.3" y="-0.15" track="1.7" driven="true" brake="0.65" handbrake="1" diff="lsd" lock="250">
-          <tire formula="tire_mf" soft="true" stiffness="120000" damping="0.4" segments="24" rows="3"/>
+          <tire radius="0.42" width="0.3" inertia="1.8" formula="tire_mf" soft="true"
+                stiffness="60000" damping="0.2" segments="28" rows="4"
+                pressure="320000" pressureFormula="tire_air"/>
         </axle>
       </vehicle>
     </body>
@@ -116,6 +171,14 @@
     </body>
     <body name="cone2" pos="-2 0.3 -24">
       <geom type="box" size="0.2 0.3 0.2" mass="2" rgba="1 0.6 0.1 1"/>
+    </body>
+    <!-- 階段（上って踊り場、下る）: 専用のオブジェクトではなく、geom を持たない
+         固定ボディ（= 全体が収まる箱の中心。<geom> を書かず mass だけ）にプレハブ
+         "stairs"（<asset> 参照）を付けたもの。段はすべて collide="true" の箱の
+         部品で、物理では本体の複合形状、車輪のレイも同じ形に当たる。アセット
+         パネルの 🪜 Stairs でも同じ流儀で置ける。 -->
+    <body name="stairs" pos="6.0 0.36 -10.5" fixed="true" mass="50">
+      <prefab name="stairs"/>
     </body>
     <body name="wall" pos="0 0.5 -40">
       <geom type="box" size="3 0.5 0.25" mass="200" rgba="0.5 0.5 0.55 1"/>

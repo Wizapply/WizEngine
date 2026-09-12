@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "document/EditorTypes.h"
 #include "scene/SceneComponent.h"
 #include "vehicle/LuaFormula.h"
 #include "vehicle/VehicleModel.h"
@@ -75,6 +76,14 @@ private:
     // 実行状態（PHYSICS スレッド専用）。キーはオブジェクト番号。
     std::map<std::size_t, std::unique_ptr<wizengine::vehicle::VehicleModel>> models_;
     std::map<std::size_t, int> reportedFailures_;  // 式の失敗を 1 回だけ報告
+    // 診断: 車体が何かに接触していたら 1 秒に 1 回ログに出す（階段で跳ねる、
+    // などの切り分け用。レイキャストの車輪は接触しないので、出るなら車体）。
+    unsigned contactCheck_ = 0;
+    // 車輪のレイを当てるプレハブの collide 部品（階段の段など）。
+    // EditorState::prefabAssets のコピーで、prefabVersion が変わったときだけ
+    // 取り直す（毎ステップのロックを避ける。イベントの graphVersion と同じ流儀）。
+    std::vector<wizengine::editor::PrefabDesc> prefabs_;
+    std::uint64_t prefabVersion_ = ~std::uint64_t(0);
     // 取り込んだ計算式の版（EditorState::formulaVersion）。変わっていたら
     // 車両モデルを作り直す = 編集がシミュレート中にもすぐ効く（走行状態は
     // 一度リセットされる）。

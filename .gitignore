@@ -24,3 +24,4 @@ assets/*.gltf
 # 無視しない。手動で置くローカルインストール品だけを個別に除外する。
 /third_parties/chrono-install/
 /third_parties/filament-*/
+tests/

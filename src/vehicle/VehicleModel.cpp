@@ -17,10 +17,15 @@ VehicleModel::VehicleModel(const VehicleDesc& descIn, LuaRuntime* lua,
                            const std::vector<FormulaGraphDesc>* library)
     : desc_(clampVehicle(descIn)) {
     // タイヤのノード式: 名前ごとに 1 回コンパイルし、車輪ごとに実体を作る。
+    // 空気圧の式も同じ流儀（入出力の約束だけ違う）。
     std::map<std::string, std::shared_ptr<const FormulaProgram>> programs;
-    auto programFor = [&](const std::string& name) -> std::shared_ptr<const FormulaProgram> {
-        const auto it = programs.find(name);
-        if (it != programs.end()) return it->second;
+    std::map<std::string, std::shared_ptr<const FormulaProgram>> pressurePrograms;
+    auto compileFor = [&](const std::string& name, const std::vector<std::string>& inputs,
+                          const std::vector<std::string>& outputs,
+                          std::map<std::string, std::shared_ptr<const FormulaProgram>>& cache,
+                          const char* what) -> std::shared_ptr<const FormulaProgram> {
+        const auto it = cache.find(name);
+        if (it != cache.end()) return it->second;
         const FormulaGraphDesc* graph = nullptr;
         if (library) {
             for (const FormulaGraphDesc& g : *library) {
@@ -32,21 +37,42 @@ VehicleModel::VehicleModel(const VehicleDesc& descIn, LuaRuntime* lua,
         }
         std::shared_ptr<const FormulaProgram> prog;
         if (!graph) {
-            diagnostics_.push_back("tire formula \"" + name +
-                                   "\" is not defined - using the built-in tire model");
+            diagnostics_.push_back(std::string(what) + " formula \"" + name +
+                                   "\" is not defined - using the built-in model");
         } else {
             std::vector<std::string> errors, warnings;
-            prog = FormulaProgram::compile(*graph, tireFormulaInputs(), tireFormulaOutputs(),
-                                           errors, warnings);
+            prog = FormulaProgram::compile(*graph, inputs, outputs, errors, warnings);
             for (const std::string& w : warnings) diagnostics_.push_back(w);
             for (const std::string& e : errors) diagnostics_.push_back(e);
             if (!prog) {
-                diagnostics_.push_back("tire formula \"" + name +
-                                       "\" cannot run - using the built-in tire model");
+                diagnostics_.push_back(std::string(what) + " formula \"" + name +
+                                       "\" cannot run - using the built-in model");
             }
         }
-        programs[name] = prog;
+        cache[name] = prog;
         return prog;
+    };
+    auto programFor = [&](const std::string& name) {
+        return compileFor(name, tireFormulaInputs(), tireFormulaOutputs(), programs, "tire");
+    };
+    auto pressureProgramFor = [&](const std::string& name) {
+        return compileFor(name, pressureFormulaInputs(), pressureFormulaOutputs(),
+                          pressurePrograms, "pressure");
+    };
+    // 実体を作る（LuaJIT が使えればそれ、無ければインタプリタ）。
+    auto instantiate = [&](const std::shared_ptr<const FormulaProgram>& prog,
+                           const std::string& name) {
+        std::unique_ptr<FormulaInstance> inst;
+        std::string err;
+        if (lua && lua->ok()) inst = lua->instantiate(prog, err);
+        if (!inst) {
+            if (lua && lua->ok()) {
+                diagnostics_.push_back("formula \"" + name + "\": luajit failed (" + err +
+                                       ") - using the interpreter");
+            }
+            inst = prog->interpret();
+        }
+        return inst;
     };
     std::map<std::string, std::string> backendUsed;
 
@@ -61,20 +87,20 @@ VehicleModel::VehicleModel(const VehicleDesc& descIn, LuaRuntime* lua,
             w.spec.side = side;
             w.spec.inertia = axle.tire.inertia;
             w.spec.driven = axle.driven;
-            if (axle.tire.soft) w.soft = std::make_unique<SoftTire>(axle.tire);
+            if (axle.tire.soft) {
+                w.soft = std::make_unique<SoftTire>(axle.tire);
+                // 空気圧の式（体積比 → 圧力）。無ければ組み込みの等温変化。
+                if (!axle.tire.pressureFormula.empty()) {
+                    if (auto prog = pressureProgramFor(axle.tire.pressureFormula)) {
+                        auto inst = instantiate(prog, axle.tire.pressureFormula);
+                        backendUsed[axle.tire.pressureFormula] = inst->backend();
+                        w.soft->setPressureFormula(std::move(inst));
+                    }
+                }
+            }
             if (!axle.tire.formula.empty()) {
                 if (auto prog = programFor(axle.tire.formula)) {
-                    std::unique_ptr<FormulaInstance> inst;
-                    std::string err;
-                    if (lua && lua->ok()) inst = lua->instantiate(prog, err);
-                    if (!inst) {
-                        if (lua && lua->ok()) {
-                            diagnostics_.push_back("tire formula \"" + axle.tire.formula +
-                                                   "\": luajit failed (" + err +
-                                                   ") - using the interpreter");
-                        }
-                        inst = prog->interpret();
-                    }
+                    auto inst = instantiate(prog, axle.tire.formula);
                     backendUsed[axle.tire.formula] = inst->backend();
                     w.controller.setTireFormula(std::move(inst));
                 }
@@ -131,7 +157,10 @@ void VehicleModel::reset() {
 
 int VehicleModel::formulaFailures() const {
     int n = 0;
-    for (const Wheel& w : wheels_) n += w.controller.formulaFailures();
+    for (const Wheel& w : wheels_) {
+        n += w.controller.formulaFailures();
+        if (w.soft) n += w.soft->formulaFailures();
+    }
     return n;
 }
 
@@ -264,7 +293,8 @@ const std::vector<ForceAtPoint>& VehicleModel::step(const ChassisState& chassis,
             w.soft->step(w.controller.wheelCenter(),
                          wheelRotation(chassis.rotation, w.controller),
                          w.controller.grounded(), w.controller.contactPoint(),
-                         w.controller.contactNormal(), dt);
+                         w.controller.contactNormal(), w.controller.load(),
+                         w.controller.deflection(), dt);
         }
         if (!w.controller.grounded()) continue;
         forces_.push_back({w.controller.suspensionForce(), w.controller.suspensionPoint()});
@@ -342,7 +372,7 @@ std::vector<WheelLocalPose> VehicleModel::designWheelPoses(const VehicleDesc& de
             // 描画側が静止形状を組む）。
             if (axle.tire.soft && wheels > 0.0) {
                 p.deflection = clampd(chassisMass * 9.81 / (wheels * axle.tire.stiffness),
-                                      0.0, 0.45 * axle.tire.radius);
+                                      0.0, 0.25 * axle.tire.radius);
                 p.softRadius = SoftTire::particleRadius(axle.tire);
             }
             out.push_back(p);

@@ -1227,8 +1227,9 @@
             '<div class="ndItem' + (i === selIdx ? ' sel' : '') + '" data-part="' + i +
             '"><span class="link" onclick="selectPart(' + i + ')">' +
             (KI[p.type] || '📦') + ' ' + ndEsc(p.name || (p.type + ' ' + i)) + '</span>' +
-            (p.socket ? '<span class="sub">' + ndEsc(p.socket) + '</span>'
-                      : '<span class="sub"></span>') +
+            '<span class="sub">' + [p.socket ? ndEsc(p.socket) : '',
+                                    p.collide ? '当たり判定' : ''].filter(Boolean).join(' · ') +
+            '</span>' +
             '<span class="x" title="部品を削除" onclick="removePartAt(' + i + ')">✕</span>' +
             '</div>').join('')
         : '<div class="edHint">部品がありません。「＋ 部品」で追加してください。</div>';
@@ -1277,6 +1278,10 @@
     setField('edPSY', part.size.y.toFixed(3));
     setField('edPSZ', part.size.z.toFixed(3));
     setField('edPartColor', part.color);
+    // 当たり判定は車体に固定の箱 / 球だけ（他は欄を無効に）。
+    const canCollide = !part.socket && (part.type === 'box' || part.type === 'sphere');
+    setField('edPartCollide', !!part.collide);
+    document.getElementById('edPartCollide').disabled = !canCollide;
   }
 
   function renderHierarchy() {
@@ -1298,7 +1303,7 @@
     const shown = rows.slice(0, 200);
     // 形はオブジェクトごとに違う（エディタで箱も球も置けるので）。名前を
     // 付けた物はその名前、付けていない物は「形 + 番号」で表示する。
-    const KIND = { box: 'Box', sphere: 'Sphere', model: 'Model' };
+    const KIND = { box: 'Box', sphere: 'Sphere', model: 'Model', none: 'Prefab' };
     const labelOf = (o) =>
       o.name ? o.name : ((KIND[o.shape] || 'Object') + ' ' + o.index);
     let html = '';
@@ -1365,9 +1370,10 @@
     }
     const drawn = (o.shape === 'model'
       ? ('Model (' + (o.mesh || '?') + ')')
-      : (o.shape === 'sphere' ? 'Sphere' : 'Box')) +
+      : (o.shape === 'sphere' ? 'Sphere'
+         : (o.shape === 'none' ? 'Prefab (' + (o.prefab || 'no geom') + ')' : 'Box'))) +
       ((o.soft && o.soft.enabled) ? ' · soft ' + (o.softParticles || 0) + 'p' : '');
-    const size = o.shape === 'box'
+    const size = (o.shape === 'box' || o.shape === 'none')
       ? [o.size.x, o.size.y, o.size.z].map((v) => v.toFixed(2)).join(' × ')
       : ('⌀ ' + o.size.x.toFixed(2));
     const px = (o.px !== undefined) ? o.px : o.position.x;
@@ -1494,7 +1500,7 @@
     if (!sel) return;
     const sx = num('edSX', 0.5);
     // 球は直径ひとつ。X の欄だけを見て 3 成分に配る。
-    applyEdit({ size: sel.shape === 'box'
+    applyEdit({ size: (sel.shape === 'box' || sel.shape === 'none')
       ? { x: sx, y: num('edSY', 0.5), z: num('edSZ', 0.5) }
       : { x: sx, y: sx, z: sx } });
   }
@@ -2060,7 +2066,7 @@
     document.getElementById('edNoSel').hidden = !!sel;
     document.getElementById('edProps').hidden = !sel;
     if (sel) {
-      const sphere = sel.shape !== 'box';
+      const sphere = sel.shape !== 'box' && sel.shape !== 'none';
       setField('edName', sel.name || '');
       // 位置は「置いた場所」ではなく今の実際の位置を出す（シミュレート中に
       // 見て分かるほうが役に立つ。編集すればその場所が新しい置き場所になる）。
@@ -2192,6 +2198,12 @@
       '<div class="asItem" title="柔らかい球を配置（粒子の格子 + ばね）" ' +
       'onclick="addObject(\'sphere\', null, true)"><span class="ico">🫧</span>' +
       '<span class="name">Soft Ball</span><span class="kind">soft body</span></div>' +
+      // 階段: 専用のオブジェクトではなく「1 段目の固定の箱 + 2 段目以降を
+      // 当たり判定付きの箱で並べたプレハブ stairs」。プレハブ編集で段を動かせる。
+      '<div class="asItem" title="階段を配置（1 段目の固定の箱にプレハブ stairs を付ける。' +
+      '6 段、カメラの正面から奥へ上る。段は「プレハブを編集」で動かせる）" ' +
+      'onclick="addObject(\'stairs\')"><span class="ico">🪜</span>' +
+      '<span class="name">Stairs</span><span class="kind">prefab</span></div>' +
       // ライト。クリックでカメラ正面（Sun は原点上空）に追加され、そのまま
       // 選択されるので、置いた直後にギズモ / Inspector で調整できる。
       '<div class="asItem" title="点光源を追加（全方向に光る）" ' +
@@ -2311,6 +2323,10 @@
           hint: sel ? (sel.vehicle ? '#' + sel.index : '車両ではない') : '未選択',
           disabled: !sel || !sel.vehicle,
           onClick: () => attachFormulaToVehicle(fname) },
+        { label: '＋ 選択中の車両の空気圧式に付ける（全軸）',
+          hint: sel ? (sel.vehicle ? 'ソフトタイヤの体積比 → 圧力' : '車両ではない') : '未選択',
+          disabled: !sel || !sel.vehicle,
+          onClick: () => attachPressureFormulaToVehicle(fname) },
         { sep: true },
         { label: '🧮 新しい計算式…', onClick: newFormulaAsset },
         { label: '🗑 この計算式を削除', danger: true,
@@ -2409,17 +2425,25 @@
     return (sceneData && sceneData.events && sceneData.events.world) || [];
   }
   // ---- 計算式アセット（🧮）-------------------------------------------------
-  // ノード式（タイヤの「スリップ → 力」）。イベントと同じくサーバーが持ち、
-  // /scene の formulas = {assets:[{name,nodes,wires}], tireInputs, tireOutputs}。
-  // ノードエディタは 1 つで、ndKind が「いまどちらを見ているか」。
+  // ノード式（タイヤの「スリップ → 力」と、ソフトタイヤの空気圧「体積比 →
+  // 圧力」）。イベントと同じくサーバーが持ち、/scene の formulas =
+  // {assets:[{name,nodes,wires}], tireInputs, tireOutputs, pressureInputs,
+  // pressureOutputs}。ノードエディタは 1 つで、ndKind が「いまどちらを見て
+  // いるか」。in / out ノードの名前の選択肢は 2 つの約束を並べたもの（式が
+  // どちらに付くかは付け先で決まるので、ここでは区別しない）。
   function formulaAssets() {
     return (sceneData && sceneData.formulas && sceneData.formulas.assets) || [];
   }
+  function formulaNames(key) {
+    return (sceneData && sceneData.formulas && sceneData.formulas[key]) || [];
+  }
   function tireInputs() {
-    return (sceneData && sceneData.formulas && sceneData.formulas.tireInputs) || [];
+    return formulaNames('tireInputs').concat(
+      formulaNames('pressureInputs').filter((n) => !formulaNames('tireInputs').includes(n)));
   }
   function tireOutputs() {
-    return (sceneData && sceneData.formulas && sceneData.formulas.tireOutputs) || [];
+    return formulaNames('tireOutputs').concat(
+      formulaNames('pressureOutputs').filter((n) => !formulaNames('tireOutputs').includes(n)));
   }
   let ndKind = 'event';   // 'event' | 'formula'
   let ndFormula = '';     // いま編集している計算式の名前
@@ -2450,12 +2474,17 @@
     if (name === null) return;
     const clean = String(name).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
     if (!clean) return;
-    const tpl = confirm('既定のタイヤ式（Magic Formula + 摩擦楕円 + 緩和長）から' +
-                        '始めますか？\n（キャンセル = 空の式から）');
+    const pick = prompt('最初の中身を選んでください:\n' +
+                        '  1 = タイヤ式（Magic Formula + 摩擦楕円 + 緩和長）\n' +
+                        '  2 = 空気圧式（体積比 → 圧力、等温変化）\n' +
+                        '  空欄 = 空の式', '1');
+    if (pick === null) return;
+    const tpl = String(pick).trim() === '1' ? 'tire'
+              : String(pick).trim() === '2' ? 'pressure' : '';
     ndKind = 'formula';
     ndFormula = clean;
     ndGraphKey = '';
-    send('edit.formula.add', { name: clean, template: tpl ? 'tire' : '' });
+    send('edit.formula.add', { name: clean, template: tpl });
   }
   function removeFormulaAsset(name) {
     const target = name || ndFormula;
@@ -2480,6 +2509,11 @@
     const sel = mySelectedDesc();
     if (!sel) return;
     send('edit.vehicle.tire', { index: sel.index, axle: -1, formula: name });
+  }
+  function attachPressureFormulaToVehicle(name) {
+    const sel = mySelectedDesc();
+    if (!sel) return;
+    send('edit.vehicle.tire', { index: sel.index, axle: -1, pressureFormula: name });
   }
   // Inspector の「車両」節。
   function applyVehicleEnable(on) {
@@ -2546,7 +2580,8 @@
     const names = formulaAssets().map((f) => f.name);
     const key = sel.index + '|' + (sel.vehicle ? 1 : 0) + '|' +
       axles.map((a) => a.z + ':' + a.steer + ':' + a.driven + ':' + a.formula +
-                       ':' + (a.soft ? 1 : 0) + ':' + a.stiffness).join(',') +
+                       ':' + (a.soft ? 1 : 0) + ':' + a.stiffness + ':' + a.pressure +
+                       ':' + a.pressureFormula).join(',') +
       '|' + names.join(',');
     if (key === vehicleSecKey) return;
     if (axlesEl.contains(document.activeElement) &&
@@ -2556,15 +2591,20 @@
     axlesEl.innerHTML = axles.map((a, i) => {
       const what = (a.z >= 0 ? '前' : '後') + (a.steer > 0 ? '・操舵' : '') +
                    (a.driven ? '・駆動' : '');
-      let opts = '<option value=""' + (!a.formula ? ' selected' : '') + '>(組み込み)</option>';
-      let found = !a.formula;
-      for (const n of names) {
-        if (n === a.formula) found = true;
-        opts += '<option value="' + ndEsc(n) + '"' + (n === a.formula ? ' selected' : '') +
-                '>🧮 ' + ndEsc(n) + '</option>';
-      }
-      if (!found) opts += '<option value="' + ndEsc(a.formula) + '" selected>? ' +
-                          ndEsc(a.formula) + '</option>';
+      const options = (cur, builtin) => {
+        let o = '<option value=""' + (!cur ? ' selected' : '') + '>' + builtin + '</option>';
+        let found = !cur;
+        for (const n of names) {
+          if (n === cur) found = true;
+          o += '<option value="' + ndEsc(n) + '"' + (n === cur ? ' selected' : '') +
+               '>🧮 ' + ndEsc(n) + '</option>';
+        }
+        if (!found) o += '<option value="' + ndEsc(cur) + '" selected>? ' + ndEsc(cur) + '</option>';
+        return o;
+      };
+      const opts = options(a.formula, '(組み込み)');
+      const popts = options(a.pressureFormula, '(組み込み・等温変化)');
+      const pressure = (a.pressure !== undefined) ? Math.round(a.pressure) : 320000;
       // ソフトタイヤ: 見た目が質点ばねの変形メッシュになり、物理では径方向
       // ばね（サスと直列）が効く。剛性は潰れ = 荷重 / 剛性。
       const stiff = (a.stiffness !== undefined) ? Math.round(a.stiffness) : 150000;
@@ -2579,7 +2619,16 @@
           ? '<div class="edRow" title="径方向剛性 (N/m)。潰れ = 荷重 / 剛性（上限は半径の 45%）">' +
             '<span>軸 ' + i + ' タイヤ剛性 (N/m)</span>' +
             '<input class="num" type="number" step="10000" min="1000" value="' + stiff + '"' +
-            ' onchange="applyVehicleTireStiffness(' + i + ', this.value)"></div>'
+            ' onchange="applyVehicleTireStiffness(' + i + ', this.value)"></div>' +
+            // 空気圧: 閉じたメッシュの体積が減ると圧力が上がり、トレッドを
+            // 張り戻す（ゴムのように戻る）。0 で項ごと切る。
+            '<div class="edRow" title="基準の空気圧 (Pa、絶対圧)。潰れて体積が減ると式の圧力が上がる。0 = 空気圧なし">' +
+            '<span>軸 ' + i + ' 空気圧 (Pa)</span>' +
+            '<input class="num" type="number" step="10000" min="0" max="1000000" value="' + pressure + '"' +
+            ' onchange="applyVehiclePressure(' + i + ', this.value)"></div>' +
+            '<div class="edRow"><span>軸 ' + i + ' 空気圧式</span>' +
+            '<select class="strSel" title="体積比 → 圧力 の計算式（🧮 アセット）。空 = 組み込みの等温変化" ' +
+            'onchange="applyVehiclePressureFormula(' + i + ', this.value)">' + popts + '</select></div>'
           : '');
     }).join('');
   }
@@ -2593,6 +2642,17 @@
     const v = parseFloat(value);
     if (!sel || !Number.isFinite(v)) return;
     send('edit.vehicle.tire', { index: sel.index, axle: axle, stiffness: v });
+  }
+  function applyVehiclePressure(axle, value) {
+    const sel = mySelectedDesc();
+    const v = parseFloat(value);
+    if (!sel || !Number.isFinite(v)) return;
+    send('edit.vehicle.tire', { index: sel.index, axle: axle, pressure: v });
+  }
+  function applyVehiclePressureFormula(axle, name) {
+    const sel = mySelectedDesc();
+    if (!sel) return;
+    send('edit.vehicle.tire', { index: sel.index, axle: axle, pressureFormula: name || '' });
   }
   function currentAsset() {
     const list = eventAssets();
@@ -3019,7 +3079,7 @@
   // ものをそのまま使う。今の値が一覧に無い（消えた直後など）ときも、勝手に
   // 別の値へ飛ばないようダミーの選択肢として残す。
   function ndObjItems() {
-    const KIND = { box: 'Box', sphere: 'Sphere', model: 'Model' };
+    const KIND = { box: 'Box', sphere: 'Sphere', model: 'Model', none: 'Prefab' };
     return (sceneData.objects || []).map((o) => ({
       v: o.index,
       t: o.name ? o.name : (KIND[o.shape] || 'Obj') + ' ' + o.index

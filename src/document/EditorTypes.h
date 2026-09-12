@@ -38,12 +38,16 @@ inline AppMode modeFromName(const std::string& s, AppMode fallback) {
 
 // 剛体の形。Model は glTF モデル（シーン文書の <asset> 節で相対パスを宣言し、
 // BodyDesc::mesh が名前で参照する）。Box / Sphere は組み込みメッシュ。
-enum class ShapeKind { Box, Sphere, Model };
+// None = geom を持たない（MJCF の geom 無し body）。見た目も当たり判定も
+// 付いているプレハブの部品だけで、ボディ自身は「部品の集合の原点 + 質量」の
+// フレーム。階段（全体が収まる箱の中心を原点にした部品の集合）が使う。
+enum class ShapeKind { Box, Sphere, Model, None };
 
 inline const char* shapeName(ShapeKind s) {
     switch (s) {
         case ShapeKind::Sphere: return "sphere";
         case ShapeKind::Model: return "model";
+        case ShapeKind::None: return "none";
         case ShapeKind::Box: break;
     }
     return "box";
@@ -52,6 +56,7 @@ inline ShapeKind shapeFromName(const std::string& s, ShapeKind fallback) {
     if (s == "box") return ShapeKind::Box;
     if (s == "sphere") return ShapeKind::Sphere;
     if (s == "model") return ShapeKind::Model;
+    if (s == "none") return ShapeKind::None;
     return fallback;
 }
 
@@ -143,6 +148,10 @@ struct MeshAssetDesc {
 // オブジェクト（車体）に固定されて動く見た目の子。socket を書いた部品は
 // 車両が動かす（"wheel:<軸>:<L|R>" = その車輪の姿勢に付いていく）。
 // 文書では <asset> の <prefab name> と、<body> の <prefab name/>（付け先）。
+// collide を立てた部品（箱 / 球、車体に固定のものだけ）は、付け先のボディの
+// 当たり形状に**足される**（Chrono の複合形状 = 1 ボディに複数の形）。
+// 質量・慣性は元の <geom> のまま。階段のように「固定の箱を並べた物」を
+// 1 つのオブジェクトにする用途（builtinStairsPrefab）。
 enum class PartKind { Box, Sphere, Cylinder, Mesh };
 
 inline const char* partKindName(PartKind k) {
@@ -173,6 +182,9 @@ struct PartDesc {
     Vec3d size{0.5, 0.5, 0.5};
     Color3 color;
     std::string socket;           // "" = 車体に固定。"wheel:0:L" など
+    // 当たり判定を持つ（付け先のボディの複合形状に足す）。箱 / 球で socket が
+    // 空のものだけ有効（clampPart が他を false に落とす）。
+    bool collide = false;
 };
 
 struct PrefabDesc {
@@ -700,6 +712,10 @@ inline BodyDesc bodyFromJson(const nlohmann::json& j, const BodyDesc& base) {
     if (j.contains("color") && j["color"].is_string()) {
         b.color = colorFromHex(j["color"], b.color);
     }
+    // 付けるプレハブ（名前）。置いた時点で付ける用途（🪜 Stairs など）。
+    if (j.contains("prefab") && j["prefab"].is_string()) {
+        b.prefab = sanitizeEventName(j["prefab"].get<std::string>());
+    }
     // イベントアセットの付け外しは専用のコマンド（edit.event.attach /
     // detach）で行うので、ここでは配列がまるごと来たときだけ受ける。
     if (j.contains("events") && j["events"].is_array()) {
@@ -888,6 +904,7 @@ inline nlohmann::json toJson(const PartDesc& p) {
     j["size"] = toJson(p.size);
     j["color"] = colorToHex(p.color);
     j["socket"] = p.socket;
+    j["collide"] = p.collide;
     return j;
 }
 inline PartDesc partFromJson(const nlohmann::json& j, const PartDesc& base) {
@@ -905,6 +922,7 @@ inline PartDesc partFromJson(const nlohmann::json& j, const PartDesc& base) {
         p.color = colorFromHex(j["color"], p.color);
     }
     if (j.contains("socket") && j["socket"].is_string()) p.socket = j["socket"];
+    if (j.contains("collide") && j["collide"].is_boolean()) p.collide = j["collide"];
     return p;
 }
 inline PartDesc clampPart(PartDesc p) {
@@ -919,6 +937,11 @@ inline PartDesc clampPart(PartDesc p) {
     p.size.z = cl(p.size.z, 0.005, 50.0);
     if (p.name.size() > 64) p.name.resize(64);
     if (p.socket.size() > 32) p.socket.resize(32);
+    // 当たり判定は車体に固定の箱 / 球だけ（車輪に付く部品は動くので複合形状に
+    // できない。円柱 / メッシュの当たり形状は未対応）。
+    if (!p.socket.empty() || (p.kind != PartKind::Box && p.kind != PartKind::Sphere)) {
+        p.collide = false;
+    }
     return p;
 }
 inline nlohmann::json toJson(const PrefabDesc& d) {
@@ -1189,6 +1212,14 @@ inline BodyDesc clampBody(BodyDesc b) {
     b.position.y = cl(b.position.y, -500.0, 500.0);
     b.position.z = cl(b.position.z, -500.0, 500.0);
     b.soft = clampSoft(b.soft);
+    // geom の無いボディ: 当たり判定も無し（部品だけ）。ソフトボディにはできない
+    // （格子は箱か球）ので箱へ倒す。
+    if (b.hasSoft && b.shape == ShapeKind::None) {
+        b.shape = ShapeKind::Box;
+        b.collision = ShapeKind::Box;
+    }
+    if (b.shape == ShapeKind::None) b.collision = ShapeKind::None;
+    if (b.collision == ShapeKind::None && b.shape != ShapeKind::None) b.collision = b.shape;
     return b;
 }
 

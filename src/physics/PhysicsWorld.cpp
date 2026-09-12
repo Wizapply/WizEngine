@@ -3,6 +3,14 @@
 
 #include <chrono/collision/ChCollisionModel.h>
 #include <chrono/collision/ChCollisionSystem.h>
+// 複合形状（プレハブの collide 部品）。Chrono 9 の形状クラス。ヘッダが無い
+// 版では複合形状を諦めて警告だけ出す（ビルドは止めない）。
+#if __has_include(<chrono/collision/ChCollisionShapeBox.h>)
+#include <chrono/collision/ChCollisionShapeBox.h>
+#include <chrono/collision/ChCollisionShapeSphere.h>
+#define WIZ_HAVE_COLLISION_SHAPES 1
+#endif
+#include <chrono/physics/ChBody.h>
 #include <chrono/physics/ChBodyEasy.h>
 #include <chrono/physics/ChContactContainer.h>
 #include <chrono/physics/ChLinkDistance.h>
@@ -277,7 +285,13 @@ void PhysicsWorld::registerBody(const std::shared_ptr<chrono::ChBody>& body) {
     bodies_.push_back(body);
     active_.push_back(true);
     softOf_.push_back(kNoSoft);  // addSoftBody が粒子ぶんを後から書き換える
+    alias_.push_back(kNoSoft);
     bindCollision(body);
+}
+
+void PhysicsWorld::setAlias(std::size_t id, std::size_t owner) {
+    if (id >= alias_.size() || owner >= bodies_.size() || id == owner) return;
+    alias_[id] = owner;
 }
 
 // ---- ソフトボディ -----------------------------------------------------------
@@ -495,13 +509,17 @@ PhysicsWorld::activeContactPairs() const {
     auto collector =
         chrono_types::make_shared<ContactPairCollector>(bodyIndex_, pairs);
     container->ReportAllContacts(collector);
-    // ソフトボディの粒子は代表番号に寄せる（Scene はその番号しか知らない）。
-    // 同じソフトボディの粒子どうしは代表が一致するので落ちる。
-    if (!softBodies_.empty()) {
+    // ソフトボディの粒子は代表番号に、子ボディ（setAlias）は持ち主に寄せる
+    // （Scene はその番号しか知らない）。同じ物どうしは一致するので落ちる。
+    auto owner = [this](std::size_t id) {
+        id = representative(id);
+        return (id < alias_.size() && alias_[id] != kNoSoft) ? alias_[id] : id;
+    };
+    {
         std::size_t kept = 0;
         for (auto& pr : pairs) {
-            std::size_t a = representative(pr.first);
-            std::size_t b = representative(pr.second);
+            std::size_t a = owner(pr.first);
+            std::size_t b = owner(pr.second);
             if (a == b) continue;
             if (a > b) std::swap(a, b);
             pairs[kept++] = {a, b};
@@ -842,11 +860,57 @@ void PhysicsWorld::step(double dt) {
     }
 }
 
+namespace {
+#ifdef WIZ_HAVE_COLLISION_SHAPES
+// ChBody::AddCollisionShape(shape, frame) は Chrono 9 の口。無い版では
+// false を返して呼び出し側が警告する（スリープ / ジョイントと同じ SFINAE）。
+template <class B>
+auto addShapeImpl(B& body, std::shared_ptr<chrono::ChCollisionShape> shape,
+                  const chrono::ChFrame<>& frame, int)
+    -> decltype(body.AddCollisionShape(shape, frame), bool()) {
+    body.AddCollisionShape(shape, frame);
+    return true;
+}
+template <class B>
+bool addShapeImpl(B&, std::shared_ptr<chrono::ChCollisionShape>, const chrono::ChFrame<>&,
+                  long) {
+    return false;
+}
+#endif
+}  // namespace
+
+void PhysicsWorld::attachExtraShapes(ChBody& body, const std::vector<ExtraShape>& extras) {
+    if (extras.empty()) return;
+    static bool warned = false;
+    bool ok = true;
+#ifdef WIZ_HAVE_COLLISION_SHAPES
+    for (const ExtraShape& s : extras) {
+        std::shared_ptr<ChCollisionShape> shape;
+        if (s.sphere) {
+            shape = chrono_types::make_shared<ChCollisionShapeSphere>(mat_, s.size.x() * 0.5);
+        } else {
+            shape = chrono_types::make_shared<ChCollisionShapeBox>(mat_, s.size.x(),
+                                                                   s.size.y(), s.size.z());
+        }
+        ok = addShapeImpl(body, shape, ChFrame<>(s.pos, s.rot), 0) && ok;
+    }
+#else
+    ok = false;
+#endif
+    if (!ok && !warned) {
+        warned = true;
+        LOGW("physics", "this Chrono build has no compound collision shapes - "
+                        "prefab parts with collide=\"true\" are visual only");
+    }
+}
+
 std::size_t PhysicsWorld::addSphere(double radius, double density,
                                     const ChVector3d& pos,
-                                    const ChQuaternion<>& rot, bool fixed) {
+                                    const ChQuaternion<>& rot, bool fixed,
+                                    const std::vector<ExtraShape>& extras) {
     auto b = chrono_types::make_shared<ChBodyEasySphere>(
         radius, density, /*visualize*/ true, /*collide*/ true, mat_);
+    attachExtraShapes(*b, extras);
     b->SetPos(pos);
     b->SetRot(rot);
     b->SetFixed(fixed);
@@ -880,9 +944,11 @@ void PhysicsWorld::setRollingFriction(float rolling, float spinning) {
 
 std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density,
                                  const ChVector3d& pos,
-                                 const ChQuaternion<>& rot, bool fixed) {
+                                 const ChQuaternion<>& rot, bool fixed,
+                                 const std::vector<ExtraShape>& extras) {
     auto b = chrono_types::make_shared<ChBodyEasyBox>(
         sx, sy, sz, density, /*visualize*/ true, /*collide*/ true, mat_);
+    attachExtraShapes(*b, extras);
     b->SetPos(pos);
     b->SetRot(rot);
     b->SetFixed(fixed);
@@ -897,9 +963,53 @@ std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density
     return bodies_.size() - 1;
 }
 
+std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
+                                   const ChQuaternion<>& rot, bool fixed,
+                                   const std::vector<ExtraShape>& extras) {
+    auto b = chrono_types::make_shared<ChBody>();
+    const double m = std::max(mass, 1e-3);
+    b->SetMass(m);
+    // 慣性: 追加形状の外接箱（回転は無視、ローカルの軸に沿った箱）を
+    // 均質な箱として。無ければ 0.5 m の箱（フレームだけなら動かないので
+    // 値はほぼ効かない）。
+    double lo[3] = {1e9, 1e9, 1e9}, hi[3] = {-1e9, -1e9, -1e9};
+    for (const ExtraShape& e : extras) {
+        const double hx = e.sphere ? e.size.x() * 0.5 : e.size.x() * 0.5;
+        const double hy = e.sphere ? e.size.x() * 0.5 : e.size.y() * 0.5;
+        const double hz = e.sphere ? e.size.x() * 0.5 : e.size.z() * 0.5;
+        const double c[3] = {e.pos.x(), e.pos.y(), e.pos.z()};
+        const double h[3] = {hx, hy, hz};
+        for (int a = 0; a < 3; ++a) {
+            lo[a] = std::min(lo[a], c[a] - h[a]);
+            hi[a] = std::max(hi[a], c[a] + h[a]);
+        }
+    }
+    double L[3] = {0.5, 0.5, 0.5};
+    if (!extras.empty()) {
+        for (int a = 0; a < 3; ++a) L[a] = std::max(hi[a] - lo[a], 0.01);
+    }
+    b->SetInertiaXX(ChVector3d(m / 12.0 * (L[1] * L[1] + L[2] * L[2]),
+                               m / 12.0 * (L[0] * L[0] + L[2] * L[2]),
+                               m / 12.0 * (L[0] * L[0] + L[1] * L[1])));
+    attachExtraShapes(*b, extras);
+    b->SetPos(pos);
+    b->SetRot(rot);
+    b->SetFixed(fixed);
+    if (!extras.empty()) b->EnableCollision(true);
+    allowSleeping(b.get(), sleepingEnabled_, 0);
+    if (sleepingEnabled_) {
+        b->SetSleepTime(sleepSeconds_);
+        setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
+    }
+    sys_->AddBody(b);
+    registerBody(b);
+    return bodies_.size() - 1;
+}
+
 std::size_t PhysicsWorld::addConvexHull(
     const std::vector<ChVector3d>& points, double density,
-    const ChVector3d& pos, const ChQuaternion<>& rot) {
+    const ChVector3d& pos, const ChQuaternion<>& rot,
+    const std::vector<ExtraShape>& extras) {
     // visualize=false: our renderer draws the glTF model itself; Chrono's
     // visual assets are unused here.
     //
@@ -910,6 +1020,9 @@ std::size_t PhysicsWorld::addConvexHull(
     std::vector<ChVector3d> local = points;
     auto b = chrono_types::make_shared<ChBodyEasyConvexHull>(
         local, density, /*visualize*/ false, /*collide*/ true, mat_);
+    // 凸包は重心へ寄せられるので、部品の位置は「寄せる前の原点」基準のまま
+    // = 原点が中心から離れたモデルではそのぶんずれる（addConvexHull の注記と同じ）。
+    attachExtraShapes(*b, extras);
     b->SetPos(pos);
     b->SetRot(rot);
     b->SetFixed(false);

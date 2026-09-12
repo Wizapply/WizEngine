@@ -2,8 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
+#include "vehicle/Formula.h"
 #include "vehicle/VehicleMath.h"
 #include "vehicle/VehicleTypes.h"
 
@@ -57,8 +59,22 @@ public:
     void reset();
     // 物理 1 ステップ。center / rot は車輪の姿勢（ワールド、X = 車軸）、
     // grounded なら groundPoint / groundNormal の平面より上にトレッドを保つ。
+    // load / deflection は空気圧の式へ渡す文脈（荷重 N、物理側の潰れ m）。
     void step(const Vec3& center, const Quat& rot, bool grounded,
-              const Vec3& groundPoint, const Vec3& groundNormal, double dt);
+              const Vec3& groundPoint, const Vec3& groundNormal, double load,
+              double deflection, double dt);
+
+    // ---- 空気圧 -----------------------------------------------------------
+    // 閉じたメッシュが囲む体積から圧力（静止からの増分）を出し、径方向の
+    // 陰解法ばね（剛性 = 圧力の一様モードの線形化、自然長 = 静止半径 +
+    // 圧力ぶんの膨らみ）としてトレッドへ掛ける。式は TireFormula.h の約束
+    // （pressureFormulaInputs / Outputs）で差し替えられる（nullptr = 組み込みの
+    // 等温変化）。式が失敗（NaN・実行時エラー）したステップは組み込みで代用
+    // し、回数を formulaFailures() に数える。<tire pressure> が 0 なら項ごと切る。
+    void setPressureFormula(std::unique_ptr<FormulaInstance> formula);
+    int formulaFailures() const { return formulaFailures_; }
+    double volumeRatio() const { return ratio_; }   // V / V0（直近の step）
+    double pressure() const { return pressure_; }   // 直近の step の増分 Pa
 
     // 粒子のワールド位置（直近の step の姿勢で置いたもの）。
     const std::vector<Vec3>& particles() const { return world_; }
@@ -82,6 +98,24 @@ private:
     std::vector<Vec3> pos_, vel_;    // 車輪ローカル（リムと一緒に回る座標系）
     std::vector<Vec3> world_;        // 直近の step でワールドへ置いた粒子位置
     bool placed_ = false;
+
+    // 空気圧。indices_ は閉じた面（topology と同じ）、areaVec_ は頂点の面積
+    // ベクトル（隣接三角形の面積 × 外向き法線 / 3 の和 = 圧力を掛ける面）。
+    std::vector<std::uint32_t> indices_;
+    std::vector<Vec3> areaVec_;
+    double restVolume_ = 0.0;
+    double totalArea_ = 0.0;   // トレッドの面積の合計（陰解法の係数に使う）
+    double ratio_ = 1.0;
+    double pressure_ = 0.0;
+    // 今ステップの圧力を表す径方向ばね: 剛性 = pressureK_ × |A_i|、自然長 =
+    // 静止半径 + pressureOffset_（SoftTire.cpp の computePressure 参照）。
+    double pressureK_ = 0.0;
+    double pressureOffset_ = 0.0;
+    std::unique_ptr<FormulaInstance> pressureFormula_;
+    int formulaFailures_ = 0;
+    double volumeOf(const std::vector<Vec3>& p) const;
+    void areaVectorsOf(const std::vector<Vec3>& p, std::vector<Vec3>& out) const;
+    void computePressure(double load, double deflection, double dt);
 };
 
 }  // namespace vehicle

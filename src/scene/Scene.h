@@ -284,13 +284,24 @@ private:
     // 設計値から Chrono のボディを 1 個（createObject / rebuildBody 共通）。
     // ソフトボディ（desc.hasSoft）なら粒子の格子を作り、その設計図を lattice
     // へ返す（剛体なら nullptr）。戻り値は physId（ソフトなら代表番号）。
+    // 固定の持ち主の collide 部品は別の固定ボディ（children に番号）、動く
+    // 持ち主のものは本体の複合形状になる。
     std::size_t createBody(
         const wizengine::editor::BodyDesc& desc, int meshIndex,
-        std::shared_ptr<const wizengine::softlattice::Lattice>& lattice);
+        std::shared_ptr<const wizengine::softlattice::Lattice>& lattice,
+        std::vector<std::size_t>& children);
+    // プレハブの collide 部品を Chrono の追加形状（複合形状）に直す（createBody 用）。
+    std::vector<PhysicsWorld::ExtraShape> collisionShapes(
+        const wizengine::editor::BodyDesc& desc) const;
+    // プレハブの collide 部品が変わったら、それを付けている物の当たり形状を
+    // 作り直す（エディタ中は physDirty だけ、シミュレート中は即 rebuildBody）。
+    void markPrefabUsersDirty(const std::string& prefab);
     void destroyObject(std::size_t index);
     // 形・大きさ・質量が変わったオブジェクトの Chrono ボディを作り直す。
     // physDirty が立っているものだけが対象。
     void rebuildBody(std::size_t index);
+    // 別ボディの部品（childPhysIds）を持ち主の今の姿勢へ作り直す。
+    void rebuildChildren(std::size_t index);
     // 文書のジョイントを Chrono に作り直す（シミュレート開始時）。
     void buildJoints();
 

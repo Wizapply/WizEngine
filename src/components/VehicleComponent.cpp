@@ -6,6 +6,7 @@
 #include "document/EditorTypes.h"
 #include "core/Log.h"
 #include "scene/Scene.h"
+#include "scene/SceneMath.h"
 
 namespace veh = wizengine::vehicle;
 
@@ -71,6 +72,11 @@ void VehicleComponent::onEditorStep(Scene& scene, double dt) {
 
 void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
     PhysicsWorld& physics = scene.physics();
+    // 車輪のレイを当てるプレハブ（collide 部品）の一覧。変わったときだけコピー。
+    if (scene.editor().prefabVersion() != prefabVersion_) {
+        prefabVersion_ = scene.editor().prefabVersion();
+        prefabs_ = scene.editor().prefabAssets();
+    }
     veh::VehicleInput input;
     input.throttle = throttle_.load();
     input.brake = brake_.load();
@@ -143,10 +149,101 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
         chassis.angularVelocity = toVec(physics.bodyAngularVelocity(obj.physId));
         chassis.mass = physics.bodyMass(obj.physId);
 
-        const auto& forces = model.step(chassis, dt, veh::planeGroundQuery);
+        // 車輪のレイは床（y = 0）だけでなく、シーンの剛体（箱・球。ソフト
+        // ボディと自分自身は除く）にも当てる = 階段や坂の上を走れる。
+        // レイキャスト式なので乗った物に力は返さない（固定の段差向き）。
+        // 物理スレッドはオブジェクト一覧の唯一の書き手なのでロックは要らない。
+        const std::size_t self = i;
+        const veh::GroundQuery query = [this, &scene, &physics, self](const veh::Vec3& origin,
+                                                                       const veh::Vec3& dir,
+                                                                       double maxDist) {
+            veh::GroundHit best = veh::planeGroundQuery(origin, dir, maxDist);
+            // 当たり判定の結果（dist / normal は出力引数）を採用するかは、必ず
+            // 判定を呼び終えてから決める。consider(rayHits...(.., dist, normal),
+            // dist, normal) の一行書きは引数の評価順が未規定で、MSVC は右から
+            // 左に評価するため dist が判定前の古い値でコピーされ、前の部品の
+            // 距離が使われて階段で車が跳ねた（GCC のテストでは再現しない）。
+            double dist = 0.0;
+            veh::Vec3 normal;
+            auto consider = [&](bool hit) {
+                if (hit && (!best.hit || dist < best.distance)) {
+                    best.hit = true;
+                    best.distance = dist;
+                    best.point = origin + dir * dist;
+                    best.normal = normal;
+                }
+            };
+            for (std::size_t j = 0; j < scene.objectCount(); ++j) {
+                if (j == self) continue;
+                const GameObject& o = scene.object(j);
+                if (!o.alive || o.physId == GameObject::kInvalidId || o.lattice) continue;
+                const BodyTransform t = physics.bodyTransform(o.physId);
+                const veh::Vec3 center{t.px, t.py, t.pz};
+                const veh::Quat rot{t.qw, t.qx, t.qy, t.qz};
+                if (o.desc.collision == wizengine::editor::ShapeKind::Box) {
+                    const bool hit = veh::rayHitsOrientedBox(
+                        origin, dir, center, rot,
+                        veh::Vec3{o.desc.size.x * 0.5, o.desc.size.y * 0.5,
+                                  o.desc.size.z * 0.5},
+                        maxDist, dist, normal);
+                    consider(hit);
+                } else if (o.desc.collision != wizengine::editor::ShapeKind::None) {
+                    const bool hit = veh::rayHitsSphereSurface(
+                        origin, dir, center, o.desc.radius(), maxDist, dist, normal);
+                    consider(hit);
+                }
+                // プレハブの collide 部品（階段の段など）。物理でも複合形状として
+                // 本体に付いているので、レイも同じ形に当てる。部品はボディの
+                // ローカル座標（clampPart により socket 無しの箱 / 球だけ）。
+                if (o.desc.prefab.empty()) continue;
+                for (const wizengine::editor::PrefabDesc& p : prefabs_) {
+                    if (p.name != o.desc.prefab) continue;
+                    for (const wizengine::editor::PartDesc& part : p.parts) {
+                        if (!part.collide) continue;
+                        const veh::Vec3 pc = center + rot.rotate(veh::Vec3{
+                                                 part.position.x, part.position.y,
+                                                 part.position.z});
+                        if (part.kind == wizengine::editor::PartKind::Sphere) {
+                            const bool hit = veh::rayHitsSphereSurface(
+                                origin, dir, pc, part.size.x * 0.5, maxDist, dist, normal);
+                            consider(hit);
+                            continue;
+                        }
+                        const auto pq = scenemath::quatFromEulerDegrees(
+                            part.rotation.x, part.rotation.y, part.rotation.z);
+                        const veh::Quat prot = rot * veh::Quat{pq.w(), pq.x(), pq.y(), pq.z()};
+                        const bool hit = veh::rayHitsOrientedBox(
+                            origin, dir, pc, prot,
+                            veh::Vec3{part.size.x * 0.5, part.size.y * 0.5, part.size.z * 0.5},
+                            maxDist, dist, normal);
+                        consider(hit);
+                    }
+                    break;
+                }
+            }
+            return best;
+        };
+        const auto& forces = model.step(chassis, dt, query);
         for (const veh::ForceAtPoint& f : forces) {
             physics.applyForceAtPoint(obj.physId, toChrono(f.force),
                                       toChrono(f.point), dt);
+        }
+        // 診断: 車体（箱）が何かに触れていたら、相手の名前を 1 秒に 1 回。
+        // 車輪はレイなので接触しない = 出たら車体が段や壁に当たっている。
+        if (first && (contactCheck_++ % 60) == 0) {
+            for (const auto& pr : physics.activeContactPairs()) {
+                if (pr.first != obj.physId && pr.second != obj.physId) continue;
+                const std::size_t other = pr.first == obj.physId ? pr.second : pr.first;
+                std::string name = "body " + std::to_string(other);
+                for (std::size_t j = 0; j < scene.objectCount(); ++j) {
+                    const GameObject& o = scene.object(j);
+                    if (!o.alive || o.physId != other) continue;
+                    name = "object " + std::to_string(j) + " '" + o.desc.name + "'";
+                    break;
+                }
+                LOGI("vehicle", "object %zu '%s': chassis is in contact with %s", i,
+                     obj.desc.name.c_str(), name.c_str());
+            }
         }
         vis[i] = model.wheelLocalPoses();
         ++count;

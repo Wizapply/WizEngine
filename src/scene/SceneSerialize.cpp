@@ -172,6 +172,10 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         for (const auto& g : editor_.formulaAssets()) f["assets"].push_back(ed::toJson(g));
         f["tireInputs"] = wizengine::vehicle::tireFormulaInputs();
         f["tireOutputs"] = wizengine::vehicle::tireFormulaOutputs();
+        // 空気圧式（体積比 → 圧力）の入出力名。ノードエディタの in / out の
+        // 選択肢に、タイヤ式のぶんと並べて出す。
+        f["pressureInputs"] = wizengine::vehicle::pressureFormulaInputs();
+        f["pressureOutputs"] = wizengine::vehicle::pressureFormulaOutputs();
         j["formulas"] = f;
     }
 
@@ -219,7 +223,9 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
                                  {"driven", a.driven},
                                  {"formula", a.tire.formula},
                                  {"soft", a.tire.soft},
-                                 {"stiffness", a.tire.stiffness}});
+                                 {"stiffness", a.tire.stiffness},
+                                 {"pressure", a.tire.pressure},
+                                 {"pressureFormula", a.tire.pressureFormula}});
             }
             d["vehicleAxles"] = axles;
         }

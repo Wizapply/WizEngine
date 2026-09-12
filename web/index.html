@@ -230,6 +230,10 @@
             <select id="edPartSocket" class="strSel" title="車輪に付ける（wheel:軸:左右）。無し = 車体に固定"
                     onchange="applyPartField('socket', this.value)"></select>
           </div>
+          <div class="edRow" title="この部品を付け先の当たり形状に足す（車体に固定の Box / Sphere だけ。質量は本体のまま）。階段の段など">
+            <span>当たり判定</span>
+            <input id="edPartCollide" type="checkbox" onchange="applyPartField('collide', this.checked)">
+          </div>
           <div class="trRow" title="親（車体 / ソケット）からの位置 (m)">
             <span class="trLabel">位置</span>
             <span class="trAxis x">X</span><input id="edPPX" class="num" type="number" step="0.01" onchange="applyPartVec('position')">

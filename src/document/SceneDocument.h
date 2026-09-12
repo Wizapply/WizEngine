@@ -28,9 +28,13 @@
 //       <formula name="tire_mf"> <node .../> <wire .../> </formula>
 //                                    ... 計算式アセット（vehicle/FormulaXml.h）。
 //                                        <tire formula="tire_mf"> が参照する
-//       <prefab name="sedan"> <part name type pos euler size rgba socket/> </prefab>
+//       <prefab name="sedan"> <part name type pos euler size rgba socket collide/> </prefab>
+//                                    ... <geom> を書かない <body mass> は「部品だけの
+//                                        フレーム」（ShapeKind::None。階段など）
 //                                    ... 見た目の部品の集合（EditorTypes.h の
-//                                        PrefabDesc）。<body> の <prefab name/> で付ける
+//                                        PrefabDesc）。<body> の <prefab name/> で付ける。
+//                                        collide="true" の部品（箱 / 球）は付け先の
+//                                        当たり形状に足される（階段など）
 //     </asset>
 //     <worldbody>
 //       <environment hdr="studio.hdr" intensity="30000"/>

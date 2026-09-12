@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -180,6 +181,12 @@ int main(int argc, char** argv) {
                 auto inst = lua.instantiate(prog, err);
                 if (inst) bench("luajit", std::move(inst)); else std::printf("  luajit: %s\n", err.c_str());
             }
+            return 0;
+        }
+        if (std::strcmp(argv[i], "--dump-pressure-formula") == 0) {
+            std::printf("%s", wizengine::xml::write(
+                                  formulaElement(defaultPressureFormulaGraph()), false)
+                                  .c_str());
             return 0;
         }
         if (std::strcmp(argv[i], "--dump-formula") == 0) {
@@ -559,7 +566,7 @@ int main(int argc, char** argv) {
         for (int i = 0; i < 240; ++i) {
             spin += 40.0 * dt;  // 40 rad/s ≈ 46 km/h
             rot = Quat::fromAxisAngle(Vec3{-1.0, 0.0, 0.0}, spin);
-            st.step(center, rot, true, Vec3{}, Vec3{0.0, 1.0, 0.0}, dt);
+            st.step(center, rot, true, Vec3{}, Vec3{0.0, 1.0, 0.0}, 3400.0, defl, dt);
         }
         auto scan = [&](double& minY, double& maxY, bool& finite) {
             minY = 1e9;
@@ -580,23 +587,57 @@ int main(int argc, char** argv) {
         check(std::fabs(minY - rp) < 0.003, "tread bottom sits on the ground");
         check(std::fabs(maxY - (center.y + r - rp)) < 0.01, "tread top keeps the radius");
         const SoftTireTopology topo = SoftTire::topology(tire);
+        // 帯（rows+3 組の行）× 6 + 両側のキャップ × 3。
         check(topo.vertexCount == st.particleCount() && topo.indices.size() % 3 == 0 &&
-                  topo.indices.size() == std::size_t(topo.rows + 1) * std::size_t(topo.segments) * 6,
+                  topo.indices.size() == std::size_t(topo.rows + 3) * std::size_t(topo.segments) * 6 +
+                                             std::size_t(topo.segments) * 6,
               "topology matches the particle count");
+        bool indexOk = true;
+        for (const std::uint32_t idx : topo.indices) indexOk = indexOk && idx < topo.vertexCount;
+        check(indexOk, "topology indices stay in range");
         for (int i = 0; i < 240; ++i) {
-            st.step(center + Vec3{0.0, 0.3, 0.0}, rot, false, Vec3{}, Vec3{0.0, 1.0, 0.0}, dt);
+            st.step(center + Vec3{0.0, 0.3, 0.0}, rot, false, Vec3{}, Vec3{0.0, 1.0, 0.0}, 0.0, 0.0, dt);
         }
         double maxErr = 0.0;
         for (std::size_t k = 0; k < st.particleCount(); ++k) {
             const Vec3 local = rot.rotateBack(st.particles()[k] - (center + Vec3{0.0, 0.3, 0.0}));
             const double rad = std::sqrt(local.y * local.y + local.z * local.z);
-            if (k >= std::size_t(topo.segments) &&
-                k < std::size_t(topo.segments) * std::size_t(topo.rows + 1)) {
+            if (k >= std::size_t(topo.segments) * 2 &&
+                k < std::size_t(topo.segments) * std::size_t(topo.rows + 2)) {  // トレッド行
                 maxErr = std::max(maxErr, std::fabs(rad - (r - rp)));
             }
         }
         std::printf("  airborne: max tread radius error %.4f m\n", maxErr);
         check(maxErr < 0.05 * r, "tread returns to round in the air");
+        // 強い衝撃: 接地面をリムより内側まで押し込んでから離す。トレッドは
+        // リムより内側へ入らず（硬い境界）、離せば必ず丸に戻る（ゴム）。
+        // 空気圧のばねをリムのフランジへ張っていた頃は、鏡像の位置で釣り合って
+        // へこんだままになった。
+        // 中心が半径の 72% の高さ = 潰れ 28%（物理の上限 25% より少し深い）。
+        const Vec3 crushed{0.0, r * 0.72, 0.0};
+        for (int i = 0; i < 120; ++i) {
+            st.step(crushed, rot, true, Vec3{}, Vec3{0.0, 1.0, 0.0}, 6000.0, r * 0.28, dt);
+        }
+        double minRadius = 1e9;
+        for (std::size_t k = std::size_t(topo.segments) * 2;
+             k < std::size_t(topo.segments) * std::size_t(topo.rows + 2); ++k) {
+            const Vec3 local = rot.rotateBack(st.particles()[k] - crushed);
+            minRadius = std::min(minRadius, std::sqrt(local.y * local.y + local.z * local.z));
+        }
+        std::printf("  crushed: min tread radius %.4f m (rim %.4f)\n", minRadius, 0.6 * r);
+        check(minRadius >= 0.6 * r - 1e-6, "tread never goes inside the rim");
+        for (int i = 0; i < 240; ++i) {
+            st.step(center + Vec3{0.0, 0.3, 0.0}, rot, false, Vec3{}, Vec3{0.0, 1.0, 0.0}, 0.0, 0.0, dt);
+        }
+        maxErr = 0.0;
+        for (std::size_t k = std::size_t(topo.segments) * 2;
+             k < std::size_t(topo.segments) * std::size_t(topo.rows + 2); ++k) {
+            const Vec3 local = rot.rotateBack(st.particles()[k] - (center + Vec3{0.0, 0.3, 0.0}));
+            const double rad = std::sqrt(local.y * local.y + local.z * local.z);
+            maxErr = std::max(maxErr, std::fabs(rad - (r - rp)));
+        }
+        std::printf("  after the crush: max tread radius error %.4f m\n", maxErr);
+        check(maxErr < 0.05 * r, "tread springs back to round after a deep crush");
 
         VehicleDesc sd = desc;
         for (AxleDesc& a : sd.axles) {
@@ -646,6 +687,239 @@ int main(int argc, char** argv) {
                   std::fabs(back.axles[0].tire.stiffness - 60000.0) < 1e-6 &&
                   back.axles[0].tire.segments == 24 && back.axles[0].tire.rows == 3,
               "soft tire attributes survive the xml round trip");
+    }
+
+    // ---- 8b. 空気圧 ------------------------------------------------------------
+    // 潰すと体積比が 1 を切って圧力が上がり、反対側（上）が静止半径より少し
+    // 膨らむ。空気圧 0 なら膨らまない。既定の空気圧式（等温変化）は組み込みと
+    // 同じ数字で、式を付けたタイヤは組み込みと同じ形になる。
+    std::printf("8b. tire pressure\n");
+    {
+        TireDesc tire;
+        tire.soft = true;
+        tire.stiffness = 60000.0;
+        const double r = tire.radius;
+        const double dt = 1.0 / 120.0;
+        auto runCrushed = [&](SoftTire& st, double& top, double& ratio, double& p) {
+            const Vec3 center{0.0, r * 0.85, 0.0};  // 潰れ 15%
+            for (int i = 0; i < 240; ++i) {
+                st.step(center, Quat{}, true, Vec3{}, Vec3{0.0, 1.0, 0.0}, 5000.0, r * 0.15, dt);
+            }
+            top = -1e9;
+            for (const Vec3& q : st.particles()) top = std::max(top, q.y);
+            top -= center.y;
+            ratio = st.volumeRatio();
+            p = st.pressure();
+        };
+        SoftTire inflated(tire);
+        double topI, ratioI, pI;
+        runCrushed(inflated, topI, ratioI, pI);
+        TireDesc flat = tire;
+        flat.pressure = 0.0;
+        SoftTire deflated(flat);
+        double topD, ratioD, pD;
+        runCrushed(deflated, topD, ratioD, pD);
+        const double rp = inflated.radius();
+        std::printf("  inflated: V/V0 %.4f pressure %.0f Pa top %.4f (rest %.4f) | no air: top %.4f\n",
+                    ratioI, pI, topI, r - rp, topD);
+        check(ratioI < 1.0 && ratioI > 0.8, "crushing the tire reduces the enclosed volume");
+        check(pI > 0.0 && std::fabs(pI - builtinTirePressure(ratioI, tire.pressure)) < 1e-6,
+              "pressure follows the isothermal law");
+        check(topI > topD + 1e-4 && topI > (r - rp) - 1e-4 && topI < (r - rp) * 1.06,
+              "the far side bulges outward with air, not without");
+        check(pD == 0.0 && ratioD == 1.0, "pressure 0 disables the term");
+
+        // 式: 既定グラフ = 組み込み。
+        const FormulaGraphDesc graph = defaultPressureFormulaGraph();
+        std::vector<std::string> errors, warnings;
+        auto prog = FormulaProgram::compile(graph, pressureFormulaInputs(),
+                                            pressureFormulaOutputs(), errors, warnings);
+        check(prog != nullptr && errors.empty() && warnings.empty(),
+              "default pressure graph compiles cleanly");
+        if (prog) {
+            auto inst = prog->interpret();
+            double maxDiff = 0.0;
+            for (double ratio = 0.5; ratio <= 1.6; ratio += 0.05) {
+                const double in[6] = {ratio, 0.0, 320000.0, 0.0, 0.0, 0.32};
+                double out[1] = {0.0};
+                inst->eval(in, out, dt);
+                maxDiff = std::max(maxDiff, std::fabs(out[0] - builtinTirePressure(ratio, 320000.0)));
+            }
+            check(maxDiff < 1e-6, "interpreter matches the built-in pressure law");
+            SoftTire withFormula(tire);
+            withFormula.setPressureFormula(prog->interpret());
+            double topF, ratioF, pF;
+            runCrushed(withFormula, topF, ratioF, pF);
+            double maxPos = 0.0;
+            for (std::size_t k = 0; k < inflated.particleCount(); ++k) {
+                maxPos = std::max(maxPos, (inflated.particles()[k] - withFormula.particles()[k]).length());
+            }
+            check(maxPos < 1e-9 && withFormula.formulaFailures() == 0,
+                  "formula-driven pressure gives the same mesh as the built-in");
+        }
+        // XML: pressure と pressureFormula が残る。
+        VehicleDesc sd = desc;
+        sd.axles[0].tire.soft = true;
+        sd.axles[0].tire.pressure = 250000.0;
+        sd.axles[0].tire.pressureFormula = "tire_air";
+        const std::string text = wizengine::xml::write(vehicleElement(sd));
+        wizengine::xml::Element parsed;
+        std::string err;
+        check(wizengine::xml::parse(text, parsed, err), "pressure xml parses back");
+        const VehicleDesc back = vehicleFromXml(parsed, nullptr);
+        check(std::fabs(back.axles[0].tire.pressure - 250000.0) < 1e-6 &&
+                  back.axles[0].tire.pressureFormula == "tire_air",
+              "pressure attributes survive the xml round trip");
+    }
+
+    // ---- 9. 車輪のレイとシーンの剛体 -------------------------------------
+    // VehicleComponent が階段などの箱・球にレイを当てるときの当たり判定。
+    // 段の上面に当たる・中から撃ったら無視・回した箱の法線が外向き・球の
+    // 表面で法線が中心から外へ、を確かめる。
+    std::printf("9. wheel ray vs scene bodies\n");
+    {
+        double t = 0.0;
+        Vec3 n;
+        // 段（中心 (0, 0.3, 0)、半寸法 (1, 0.3, 0.5)）の真上から下へ。
+        bool hit = rayHitsOrientedBox(Vec3{0.2, 2.0, 0.1}, Vec3{0.0, -1.0, 0.0}, Vec3{0.0, 0.3, 0.0},
+                                      Quat{}, Vec3{1.0, 0.3, 0.5}, 5.0, t, n);
+        check(hit && std::fabs(t - 1.4) < 1e-9 && n.y > 0.999, "ray hits the step top with an up normal");
+        // 段の横を通り過ぎる。
+        hit = rayHitsOrientedBox(Vec3{1.5, 2.0, 0.0}, Vec3{0.0, -1.0, 0.0}, Vec3{0.0, 0.3, 0.0},
+                                 Quat{}, Vec3{1.0, 0.3, 0.5}, 5.0, t, n);
+        check(!hit, "ray beside the step misses");
+        // 中から撃つ（車体と重なった箱）→ 無視。
+        hit = rayHitsOrientedBox(Vec3{0.0, 0.3, 0.0}, Vec3{0.0, -1.0, 0.0}, Vec3{0.0, 0.3, 0.0},
+                                 Quat{}, Vec3{1.0, 0.3, 0.5}, 5.0, t, n);
+        check(!hit, "ray starting inside a box is ignored");
+        // 45 度に回した箱の上面: 法線も回る。
+        const Quat tilt = Quat::fromAxisAngle(Vec3{0.0, 0.0, 1.0}, degToRad(45.0));
+        hit = rayHitsOrientedBox(Vec3{0.0, 3.0, 0.0}, Vec3{0.0, -1.0, 0.0}, Vec3{0.0, 0.0, 0.0},
+                                 tilt, Vec3{0.5, 0.5, 0.5}, 5.0, t, n);
+        const Vec3 expect = tilt.rotate(Vec3{0.0, 1.0, 0.0});
+        // 真上から見ると稜線に当たる（2 面のどちらか）。法線は上向き成分 cos45。
+        check(hit && std::fabs(n.y - expect.y) < 1e-6 && std::fabs(t - (3.0 - 0.5 * std::sqrt(2.0))) < 1e-6,
+              "tilted box: hit distance and normal follow the rotation");
+        // 球。
+        hit = rayHitsSphereSurface(Vec3{0.0, 2.0, 0.0}, Vec3{0.0, -1.0, 0.0}, Vec3{0.0, 0.0, 0.0},
+                                   0.5, 5.0, t, n);
+        check(hit && std::fabs(t - 1.5) < 1e-9 && n.y > 0.999, "sphere: top hit with an outward normal");
+        hit = rayHitsSphereSurface(Vec3{0.0, 0.1, 0.0}, Vec3{0.0, -1.0, 0.0}, Vec3{0.0, 0.0, 0.0},
+                                   0.5, 5.0, t, n);
+        check(!hit, "ray starting inside a sphere is ignored");
+        // 車が段に乗る: 段の上に置いた車が段の高さぶん高く座り、ずり落ちない。
+        VehicleDesc sd = desc;
+        Sim sim(sd);
+        const double stepTop = 0.3;
+        const GroundQuery stepQuery = [stepTop](const Vec3& origin, const Vec3& dir, double maxDist) {
+            GroundHit best = planeGroundQuery(origin, dir, maxDist);
+            double tt = 0.0;
+            Vec3 nn;
+            if (rayHitsOrientedBox(origin, dir, Vec3{0.0, stepTop * 0.5, 0.0}, Quat{},
+                                   Vec3{4.0, stepTop * 0.5, 4.0}, maxDist, tt, nn) &&
+                (!best.hit || tt < best.distance)) {
+                best.hit = true;
+                best.distance = tt;
+                best.point = origin + dir * tt;
+                best.normal = nn;
+            }
+            return best;
+        };
+        sim.place(h + stepTop + 0.05);
+        for (int i = 0; i < 240; ++i) {
+            const auto& forces = sim.model.step(sim.body.state(), sim.dt, stepQuery);
+            for (const ForceAtPoint& f : forces) sim.body.applyForceAtPoint(f.force, f.point);
+            sim.body.integrate(sim.dt, 9.81);
+        }
+        std::printf("  car on a %.2f m step: y=%.3f (expect %.3f)\n", stepTop, sim.body.pos.y,
+                    h + stepTop);
+        check(std::fabs(sim.body.pos.y - (h + stepTop)) < 0.02, "car rests on top of the step");
+    }
+
+    // ---- 10. 階段を上る（車輪のレイと段差）-----------------------------
+    // vehicle.xml と同じ階段（0.12 m × 0.5 m を 6 段、踊り場）を車輪のレイで
+    // 上る。段差で縮みが飛ぶと車が跳ねる（「反発して飛んでいく」）ので、
+    // 上りきるまでの上向き速度と、踊り場に落ち着いた高さを見る。
+    std::printf("10. driving up stairs\n");
+    {
+        struct Step { Vec3 c, h; };
+        std::vector<Step> steps;
+        for (int k = 0; k < 6; ++k) {
+            steps.push_back({Vec3{0.0, 0.06 * (k + 1), -6.25 - 0.5 * k},
+                             Vec3{1.5, 0.06 * (k + 1), 0.25}});
+        }
+        steps.push_back({Vec3{0.0, 0.36, -10.5}, Vec3{1.5, 0.36, 1.5}});
+        const GroundQuery stairsQuery = [&steps](const Vec3& origin, const Vec3& dir,
+                                                 double maxDist) {
+            GroundHit best = planeGroundQuery(origin, dir, maxDist);
+            for (const Step& st : steps) {
+                double tt = 0.0;
+                Vec3 nn;
+                if (rayHitsOrientedBox(origin, dir, st.c, Quat{}, st.h, maxDist, tt, nn) &&
+                    (!best.hit || tt < best.distance)) {
+                    best.hit = true;
+                    best.distance = tt;
+                    best.point = origin + dir * tt;
+                    best.normal = nn;
+                }
+            }
+            return best;
+        };
+        for (int soft = 0; soft < 2; ++soft) {
+            VehicleDesc sd = desc;
+            for (AxleDesc& a : sd.axles) {
+                a.tire.radius = 0.42;
+                a.tire.soft = soft == 1;
+                a.tire.stiffness = 60000.0;
+                if (const char* env = std::getenv("STAIRS_RAYS")) a.tire.rays = std::atoi(env);
+            }
+            Sim sim(sd);
+            sim.place(restHeight(sd, 1400.0));
+            // 平地で落ち着いた高さ（ソフトタイヤは潰れのぶん低い）を基準に。
+            for (int i = 0; i < 120; ++i) {
+                const auto& forces = sim.model.step(sim.body.state(), sim.dt, stairsQuery);
+                for (const ForceAtPoint& f : forces) sim.body.applyForceAtPoint(f.force, f.point);
+                sim.body.integrate(sim.dt, 9.81);
+            }
+            const double hs = sim.body.pos.y;
+            VehicleInput in;
+            in.throttle = 0.35;
+            sim.model.setInput(in);
+            double maxVy = 0.0, maxAy = 0.0, minUp = 1.0, prevVy = 0.0, topAt = -1.0;
+            for (int i = 0; i < 60 * 14; ++i) {
+                const auto& forces = sim.model.step(sim.body.state(), sim.dt, stairsQuery);
+                for (const ForceAtPoint& f : forces) sim.body.applyForceAtPoint(f.force, f.point);
+                sim.body.integrate(sim.dt, 9.81);
+                sim.time += sim.dt;
+                maxVy = std::max(maxVy, sim.body.vel.y);
+                maxAy = std::max(maxAy, std::fabs(sim.body.vel.y - prevVy) / sim.dt);
+                prevVy = sim.body.vel.y;
+                minUp = std::min(minUp, sim.upDot());
+                if (topAt < 0.0 && sim.body.pos.z < -9.5) topAt = sim.time;
+                if (std::getenv("STAIRS_TRACE") && i % 15 == 0) {
+                    const auto& tw = sim.model.telemetry().wheels;
+                    std::printf("    t=%.2f z=%.2f y=%.3f vy=%.2f pitch=%.1f | fl comp %.3f load %.0f g%d | rl comp %.3f load %.0f g%d\n",
+                                sim.time, sim.body.pos.z, sim.body.pos.y, sim.body.vel.y, sim.pitchDeg(),
+                                tw[0].compression, tw[0].load, tw[0].grounded ? 1 : 0,
+                                tw[2].compression, tw[2].load, tw[2].grounded ? 1 : 0);
+                }
+                if (sim.body.pos.z < -10.0) {
+                    in.throttle = 0.0;
+                    in.brake = 1.0;
+                    in.handbrake = 1.0;
+                    sim.model.setInput(in);
+                }
+            }
+            std::printf("  %s tire: reached landing at %.1f s, y=%.3f (expect %.3f), "
+                        "max vy %.2f m/s, max |ay| %.1f m/s2, min up %.3f\n",
+                        soft ? "soft" : "rigid", topAt, sim.body.pos.y, hs + 0.72, maxVy,
+                        maxAy, minUp);
+            check(topAt > 0.0, "car climbs the stairs");
+            check(std::fabs(sim.body.pos.y - (hs + 0.72)) < 0.03, "car settles on the landing");
+            check(maxVy < 1.5, "no launch while climbing (vy)");
+            check(maxAy < 12.0, "no impulse while climbing (ay)");
+            check(minUp > 0.9, "car stays upright");
+        }
     }
 
     std::printf("%s (%d failure%s)\n", g_failures == 0 ? "ALL PASSED" : "FAILED",

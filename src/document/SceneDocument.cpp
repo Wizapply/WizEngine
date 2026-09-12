@@ -106,6 +106,7 @@ const char* geomTypeName(ShapeKind s) {
     switch (s) {
         case ShapeKind::Sphere: return "sphere";
         case ShapeKind::Model: return "mesh";
+        case ShapeKind::None: return "none";   // 書き出しでは <geom> ごと省く
         case ShapeKind::Box: break;
     }
     return "box";
@@ -114,6 +115,7 @@ ShapeKind geomTypeFromName(const std::string& s, ShapeKind fallback) {
     if (s == "box") return ShapeKind::Box;
     if (s == "sphere") return ShapeKind::Sphere;
     if (s == "mesh" || s == "model") return ShapeKind::Model;
+    if (s == "none") return ShapeKind::None;
     return fallback;
 }
 
@@ -237,33 +239,9 @@ SimSettings optionFromXml(const xml::Element& o, SimSettings base) {
     return base;
 }
 
-xml::Element bodyElement(const BodyDesc& b) {
-    xml::Element body("body");
-    if (!b.name.empty()) body.set("name", b.name);
-    setVec3(body, "pos", b.position);
-    setVec3(body, "euler", b.rotation);
-    body.setBool("fixed", b.fixed);
-
-    xml::Element geom("geom");
-    geom.set("type", geomTypeName(b.shape));
-    if (b.shape == ShapeKind::Model && !b.mesh.empty()) {
-        geom.set("mesh", b.mesh);
-    }
-    // MuJoCo と同じ「半分の寸法」。box は 3 つ、sphere / mesh は半径 1 つ。
-    if (b.shape == ShapeKind::Box) {
-        const double half[3] = {b.size.x * 0.5, b.size.y * 0.5, b.size.z * 0.5};
-        geom.setNumbers("size", half, 3);
-    } else {
-        geom.setNumber("size", b.size.x * 0.5);
-    }
-    geom.setNumber("mass", b.mass);
-    setColor(geom, "rgba", b.color);
-    // 当たり判定が見た目と違うときだけ書く（既存シーンの「見た目は glTF・
-    // 当たりは球」のような組み合わせ）。
-    if (b.collision != b.shape) {
-        geom.set("collision", geomTypeName(b.collision));
-    }
-    body.append(std::move(geom));
+// <body> の geom 以外の子（イベント・プレハブ・車両・ソフト）。geom の
+// 有無で共通。
+void appendBodyChildren(xml::Element& body, const BodyDesc& b) {
     // 付いているイベントアセット（<asset> の <event> を名前で参照）。
     // Unity のコンポーネント欄と同じで、順番はインスペクタの並び順。
     for (const auto& name : b.events) {
@@ -290,6 +268,44 @@ xml::Element bodyElement(const BodyDesc& b) {
         soft.setInt("iterations", b.soft.iterations);
         body.append(std::move(soft));
     }
+}
+
+xml::Element bodyElement(const BodyDesc& b) {
+    xml::Element body("body");
+    if (!b.name.empty()) body.set("name", b.name);
+    setVec3(body, "pos", b.position);
+    setVec3(body, "euler", b.rotation);
+    body.setBool("fixed", b.fixed);
+
+    // geom の無いボディ（プレハブの部品だけ）: MJCF と同じく <geom> を書かず、
+    // 質量だけ body に付ける。
+    if (b.shape == ShapeKind::None) {
+        body.setNumber("mass", b.mass);
+        appendBodyChildren(body, b);
+        return body;
+    }
+
+    xml::Element geom("geom");
+    geom.set("type", geomTypeName(b.shape));
+    if (b.shape == ShapeKind::Model && !b.mesh.empty()) {
+        geom.set("mesh", b.mesh);
+    }
+    // MuJoCo と同じ「半分の寸法」。box は 3 つ、sphere / mesh は半径 1 つ。
+    if (b.shape == ShapeKind::Box) {
+        const double half[3] = {b.size.x * 0.5, b.size.y * 0.5, b.size.z * 0.5};
+        geom.setNumbers("size", half, 3);
+    } else {
+        geom.setNumber("size", b.size.x * 0.5);
+    }
+    geom.setNumber("mass", b.mass);
+    setColor(geom, "rgba", b.color);
+    // 当たり判定が見た目と違うときだけ書く（既存シーンの「見た目は glTF・
+    // 当たりは球」のような組み合わせ）。
+    if (b.collision != b.shape) {
+        geom.set("collision", geomTypeName(b.collision));
+    }
+    body.append(std::move(geom));
+    appendBodyChildren(body, b);
     return body;
 }
 
@@ -440,13 +456,20 @@ BodyDesc bodyFromXml(const xml::Element& e,
         b.mass = g->number("mass", b.mass);
         b.color = getColor(*g, "rgba", b.color);
     } else {
-        warn("<body name=\"" + label +
-             "\"> has no <geom> - using a default box");
+        // geom の無い body = 部品（プレハブ）だけのフレーム。見た目も当たり
+        // 判定も部品が持つので、プレハブが無ければ何も見えない - 伝える。
+        b.shape = ShapeKind::None;
+        b.collision = ShapeKind::None;
+        b.mass = e.number("mass", b.mass);
+        if (b.prefab.empty()) {
+            warn("<body name=\"" + label +
+                 "\"> has no <geom> and no <prefab> - an invisible frame");
+        }
     }
-    if (softBody && b.shape == ShapeKind::Model) {
+    if (softBody && (b.shape == ShapeKind::Model || b.shape == ShapeKind::None)) {
         warn("<body name=\"" + label +
-             "\">: <soft> needs a box or sphere geom - the mesh is drawn as "
-             "a soft box of its size");
+             "\">: <soft> needs a box or sphere geom - drawn as a soft box of "
+             "its size");
         b.shape = ShapeKind::Box;
         b.collision = ShapeKind::Box;
         b.mesh.clear();
@@ -710,6 +733,7 @@ xml::Element partElement(const PartDesc& p) {
     setVec3(e, "size", p.size);
     setColor(e, "rgba", p.color);
     if (!p.socket.empty()) e.set("socket", p.socket);
+    if (p.collide) e.setBool("collide", true);
     return e;
 }
 PartDesc partFromXml(const xml::Element& e, const std::vector<MeshAssetDesc>& meshes,
@@ -742,6 +766,13 @@ PartDesc partFromXml(const xml::Element& e, const std::vector<MeshAssetDesc>& me
                  "\"> is unknown (use \"wheel:<axle>:<L|R>\") - fixed to the body");
             p.socket.clear();
         }
+    }
+    p.collide = e.boolean("collide", p.collide);
+    if (p.collide && (!p.socket.empty() ||
+                      (p.kind != PartKind::Box && p.kind != PartKind::Sphere))) {
+        warn(label + ": <part collide=\"true\"> only works for box / sphere parts fixed "
+                     "to the body - ignored");
+        p.collide = false;
     }
     return clampPart(p);
 }
@@ -1044,16 +1075,24 @@ SceneDocument fromXml(const xml::Element& root,
     // ---- 車両のタイヤ式の参照（<asset> の <formula> か <vehicle> 内）------
     for (const auto& b : doc.bodies) {
         if (!b.hasVehicle) continue;
-        for (const auto& a : b.vehicle.axles) {
-            if (a.tire.formula.empty()) continue;
+        auto exists = [&](const std::string& name) {
             bool found = false;
-            for (const auto& f : doc.formulas) found = found || f.name == a.tire.formula;
-            for (const auto& f : b.vehicle.formulas) found = found || f.name == a.tire.formula;
-            if (!found) {
+            for (const auto& f : doc.formulas) found = found || f.name == name;
+            for (const auto& f : b.vehicle.formulas) found = found || f.name == name;
+            return found;
+        };
+        for (const auto& a : b.vehicle.axles) {
+            if (!a.tire.formula.empty() && !exists(a.tire.formula)) {
                 warn("<body name=\"" + (b.name.empty() ? std::string("(unnamed)") : b.name) +
                      "\">: <tire formula=\"" + a.tire.formula +
                      "\"> names a <formula> that does not exist - using the built-in "
                      "tire model");
+            }
+            if (!a.tire.pressureFormula.empty() && !exists(a.tire.pressureFormula)) {
+                warn("<body name=\"" + (b.name.empty() ? std::string("(unnamed)") : b.name) +
+                     "\">: <tire pressureFormula=\"" + a.tire.pressureFormula +
+                     "\"> names a <formula> that does not exist - using the built-in "
+                     "isothermal pressure");
             }
         }
     }

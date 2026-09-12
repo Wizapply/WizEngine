@@ -3,6 +3,7 @@
 // エディタ操作は SceneEdit.cpp、イベントの実行は SceneEvents.cpp、
 // 文書との変換は SceneSerialize.cpp。共通の下準備は SceneInternal.h。
 #include "scene/SceneInternal.h"
+#include "scene/PrefabDefaults.h"
 
 using namespace chrono;
 using namespace scene_detail;
@@ -254,6 +255,10 @@ std::size_t Scene::pickBoxAt(double ndcX, double ndcY,
         std::lock_guard<std::mutex> pl(poseMutex_);
         poses = latestPoses_;
     }
+    // プレハブの部品にも当てる（階段の段・車のキャビンをクリックしても
+    // その持ち主が選べる）。一覧のコピーは editor のロック（objects より先に
+    // 取る = ロック順 objects → editor を守るため、objects を取る前に済ます）。
+    const std::vector<ed::PrefabDesc> prefabs = editor_.prefabAssets();
 
     std::unique_lock<std::mutex> lk(objectsMutex_);
     std::size_t best = BoxController::kNone;
@@ -262,17 +267,62 @@ std::size_t Scene::pickBoxAt(double ndcX, double ndcY,
         if (!boxes_[i].alive) continue;
         const ed::BodyDesc& d = boxes_[i].desc;
         const BodyTransform t = poses[i];
-        const double hit =
-            (d.shape == ed::ShapeKind::Box)
-                ? scenemath::rayHitsBox(
-                      basis.eye, dir, t,
-                      scenemath::Vec3(d.size.x * 0.5, d.size.y * 0.5,
-                                      d.size.z * 0.5))
-                : scenemath::rayHitsSphere(basis.eye, dir, t, d.radius());
-        if (hit < 0.0) continue;
-        if (best == BoxController::kNone || hit < bestT) {
-            best = i;
-            bestT = hit;
+        auto consider = [&](double hit) {
+            if (hit < 0.0) return;
+            if (best == BoxController::kNone || hit < bestT) {
+                best = i;
+                bestT = hit;
+            }
+        };
+        if (d.shape == ed::ShapeKind::Box) {
+            consider(scenemath::rayHitsBox(
+                basis.eye, dir, t,
+                scenemath::Vec3(d.size.x * 0.5, d.size.y * 0.5, d.size.z * 0.5)));
+        } else if (d.shape != ed::ShapeKind::None) {
+            consider(scenemath::rayHitsSphere(basis.eye, dir, t, d.radius()));
+        }
+        // 部品（車体に固定のものだけ。車輪に付く部品は走行中に動くので外す）。
+        // 付いていない車両は組み込みの見た目（builtinCarPrefab）が相手。
+        const ed::PrefabDesc* prefab = nullptr;
+        ed::PrefabDesc builtin;
+        if (!d.prefab.empty()) {
+            for (const auto& p : prefabs) {
+                if (p.name == d.prefab) prefab = &p;
+            }
+        } else if (d.hasVehicle) {
+            builtin = ed::builtinCarPrefab(d);
+            prefab = &builtin;
+        }
+        if (!prefab) continue;
+        const scenemath::Quat rot(t.qw, t.qx, t.qy, t.qz);
+        const scenemath::Vec3 pos(t.px, t.py, t.pz);
+        for (const ed::PartDesc& part : prefab->parts) {
+            if (!part.socket.empty() || part.kind == ed::PartKind::Mesh) continue;
+            const scenemath::Vec3 wp =
+                pos + rot * scenemath::Vec3(part.position.x, part.position.y, part.position.z);
+            const scenemath::Quat wq =
+                rot * scenemath::quatFromEulerDegrees(part.rotation.x, part.rotation.y,
+                                                      part.rotation.z);
+            BodyTransform pt;
+            pt.px = wp.x();
+            pt.py = wp.y();
+            pt.pz = wp.z();
+            pt.qw = wq.w();
+            pt.qx = wq.x();
+            pt.qy = wq.y();
+            pt.qz = wq.z();
+            if (part.kind == ed::PartKind::Sphere) {
+                consider(scenemath::rayHitsSphere(basis.eye, dir, pt, part.size.x * 0.5));
+            } else if (part.kind == ed::PartKind::Cylinder) {
+                // 軸 X の円柱は長さ x・直径 y の箱で近似（選択判定なので十分）。
+                consider(scenemath::rayHitsBox(
+                    basis.eye, dir, pt,
+                    scenemath::Vec3(part.size.x * 0.5, part.size.y * 0.5, part.size.y * 0.5)));
+            } else {
+                consider(scenemath::rayHitsBox(
+                    basis.eye, dir, pt,
+                    scenemath::Vec3(part.size.x * 0.5, part.size.y * 0.5, part.size.z * 0.5)));
+            }
         }
     }
     lk.unlock();
@@ -686,6 +736,9 @@ void Scene::syncRenderables() {
         }
         obj.renderDirty = false;
         if (!obj.alive) continue;
+        // geom の無いボディ（プレハブの部品だけ）は自分の実体を持たない。
+        // 部品は PrefabComponent が描く。
+        if (obj.desc.shape == ed::ShapeKind::None && !obj.lattice) continue;
 
         if (obj.renderId == GameObject::kInvalidId) {
             // ソフトボディ: 表面粒子を結んだ変形メッシュ（頂点は毎フレーム

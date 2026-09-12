@@ -73,10 +73,51 @@ void WheelController::updateContact(const ChassisState& chassis, double steerRad
     const Vec3 down = -strutUp_;
     attachWorld_ = chassis.position + q.rotate(localAttach_);
 
-    // 伸びきった車輪の底までレイを飛ばす。当たらなければ宙に浮いている。
+    // 舵を切った向きの「前」（車輪の面内、down と直交）。
+    const double sSteer = std::sin(steerRad), cSteer = std::cos(steerRad);
+    const Vec3 fwdWheel = q.rotate(Vec3{-sSteer, 0.0, -cSteer});
+
+    // 接地の検出。伸びきった車輪の底まで届くレイを飛ばし、当たらなければ
+    // 宙に浮いている。真下 1 本だと段差で縮みが一気に飛ぶ（車輪の中心が縁を
+    // 越えた瞬間に段の高さぶん持ち上がる = 車が跳ねる）ので、車輪の面内で
+    // ±60° に広げた rays 本の扇にし、それぞれの当たり点に「半径 r の円が
+    // 触れる」ときの車輪中心の高さに直す:
+    //   c = L cosθ − sqrt(r² − (L sinθ)²)   （c = 取り付け点から中心までの距離）
+    // 真下（θ = 0）なら c = L − r で従来と同じ。一番高い円（c 最小）を採る =
+    // 縁に近づくにつれて円が縁に乗り上げ、縮みは連続に変わる。法線は
+    // 「当たり点 → 円の中心」（縁に乗っているときは斜め = 乗り越える向きに
+    // タイヤ力が働く）。rays = 1 は旧来どおり真下 1 本・面の法線。
     const double reach = sus_.restLength + tire_.radius;
-    const GroundHit hit = ground(attachWorld_, down, reach);
-    if (!hit.hit) {
+    const double r = tire_.radius;
+    const int rays = std::max(1, std::min(tire_.rays, 15));
+    const double thetaMax = degToRad(60.0);
+    bool found = false;
+    double bestC = 0.0;
+    Vec3 bestPoint, bestNormal;
+    for (int k = 0; k < rays; ++k) {
+        const double theta =
+            rays == 1 ? 0.0 : -thetaMax + 2.0 * thetaMax * double(k) / double(rays - 1);
+        const double ct = std::cos(theta), st = std::sin(theta);
+        const Vec3 dir = (down * ct + fwdWheel * st).normalized();
+        const GroundHit hit = ground(attachWorld_, dir, reach / ct);
+        if (!hit.hit) continue;
+        const double L = hit.distance;
+        const double s = std::fabs(L * st);
+        if (s > r) continue;  // 車輪の真下（幅 2r の帯）に無い点
+        const double c = L * ct - std::sqrt(std::max(r * r - s * s, 0.0));
+        if (c > sus_.restLength) continue;  // 円がそこまで下がらない = 触れない
+        if (found && c >= bestC) continue;
+        found = true;
+        bestC = c;
+        bestPoint = hit.point;
+        if (rays == 1) {
+            bestNormal = hit.normal;
+        } else {
+            const Vec3 toCenter = attachWorld_ + down * c - hit.point;
+            bestNormal = toCenter.length() > 1e-9 ? toCenter.normalized() : hit.normal;
+        }
+    }
+    if (!found) {
         grounded_ = false;
         compression_ = 0.0;
         deflection_ = 0.0;
@@ -90,14 +131,16 @@ void WheelController::updateContact(const ChassisState& chassis, double steerRad
         return;
     }
     grounded_ = true;
-    normal_ = hit.normal.normalized();
-    contactPoint_ = hit.point;
+    normal_ = bestNormal.normalized();
+    contactPoint_ = bestPoint;
     // ソフトタイヤ: サスとタイヤの径方向ばねが直列に縮む。同じ力を分け合う
     // ので、縮みは剛性の逆比（サス側 = 全体 × k_t / (k_s + k_t)）。タイヤの
-    // 潰れは半径の 45% で頭打ち（残りはサスが受ける）。剛タイヤなら全部サス。
-    const double total = std::max(reach - hit.distance, 0.0);
+    // 潰れは半径の 25% で頭打ち（残りはサスが受ける）- それ以上潰すと接地面が
+    // リム（半径 70%）より内側に来て、ゴムではなく金属が地面に着くことになる。
+    // 剛タイヤなら全部サス。
+    const double total = std::max(sus_.restLength - bestC, 0.0);
     if (tire_.soft && tire_.stiffness > 0.0) {
-        const double maxDefl = 0.45 * tire_.radius;
+        const double maxDefl = 0.25 * tire_.radius;
         const double share = tire_.stiffness / (sus_.stiffness + tire_.stiffness);
         double xs = total * share;
         deflection_ = total - xs;
@@ -122,12 +165,12 @@ void WheelController::updateContact(const ChassisState& chassis, double steerRad
         // バンプストップ: 8 倍のばねで受ける。
         f += sus_.stiffness * 8.0 * (compression_ - sus_.travel);
     }
-    load_ = std::max(f, 0.0);
+    // 上限: 静止荷重の 8 倍。段差で縮みが飛んだステップの力が 1 発の衝撃に
+    // ならないための安全弁（バンプストップの範囲は十分に残る）。
+    load_ = std::min(std::max(f, 0.0), massShare_ * 9.81 * 8.0);
 
     // タイヤ座標系（地面に沿った前・右）。舵角は車体の上向きまわり。
-    const double s = std::sin(steerRad), c = std::cos(steerRad);
-    const Vec3 fLocal{-s, 0.0, -c};
-    const Vec3 f0 = q.rotate(fLocal);
+    const Vec3& f0 = fwdWheel;
     Vec3 fwd = f0 - normal_ * f0.dot(normal_);
     if (fwd.length() < 1e-6) fwd = f0;
     forward_ = fwd.normalized();

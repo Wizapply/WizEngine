@@ -10,9 +10,49 @@ using namespace scene_detail;
 // 当たり判定の Model は「メッシュの凸包」で、点群が無ければ球へ。
 // ソフトボディは粒子の格子（scene/SoftLattice.h）を PhysicsWorld に渡し、
 // 代表番号を physId として使う。
+// プレハブの collide 部品 → 追加の当たり形状。部品はボディのローカル座標
+// なので、Chrono の複合形状のフレームにそのまま渡せる（socket 付きは
+// clampPart が collide を落としているので来ない）。
+std::vector<PhysicsWorld::ExtraShape> Scene::collisionShapes(const ed::BodyDesc& desc) const {
+    std::vector<PhysicsWorld::ExtraShape> out;
+    if (desc.prefab.empty() || desc.hasSoft) return out;
+    for (const ed::PrefabDesc& p : editor_.prefabAssets()) {
+        if (p.name != desc.prefab) continue;
+        for (const ed::PartDesc& part : p.parts) {
+            if (!part.collide || !part.socket.empty()) continue;
+            if (part.kind != ed::PartKind::Box && part.kind != ed::PartKind::Sphere) continue;
+            PhysicsWorld::ExtraShape s;
+            s.sphere = part.kind == ed::PartKind::Sphere;
+            s.size = ChVector3d(part.size.x, part.size.y, part.size.z);
+            s.pos = ChVector3d(part.position.x, part.position.y, part.position.z);
+            s.rot = quatFromEuler(part.rotation);
+            out.push_back(s);
+        }
+        break;
+    }
+    return out;
+}
+
+void Scene::markPrefabUsersDirty(const std::string& prefab) {
+    std::vector<std::size_t> users;
+    {
+        std::lock_guard<std::mutex> lk(objectsMutex_);
+        for (std::size_t i = 0; i < boxes_.size(); ++i) {
+            if (!boxes_[i].alive || boxes_[i].desc.prefab != prefab) continue;
+            boxes_[i].physDirty = true;
+            users.push_back(i);
+        }
+    }
+    if (editor_.mode() == ed::AppMode::Simulate) {
+        for (const std::size_t i : users) rebuildBody(i);
+    }
+}
+
 std::size_t Scene::createBody(
     const ed::BodyDesc& desc, int meshIndex,
-    std::shared_ptr<const wizengine::softlattice::Lattice>& lattice) {
+    std::shared_ptr<const wizengine::softlattice::Lattice>& lattice,
+    std::vector<std::size_t>& children) {
+    children.clear();
     const ChVector3d pos(desc.position.x, desc.position.y, desc.position.z);
     const ChQuaternion<> rot = quatFromEuler(desc.rotation);
     lattice.reset();
@@ -44,20 +84,44 @@ std::size_t Scene::createBody(
         LOGW("scene", "object '%s': soft body could not be created - rigid",
              desc.name.c_str());
     }
-    if (desc.collision == ed::ShapeKind::Model) {
+    // プレハブの collide 部品（階段の段など）。固定の持ち主なら部品ごとに
+    // 別の固定ボディにする（「固定の箱を並べた階段」と同じ物理 = Core /
+    // Multicore とも実績のある経路。接触ペアは setAlias で持ち主の番号に
+    // 寄せる）。動く持ち主なら本体に足す複合形状（部品が一緒に動く）。
+    const std::vector<PhysicsWorld::ExtraShape> parts = collisionShapes(desc);
+    const bool separate = desc.fixed && !parts.empty();
+    const std::vector<PhysicsWorld::ExtraShape> extras =
+        separate ? std::vector<PhysicsWorld::ExtraShape>{} : parts;
+    std::size_t physId = GameObject::kInvalidId;
+    if (desc.collision == ed::ShapeKind::None) {
+        // geom の無いボディ: 部品の当たり判定だけを持つフレーム（階段など）。
+        physId = physics_.addFrame(desc.mass, pos, rot, desc.fixed, extras);
+    } else if (desc.collision == ed::ShapeKind::Model) {
         if (const auto* hull = meshHull(meshIndex)) {
-            const std::size_t physId =
-                physics_.addConvexHull(*hull, desc.density(), pos, rot);
+            physId = physics_.addConvexHull(*hull, desc.density(), pos, rot, extras);
             if (desc.fixed) physics_.setBodyFixed(physId, true);
-            return physId;
         }
     }
-    if (desc.collision == ed::ShapeKind::Box) {
-        return physics_.addBox(desc.size.x, desc.size.y, desc.size.z,
-                               desc.density(), pos, rot, desc.fixed);
+    if (physId == GameObject::kInvalidId) {
+        physId = desc.collision == ed::ShapeKind::Box
+                     ? physics_.addBox(desc.size.x, desc.size.y, desc.size.z,
+                                       desc.density(), pos, rot, desc.fixed, extras)
+                     : physics_.addSphere(desc.size.x * 0.5, desc.density(), pos, rot,
+                                          desc.fixed, extras);
     }
-    return physics_.addSphere(desc.size.x * 0.5, desc.density(), pos, rot,
-                              desc.fixed);
+    if (separate) {
+        for (const PhysicsWorld::ExtraShape& e : parts) {
+            const ChVector3d wp = pos + rot.Rotate(e.pos);
+            const ChQuaternion<> wr = rot * e.rot;
+            const std::size_t child =
+                e.sphere ? physics_.addSphere(e.size.x() * 0.5, 1000.0, wp, wr, true)
+                         : physics_.addBox(e.size.x(), e.size.y(), e.size.z(), 1000.0, wp,
+                                           wr, true);
+            physics_.setAlias(child, physId);
+            children.push_back(child);
+        }
+    }
+    return physId;
 }
 
 std::size_t Scene::createObject(const ed::BodyDesc& descIn) {
@@ -77,7 +141,7 @@ std::size_t Scene::createObject(const ed::BodyDesc& descIn) {
     }
 
     GameObject obj;
-    obj.physId = createBody(desc, meshIndex, obj.lattice);
+    obj.physId = createBody(desc, meshIndex, obj.lattice, obj.childPhysIds);
     obj.meshIndex = meshIndex;
     obj.desc = desc;
     obj.alive = true;
@@ -98,6 +162,8 @@ void Scene::destroyObject(std::size_t index) {
     if (boxes_[index].physId != GameObject::kInvalidId) {
         physics_.disableBody(boxes_[index].physId);
     }
+    for (const std::size_t c : boxes_[index].childPhysIds) physics_.disableBody(c);
+    boxes_[index].childPhysIds.clear();
     // 編集中のプレハブの持ち主が消えたら編集モードも終わる。
     if (editor_.prefabEditObject() == int(index)) {
         editor_.setPrefabEditObject(-1);
@@ -144,6 +210,7 @@ void Scene::moveObject(std::size_t index, double x, double y, double z) {
     if (obj.physId == GameObject::kInvalidId) return;
     physics_.placeBody(obj.physId, ChVector3d(x, y, z),
                        quatFromEuler(obj.desc.rotation));
+    rebuildChildren(index);
 }
 
 void Scene::rotateObject(std::size_t index, double rx, double ry, double rz) {
@@ -157,6 +224,20 @@ void Scene::rotateObject(std::size_t index, double rx, double ry, double rz) {
     const ed::Vec3d& p = obj.desc.position;
     physics_.placeBody(obj.physId, ChVector3d(p.x, p.y, p.z),
                        quatFromEuler(obj.desc.rotation));
+    rebuildChildren(index);
+}
+
+// 部品を別ボディで持つ固定の持ち主を動かしたら、部品もその場所へ（作り直し。
+// エディタ中は physDirty だけ = シミュレート開始でまとめて、シミュレート中は
+// 即）。placeBody は持ち主しか動かさないため。
+void Scene::rebuildChildren(std::size_t index) {
+    GameObject& obj = boxes_[index];
+    if (obj.childPhysIds.empty()) return;
+    {
+        std::lock_guard<std::mutex> lk(objectsMutex_);
+        obj.physDirty = true;
+    }
+    if (editor_.mode() == ed::AppMode::Simulate) rebuildBody(index);
 }
 
 void Scene::resizeObject(std::size_t index, double sx, double sy, double sz) {
@@ -185,12 +266,15 @@ void Scene::rebuildBody(std::size_t index) {
     // 判定を切って地面の下へ）。エディタで何度も大きさを変えると空のボディが
     // 溜まるが、動かないし当たらないのでステップ時間には効かない。
     if (obj.physId != GameObject::kInvalidId) physics_.disableBody(obj.physId);
+    for (const std::size_t c : obj.childPhysIds) physics_.disableBody(c);
 
     std::shared_ptr<const wizengine::softlattice::Lattice> lattice;
-    const std::size_t physId = createBody(obj.desc, obj.meshIndex, lattice);
+    std::vector<std::size_t> children;
+    const std::size_t physId = createBody(obj.desc, obj.meshIndex, lattice, children);
 
     std::lock_guard<std::mutex> lk(objectsMutex_);
     obj.physId = physId;
+    obj.childPhysIds = children;
     obj.lattice = lattice;
     obj.softRebuildTimer = 0.0;
     obj.physDirty = false;
@@ -420,8 +504,9 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         // ソフトボディの切替と設定は格子の作り直し（粒子数・ばねが変わる）。
         const bool softChanged = next.hasSoft != before.hasSoft ||
                                  (next.hasSoft && next.soft != before.soft);
-        if (next.hasSoft && next.shape == ed::ShapeKind::Model) {
-            // 格子は箱か球。メッシュ形状のままソフトにはできない。
+        if (next.hasSoft &&
+            (next.shape == ed::ShapeKind::Model || next.shape == ed::ShapeKind::None)) {
+            // 格子は箱か球。メッシュ形状・geom 無しのままソフトにはできない。
             next.shape = ed::ShapeKind::Box;
             next.collision = ed::ShapeKind::Box;
             next.mesh.clear();
@@ -449,6 +534,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                                ChVector3d(next.position.x, next.position.y,
                                           next.position.z),
                                quatFromEuler(next.rotation));
+            if (!obj.childPhysIds.empty()) obj.physDirty = true;  // 部品も付いていく
         }
         // 形が変わったら Chrono のボディを作り直す必要がある。エディタ中は
         // シミュレート開始まで待つ（当たり判定は使っていないので困らない）。
@@ -626,6 +712,8 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         wizengine::vehicle::FormulaGraphDesc g;
         if (a.value("template", "") == "tire") {
             g = wizengine::vehicle::defaultTireFormulaGraph(name);
+        } else if (a.value("template", "") == "pressure") {
+            g = wizengine::vehicle::defaultPressureFormulaGraph(name);
         } else {
             g.name = name;
         }
@@ -647,6 +735,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                 if (!o.desc.hasVehicle) continue;
                 for (auto& ax : o.desc.vehicle.axles) {
                     if (ax.tire.formula == name) ax.tire.formula.clear();
+                    if (ax.tire.pressureFormula == name) ax.tire.pressureFormula.clear();
                 }
             }
         }
@@ -754,7 +843,11 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             std::lock_guard<std::mutex> lk(objectsMutex_);
             boxes_[std::size_t(index)].desc.prefab =
                 op.kind == "prefab.attach" ? name : std::string();
+            // collide 部品のぶん当たり形状が変わる（無くても剛体の作り直しは
+            // 安い。エディタ中はシミュレート開始でまとめて）。
+            boxes_[std::size_t(index)].physDirty = true;
         }
+        if (editor_.mode() == ed::AppMode::Simulate) rebuildBody(std::size_t(index));
         editor_.setStatus("#" + std::to_string(index) +
                           (op.kind == "prefab.attach" ? " に " + name + " を付けました"
                                                        : " のプレハブを外しました"));
@@ -765,17 +858,28 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         const std::string name = a.value("name", "");
         ed::PrefabDesc d;
         d.name = name;
+        // 中身付きで作る口（🪜 Stairs = builtinStairsPrefab）。省略時は空。
+        if (a.contains("parts") && a["parts"].is_array()) {
+            for (const auto& pj : a["parts"]) {
+                if (d.parts.size() >= 256) break;
+                ed::PartDesc p = ed::clampPart(ed::partFromJson(pj, ed::PartDesc{}));
+                if (p.name.empty()) p.name = std::string(ed::partKindName(p.kind));
+                d.parts.push_back(std::move(p));
+            }
+        }
         if (name.empty() || !editor_.addPrefabAsset(d)) {
             editor_.setStatus("同じ名前のプレハブがあります: " + name);
             return;
         }
-        editor_.setStatus("プレハブを作成: " + name);
+        editor_.setStatus("プレハブを作成: " + name +
+                          (d.parts.empty() ? "" : "（" + std::to_string(d.parts.size()) + " 部品）"));
         return;
     }
 
     if (op.kind == "prefab.remove") {
         const std::string name = a.value("name", "");
         if (name.empty() || !editor_.removePrefabAsset(name)) return;
+        markPrefabUsersDirty(name);  // 外す前に（名前で探すので）
         {
             std::lock_guard<std::mutex> lk(objectsMutex_);
             for (auto& o : boxes_) {
@@ -799,20 +903,29 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             return;
         }
         if (op.kind == "part.add") {
-            ed::PartDesc p = ed::partFromJson(a, ed::PartDesc{});
+            ed::PartDesc p = ed::clampPart(ed::partFromJson(a, ed::PartDesc{}));
             if (p.name.empty()) p.name = std::string(ed::partKindName(p.kind));
             const int idx = editor_.addPart(prefab, p);
             if (idx < 0) return;
+            if (p.collide) markPrefabUsersDirty(prefab);
             editor_.setSel(EditorState::SelKind::Part, idx);
             editor_.setStatus("部品を追加: " + p.name);
             return;
         }
         const int part = ed::jsonInt(a, "part", -1);
+        // 当たり判定を持つ部品（前後どちらかで collide）が変われば、持ち主の
+        // 剛体の複合形状を作り直す。Chrono は形を後から変えられない。
+        ed::PartDesc before;
+        const bool had = editor_.partDesc(prefab, part, before) && before.collide;
         if (op.kind == "part.set") {
-            editor_.updatePart(prefab, part, a);  // 連投なので無言
+            if (!editor_.updatePart(prefab, part, a)) return;  // 連投なので無言
+            ed::PartDesc after;
+            const bool has = editor_.partDesc(prefab, part, after) && after.collide;
+            if (had || has) markPrefabUsersDirty(prefab);
             return;
         }
         if (editor_.removePart(prefab, part)) {
+            if (had) markPrefabUsersDirty(prefab);
             if (editor_.selKind() == EditorState::SelKind::Part) editor_.clearSel();
             editor_.setStatus("部品を削除: #" + std::to_string(part));
         }
@@ -845,9 +958,17 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                 const bool hasFormula = a.contains("formula") && a["formula"].is_string();
                 const bool hasSoft = a.contains("soft") && a["soft"].is_boolean();
                 const bool hasStiffness = a.contains("stiffness") && a["stiffness"].is_number();
+                const bool hasPressure = a.contains("pressure") && a["pressure"].is_number();
+                const bool hasPressureFormula =
+                    a.contains("pressureFormula") && a["pressureFormula"].is_string();
                 const std::string formula = hasFormula ? a["formula"].get<std::string>() : "";
+                const std::string pressureFormula =
+                    hasPressureFormula ? a["pressureFormula"].get<std::string>() : "";
                 if (hasFormula && !formula.empty() && !editor_.hasFormulaAsset(formula)) {
                     status = "計算式が見つかりません: " + formula;
+                } else if (hasPressureFormula && !pressureFormula.empty() &&
+                           !editor_.hasFormulaAsset(pressureFormula)) {
+                    status = "計算式が見つかりません: " + pressureFormula;
                 } else if (!obj.desc.hasVehicle) {
                     status = "#" + std::to_string(index) + " は車両ではありません";
                 } else {
@@ -859,11 +980,19 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                         if (hasStiffness) {
                             axles[i].tire.stiffness = a["stiffness"].get<double>();
                         }
+                        if (hasPressure) axles[i].tire.pressure = a["pressure"].get<double>();
+                        if (hasPressureFormula) axles[i].tire.pressureFormula = pressureFormula;
                     }
                     obj.desc.vehicle = wizengine::vehicle::clampVehicle(obj.desc.vehicle);
                     if (hasFormula) {
                         status = "#" + std::to_string(index) + " のタイヤ式: " +
                                  (formula.empty() ? "(組み込み)" : formula);
+                    } else if (hasPressureFormula) {
+                        status = "#" + std::to_string(index) + " の空気圧式: " +
+                                 (pressureFormula.empty() ? "(組み込み・等温変化)"
+                                                          : pressureFormula);
+                    } else if (hasPressure) {
+                        status = "#" + std::to_string(index) + " の空気圧を更新";
                     } else if (hasSoft) {
                         status = "#" + std::to_string(index) + " のタイヤ: " +
                                  (a["soft"].get<bool>() ? "ソフト（変形メッシュ）" : "剛");

@@ -107,5 +107,66 @@ FormulaGraphDesc defaultTireFormulaGraph(const std::string& name) {
     return g;
 }
 
+// ---- 空気圧 -----------------------------------------------------------------
+
+const std::vector<std::string>& pressureFormulaInputs() {
+    static const std::vector<std::string> v = {"ratio", "rate", "p0", "load",
+                                               "deflection", "radius"};
+    return v;
+}
+
+const std::vector<std::string>& pressureFormulaOutputs() {
+    static const std::vector<std::string> v = {"pressure"};
+    return v;
+}
+
+double builtinTirePressure(double ratio, double p0) {
+    if (ratio <= 1e-6) ratio = 1e-6;
+    const double p = p0 * (1.0 / ratio - 1.0);
+    return p < -p0 ? -p0 : p;
+}
+
+FormulaGraphDesc defaultPressureFormulaGraph(const std::string& name) {
+    FormulaGraphDesc g;
+    g.name = name;
+    int next = 1;
+    auto node = [&](const std::string& kind, const std::string& nm, double x, double y,
+                    std::vector<double> params = {}) {
+        FormulaNodeDesc n;
+        n.id = next++;
+        n.kind = kind;
+        n.name = nm;
+        n.params = std::move(params);
+        n.x = x;
+        n.y = y;
+        g.nodes.push_back(n);
+        return n.id;
+    };
+    auto wire = [&](int from, int to, int port, int fromPort = 0) {
+        g.wires.push_back({from, fromPort, to, port});
+    };
+    // 等温変化: pressure = max(p0 * (1 / ratio - 1), -p0)
+    const int ratio = node("in", "ratio", 40, 40);
+    const int p0 = node("in", "p0", 40, 160);
+    const int one = node("const", "", 40, 280, {1.0});
+    const int inv = node("div", "", 260, 40);   // 1 / ratio
+    wire(one, inv, 0);
+    wire(ratio, inv, 1);
+    const int strain = node("sub", "", 420, 40);  // 1 / ratio - 1
+    wire(inv, strain, 0);
+    wire(one, strain, 1);
+    const int scaled = node("mul", "", 580, 40);  // p0 * (...)
+    wire(strain, scaled, 0);
+    wire(p0, scaled, 1);
+    const int negP0 = node("neg", "", 420, 160);  // -p0（真空が下限）
+    wire(p0, negP0, 0);
+    const int lim = node("max", "", 740, 40);
+    wire(scaled, lim, 0);
+    wire(negP0, lim, 1);
+    const int out = node("out", "pressure", 900, 40);
+    wire(lim, out, 0);
+    return g;
+}
+
 }  // namespace vehicle
 }  // namespace wizengine

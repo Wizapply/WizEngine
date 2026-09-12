@@ -87,6 +87,72 @@ struct Quat {
     Vec3 rotateBack(const Vec3& v) const { return conjugate().rotate(v); }
 };
 
+// ---- 車輪のレイ用の当たり判定 -----------------------------------------------
+// 光線（origin + t*dir、dir は単位）と向き付きの箱（中心・回転・半寸法）。
+// 当たれば t（0 < t <= maxDist）と外向きの法線を返す。origin が箱の中に
+// あるときは false - 車体と重なった箱を「地面」と取り違えないため。
+inline bool rayHitsOrientedBox(const Vec3& origin, const Vec3& dir, const Vec3& center,
+                               const Quat& rot, const Vec3& half, double maxDist,
+                               double& tOut, Vec3& normalOut) {
+    const Vec3 o = rot.rotateBack(origin - center);
+    const Vec3 d = rot.rotateBack(dir);
+    const double oa[3] = {o.x, o.y, o.z};
+    const double da[3] = {d.x, d.y, d.z};
+    const double ha[3] = {half.x, half.y, half.z};
+    if (std::fabs(oa[0]) <= ha[0] && std::fabs(oa[1]) <= ha[1] && std::fabs(oa[2]) <= ha[2]) {
+        return false;  // 中から撃っている
+    }
+    double tMin = 0.0, tMax = maxDist;
+    int axis = -1;
+    double sign = 0.0;
+    for (int a = 0; a < 3; ++a) {
+        if (std::fabs(da[a]) < 1e-12) {
+            if (oa[a] < -ha[a] || oa[a] > ha[a]) return false;
+            continue;
+        }
+        double t1 = (-ha[a] - oa[a]) / da[a];
+        double t2 = (ha[a] - oa[a]) / da[a];
+        double s = -1.0;  // t1 が -half 側の面
+        if (t1 > t2) {
+            const double tmp = t1;
+            t1 = t2;
+            t2 = tmp;
+            s = 1.0;
+        }
+        if (t1 > tMin) {
+            tMin = t1;
+            axis = a;
+            sign = s;
+        }
+        if (t2 < tMax) tMax = t2;
+        if (tMin > tMax) return false;
+    }
+    if (axis < 0 || tMin <= 0.0) return false;
+    Vec3 nLocal;
+    if (axis == 0) nLocal = Vec3{sign, 0.0, 0.0};
+    else if (axis == 1) nLocal = Vec3{0.0, sign, 0.0};
+    else nLocal = Vec3{0.0, 0.0, sign};
+    tOut = tMin;
+    normalOut = rot.rotate(nLocal);
+    return true;
+}
+
+// 光線と球の表面。origin が球の中なら false。
+inline bool rayHitsSphereSurface(const Vec3& origin, const Vec3& dir, const Vec3& center,
+                                 double radius, double maxDist, double& tOut, Vec3& normalOut) {
+    const Vec3 rel = center - origin;
+    const double along = rel.dot(dir);
+    const double perpSq = rel.dot(rel) - along * along;
+    const double rSq = radius * radius;
+    if (perpSq > rSq) return false;
+    if (rel.dot(rel) < rSq) return false;  // 中から撃っている
+    const double t = along - std::sqrt(rSq - perpSq);
+    if (t <= 0.0 || t > maxDist) return false;
+    tOut = t;
+    normalOut = ((origin + dir * t) - center).normalized();
+    return true;
+}
+
 inline double clampd(double v, double lo, double hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }

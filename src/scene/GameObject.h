@@ -57,6 +57,11 @@ struct GameObject {
     // エディタ中は物理を回していないので、シミュレート開始のときにまとめて
     // 作り直す（スライダーを動かすたびにボディを捨てないための遅延）。
     bool physDirty = false;
+    // 固定の持ち主に付いたプレハブの collide 部品を、複合形状ではなく別の
+    // 固定ボディとして作ったときの番号（Scene::createBody）。持ち主と一緒に
+    // 退場させ、持ち主を動かしたら physDirty で作り直す。動く持ち主の部品は
+    // 複合形状（本体に足す）なのでここには入らない。
+    std::vector<std::size_t> childPhysIds;
     // イベントグラフのアクション（SetColor）が与える実行時の色。設計値
     // （desc.color）は書き換えない: シミュレートを止めると desc へ戻る、
     // という姿勢と同じ原則で色も戻す（Scene::resetGraphRuntime が落とす）。
