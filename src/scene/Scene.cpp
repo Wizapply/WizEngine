@@ -461,10 +461,37 @@ void Scene::stepPhysics(double dt) {
         for (auto& a : obj.actions) a->onPhysicsStep(obj, physics_, dt);
     }
     physics_.step(dt);
+    // 破断したジョイントを文書の番号に引き直してイベントへ渡し、反力の計測値
+    // を更新する（どちらもこのステップの結果）。
+    for (const std::size_t phys : physics_.takeBrokenJoints()) {
+        for (std::size_t i = 0; i < jointPhysIds_.size(); ++i) {
+            if (jointPhysIds_[i] == phys) graphRt_.brokenJoints.push_back(int(i));
+        }
+    }
+    updateJointStats();
     // イベントグラフは step の後: 衝突トリガーはこのステップが作った接触を
     // 見る（前に置くと 1 ステップ古い接触に反応する）。
     runEventGraph(dt);
     snapshot();
+}
+
+void Scene::updateJointStats() {
+    std::vector<JointStat> stats(jointPhysIds_.size());
+    for (std::size_t i = 0; i < jointPhysIds_.size(); ++i) {
+        const std::size_t phys = jointPhysIds_[i];
+        if (phys == PhysicsWorld::kInvalidJoint) continue;
+        stats[i].broken = physics_.jointBroken(phys);
+        if (!stats[i].broken) {
+            physics_.jointReaction(phys, stats[i].force, stats[i].torque);
+        }
+    }
+    std::lock_guard<std::mutex> lk(poseMutex_);
+    jointStats_.swap(stats);
+}
+
+std::vector<Scene::JointStat> Scene::jointStats() {
+    std::lock_guard<std::mutex> lk(poseMutex_);
+    return jointStats_;
 }
 
 // エディタモードの 1 パス。積分しない代わりに、掴んでいる物の置き直しと
@@ -499,6 +526,16 @@ void Scene::restoreAuthoredPoses() {
         const ChVector3d p(obj.desc.position.x, obj.desc.position.y,
                            obj.desc.position.z);
         physics_.placeBody(obj.physId, p, quatFromEuler(obj.desc.rotation));
+        // 初速（文書の velocity / angvel）。置き直しは速度を捨てるので、その
+        // 後に与える。エディタ中は積分しないので残っていても動かない。
+        const ed::Vec3d& v = obj.desc.velocity;
+        const ed::Vec3d& w = obj.desc.angularVelocity;
+        if (v.x != 0.0 || v.y != 0.0 || v.z != 0.0 || w.x != 0.0 || w.y != 0.0 ||
+            w.z != 0.0) {
+            physics_.setBodyVelocity(
+                obj.physId, ChVector3d(v.x, v.y, v.z),
+                ChVector3d(w.x * kDegToRad, w.y * kDegToRad, w.z * kDegToRad));
+        }
     }
 }
 
@@ -508,13 +545,30 @@ void Scene::restoreAuthoredPoses() {
 
 void Scene::applySimSettings() {
     const ed::SimSettings s = editor_.sim();
-    physics_.setGravityY(s.gravity);
+    physics_.setGravity(s.gravityX, s.gravity, s.gravityZ);
     physics_.setSurfaceMaterial(s.friction, s.restitution);
     physics_.setDamping(s.linearDamping, s.angularDamping);
     physics_.setSleepingEnabled(s.sleeping, kSleepSeconds, kSleepMinLinVel,
                                 kSleepMinAngVel);
+    // 積分器とソルバは Core だけ切り替わる（Multicore は自前のステッパと
+    // APGD）。既定以外を頼まれて効かないときだけ 1 回伝える。
+    static bool warnedInteg = false, warnedSolver = false;
+    if (!physics_.setIntegrator(s.integrator) && s.integrator != "euler" && !warnedInteg) {
+        warnedInteg = true;
+        LOGW("editor", "integrator '%s' is not available on the %s backend - "
+                       "keeping the default", s.integrator.c_str(), physics_.backendName());
+    }
+    if (!physics_.setSolver(s.solver) && s.solver != "bb" && !warnedSolver) {
+        warnedSolver = true;
+        LOGW("editor", "solver '%s' is not available on the %s backend - "
+                       "keeping the default", s.solver.c_str(), physics_.backendName());
+    }
+    // ソルバを替えると反復回数の器も替わるので、その後に入れる。
     physics_.setSolverIterations(s.iterations);
     physics_.setContactRecoverySpeed(s.recovery);
+    physics_.setMaterialCombine(s.combine == "average" ? CombineMode::Average
+                                : s.combine == "max"   ? CombineMode::Max
+                                                       : CombineMode::Min);
 }
 
 std::size_t Scene::jointBodyId(int objectIndex) const {
@@ -526,9 +580,12 @@ std::size_t Scene::jointBodyId(int objectIndex) const {
 
 void Scene::buildJoints() {
     physics_.removeAllJoints();
+    graphRt_.brokenJoints.clear();
     const auto joints = editor_.joints();
+    jointPhysIds_.assign(joints.size(), PhysicsWorld::kInvalidJoint);
     std::size_t made = 0;
-    for (const auto& j : joints) {
+    for (std::size_t i = 0; i < joints.size(); ++i) {
+        const ed::JointDesc& j = joints[i];
         const std::size_t a = jointBodyId(j.bodyA);
         const std::size_t b = jointBodyId(j.bodyB);
         if (a == GameObject::kInvalidId || b == GameObject::kInvalidId) {
@@ -536,15 +593,17 @@ void Scene::buildJoints() {
                  j.name.c_str());
             continue;
         }
-        const std::size_t id = physics_.addJoint(
-            toJointType(j.kind), a, b,
-            ChVector3d(j.anchor.x, j.anchor.y, j.anchor.z),
-            ChVector3d(j.axis.x, j.axis.y, j.axis.z), j.distance);
+        JointSpec spec = toJointSpec(j);  // 度 → rad はここで済む
+        spec.bodyA = a;
+        spec.bodyB = b;
+        const std::size_t id = physics_.addJoint(spec);
+        jointPhysIds_[i] = id;
         if (id != PhysicsWorld::kInvalidJoint) ++made;
     }
     if (!joints.empty()) {
         LOGI("editor", "joints: %zu / %zu created", made, joints.size());
     }
+    updateJointStats();
 }
 
 void Scene::enterMode(ed::AppMode target) {
@@ -568,6 +627,8 @@ void Scene::enterMode(ed::AppMode target) {
         // 止める = 設計状態へ巻き戻す。拘束を先に外さないと、置き直した
         // 姿勢と食い違ったまま次のステップで暴れる。
         physics_.removeAllJoints();
+        jointPhysIds_.clear();
+        updateJointStats();  // 計測値も空に（破断表示を消す）
         restoreAuthoredPoses();
     }
     snapshot();
@@ -612,6 +673,25 @@ const std::vector<ChVector3d>* Scene::meshHull(int meshIndex) {
         }
     }
     return m.hull.empty() ? nullptr : &m.hull;
+}
+
+// メッシュの三角形（collision="trimesh"）。凸包と同じく最初に使うときに読む。
+const wizengine::CollisionTriangles* Scene::meshTrimesh(int meshIndex) {
+    if (meshIndex < 0 || std::size_t(meshIndex) >= meshes_.size()) {
+        return nullptr;
+    }
+    MeshAsset& m = meshes_[std::size_t(meshIndex)];
+    if (!m.trimeshTried) {
+        m.trimeshTried = true;
+        m.trimesh = wizengine::loadCollisionTriangles(m.desc.file, m.desc.scale);
+        if (m.trimesh.triangles.empty()) {
+            LOGW("scene",
+                 "mesh '%s' (%s): triangle mesh unavailable - bodies fall back "
+                 "to the convex hull",
+                 m.desc.name.c_str(), m.desc.file.c_str());
+        }
+    }
+    return m.trimesh.triangles.empty() ? nullptr : &m.trimesh;
 }
 
 
@@ -818,10 +898,12 @@ void Scene::applyToRenderer() {
 
     std::vector<BodyTransform> poses;
     std::vector<std::vector<float>> softPts;
+    std::vector<JointStat> jstats;
     {
         std::lock_guard<std::mutex> pl(poseMutex_);
         poses = latestPoses_;
         softPts = latestSoft_;
+        jstats = jointStats_;
     }
 
     // The cube/sphere meshes are unit-sized; scale them to the object's size
@@ -908,7 +990,9 @@ void Scene::applyToRenderer() {
         const filament::math::float3 anchor{float(j.anchor.x),
                                             float(j.anchor.y),
                                             float(j.anchor.z)};
-        if (!ok) {
+        // 破断した拘束は線を消す（外れたことが見える）。
+        const bool broken = i < jstats.size() && jstats[i].broken;
+        if (!ok || broken) {
             renderer_.setJointLine(i * 2, pa, pb, col, false);
             renderer_.setJointLine(i * 2 + 1, pa, pb, col, false);
             continue;

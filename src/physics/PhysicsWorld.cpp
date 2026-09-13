@@ -10,17 +10,62 @@
 #include <chrono/collision/ChCollisionShapeSphere.h>
 #define WIZ_HAVE_COLLISION_SHAPES 1
 #endif
+// 円柱の当たり形状（プレハブの円柱部品）と三角メッシュ（glTF の凹形状）。
+// どちらも Chrono 9 の形状クラスで、無い版ではその形だけ諦めて警告する。
+#if __has_include(<chrono/collision/ChCollisionShapeCylinder.h>)
+#include <chrono/collision/ChCollisionShapeCylinder.h>
+#define WIZ_HAVE_CYLINDER_SHAPE 1
+#endif
+#if __has_include(<chrono/collision/ChCollisionShapeTriangleMesh.h>)
+#include <chrono/collision/ChCollisionShapeTriangleMesh.h>
+#define WIZ_HAVE_TRIMESH_SHAPE 1
+#endif
 #include <chrono/collision/bullet/ChCollisionUtilsBullet.h>  // 凸包の体積重心
 #include <chrono/core/ChMatrix33.h>
 #include <chrono/geometry/ChTriangleMeshConnected.h>
 #include <chrono/physics/ChBody.h>
 #include <chrono/physics/ChBodyEasy.h>
 #include <chrono/physics/ChContactContainer.h>
+#include <chrono/physics/ChContactMaterial.h>  // 材質の合成方式
 #include <chrono/physics/ChLinkDistance.h>
 #include <chrono/physics/ChLinkLock.h>
 #include <chrono/physics/ChSystemNSC.h>
 #include <chrono/solver/ChIterativeSolverVI.h>
 #include <chrono/solver/ChSolver.h>
+#include <chrono/timestepper/ChTimestepper.h>
+// ジョイントの拡張（A の導入）: モータ・自在継手・歯車・ねじ・ばね。
+// Chrono 9 のヘッダ名。歯車とねじは版で置き場が変わったので __has_include
+// で見て、無ければその種類だけ「作らない」で済ませる（Distance と同じ扱い）。
+#include <chrono/physics/ChLinkMotorRotationSpeed.h>
+#include <chrono/physics/ChLinkMotorRotationAngle.h>
+#include <chrono/physics/ChLinkMotorRotationTorque.h>
+#include <chrono/physics/ChLinkMotorLinearSpeed.h>
+#include <chrono/physics/ChLinkMotorLinearPosition.h>
+#include <chrono/physics/ChLinkMotorLinearForce.h>
+#include <chrono/physics/ChLinkUniversal.h>
+#include <chrono/physics/ChLinkTSDA.h>
+#include <chrono/physics/ChLinkRSDA.h>
+#if __has_include(<chrono/physics/ChLinkLockGear.h>)
+#include <chrono/physics/ChLinkLockGear.h>
+#define WIZ_HAVE_GEAR 1
+#endif
+#if __has_include(<chrono/physics/ChLinkLockScrew.h>)
+#include <chrono/physics/ChLinkLockScrew.h>
+#define WIZ_HAVE_SCREW 1
+#endif
+// 定数関数（モータの目標値）。Chrono 9 は functions/ChFunctionConst.h、
+// 旧版は motion_functions/ChFunction_Const.h。
+#if __has_include(<chrono/functions/ChFunctionConst.h>)
+#include <chrono/functions/ChFunctionConst.h>
+#include <chrono/functions/ChFunctionRamp.h>
+using WizConstFunction = chrono::ChFunctionConst;
+using WizRampFunction = chrono::ChFunctionRamp;
+#else
+#include <chrono/motion_functions/ChFunction_Const.h>
+#include <chrono/motion_functions/ChFunction_Ramp.h>
+using WizConstFunction = chrono::ChFunction_Const;
+using WizRampFunction = chrono::ChFunction_Ramp;
+#endif
 
 #ifdef WIZ_USE_MULTICORE
 // Chrono::Multicore: OpenMP-parallel solver (APGD) and collision detection.
@@ -151,6 +196,272 @@ auto wakeUp(T* obj, long) -> decltype(obj->WakeUp(), void()) {
     obj->WakeUp();
 }
 
+// ---- A の導入で足した版差の吸収（同じ SFINAE の手口）------------------------
+// 定数関数の値: Chrono 9 は SetConstant、旧版は Set_yconst。
+template <typename F>
+auto setConstValue(F* f, double v, int) -> decltype(f->SetConstant(v), void()) {
+    f->SetConstant(v);
+}
+template <typename F>
+auto setConstValue(F* f, double v, long) -> decltype(f->Set_yconst(v), void()) {
+    f->Set_yconst(v);
+}
+
+// ボディごとの重力オフ: Chrono 9 は SetUseGravity、旧版は SetNoGravity。
+// どちらも無ければ何もしない（false を返して呼び出し側が警告する）。
+template <typename B>
+auto setUseGravity(B* b, bool on, int) -> decltype(b->SetUseGravity(on), bool()) {
+    b->SetUseGravity(on);
+    return true;
+}
+template <typename B>
+auto setUseGravity(B* b, bool on, long) -> decltype(b->SetNoGravity(!on), bool()) {
+    b->SetNoGravity(!on);
+    return true;
+}
+template <typename B>
+bool setUseGravity(B*, bool, ...) {
+    return false;
+}
+
+// 衝突ファミリ（レイヤ）。SetFamily は両版共通、「そのファミリと当てない」は
+// Chrono 9 が DisallowCollisionsWith、旧版が SetFamilyMaskNoCollisionWithFamily。
+template <typename M>
+auto setFamilyOf(M* model, int family, int) -> decltype(model->SetFamily(family), bool()) {
+    model->SetFamily(family);
+    return true;
+}
+template <typename M>
+bool setFamilyOf(M*, int, long) {
+    return false;
+}
+template <typename M>
+auto disallowFamily(M* model, int family, int)
+    -> decltype(model->DisallowCollisionsWith(family), bool()) {
+    model->DisallowCollisionsWith(family);
+    return true;
+}
+template <typename M>
+auto disallowFamily(M* model, int family, long)
+    -> decltype(model->SetFamilyMaskNoCollisionWithFamily(family), bool()) {
+    model->SetFamilyMaskNoCollisionWithFamily(family);
+    return true;
+}
+template <typename M>
+bool disallowFamily(M*, int, ...) {
+    return false;
+}
+
+// ChLinkLock の可動範囲: Chrono 9 は LimitRz() が ChLinkLimit& を返し
+// SetActive / SetMin / SetMax、旧版は GetLimit_Rz() が ポインタで Set_active /
+// Set_min / Set_max。
+template <typename L>
+auto setLimitRz(L* link, double lo, double hi, int)
+    -> decltype(link->LimitRz().SetActive(true), bool()) {
+    link->LimitRz().SetActive(true);
+    link->LimitRz().SetMin(lo);
+    link->LimitRz().SetMax(hi);
+    return true;
+}
+template <typename L>
+auto setLimitRz(L* link, double lo, double hi, long)
+    -> decltype(link->GetLimit_Rz().Set_active(true), bool()) {
+    link->GetLimit_Rz().Set_active(true);
+    link->GetLimit_Rz().Set_min(lo);
+    link->GetLimit_Rz().Set_max(hi);
+    return true;
+}
+template <typename L>
+bool setLimitRz(L*, double, double, ...) {
+    return false;
+}
+template <typename L>
+auto setLimitZ(L* link, double lo, double hi, int)
+    -> decltype(link->LimitZ().SetActive(true), bool()) {
+    link->LimitZ().SetActive(true);
+    link->LimitZ().SetMin(lo);
+    link->LimitZ().SetMax(hi);
+    return true;
+}
+template <typename L>
+auto setLimitZ(L* link, double lo, double hi, long)
+    -> decltype(link->GetLimit_Z().Set_active(true), bool()) {
+    link->GetLimit_Z().Set_active(true);
+    link->GetLimit_Z().Set_min(lo);
+    link->GetLimit_Z().Set_max(hi);
+    return true;
+}
+template <typename L>
+bool setLimitZ(L*, double, double, ...) {
+    return false;
+}
+
+// 拘束の反力（ボディ 2 側）。Chrono 9 は GetReaction2() が ChWrenchd
+// （force / torque）、旧版は Get_react_force() / Get_react_torque()。
+template <typename L>
+auto linkReaction(const L* link, double& force, double& torque, int)
+    -> decltype(link->GetReaction2().force.Length(), bool()) {
+    const auto r = link->GetReaction2();
+    force = r.force.Length();
+    torque = r.torque.Length();
+    return true;
+}
+template <typename L>
+auto linkReaction(const L* link, double& force, double& torque, long)
+    -> decltype(link->Get_react_force().Length(), bool()) {
+    force = link->Get_react_force().Length();
+    torque = link->Get_react_torque().Length();
+    return true;
+}
+template <typename L>
+bool linkReaction(const L*, double&, double&, ...) {
+    return false;
+}
+
+// 歯車: 変速比とシャフトの座標系（ボディローカル）。Chrono 9 は
+// SetTransmissionRatio / SetFrameShaft1、旧版は Set_tau / Set_local_shaft1。
+template <typename L>
+auto setGearParams(L* link, double ratio, const chrono::ChFrame<>& s1,
+                   const chrono::ChFrame<>& s2, int)
+    -> decltype(link->SetTransmissionRatio(ratio), link->SetFrameShaft1(s1), bool()) {
+    link->SetTransmissionRatio(ratio);
+    link->SetFrameShaft1(s1);
+    link->SetFrameShaft2(s2);
+    return true;
+}
+template <typename L>
+auto setGearParams(L* link, double ratio, const chrono::ChFrame<>& s1,
+                   const chrono::ChFrame<>& s2, long)
+    -> decltype(link->Set_tau(ratio), link->Set_local_shaft1(s1), bool()) {
+    link->Set_tau(ratio);
+    link->Set_local_shaft1(s1);
+    link->Set_local_shaft2(s2);
+    return true;
+}
+template <typename L>
+bool setGearParams(L*, double, const chrono::ChFrame<>&, const chrono::ChFrame<>&, ...) {
+    return false;
+}
+
+// ねじ: 1 回転あたりの前進。Chrono 9 は SetThread、旧版は Set_thread。
+template <typename L>
+auto setScrewThread(L* link, double pitch, int) -> decltype(link->SetThread(pitch), bool()) {
+    link->SetThread(pitch);
+    return true;
+}
+template <typename L>
+auto setScrewThread(L* link, double pitch, long) -> decltype(link->Set_thread(pitch), bool()) {
+    link->Set_thread(pitch);
+    return true;
+}
+template <typename L>
+bool setScrewThread(L*, double, ...) {
+    return false;
+}
+
+// 接触の座標系の X 軸 = 法線。Chrono 9 は GetAxisX、旧版は Get_A_Xaxis。
+template <typename M>
+auto matrixXAxis(const M& m, int) -> decltype(m.GetAxisX()) {
+    return m.GetAxisX();
+}
+template <typename M>
+auto matrixXAxis(const M& m, long) -> decltype(m.Get_A_Xaxis()) {
+    return m.Get_A_Xaxis();
+}
+
+// リンクの無効化（破断）。Chrono 9 / 旧版とも SetDisabled。無い版は false。
+template <typename L>
+auto disableLink(L* link, int) -> decltype(link->SetDisabled(true), bool()) {
+    link->SetDisabled(true);
+    return true;
+}
+template <typename L>
+bool disableLink(L*, ...) {
+    return false;
+}
+
+// 診断用: 接触数とリンク数。Chrono 9 は GetNumContacts / GetLinks、旧版は
+// GetNcontacts / Get_linklist。無ければ -1。
+template <typename C>
+auto contactCountOf(C* c, int) -> decltype(c->GetNumContacts(), int()) {
+    return int(c->GetNumContacts());
+}
+template <typename C>
+auto contactCountOf(C* c, long) -> decltype(c->GetNcontacts(), int()) {
+    return int(c->GetNcontacts());
+}
+template <typename C>
+int contactCountOf(C*, ...) {
+    return -1;
+}
+template <typename S>
+auto linkCountOf(S* s, int) -> decltype(s->GetLinks().size(), int()) {
+    return int(s->GetLinks().size());
+}
+template <typename S>
+auto linkCountOf(S* s, long) -> decltype(s->Get_linklist().size(), int()) {
+    return int(s->Get_linklist().size());
+}
+template <typename S>
+int linkCountOf(S*, ...) {
+    return -1;
+}
+
+// 積分器の種類（名前は editor::integratorNameValid の語彙）。
+bool timestepperFromName(const std::string& name, chrono::ChTimestepper::Type& out) {
+    using T = chrono::ChTimestepper::Type;
+    if (name == "euler") { out = T::EULER_IMPLICIT_LINEARIZED; return true; }
+    if (name == "projected") { out = T::EULER_IMPLICIT_PROJECTED; return true; }
+    if (name == "implicit") { out = T::EULER_IMPLICIT; return true; }
+    if (name == "trapezoidal") { out = T::TRAPEZOIDAL_LINEARIZED; return true; }
+    return false;
+}
+bool solverFromName(const std::string& name, chrono::ChSolver::Type& out) {
+    using T = chrono::ChSolver::Type;
+    if (name == "bb") { out = T::BARZILAIBORWEIN; return true; }
+    if (name == "apgd") { out = T::APGD; return true; }
+    if (name == "psor") { out = T::PSOR; return true; }
+    if (name == "jacobi") { out = T::PJACOBI; return true; }
+    if (name == "minres") { out = T::MINRES; return true; }
+    return false;
+}
+
+// 2 材質の合成方式。Chrono の既定は min（滑りやすい方が勝つ）。average /
+// max にすると氷の上のゴムのような組み合わせの手触りが変わる。
+// メソッド名は Chrono 9.0 の ChContactMaterialCompositionStrategy に合わせて
+// ある。override は付けない: 版によって無い仮想関数（CombineRestitution）が
+// あり、付けるとその版でコンパイルが止まる。名前が合わない欄はただ既定
+// （min）のままになる。
+class CombineStrategy : public chrono::ChContactMaterialCompositionStrategy {
+public:
+    explicit CombineStrategy(CombineMode mode) : mode_(mode) {}
+    float combine(float a, float b) const {
+        switch (mode_) {
+            case CombineMode::Average: return 0.5f * (a + b);
+            case CombineMode::Max: return std::max(a, b);
+            case CombineMode::Min: break;
+        }
+        return std::min(a, b);
+    }
+    virtual float CombineFriction(float a1, float a2) const { return combine(a1, a2); }
+    virtual float CombineRestitution(float a1, float a2) const { return combine(a1, a2); }
+    virtual float CombineCohesion(float a1, float a2) const { return combine(a1, a2); }
+    virtual float CombineDamping(float a1, float a2) const { return combine(a1, a2); }
+
+private:
+    CombineMode mode_;
+};
+
+// ワールド座標の座標系をボディのローカルへ（歯車のシャフト座標系用）。
+// Chrono の TransformParentToLocal は版で引数が違うので四元数で手計算。
+chrono::ChFrame<> worldToBodyLocal(const chrono::ChBody& body, const chrono::ChVector3d& pos,
+                                   const chrono::ChQuaternion<>& rot) {
+    const chrono::ChQuaternion<> q = body.GetRot();
+    const chrono::ChVector3d lp = q.RotateBack(pos - body.GetPos());
+    const chrono::ChQuaternion<> lr = q.GetConjugate() * rot;
+    return chrono::ChFrame<>(lp, lr);
+}
+
 // 衝突ファミリ: 同じソフトボディの粒子どうしを当てない（ばねで結んだ隣が
 // 接触で押し合うと硬さが二重になる）。Chrono 9 は SetFamily +
 // DisallowCollisionsWith、旧版は SetFamilyMaskNoCollisionWithFamily。
@@ -220,39 +531,50 @@ bool initDistance(L*, const B&, const B&, const chrono::ChVector3d&,
     return false;
 }
 
-// 接触コンテナの走査で、ボディ同士の接触だけを physId のペアに集める。
-// ChContactable* から ChBody* へは dynamic_cast（Chrono 自身が
-// SumAllContactForces で使っている手）。同じペアに複数の接触点があるので、
-// 呼び出し側（activeContactPairs）で 1 本化する。
-class ContactPairCollector
-    : public chrono::ChContactContainer::ReportContactCallback {
+// 接触コンテナの走査で、ボディ同士の接触だけを physId のペア + 力・法線・
+// めり込みで集める。ChContactable* から ChBody* へは dynamic_cast（Chrono
+// 自身が SumAllContactForces で使っている手）。同じペアに複数の接触点が
+// あるので、ペアだけ欲しい側（activeContactPairs）が 1 本化する。
+// react_forces は接触座標系（X = 法線）の力 (N)。NSC でも Chrono が
+// 力積 / dt に直して渡してくる。
+class ContactCollector : public chrono::ChContactContainer::ReportContactCallback {
 public:
-    ContactPairCollector(
-        const std::unordered_map<const chrono::ChBody*, std::size_t>& index,
-        std::vector<std::pair<std::size_t, std::size_t>>& out)
+    ContactCollector(const std::unordered_map<const chrono::ChBody*, std::size_t>& index,
+                     std::vector<ContactInfo>& out)
         : index_(index), out_(out) {}
 
     bool OnReportContact(const ChVector3d&, const ChVector3d&,
-                         const ChMatrix33<>&, const double&, const double&,
-                         const ChVector3d&, const ChVector3d&,
-                         ChContactable* objA, ChContactable* objB) override {
+                         const ChMatrix33<>& plane, const double& distance,
+                         const double&, const ChVector3d& reactForce,
+                         const ChVector3d&, ChContactable* objA,
+                         ChContactable* objB) override {
         const auto* bodyA = dynamic_cast<const ChBody*>(objA);
         const auto* bodyB = dynamic_cast<const ChBody*>(objB);
         if (!bodyA || !bodyB) return true;  // ボディ以外（FEA 等）は対象外
         const auto ia = index_.find(bodyA);
         const auto ib = index_.find(bodyB);
         if (ia == index_.end() || ib == index_.end()) return true;
-        std::size_t a = ia->second;
-        std::size_t b = ib->second;
-        if (a == b) return true;
-        if (a > b) std::swap(a, b);
-        out_.push_back({a, b});
+        ContactInfo c;
+        c.a = ia->second;
+        c.b = ib->second;
+        if (c.a == c.b) return true;
+        const ChVector3d n = matrixXAxis(plane, 0);  // A から B へ向く法線
+        if (c.a > c.b) {
+            std::swap(c.a, c.b);
+            c.nx = -n.x(); c.ny = -n.y(); c.nz = -n.z();
+        } else {
+            c.nx = n.x(); c.ny = n.y(); c.nz = n.z();
+        }
+        c.force = reactForce.Length();
+        c.normalForce = reactForce.x();
+        c.depth = -distance;  // Chrono は「重なり = 負の距離」
+        out_.push_back(c);
         return true;  // 続けて最後まで走査する
     }
 
 private:
     const std::unordered_map<const chrono::ChBody*, std::size_t>& index_;
-    std::vector<std::pair<std::size_t, std::size_t>>& out_;
+    std::vector<ContactInfo>& out_;
 };
 
 // +Z をこの向きに合わせる回転。ChLinkLockRevolute はリンク座標系の Z 軸まわり
@@ -277,6 +599,30 @@ chrono::ChQuaternion<> quatFromZAxis(const chrono::ChVector3d& axis) {
     return q;
 }
 
+// +X をこの向きに合わせる回転。ChLinkMotorLinear* は X 軸方向に動くので、
+// 直動モータだけはこちら（ChLinkLockPrismatic は Z）。
+chrono::ChQuaternion<> quatFromXAxis(const chrono::ChVector3d& axis) {
+    double ax = axis.x(), ay = axis.y(), az = axis.z();
+    const double n = std::sqrt(ax * ax + ay * ay + az * az);
+    if (n < 1e-9) return chrono::ChQuaternion<>(1, 0, 0, 0);
+    ax /= n;
+    ay /= n;
+    az /= n;
+    const double c = ax;  // dot((1,0,0), axis)
+    if (c < -0.999999) {  // 真後ろ: Y 軸まわりに 180 度
+        return chrono::ChQuaternion<>(0, 0, 1, 0);
+    }
+    // 最短回転。cross((1,0,0), axis) = (0, -az, ay)
+    chrono::ChQuaternion<> q(1.0 + c, 0.0, -az, ay);
+    q.Normalize();
+    return q;
+}
+
+// 零ベクトルでない軸か。
+bool axisUsable(const chrono::ChVector3d& a) {
+    return a.x() * a.x() + a.y() * a.y() + a.z() * a.z() > 1e-12;
+}
+
 }  // namespace
 
 const char* PhysicsWorld::backendName() const {
@@ -289,7 +635,118 @@ void PhysicsWorld::registerBody(const std::shared_ptr<chrono::ChBody>& body) {
     active_.push_back(true);
     softOf_.push_back(kNoSoft);  // addSoftBody が粒子ぶんを後から書き換える
     alias_.push_back(kNoSoft);
+    mats_.push_back(nullptr);  // finishBody が専用材質なら書く
+    options_.push_back(BodyOptions{});
     bindCollision(body);
+}
+
+// ---- 接触の物性・レイヤ・重力（A の導入）------------------------------------
+
+void PhysicsWorld::applySurface(ChContactMaterialNSC& m, const BodyOptions& o) const {
+    m.SetFriction(o.friction >= 0.0f ? o.friction : friction_);
+    m.SetRestitution(o.restitution >= 0.0f ? o.restitution : restitution_);
+    m.SetRollingFriction(o.rolling >= 0.0f ? o.rolling : rolling_);
+    m.SetSpinningFriction(o.rolling >= 0.0f ? o.rolling : spinning_);
+    m.SetCohesion(o.cohesion);
+}
+
+std::shared_ptr<ChContactMaterialNSC> PhysicsWorld::materialFor(const BodyOptions& o) {
+    const bool custom = o.friction >= 0.0f || o.restitution >= 0.0f ||
+                        o.rolling >= 0.0f || o.cohesion != 0.0f;
+    if (!custom) return mat_;
+    auto m = chrono_types::make_shared<ChContactMaterialNSC>();
+    applySurface(*m, o);
+    return m;
+}
+
+void PhysicsWorld::prepareBody(ChBody& body, const BodyOptions& options) {
+    // 衝突レイヤ（ファミリ 0〜7）。レイヤ 0 で除外無しなら既定のまま触らない。
+    // 衝突系へ登録する前（AddBody の前）に呼ぶこと - 登録後の変更は Bullet が
+    // モデルを Remove / Add し直し、Multicore の衝突系は Remove が未実装で
+    // 例外を投げる。
+    if (options.layer != 0 || options.nocollide != 0) {
+        static bool warned = false;
+        bool ok = true;
+        if (auto model = body.GetCollisionModel()) {
+            const int layer = std::max(0, std::min(kCollisionLayerCount - 1, options.layer));
+            // レイヤ 0 は Chrono の既定ファミリなので触らない（ソフトボディの
+            // 粒子は先に 8〜15 を付けてここへ来る - 上書きしない）。
+            if (layer != 0) ok = setFamilyOf(&*model, layer, 0) && ok;
+            for (int L = 0; L < kCollisionLayerCount; ++L) {
+                if (options.nocollide & (1u << L)) ok = disallowFamily(&*model, L, 0) && ok;
+            }
+        }
+        if (!ok && !warned) {
+            warned = true;
+            LOGW("physics", "this Chrono has no collision family API - collision "
+                            "layers are ignored");
+        }
+    }
+    // 重力オフ: Chrono に per-body の口があれば使う（9.0 には無い）。無くても
+    // step() が重力ぶんを毎ステップ打ち消すので、どちらでも効く。
+    if (!options.gravity) setUseGravity(&body, false, 0);
+}
+
+void PhysicsWorld::finishBody(const std::shared_ptr<chrono::ChBody>& body,
+                              const std::shared_ptr<chrono::ChContactMaterialNSC>& mat,
+                              const BodyOptions& options) {
+    registerBody(body);
+    const std::size_t id = bodies_.size() - 1;
+    mats_[id] = (mat == mat_) ? nullptr : mat;
+    options_[id] = options;
+}
+
+void PhysicsWorld::setBodyGravity(std::size_t id, bool enabled) {
+    if (id >= bodies_.size()) return;
+    options_[id].gravity = enabled;
+    if (SoftBody* soft = softOfRoot(id)) {
+        for (const std::size_t p : soft->particles) setUseGravity(bodies_[p].get(), enabled, 0);
+        return;
+    }
+    setUseGravity(bodies_[id].get(), enabled, 0);
+    wakeUp(bodies_[id].get(), 0);
+}
+
+bool PhysicsWorld::setBodySurface(std::size_t id, const BodyOptions& options) {
+    if (id >= bodies_.size()) return false;
+    const bool custom = options.friction >= 0.0f || options.restitution >= 0.0f ||
+                        options.rolling >= 0.0f || options.cohesion != 0.0f;
+    // 物性以外（レイヤ・重力）は options_ に写すだけ。レイヤは衝突モデルの
+    // 作り直しが要るので呼び出し側が判断する。
+    BodyOptions& cur = options_[id];
+    cur.friction = options.friction;
+    cur.restitution = options.restitution;
+    cur.rolling = options.rolling;
+    cur.cohesion = options.cohesion;
+    if (SoftBody* soft = softOfRoot(id)) {
+        bool ok = true;
+        for (const std::size_t p : soft->particles) {
+            if (mats_[p]) applySurface(*mats_[p], cur);
+            else if (custom) ok = false;
+            options_[p].friction = cur.friction;
+            options_[p].restitution = cur.restitution;
+            options_[p].rolling = cur.rolling;
+            options_[p].cohesion = cur.cohesion;
+        }
+        return ok;
+    }
+    if (mats_[id]) {
+        applySurface(*mats_[id], cur);
+        return true;
+    }
+    // 共有材質のまま「シーン任せ」に戻すだけなら、何も変えずに済む。
+    return !custom;
+}
+
+void PhysicsWorld::setMaterialCombine(CombineMode mode) {
+    // min は Chrono の既定そのもの。既定のままなら Chrono 自身の戦略オブジェクト
+    // を残す（差し替えるのは average / max を頼まれたときだけ）。
+    static CombineMode current = CombineMode::Min;
+    if (mode == current) return;
+    current = mode;
+    sys_->SetMaterialCompositionStrategy(std::make_unique<CombineStrategy>(mode));
+    LOGI("physics", "material composition: %s",
+         mode == CombineMode::Average ? "average" : mode == CombineMode::Max ? "max" : "min");
 }
 
 void PhysicsWorld::setAlias(std::size_t id, std::size_t owner) {
@@ -352,18 +809,26 @@ std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec,
     for (const auto& r : soft.rest) soft.restCentroid += r;
     soft.restCentroid *= 1.0 / double(soft.rest.size());
 
-    // 衝突ファミリは 1〜14 を順に使う（0 は普通の剛体）。15 個目以降は
-    // 番号を使い回すので、その組は互いに当たらない - 現実的な数では起きない。
-    const int family = 1 + int(softBodies_.size() % 14);
+    // 衝突ファミリは 8〜15 を順に使う（0〜7 は剛体の衝突レイヤ）。9 個目
+    // 以降は番号を使い回すので、その組は互いに当たらない - 現実的な数では
+    // 起きない。剛体側の nocollide でソフトボディを除外することはできない
+    // （レイヤは 0〜7 だけ）。
+    const int family = kCollisionLayerCount + int(softBodies_.size() % kCollisionLayerCount);
     const std::size_t softIndex = softBodies_.size();
     const double radius = std::max(spec.radius, 1e-4);
     const double volume = (4.0 / 3.0) * 3.14159265358979323846 * radius * radius * radius;
     const double density = std::max(spec.particleMass, 1e-9) / volume;
+    // 物性は粒子全部で 1 個の材質を共有する（専用が要るときだけ作る）。
+    const auto mat = materialFor(spec.options);
+    // 粒子のレイヤは家族番号で決まるので、剛体レイヤは付けない（nocollide と
+    // 重力だけ効かせる）。
+    BodyOptions particleOpts = spec.options;
+    particleOpts.layer = 0;
 
     bool familyOk = true;
     for (std::size_t i = 0; i < spec.rest.size(); ++i) {
         auto b = chrono_types::make_shared<ChBodyEasySphere>(
-            radius, density, /*visualize*/ false, /*collide*/ true, mat_);
+            radius, density, /*visualize*/ false, /*collide*/ true, mat);
         b->SetPos(pos + rot.Rotate(spec.rest[i]));
         b->SetRot(rot);
         b->SetFixed(spec.fixed);
@@ -374,8 +839,9 @@ std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec,
         if (auto model = b->GetCollisionModel()) {
             if (!applyNoSelfCollision(&*model, family)) familyOk = false;
         }
+        prepareBody(*b, particleOpts);
         sys_->AddBody(b);
-        registerBody(b);
+        finishBody(b, mat, particleOpts);
         const std::size_t id = bodies_.size() - 1;
         softOf_[id] = softIndex;
         soft.particles.push_back(id);
@@ -504,13 +970,11 @@ void PhysicsWorld::bindCollision(const std::shared_ptr<chrono::ChBody>& body) {
     coll->BindItem(body);
 }
 
-std::vector<std::pair<std::size_t, std::size_t>>
-PhysicsWorld::activeContactPairs() const {
-    std::vector<std::pair<std::size_t, std::size_t>> pairs;
+std::vector<ContactInfo> PhysicsWorld::activeContacts() const {
+    std::vector<ContactInfo> contacts;
     const auto container = sys_->GetContactContainer();
-    if (!container) return pairs;
-    auto collector =
-        chrono_types::make_shared<ContactPairCollector>(bodyIndex_, pairs);
+    if (!container) return contacts;
+    auto collector = chrono_types::make_shared<ContactCollector>(bodyIndex_, contacts);
     container->ReportAllContacts(collector);
     // ソフトボディの粒子は代表番号に、子ボディ（setAlias）は持ち主に寄せる
     // （Scene はその番号しか知らない）。同じ物どうしは一致するので落ちる。
@@ -518,17 +982,28 @@ PhysicsWorld::activeContactPairs() const {
         id = representative(id);
         return (id < alias_.size() && alias_[id] != kNoSoft) ? alias_[id] : id;
     };
-    {
-        std::size_t kept = 0;
-        for (auto& pr : pairs) {
-            std::size_t a = owner(pr.first);
-            std::size_t b = owner(pr.second);
-            if (a == b) continue;
-            if (a > b) std::swap(a, b);
-            pairs[kept++] = {a, b};
+    std::size_t kept = 0;
+    for (auto& c : contacts) {
+        const std::size_t a = owner(c.a);
+        const std::size_t b = owner(c.b);
+        if (a == b) continue;
+        ContactInfo out = c;
+        out.a = a;
+        out.b = b;
+        if (a > b) {  // 番号順に揃え、法線も a → b のまま保つ
+            std::swap(out.a, out.b);
+            out.nx = -out.nx; out.ny = -out.ny; out.nz = -out.nz;
         }
-        pairs.resize(kept);
+        contacts[kept++] = out;
     }
+    contacts.resize(kept);
+    return contacts;
+}
+
+std::vector<std::pair<std::size_t, std::size_t>>
+PhysicsWorld::activeContactPairs() const {
+    std::vector<std::pair<std::size_t, std::size_t>> pairs;
+    for (const ContactInfo& c : activeContacts()) pairs.push_back({c.a, c.b});
     // 1 ペアに接触点は複数あるのが普通（箱同士は最大 4 点）。ここで 1 本化。
     std::sort(pairs.begin(), pairs.end());
     pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
@@ -625,9 +1100,54 @@ PhysicsWorld::PhysicsWorld(PhysicsBackend backend) {
     allowSleeping(sys_.get(), false, 0);
 
     mat_ = chrono_types::make_shared<ChContactMaterialNSC>();
-    mat_->SetFriction(0.6f);
+    mat_->SetFriction(friction_);
     // No bounce: even a little restitution keeps settled boxes micro-bouncing.
-    mat_->SetRestitution(0.0f);
+    mat_->SetRestitution(restitution_);
+}
+
+void PhysicsWorld::setGravity(double gx, double gy, double gz) {
+    sys_->SetGravitationalAcceleration(ChVector3d(gx, gy, gz));
+}
+
+void PhysicsWorld::setBodyVelocity(std::size_t id, const ChVector3d& linear,
+                                   const ChVector3d& angular) {
+    if (id >= bodies_.size()) return;
+    if (SoftBody* soft = softOfRoot(id)) {
+        // 粒子群には並進だけ（回転は粒子の配置が決める）。
+        for (const std::size_t p : soft->particles) {
+            if (bodies_[p]->IsFixed()) continue;
+            setLinVel(bodies_[p].get(), linear, 0);
+        }
+        return;
+    }
+    auto& b = bodies_[id];
+    if (b->IsFixed()) return;  // 固定ボディの速度は「動く床」になるので触らない
+    wakeUp(b.get(), 0);
+    setLinVel(b.get(), linear, 0);
+    setAngVel(b.get(), angular, 0);
+}
+
+bool PhysicsWorld::setIntegrator(const std::string& name) {
+    if (backend_ == PhysicsBackend::Multicore) return false;  // 自前のステッパ
+    ChTimestepper::Type type;
+    if (!timestepperFromName(name, type)) return false;
+    // 同じ種類なら触らない（シミュレート開始のたびに呼ばれる）。
+    if (sys_->GetTimestepperType() == type) return true;
+    sys_->SetTimestepperType(type);
+    LOGI("physics", "integrator: %s", name.c_str());
+    return true;
+}
+
+bool PhysicsWorld::setSolver(const std::string& name) {
+    if (backend_ == PhysicsBackend::Multicore) return false;  // APGD 固定
+    ChSolver::Type type;
+    if (!solverFromName(name, type)) return false;
+    // 同じ種類なら触らない: SetSolverType はソルバとシステム記述子を作り直す
+    // ので、毎回呼ぶと反復回数やウォームスタートの設定が飛ぶ。
+    if (sys_->GetSolver() && sys_->GetSolver()->GetType() == type) return true;
+    sys_->SetSolverType(type);
+    LOGI("physics", "solver: %s", name.c_str());
+    return true;
 }
 
 void PhysicsWorld::setSleepingEnabled(bool enabled, float seconds,
@@ -847,8 +1367,82 @@ void PhysicsWorld::step(double dt) {
     // ソフトボディのばね: 積分の前に粒子の速度へ織り込む（接触ソルバは
     // この速度を見て解く）。
     for (auto& soft : softBodies_) solveSoftSprings(soft, dt);
+    // Multicore 用の手計算のモータ・ばね（Core では空）。
+    applyManualJoints(dt);
+    // ボディ別の重力オフ: Chrono 9 には per-body の口が無い（SetNoGravity は
+    // 消えた）ので、重力ぶんを毎ステップ打ち消す（両バックエンド共通）。
+    {
+        const ChVector3d g = sys_->GetGravitationalAcceleration();
+        if (g.Length2() > 0.0) {
+            for (std::size_t i = 0; i < bodies_.size(); ++i) {
+                if (options_[i].gravity || !active_[i]) continue;
+                auto& b = bodies_[i];
+                if (b->IsFixed() || softOf_[i] != kNoSoft) continue;
+                if (b->IsSleeping()) continue;
+                setLinVel(b.get(), getLinVel(b.get(), 0) - g * dt, 0);
+            }
+        }
+    }
 
     sys_->DoStepDynamics(dt);
+
+    // 診断: 拘束が解かれているかを最初の数ステップと 1 秒後に 1 回ずつ出す
+    // （「全部が地面を抜けて落ちる」の切り分け用: 接触とリンクの数、
+    // ソルバの設定）。ステップ数は removeAllJoints で戻る = シミュレート
+    // 開始のたびに出る。
+    ++diagSteps_;
+    if (diagSteps_ == 2 || diagSteps_ == 120) {
+        std::size_t activeBodies = 0;
+        for (std::size_t i = 0; i < bodies_.size(); ++i) {
+            if (active_[i] && !bodies_[i]->IsFixed()) ++activeBodies;
+        }
+        LOGI("physics",
+             "diag step %d: backend=%s dt=%.4f bodies=%zu (dynamic %zu) links=%d "
+             "contacts=%d joints=%zu gravity=(%.2f %.2f %.2f)",
+             diagSteps_, backendName(), dt, bodies_.size(), activeBodies,
+             linkCountOf(sys_.get(), 0),
+             contactCountOf(sys_->GetContactContainer().get(), 0), joints_.size(),
+             sys_->GetGravitationalAcceleration().x(),
+             sys_->GetGravitationalAcceleration().y(),
+             sys_->GetGravitationalAcceleration().z());
+        if (auto iterative = std::dynamic_pointer_cast<ChIterativeSolverVI>(sys_->GetSolver())) {
+            LOGI("physics", "diag: iterative solver, max iterations %d",
+                 iterative->GetMaxIterations());
+        } else if (sys_->GetSolver()) {
+            LOGI("physics", "diag: non-iterative solver (type %d)", int(sys_->GetSolver()->GetType()));
+        } else {
+            LOGW("physics", "diag: the system has NO solver");
+        }
+    }
+
+    // 診断: NaN の検出。1 本の拘束が NaN を出すと反復ソルバ全体が NaN になり、
+    // 拘束の付いた物が全部消える（= 落ちたように見える）。最初の 2 秒だけ
+    // 見て、出たらどのジョイントの反力が NaN かを 1 回だけ出す。
+    if (diagSteps_ <= 120 && !diagNanReported_) {
+        std::size_t bad = 0;
+        for (std::size_t i = 0; i < bodies_.size(); ++i) {
+            if (!active_[i]) continue;
+            const ChVector3d p = bodies_[i]->GetPos();
+            const ChVector3d v = getLinVel(bodies_[i].get(), 0);
+            if (!std::isfinite(p.x() + p.y() + p.z() + v.x() + v.y() + v.z())) ++bad;
+        }
+        if (bad > 0) {
+            diagNanReported_ = true;
+            LOGE("physics", "diag step %d: %zu bodies have NaN position/velocity - "
+                            "the constraint solve is poisoned", diagSteps_, bad);
+            for (std::size_t j = 0; j < joints_.size(); ++j) {
+                double f = 0.0, t = 0.0;
+                const bool ok = jointReaction(j, f, t);
+                LOGE("physics", "  joint #%zu type %d: reaction %s (force %.3g torque %.3g)%s",
+                     j, int(joints_[j].type),
+                     ok ? (std::isfinite(f + t) ? "finite" : "NaN") : "n/a", f, t,
+                     joints_[j].manual.kind != JointRec::Manual::Kind::None ? " [manual]" : "");
+            }
+        }
+    }
+
+    // 破断: 反力が閾値を超えたジョイントを外す（このステップの反力を見る）。
+    checkJointBreaks();
 
     // Damping after the solve: scale each body's velocity towards zero. exp()
     // makes the decay frame-rate independent, so changing the physics rate
@@ -888,20 +1482,38 @@ bool addShapeImpl(B&, std::shared_ptr<chrono::ChCollisionShape>, const chrono::C
 #endif
 }  // namespace
 
-void PhysicsWorld::attachExtraShapes(ChBody& body, const std::vector<ExtraShape>& extras) {
+void PhysicsWorld::attachExtraShapes(ChBody& body, const std::vector<ExtraShape>& extras,
+                                     const std::shared_ptr<ChContactMaterialNSC>& mat) {
     if (extras.empty()) return;
     static bool warned = false;
+    static bool warnedCylinder = false;
     bool ok = true;
 #ifdef WIZ_HAVE_COLLISION_SHAPES
     for (const ExtraShape& s : extras) {
         std::shared_ptr<ChCollisionShape> shape;
-        if (s.sphere) {
-            shape = chrono_types::make_shared<ChCollisionShapeSphere>(mat_, s.size.x() * 0.5);
+        ChQuaternion<> rot = s.rot;
+        if (s.cylinder) {
+            // Chrono の円柱は形状座標系の Z 軸が軸。部品の円柱は X 軸なので
+            // 「Z を X へ」の回転を部品の回転に重ねる。
+#ifdef WIZ_HAVE_CYLINDER_SHAPE
+            shape = chrono_types::make_shared<ChCollisionShapeCylinder>(
+                mat, s.size.y() * 0.5, s.size.x());
+            rot = s.rot * quatFromZAxis(ChVector3d(1, 0, 0));
+#else
+            if (!warnedCylinder) {
+                warnedCylinder = true;
+                LOGW("physics", "this Chrono build has no cylinder collision shape - "
+                                "cylinder parts with collide=\"true\" are visual only");
+            }
+            continue;
+#endif
+        } else if (s.sphere) {
+            shape = chrono_types::make_shared<ChCollisionShapeSphere>(mat, s.size.x() * 0.5);
         } else {
-            shape = chrono_types::make_shared<ChCollisionShapeBox>(mat_, s.size.x(),
+            shape = chrono_types::make_shared<ChCollisionShapeBox>(mat, s.size.x(),
                                                                    s.size.y(), s.size.z());
         }
-        ok = addShapeImpl(body, shape, ChFrame<>(s.pos, s.rot), 0) && ok;
+        ok = addShapeImpl(body, shape, ChFrame<>(s.pos, rot), 0) && ok;
     }
 #else
     ok = false;
@@ -916,10 +1528,12 @@ void PhysicsWorld::attachExtraShapes(ChBody& body, const std::vector<ExtraShape>
 std::size_t PhysicsWorld::addSphere(double radius, double density,
                                     const ChVector3d& pos,
                                     const ChQuaternion<>& rot, bool fixed,
-                                    const std::vector<ExtraShape>& extras) {
+                                    const std::vector<ExtraShape>& extras,
+                                    const BodyOptions& options) {
+    const auto mat = materialFor(options);
     auto b = chrono_types::make_shared<ChBodyEasySphere>(
-        radius, density, /*visualize*/ true, /*collide*/ true, mat_);
-    attachExtraShapes(*b, extras);
+        radius, density, /*visualize*/ true, /*collide*/ true, mat);
+    attachExtraShapes(*b, extras, mat);
     b->SetPos(pos);
     b->SetRot(rot);
     b->SetFixed(fixed);
@@ -929,8 +1543,9 @@ std::size_t PhysicsWorld::addSphere(double radius, double density,
         b->SetSleepTime(sleepSeconds_);
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
+    prepareBody(*b, options);
     sys_->AddBody(b);
-    registerBody(b);
+    finishBody(b, mat, options);
     return bodies_.size() - 1;
 }
 
@@ -940,24 +1555,37 @@ void PhysicsWorld::setDamping(double linearPerSecond, double angularPerSecond) {
 }
 
 void PhysicsWorld::setSurfaceMaterial(float friction, float restitution) {
+    friction_ = friction;
+    restitution_ = restitution;
     mat_->SetFriction(friction);
     mat_->SetRestitution(restitution);
+    // 専用材質のボディも「シーン任せ」の欄はこの値に追従する。
+    for (std::size_t i = 0; i < mats_.size(); ++i) {
+        if (mats_[i]) applySurface(*mats_[i], options_[i]);
+    }
 }
 
 void PhysicsWorld::setRollingFriction(float rolling, float spinning) {
     // NSC materials expose these directly; they are ignored by solvers that do
     // not model rolling resistance, which is harmless.
+    rolling_ = rolling;
+    spinning_ = spinning;
     mat_->SetRollingFriction(rolling);
     mat_->SetSpinningFriction(spinning);
+    for (std::size_t i = 0; i < mats_.size(); ++i) {
+        if (mats_[i]) applySurface(*mats_[i], options_[i]);
+    }
 }
 
 std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density,
                                  const ChVector3d& pos,
                                  const ChQuaternion<>& rot, bool fixed,
-                                 const std::vector<ExtraShape>& extras) {
+                                 const std::vector<ExtraShape>& extras,
+                                 const BodyOptions& options) {
+    const auto mat = materialFor(options);
     auto b = chrono_types::make_shared<ChBodyEasyBox>(
-        sx, sy, sz, density, /*visualize*/ true, /*collide*/ true, mat_);
-    attachExtraShapes(*b, extras);
+        sx, sy, sz, density, /*visualize*/ true, /*collide*/ true, mat);
+    attachExtraShapes(*b, extras, mat);
     b->SetPos(pos);
     b->SetRot(rot);
     b->SetFixed(fixed);
@@ -967,14 +1595,92 @@ std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density
         b->SetSleepTime(sleepSeconds_);
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
+    prepareBody(*b, options);
     sys_->AddBody(b);
-    registerBody(b);
+    finishBody(b, mat, options);
     return bodies_.size() - 1;
+}
+
+std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertices,
+                                          const std::vector<std::array<int, 3>>& triangles,
+                                          double mass, const ChVector3d& pos,
+                                          const ChQuaternion<>& rot, bool fixed,
+                                          const std::vector<ExtraShape>& extras,
+                                          const BodyOptions& options) {
+#if defined(WIZ_HAVE_COLLISION_SHAPES) && defined(WIZ_HAVE_TRIMESH_SHAPE)
+    if (vertices.empty() || triangles.empty()) return kInvalidId;
+    auto mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
+    mesh->GetCoordsVertices() = vertices;
+    auto& tris = mesh->GetIndicesVertexes();
+    tris.reserve(triangles.size());
+    double lo[3] = {1e9, 1e9, 1e9}, hi[3] = {-1e9, -1e9, -1e9};
+    for (const auto& v : vertices) {
+        const double c[3] = {v.x(), v.y(), v.z()};
+        for (int a = 0; a < 3; ++a) {
+            lo[a] = std::min(lo[a], c[a]);
+            hi[a] = std::max(hi[a], c[a]);
+        }
+    }
+    for (const auto& t : triangles) {
+        if (t[0] < 0 || t[1] < 0 || t[2] < 0 || std::size_t(t[0]) >= vertices.size() ||
+            std::size_t(t[1]) >= vertices.size() || std::size_t(t[2]) >= vertices.size()) {
+            continue;
+        }
+        tris.push_back(ChVector3i(t[0], t[1], t[2]));
+    }
+    if (tris.empty()) return kInvalidId;
+
+    const auto mat = materialFor(options);
+    auto b = chrono_types::make_shared<ChBody>();
+    const double m = std::max(mass, 1e-3);
+    b->SetMass(m);
+    // 慣性は外接箱の均質な箱として（凹メッシュの体積は当てにならない）。
+    double L[3];
+    for (int a = 0; a < 3; ++a) L[a] = std::max(hi[a] - lo[a], 0.01);
+    b->SetInertiaXX(ChVector3d(m / 12.0 * (L[1] * L[1] + L[2] * L[2]),
+                               m / 12.0 * (L[0] * L[0] + L[2] * L[2]),
+                               m / 12.0 * (L[0] * L[0] + L[1] * L[1])));
+    // 三角メッシュ形状: is_static = 固定なら true（Bullet が静的メッシュとして
+    // 最適化する）、is_convex = false（凹形状のため）。sphere_swept は 0。
+    auto shape = chrono_types::make_shared<ChCollisionShapeTriangleMesh>(
+        mat, mesh, fixed, /*is_convex*/ false, /*sphere_swept*/ 0.0);
+    if (!addShapeImpl(*b, shape, ChFrame<>(), 0)) return kInvalidId;
+    attachExtraShapes(*b, extras, mat);
+    b->SetPos(pos);
+    b->SetRot(rot);
+    b->SetFixed(fixed);
+    b->EnableCollision(true);
+    allowSleeping(b.get(), sleepingEnabled_, 0);
+    if (sleepingEnabled_) {
+        b->SetSleepTime(sleepSeconds_);
+        setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
+    }
+    prepareBody(*b, options);
+    sys_->AddBody(b);
+    finishBody(b, mat, options);
+    if (!fixed) {
+        LOGW("physics", "triangle-mesh body is not fixed - concave mesh vs mesh "
+                        "collision is slow (GImpact); prefer fixed=\"true\"");
+    }
+    return bodies_.size() - 1;
+#else
+    (void)vertices; (void)triangles; (void)mass; (void)pos; (void)rot; (void)fixed;
+    (void)extras; (void)options;
+    static bool warned = false;
+    if (!warned) {
+        warned = true;
+        LOGW("physics", "this Chrono build has no triangle-mesh collision shape - "
+                        "collision=\"trimesh\" falls back to the convex hull");
+    }
+    return kInvalidId;
+#endif
 }
 
 std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
                                    const ChQuaternion<>& rot, bool fixed,
-                                   const std::vector<ExtraShape>& extras) {
+                                   const std::vector<ExtraShape>& extras,
+                                   const BodyOptions& options) {
+    const auto mat = materialFor(options);
     auto b = chrono_types::make_shared<ChBody>();
     const double m = std::max(mass, 1e-3);
     b->SetMass(m);
@@ -1000,7 +1706,7 @@ std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
     b->SetInertiaXX(ChVector3d(m / 12.0 * (L[1] * L[1] + L[2] * L[2]),
                                m / 12.0 * (L[0] * L[0] + L[2] * L[2]),
                                m / 12.0 * (L[0] * L[0] + L[1] * L[1])));
-    attachExtraShapes(*b, extras);
+    attachExtraShapes(*b, extras, mat);
     b->SetPos(pos);
     b->SetRot(rot);
     b->SetFixed(fixed);
@@ -1010,15 +1716,18 @@ std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
         b->SetSleepTime(sleepSeconds_);
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
+    prepareBody(*b, options);
     sys_->AddBody(b);
-    registerBody(b);
+    finishBody(b, mat, options);
     return bodies_.size() - 1;
 }
 
 std::size_t PhysicsWorld::addConvexHull(
     const std::vector<ChVector3d>& points, double mass,
     const ChVector3d& pos, const ChQuaternion<>& rot,
-    const std::vector<ExtraShape>& extras, ChVector3d* hullCenter) {
+    const std::vector<ExtraShape>& extras, ChVector3d* hullCenter,
+    const BodyOptions& options) {
+    const auto mat = materialFor(options);
     // 凸包の体積重心を先に求める。ChBodyEasyConvexHull は内部で同じ計算を
     // して頂点をここへ寄せる（ボディの原点 = 重心）ので、呼び出し側が
     // 見た目を同じだけずらせるように返す。Chrono と同じ道具（Bullet の
@@ -1048,7 +1757,7 @@ std::size_t PhysicsWorld::addConvexHull(
     // 「りんご」ができて、触れた物を弾き飛ばしていた。
     std::vector<ChVector3d> local = points;
     auto b = chrono_types::make_shared<ChBodyEasyConvexHull>(
-        local, /*density*/ 1.0, /*visualize*/ false, /*collide*/ true, mat_);
+        local, /*density*/ 1.0, /*visualize*/ false, /*collide*/ true, mat);
     const double unitMass = b->GetMass();  // 密度 1 なので = 凸包の体積
     if (unitMass > 1e-12 && std::isfinite(unitMass)) {
         // 慣性は Chrono が凸包から出した形（密度 1）のまま、質量の比で伸縮。
@@ -1070,7 +1779,7 @@ std::size_t PhysicsWorld::addConvexHull(
     // 部品の位置は「寄せる前の原点」基準のまま = 原点が重心から離れた
     // モデルではそのぶんずれる（見た目は hullCenter で合わせるが、複合形状
     // の部品までは動かさない）。
-    attachExtraShapes(*b, extras);
+    attachExtraShapes(*b, extras, mat);
     b->SetPos(pos);
     b->SetRot(rot);
     b->SetFixed(false);
@@ -1080,8 +1789,9 @@ std::size_t PhysicsWorld::addConvexHull(
         b->SetSleepTime(sleepSeconds_);
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
+    prepareBody(*b, options);
     sys_->AddBody(b);
-    registerBody(b);
+    finishBody(b, mat, options);
     return bodies_.size() - 1;
 }
 
@@ -1208,6 +1918,19 @@ bool PhysicsWorld::bodyActive(std::size_t id) const {
 std::size_t PhysicsWorld::addJoint(JointType type, std::size_t bodyA,
                                    std::size_t bodyB, const ChVector3d& anchor,
                                    const ChVector3d& axis, double distance) {
+    JointSpec spec;
+    spec.type = type;
+    spec.bodyA = bodyA;
+    spec.bodyB = bodyB;
+    spec.anchor = anchor;
+    spec.axis = axis;
+    spec.distance = distance;
+    return addJoint(spec);
+}
+
+std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
+    const std::size_t bodyA = spec.bodyA;
+    const std::size_t bodyB = spec.bodyB;
     if (bodyA >= bodies_.size() || bodyB >= bodies_.size()) {
         LOGW("physics", "joint: body id out of range (%zu, %zu)", bodyA, bodyB);
         return kInvalidJoint;
@@ -1227,12 +1950,68 @@ std::size_t PhysicsWorld::addJoint(JointType type, std::size_t bodyA,
     wakeUp(a.get(), 0);
     wakeUp(b.get(), 0);
 
+    const ChVector3d anchor = spec.anchor;
+    const ChVector3d axis = axisUsable(spec.axis) ? spec.axis : ChVector3d(0, 1, 0);
     // リンク座標系。Revolute は Z 軸まわりに回り、Prismatic は Z 軸方向へ
     // スライドするので、指定されたワールド軸を Z に合わせる。
     const ChQuaternion<> frameRot = quatFromZAxis(axis);
 
+    // 2 点間のばね（Spring 種類、または Prismatic に添えるばね）。地面側は
+    // アンカー、それ以外はボディの中心を取り付け点にする。
+    auto makeSpring = [&](double restLength) -> std::shared_ptr<chrono::ChLinkBase> {
+        const ChVector3d p1 = a->IsFixed() ? anchor : a->GetPos();
+        const ChVector3d p2 = b->IsFixed() ? anchor : b->GetPos();
+        if (a->IsFixed() && b->IsFixed()) return nullptr;
+        auto s = chrono_types::make_shared<ChLinkTSDA>();
+        s->Initialize(a, b, /*local*/ false, p1, p2);
+        double len = restLength;
+        if (len <= 0.0) len = (p2 - p1).Length();
+        s->SetRestLength(len);
+        s->SetSpringCoefficient(spec.stiffness);
+        s->SetDampingCoefficient(spec.damping);
+        return s;
+    };
+
+    JointRec rec;
+    rec.type = spec.type;
+    rec.breakForce = spec.breakForce;
     std::shared_ptr<chrono::ChLinkBase> link;
-    switch (type) {
+    bool wantLimit = spec.limited;
+    bool limitDone = false;
+    // Multicore は ChLinkTSDA / ChLinkRSDA / トルク（力）モータの力を積分に
+    // 取り込まず、速度モータは専用の一覧（RemoveLink で外れない）を持つ。
+    // そちらでは手計算の力積（applyManualJoints）と「角度モータ + ランプ
+    // 関数」で同じ意味を作る。Core は Chrono のリンクをそのまま使う。
+    const bool manualMode = backend_ == PhysicsBackend::Multicore;
+    // Multicore は片側拘束（ChLinkLimit）を解けない - 範囲に当たった瞬間に
+    // 系全体が NaN になった（実機で確認）。そちらでは可動範囲も手計算の
+    // 力積にする（applyManualJoints）。
+    auto manualLimit = [&](bool linear) {
+        rec.manual.limited = true;
+        rec.manual.limitLinear = linear;
+        rec.manual.limitLo = spec.limitLo;
+        rec.manual.limitHi = spec.limitHi;
+        rec.manual.a = bodyA;
+        rec.manual.b = bodyB;
+        rec.manual.axisLocalA = a->GetRot().RotateBack(axis);
+        rec.manual.relRot0 = a->GetRot().GetConjugate() * b->GetRot();
+        const ChVector3d axisN = axis * (1.0 / std::max(axis.Length(), 1e-9));
+        rec.manual.limitRef = (b->GetPos() - a->GetPos()).Dot(axisN);
+    };
+    // ローカル座標への変換（手計算のモータ・ばね用）。
+    auto localAxis = [&](const std::shared_ptr<ChBody>& body, const ChVector3d& w) {
+        return body->GetRot().RotateBack(w);
+    };
+    auto localPoint = [&](const std::shared_ptr<ChBody>& body, const ChVector3d& p) {
+        return body->GetRot().RotateBack(p - body->GetPos());
+    };
+    // Multicore の速度モータ: 角度 / 位置モータに「今の値 + 速度 × 経過時間」の
+    // ランプ関数を渡す。
+    auto rampFor = [&](double now, double value0, double speed) {
+        return chrono_types::make_shared<WizRampFunction>(value0 - speed * now, speed);
+    };
+
+    switch (spec.type) {
         case JointType::Fixed: {
             auto l = chrono_types::make_shared<ChLinkLockLock>();
             initLink(l.get(), a, b, anchor, frameRot, 0);
@@ -1240,9 +2019,80 @@ std::size_t PhysicsWorld::addJoint(JointType type, std::size_t bodyA,
             break;
         }
         case JointType::Revolute: {
-            auto l = chrono_types::make_shared<ChLinkLockRevolute>();
-            initLink(l.get(), a, b, anchor, frameRot, 0);
-            link = l;
+            const bool manualTorque = manualMode && spec.motor == MotorType::Force;
+            if (spec.motor != MotorType::None && !manualTorque) {
+                // モータは拘束ごと置き換わる（Z 軸まわり = Revolute と同じ）。
+                std::shared_ptr<chrono::ChLinkMotorRotation> m;
+                std::shared_ptr<chrono::ChFunction> fn;
+                if (spec.motor == MotorType::Speed && manualMode) {
+                    // Multicore: 角度モータ + ランプ関数（角速度 = 傾き）。
+                    auto am = chrono_types::make_shared<ChLinkMotorRotationAngle>();
+                    fn = rampFor(sys_->GetChTime(), 0.0, spec.motorTarget);
+                    rec.rampMotor = am;
+                    m = am;
+                } else {
+                    fn = chrono_types::make_shared<WizConstFunction>(spec.motorTarget);
+                    rec.motorFn = fn;
+                    switch (spec.motor) {
+                        case MotorType::Speed:
+                            m = chrono_types::make_shared<ChLinkMotorRotationSpeed>();
+                            break;
+                        case MotorType::Position:
+                            m = chrono_types::make_shared<ChLinkMotorRotationAngle>();
+                            break;
+                        default:
+                            m = chrono_types::make_shared<ChLinkMotorRotationTorque>();
+                            break;
+                    }
+                }
+                m->Initialize(a, b, ChFrame<>(anchor, frameRot));
+                m->SetMotorFunction(fn);
+                link = m;
+                wantLimit = false;  // モータに可動範囲は付かない
+            } else {
+                auto l = chrono_types::make_shared<ChLinkLockRevolute>();
+                initLink(l.get(), a, b, anchor, frameRot, 0);
+                if (spec.limited) {
+                    if (manualMode) { manualLimit(false); limitDone = true; }
+                    else limitDone = setLimitRz(l.get(), spec.limitLo, spec.limitHi, 0);
+                }
+                link = l;
+                if (manualTorque) {
+                    // Multicore のトルクモータ: 普通のちょうつがい + 毎ステップの角力積。
+                    rec.manual.kind = JointRec::Manual::Kind::Torque;
+                    rec.manual.a = bodyA;
+                    rec.manual.b = bodyB;
+                    rec.manual.axisLocalA = localAxis(a, axis);
+                    rec.manual.target = spec.motorTarget;
+                    wantLimit = false;
+                }
+            }
+            // 回転ばね（自然角 = 開始姿勢）。
+            if (spec.stiffness > 0.0 || spec.damping > 0.0) {
+                if (manualMode) {
+                    // トルクモータと同居できないので、その場合はばねを優先しない。
+                    if (rec.manual.kind == JointRec::Manual::Kind::None) {
+                        rec.manual.kind = JointRec::Manual::Kind::Rsda;
+                        rec.manual.a = bodyA;
+                        rec.manual.b = bodyB;
+                        rec.manual.axisLocalA = localAxis(a, axis);
+                        rec.manual.relRot0 = a->GetRot().GetConjugate() * b->GetRot();
+                        rec.manual.k = spec.stiffness;
+                        rec.manual.c = spec.damping;
+                    } else {
+                        LOGW("physics", "hinge: a torque motor and a spring on the same "
+                                        "joint are not supported on the multicore backend "
+                                        "- spring ignored");
+                    }
+                } else {
+                    auto s = chrono_types::make_shared<ChLinkRSDA>();
+                    s->Initialize(a, b, ChFrame<>(anchor, frameRot));
+                    s->SetRestAngle(0.0);
+                    s->SetSpringCoefficient(spec.stiffness);
+                    s->SetDampingCoefficient(spec.damping);
+                    rec.extra = s;
+                }
+            }
             break;
         }
         case JointType::Spherical: {
@@ -1252,16 +2102,82 @@ std::size_t PhysicsWorld::addJoint(JointType type, std::size_t bodyA,
             break;
         }
         case JointType::Prismatic: {
-            auto l = chrono_types::make_shared<ChLinkLockPrismatic>();
-            initLink(l.get(), a, b, anchor, frameRot, 0);
-            link = l;
+            const bool manualForce = manualMode && spec.motor == MotorType::Force;
+            if (spec.motor != MotorType::None && !manualForce) {
+                // 直動モータは X 軸方向に動く（ChLinkLockPrismatic は Z）。
+                const ChQuaternion<> xRot = quatFromXAxis(axis);
+                std::shared_ptr<chrono::ChLinkMotorLinear> m;
+                std::shared_ptr<chrono::ChFunction> fn;
+                if (spec.motor == MotorType::Speed && manualMode) {
+                    auto pm = chrono_types::make_shared<ChLinkMotorLinearPosition>();
+                    fn = rampFor(sys_->GetChTime(), 0.0, spec.motorTarget);
+                    rec.rampMotor = pm;
+                    rec.rampLinear = true;
+                    m = pm;
+                } else {
+                    fn = chrono_types::make_shared<WizConstFunction>(spec.motorTarget);
+                    rec.motorFn = fn;
+                    switch (spec.motor) {
+                        case MotorType::Speed:
+                            m = chrono_types::make_shared<ChLinkMotorLinearSpeed>();
+                            break;
+                        case MotorType::Position:
+                            m = chrono_types::make_shared<ChLinkMotorLinearPosition>();
+                            break;
+                        default:
+                            m = chrono_types::make_shared<ChLinkMotorLinearForce>();
+                            break;
+                    }
+                }
+                m->Initialize(a, b, ChFrame<>(anchor, xRot));
+                m->SetMotorFunction(fn);
+                link = m;
+                wantLimit = false;
+            } else {
+                auto l = chrono_types::make_shared<ChLinkLockPrismatic>();
+                initLink(l.get(), a, b, anchor, frameRot, 0);
+                if (spec.limited) {
+                    if (manualMode) { manualLimit(true); limitDone = true; }
+                    else limitDone = setLimitZ(l.get(), spec.limitLo, spec.limitHi, 0);
+                }
+                link = l;
+                if (manualForce) {
+                    rec.manual.kind = JointRec::Manual::Kind::Force;
+                    rec.manual.a = bodyA;
+                    rec.manual.b = bodyB;
+                    rec.manual.axisLocalA = localAxis(a, axis);
+                    rec.manual.target = spec.motorTarget;
+                    wantLimit = false;
+                }
+            }
+            if (spec.stiffness > 0.0 || spec.damping > 0.0) {
+                if (manualMode) {
+                    if (rec.manual.kind == JointRec::Manual::Kind::None) {
+                        rec.manual.kind = JointRec::Manual::Kind::Spring;
+                        rec.manual.a = bodyA;
+                        rec.manual.b = bodyB;
+                        rec.manual.p1Local = localPoint(a, a->IsFixed() ? anchor : a->GetPos());
+                        rec.manual.p2Local = localPoint(b, b->IsFixed() ? anchor : b->GetPos());
+                        rec.manual.k = spec.stiffness;
+                        rec.manual.c = spec.damping;
+                        rec.manual.rest = ((b->IsFixed() ? anchor : b->GetPos()) -
+                                           (a->IsFixed() ? anchor : a->GetPos())).Length();
+                    } else {
+                        LOGW("physics", "slide: a force motor and a spring on the same joint "
+                                        "are not supported on the multicore backend - "
+                                        "spring ignored");
+                    }
+                } else {
+                    rec.extra = makeSpring(0.0);
+                }
+            }
             break;
         }
         case JointType::Distance: {
             // 2 点は各ボディの現在位置。distance が 0 なら今の間隔を保つ。
             const ChVector3d p1 = a->GetPos();
             const ChVector3d p2 = b->GetPos();
-            double len = distance;
+            double len = spec.distance;
             if (len <= 0.0) {
                 const ChVector3d d = p2 - p1;
                 len = std::sqrt(d.x() * d.x() + d.y() * d.y() + d.z() * d.z());
@@ -1276,17 +2192,259 @@ std::size_t PhysicsWorld::addJoint(JointType type, std::size_t bodyA,
             link = l;
             break;
         }
+        case JointType::Universal: {
+            // 十字軸はリンク座標系の X と Y = 指定した軸（Z）に直交する 2 軸。
+            auto l = chrono_types::make_shared<ChLinkUniversal>();
+            l->Initialize(a, b, ChFrame<>(anchor, frameRot));
+            link = l;
+            if (spec.limited) {
+                LOGW("physics", "universal joint: limits are not supported - ignored");
+                wantLimit = false;
+            }
+            break;
+        }
+        case JointType::Cylindrical: {
+            auto l = chrono_types::make_shared<ChLinkLockCylindrical>();
+            initLink(l.get(), a, b, anchor, frameRot, 0);
+            if (spec.limited) {
+                if (manualMode) { manualLimit(false); limitDone = true; }
+                else limitDone = setLimitRz(l.get(), spec.limitLo, spec.limitHi, 0);
+            }
+            link = l;
+            break;
+        }
+        case JointType::Planar: {
+            // 面 = リンク座標系の XY、法線 = Z = 指定した軸。
+            auto l = chrono_types::make_shared<ChLinkLockPlanar>();
+            initLink(l.get(), a, b, anchor, frameRot, 0);
+            link = l;
+            break;
+        }
+        case JointType::PointLine: {
+            // 線はリンク座標系の X 軸なので、指定した軸を X に合わせる。
+            auto l = chrono_types::make_shared<ChLinkLockPointLine>();
+            initLink(l.get(), a, b, anchor, quatFromXAxis(axis), 0);
+            link = l;
+            break;
+        }
+        case JointType::PointPlane: {
+            // 面の法線 = Z = 指定した軸。
+            auto l = chrono_types::make_shared<ChLinkLockPointPlane>();
+            initLink(l.get(), a, b, anchor, frameRot, 0);
+            link = l;
+            break;
+        }
+        case JointType::Gear: {
+#ifdef WIZ_HAVE_GEAR
+            // シャフト 1 = A 上の (anchor, axis)、シャフト 2 = B 上の
+            // (anchor2, axis2)。どちらもボディのローカル座標系で渡す。
+            const ChVector3d anchor2 = spec.hasAnchor2 ? spec.anchor2 : b->GetPos();
+            const ChVector3d axis2 =
+                (spec.hasAxis2 && axisUsable(spec.axis2)) ? spec.axis2 : axis;
+            auto l = chrono_types::make_shared<ChLinkLockGear>();
+            initLink(l.get(), a, b, anchor, frameRot, 0);
+            const ChFrame<> s1 = worldToBodyLocal(*a, anchor, frameRot);
+            const ChFrame<> s2 = worldToBodyLocal(*b, anchor2, quatFromZAxis(axis2));
+            if (!setGearParams(l.get(), spec.ratio, s1, s2, 0)) {
+                LOGW("physics", "gear joint: this Chrono has a different ChLinkLockGear "
+                                "API - skipped");
+                return kInvalidJoint;
+            }
+            link = l;
+#else
+            LOGW("physics", "gear joint: this Chrono build has no ChLinkLockGear - skipped");
+            return kInvalidJoint;
+#endif
+            break;
+        }
+        case JointType::Screw: {
+#ifdef WIZ_HAVE_SCREW
+            auto l = chrono_types::make_shared<ChLinkLockScrew>();
+            initLink(l.get(), a, b, anchor, frameRot, 0);
+            if (!setScrewThread(l.get(), spec.pitch, 0)) {
+                LOGW("physics", "screw joint: this Chrono has a different ChLinkLockScrew "
+                                "API - skipped");
+                return kInvalidJoint;
+            }
+            link = l;
+#else
+            LOGW("physics", "screw joint: this Chrono build has no ChLinkLockScrew - skipped");
+            return kInvalidJoint;
+#endif
+            break;
+        }
+        case JointType::Spring: {
+            if (a->IsFixed() && b->IsFixed()) {
+                LOGW("physics", "spring: both ends are fixed - skipped");
+                return kInvalidJoint;
+            }
+            if (manualMode) {
+                // リンク無し。毎ステップの力積だけ（applyManualJoints）。
+                const ChVector3d p1 = a->IsFixed() ? anchor : a->GetPos();
+                const ChVector3d p2 = b->IsFixed() ? anchor : b->GetPos();
+                rec.manual.kind = JointRec::Manual::Kind::Spring;
+                rec.manual.a = bodyA;
+                rec.manual.b = bodyB;
+                rec.manual.p1Local = localPoint(a, p1);
+                rec.manual.p2Local = localPoint(b, p2);
+                rec.manual.k = spec.stiffness;
+                rec.manual.c = spec.damping;
+                rec.manual.rest = spec.distance > 0.0 ? spec.distance : (p2 - p1).Length();
+            } else {
+                link = makeSpring(spec.distance);
+            }
+            break;
+        }
     }
 
-    if (!link) return kInvalidJoint;
-    sys_->AddLink(link);
-    joints_.push_back(link);
+    if (!link && rec.manual.kind == JointRec::Manual::Kind::None) return kInvalidJoint;
+    if (wantLimit && !limitDone) {
+        LOGW("physics", "joint: limits could not be applied (this joint type or "
+                        "Chrono version has no limit API) - ignored");
+    }
+    if (link) sys_->AddLink(link);
+    if (rec.extra) sys_->AddLink(rec.extra);
+    rec.link = link;
+    LOGI("physics", "joint #%zu: type %d bodies %zu-%zu motor %d limited %d spring %s manual %d",
+         joints_.size(), int(spec.type), bodyA, bodyB, int(spec.motor), int(spec.limited),
+         rec.extra ? "yes" : "no", int(rec.manual.kind));
+    joints_.push_back(std::move(rec));
     return joints_.size() - 1;
 }
 
+// ---- Multicore 用の手計算（モータ・ばね）----------------------------------
+// Chrono::Multicore は自前の積分で、リンクが IntLoadResidual_F で足す力
+// （TSDA / RSDA / トルクモータ）を拾わない。同じ意味の力積を DoStepDynamics の
+// 前に速度へ織り込む（車両の「点に掛かる力」と同じ流儀）。
+
+void PhysicsWorld::applyAngularImpulse(std::size_t id, const ChVector3d& impulse) {
+    if (id >= bodies_.size() || isSoftBody(id)) return;
+    auto& b = bodies_[id];
+    if (b->IsFixed()) return;
+    if (b->IsSleeping()) wakeUp(b.get(), 0);
+    const ChQuaternion<> q = b->GetRot();
+    const ChVector3d dwL = b->GetInvInertia() * q.RotateBack(impulse);
+    setAngVel(b.get(), getAngVel(b.get(), 0) + q.Rotate(dwL), 0);
+}
+
+void PhysicsWorld::applyManualJoints(double dt) {
+    using Kind = JointRec::Manual::Kind;
+    // 軸まわりの逆慣性（ワールド軸 w について w·(R I⁻¹ Rᵀ w)）。固定は 0。
+    auto invInertiaAbout = [&](const std::shared_ptr<ChBody>& body, const ChVector3d& w) {
+        if (body->IsFixed()) return 0.0;
+        const ChVector3d wl = body->GetRot().RotateBack(w);
+        return wl.Dot(body->GetInvInertia() * wl);
+    };
+    auto invMassOf = [&](const std::shared_ptr<ChBody>& body) {
+        return (body->IsFixed() || body->GetMass() <= 0.0) ? 0.0 : 1.0 / body->GetMass();
+    };
+    for (JointRec& j : joints_) {
+        JointRec::Manual& m = j.manual;
+        if (j.broken || (m.kind == Kind::None && !m.limited)) continue;
+        if (m.a >= bodies_.size() || m.b >= bodies_.size()) continue;
+        auto& a = bodies_[m.a];
+        auto& b = bodies_[m.b];
+        const ChVector3d axisW = a->GetRot().Rotate(m.axisLocalA);
+
+        // ---- 可動範囲（速度レベルの片側拘束。接触の解き方と同じ）----
+        if (m.limited && dt > 0.0) {
+            constexpr double kBeta = 0.2;  // めり込みの押し戻し（1 ステップで 20%）
+            if (m.limitLinear) {
+                const double d = (b->GetPos() - a->GetPos()).Dot(axisW) - m.limitRef;
+                const double vrel = (getLinVel(b.get(), 0) - getLinVel(a.get(), 0)).Dot(axisW);
+                double want = vrel;
+                if (d > m.limitHi) want = std::min(vrel, -kBeta * (d - m.limitHi) / dt);
+                else if (d < m.limitLo) want = std::max(vrel, kBeta * (m.limitLo - d) / dt);
+                const double denom = invMassOf(a) + invMassOf(b);
+                if (want != vrel && denom > 0.0) {
+                    const double impulse = (want - vrel) / denom;  // B に +、A に -
+                    applyForce(m.b, axisW * (impulse / dt), dt);
+                    applyForce(m.a, axisW * (-impulse / dt), dt);
+                    m.lastForce = std::max(m.lastForce, std::fabs(impulse / dt));
+                }
+            } else {
+                const ChQuaternion<> rel = a->GetRot().GetConjugate() * b->GetRot();
+                const ChQuaternion<> delta = m.relRot0.GetConjugate() * rel;
+                const double proj = delta.e1() * m.axisLocalA.x() + delta.e2() * m.axisLocalA.y() +
+                                    delta.e3() * m.axisLocalA.z();
+                const double angle = 2.0 * std::atan2(proj, delta.e0());
+                const double wrel = (getAngVel(b.get(), 0) - getAngVel(a.get(), 0)).Dot(axisW);
+                double want = wrel;
+                if (angle > m.limitHi) want = std::min(wrel, -kBeta * (angle - m.limitHi) / dt);
+                else if (angle < m.limitLo) want = std::max(wrel, kBeta * (m.limitLo - angle) / dt);
+                const double denom = invInertiaAbout(a, axisW) + invInertiaAbout(b, axisW);
+                if (want != wrel && denom > 0.0) {
+                    const double impulse = (want - wrel) / denom;  // 角力積。B に +、A に -
+                    applyAngularImpulse(m.b, axisW * impulse);
+                    applyAngularImpulse(m.a, axisW * (-impulse));
+                    m.lastTorque = std::max(m.lastTorque, std::fabs(impulse / dt));
+                }
+            }
+        }
+
+        switch (m.kind) {
+            case Kind::Torque: {
+                // A に +τ、B に -τ（Chrono のモータと同じく body1 を回す向き）。
+                const ChVector3d L = axisW * (m.target * dt);
+                applyAngularImpulse(m.a, L);
+                applyAngularImpulse(m.b, -L);
+                m.lastTorque = std::fabs(m.target);
+                break;
+            }
+            case Kind::Force: {
+                const ChVector3d F = axisW * m.target;
+                applyForce(m.a, F, dt);
+                applyForce(m.b, -F, dt);
+                m.lastForce = std::fabs(m.target);
+                break;
+            }
+            case Kind::Spring: {
+                const ChVector3d p1 = a->GetPos() + a->GetRot().Rotate(m.p1Local);
+                const ChVector3d p2 = b->GetPos() + b->GetRot().Rotate(m.p2Local);
+                const ChVector3d d = p2 - p1;
+                const double len = d.Length();
+                if (len < 1e-9) break;
+                const ChVector3d dir = d * (1.0 / len);
+                const double vrel = (bodyPointVelocity(m.b, p2) - bodyPointVelocity(m.a, p1)).Dot(dir);
+                // 正 = 縮める向き（伸びているか、離れつつあるとき）。
+                const double f = m.k * (len - m.rest) + m.c * vrel;
+                applyForceAtPoint(m.a, dir * f, p1, dt);
+                applyForceAtPoint(m.b, dir * (-f), p2, dt);
+                m.lastForce = std::fabs(f);
+                break;
+            }
+            case Kind::Rsda: {
+                // B の A に対する回転を軸まわりの角度に落とす（開始姿勢が自然角）。
+                const ChQuaternion<> rel = a->GetRot().GetConjugate() * b->GetRot();
+                const ChQuaternion<> delta = m.relRot0.GetConjugate() * rel;
+                const double proj = delta.e1() * m.axisLocalA.x() + delta.e2() * m.axisLocalA.y() +
+                                    delta.e3() * m.axisLocalA.z();
+                const double angle = 2.0 * std::atan2(proj, delta.e0());
+                const double wrel = (getAngVel(b.get(), 0) - getAngVel(a.get(), 0)).Dot(axisW);
+                const double tau = m.k * angle + m.c * wrel;  // B を戻す向きの大きさ
+                const ChVector3d L = axisW * (tau * dt);
+                applyAngularImpulse(m.b, -L);
+                applyAngularImpulse(m.a, L);
+                m.lastTorque = std::fabs(tau);
+                break;
+            }
+            case Kind::None:
+                break;
+        }
+    }
+}
+
 void PhysicsWorld::removeAllJoints() {
-    for (auto& l : joints_) sys_->RemoveLink(l);
+    diagSteps_ = 0;  // 次のシミュレート開始で診断行を出し直す
+    diagNanReported_ = false;
+    for (auto& j : joints_) {
+        // 破断したリンクも無効化されて系に残っている（走行中の RemoveLink は
+        // Multicore を壊す）ので、ここでまとめて外す。
+        if (j.link) sys_->RemoveLink(j.link);
+        if (j.extra) sys_->RemoveLink(j.extra);
+    }
     joints_.clear();
+    brokenPending_.clear();
     // 拘束の増減はソルバの構成を変えるので、Setup で作り直させる
     // （wakeAll と同じ理由）。
     sys_->Setup();
@@ -1294,4 +2452,99 @@ void PhysicsWorld::removeAllJoints() {
 
 std::size_t PhysicsWorld::jointCount() const {
     return joints_.size();
+}
+
+bool PhysicsWorld::setJointMotorTarget(std::size_t joint, double target) {
+    if (joint >= joints_.size()) return false;
+    JointRec& j = joints_[joint];
+    if (j.broken) return false;
+    if (j.manual.kind == JointRec::Manual::Kind::Torque ||
+        j.manual.kind == JointRec::Manual::Kind::Force) {
+        j.manual.target = target;
+        return true;
+    }
+    if (j.rampMotor) {
+        // 今の角度 / 位置から新しい傾きで引き直す（跳びを作らない）。
+        const double now = sys_->GetChTime();
+        if (j.rampLinear) {
+            auto pm = std::dynamic_pointer_cast<ChLinkMotorLinearPosition>(j.rampMotor);
+            if (!pm) return false;
+            pm->SetMotorFunction(chrono_types::make_shared<WizRampFunction>(
+                pm->GetMotorPos() - target * now, target));
+        } else {
+            auto am = std::dynamic_pointer_cast<ChLinkMotorRotationAngle>(j.rampMotor);
+            if (!am) return false;
+            am->SetMotorFunction(chrono_types::make_shared<WizRampFunction>(
+                am->GetMotorAngle() - target * now, target));
+        }
+        return true;
+    }
+    if (!j.motorFn) return false;
+    setConstValue(static_cast<WizConstFunction*>(j.motorFn.get()), target, 0);
+    return true;
+}
+
+bool PhysicsWorld::jointReaction(std::size_t joint, double& force, double& torque) const {
+    force = 0.0;
+    torque = 0.0;
+    if (joint >= joints_.size()) return false;
+    const JointRec& j = joints_[joint];
+    if (j.broken) return false;
+    if (j.manual.kind != JointRec::Manual::Kind::None) {
+        // 手計算のばね / モータ: 拘束の反力があればそれに手計算のぶんを足す。
+        double lf = 0.0, lt = 0.0;
+        if (j.link) linkReaction(j.link.get(), lf, lt, 0);
+        force = std::max(lf, j.manual.lastForce);
+        torque = std::max(lt, j.manual.lastTorque);
+        return true;
+    }
+    if (!j.link) return false;
+    if (j.type == JointType::Spring) {
+        // ばねは拘束ではないので反力の口が無い。ばね力を返す。
+        if (auto s = std::dynamic_pointer_cast<ChLinkTSDA>(j.link)) {
+            force = std::fabs(s->GetForce());
+            return true;
+        }
+        return false;
+    }
+    return linkReaction(j.link.get(), force, torque, 0);
+}
+
+bool PhysicsWorld::jointBroken(std::size_t joint) const {
+    return joint < joints_.size() && joints_[joint].broken;
+}
+
+std::vector<std::size_t> PhysicsWorld::takeBrokenJoints() {
+    std::vector<std::size_t> out;
+    out.swap(brokenPending_);
+    return out;
+}
+
+void PhysicsWorld::checkJointBreaks() {
+    // 開始直後はソルバが収束途中で反力が跳ねる（Multicore で静止荷重 59 N の
+    // 棒が 1 ステップ目に 325 N を返した）ので、最初の数ステップは見ない。
+    constexpr int kWarmupSteps = 10;
+    if (diagSteps_ < kWarmupSteps) return;
+    for (std::size_t i = 0; i < joints_.size(); ++i) {
+        JointRec& j = joints_[i];
+        if (j.broken || j.breakForce <= 0.0) continue;
+        double force = 0.0, torque = 0.0;
+        if (!jointReaction(i, force, torque)) continue;
+        if (!std::isfinite(force) || force <= j.breakForce) continue;
+        // 外すのではなく無効化する。走行中の RemoveLink + Setup は Multicore の
+        // データマネージャを壊し、拘束の付いた物が全部 NaN になった。
+        // 系からは次の removeAllJoints（停止時）でまとめて外す。
+        bool ok = true;
+        if (j.link) ok = disableLink(j.link.get(), 0) && ok;
+        if (j.extra) ok = disableLink(j.extra.get(), 0) && ok;
+        if (!ok) {
+            LOGW("physics", "joint #%zu: this Chrono has no SetDisabled - break ignored", i);
+            j.breakForce = 0.0;  // 二度と試さない
+            continue;
+        }
+        j.broken = true;
+        brokenPending_.push_back(i);
+        LOGI("physics", "joint #%zu broke (reaction %.1f N > %.1f N)", i, force,
+             j.breakForce);
+    }
 }

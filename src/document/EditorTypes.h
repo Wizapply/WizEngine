@@ -1,9 +1,12 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -41,18 +44,25 @@ inline AppMode modeFromName(const std::string& s, AppMode fallback) {
 // None = geom を持たない（MJCF の geom 無し body）。見た目も当たり判定も
 // 付いているプレハブの部品だけで、ボディ自身は「部品の集合の原点 + 質量」の
 // フレーム。階段（全体が収まる箱の中心を原点にした部品の集合）が使う。
-enum class ShapeKind { Box, Sphere, Model, None };
+// Trimesh は**当たり判定だけ**の値（<geom type="mesh" collision="trimesh">）:
+// glTF の三角形をそのまま Chrono の静的メッシュ（Bullet の三角メッシュ）に
+// する。凸包では表せない凹形状（器・トンネル・地形）に使う。見た目の
+// shape には使えない（clampBody が Model へ倒す）。動く物には重いので
+// 固定の物に向く。
+enum class ShapeKind { Box, Sphere, Model, None, Trimesh };
 
 inline const char* shapeName(ShapeKind s) {
     switch (s) {
         case ShapeKind::Sphere: return "sphere";
         case ShapeKind::Model: return "model";
         case ShapeKind::None: return "none";
+        case ShapeKind::Trimesh: return "trimesh";
         case ShapeKind::Box: break;
     }
     return "box";
 }
 inline ShapeKind shapeFromName(const std::string& s, ShapeKind fallback) {
+    if (s == "trimesh") return ShapeKind::Trimesh;
     if (s == "box") return ShapeKind::Box;
     if (s == "sphere") return ShapeKind::Sphere;
     if (s == "model") return ShapeKind::Model;
@@ -61,7 +71,19 @@ inline ShapeKind shapeFromName(const std::string& s, ShapeKind fallback) {
 }
 
 // 拘束の種類。Chrono の対応クラスは PhysicsWorld::addJoint を参照。
-enum class JointKind { Fixed, Revolute, Spherical, Prismatic, Distance };
+//   Fixed / Revolute / Spherical / Prismatic / Distance … 従来の 5 種
+//   Universal   … 自在継手（十字軸。axis = シャフトの向き）
+//   Cylindrical … 軸まわりの回転 + 軸方向のスライド
+//   Planar      … 平面上の移動と面内の回転（axis = 面の法線）
+//   PointLine   … 点を線に載せる（axis = 線の向き。回転は自由）
+//   PointPlane  … 点を面に載せる（axis = 面の法線。回転は自由）
+//   Gear        … 2 本のシャフトを歯車で結ぶ（ratio。anchor2 / axis2 が 2 本目）
+//   Screw       … ねじ（axis まわりの回転が pitch [m/回転] の前進になる）
+//   Spring      … 2 点間のばね・ダンパ（拘束ではなく力。stiffness / damping）
+enum class JointKind {
+    Fixed, Revolute, Spherical, Prismatic, Distance,
+    Universal, Cylindrical, Planar, PointLine, PointPlane, Gear, Screw, Spring
+};
 
 inline const char* jointName(JointKind k) {
     switch (k) {
@@ -69,6 +91,14 @@ inline const char* jointName(JointKind k) {
         case JointKind::Spherical: return "spherical";
         case JointKind::Prismatic: return "prismatic";
         case JointKind::Distance: return "distance";
+        case JointKind::Universal: return "universal";
+        case JointKind::Cylindrical: return "cylindrical";
+        case JointKind::Planar: return "planar";
+        case JointKind::PointLine: return "pointLine";
+        case JointKind::PointPlane: return "pointPlane";
+        case JointKind::Gear: return "gear";
+        case JointKind::Screw: return "screw";
+        case JointKind::Spring: return "spring";
         case JointKind::Revolute: break;
     }
     return "revolute";
@@ -79,6 +109,39 @@ inline JointKind jointFromName(const std::string& s, JointKind fallback) {
     if (s == "spherical" || s == "ball") return JointKind::Spherical;
     if (s == "prismatic" || s == "slider") return JointKind::Prismatic;
     if (s == "distance" || s == "rod") return JointKind::Distance;
+    if (s == "universal") return JointKind::Universal;
+    if (s == "cylindrical") return JointKind::Cylindrical;
+    if (s == "planar" || s == "plane") return JointKind::Planar;
+    if (s == "pointLine" || s == "pointline") return JointKind::PointLine;
+    if (s == "pointPlane" || s == "pointplane") return JointKind::PointPlane;
+    if (s == "gear") return JointKind::Gear;
+    if (s == "screw") return JointKind::Screw;
+    if (s == "spring") return JointKind::Spring;
+    return fallback;
+}
+
+// ジョイントの駆動（モータ）。Revolute と Prismatic にだけ付く。Chrono の
+// ChLinkMotorRotation* / ChLinkMotorLinear* で、拘束ごと置き換わる
+// （リミットは付かない = 速度・角度モータはトルク無制限の拘束型）。
+//   Speed    … 目標の角速度 (deg/s) / 速度 (m/s)
+//   Position … 目標の角度 (deg) / 位置 (m)（開始姿勢からの相対）
+//   Force    … 一定のトルク (N·m) / 力 (N)
+enum class MotorMode { None, Speed, Position, Force };
+
+inline const char* motorModeName(MotorMode m) {
+    switch (m) {
+        case MotorMode::Speed: return "speed";
+        case MotorMode::Position: return "position";
+        case MotorMode::Force: return "force";
+        case MotorMode::None: break;
+    }
+    return "none";
+}
+inline MotorMode motorModeFromName(const std::string& s, MotorMode fallback) {
+    if (s == "none" || s.empty()) return MotorMode::None;
+    if (s == "speed" || s == "velocity") return MotorMode::Speed;
+    if (s == "position" || s == "angle") return MotorMode::Position;
+    if (s == "force" || s == "torque") return MotorMode::Force;
     return fallback;
 }
 
@@ -299,6 +362,45 @@ inline bool operator==(const SoftDesc& a, const SoftDesc& b) {
 }
 inline bool operator!=(const SoftDesc& a, const SoftDesc& b) { return !(a == b); }
 
+// ---- 接触の物性（ボディごと）-----------------------------------------------
+// 負の値は「シーンの設定（<option friction restitution>）を使う」。既定は
+// 全部シーン任せなので、触っていない物のファイルには何も出ない
+// （材質 MaterialDesc と同じ流儀）。cohesion（粘着、N）だけは既定 0 =
+// 無し。Chrono の ChContactMaterialNSC をボディごとに 1 個持つ。
+struct SurfaceDesc {
+    float friction = -1.0f;     // 滑り摩擦係数（-1 = シーン設定）
+    float restitution = -1.0f;  // 反発係数（-1 = シーン設定）
+    float rolling = -1.0f;      // 転がり摩擦（-1 = シーン既定 kRollingFriction）
+    float cohesion = 0.0f;      // 粘着力 (N)。0 = 無し
+};
+inline SurfaceDesc clampSurface(SurfaceDesc s) {
+    auto cl = [](float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); };
+    if (s.friction >= 0.0f) s.friction = cl(s.friction, 0.0f, 2.0f);
+    else s.friction = -1.0f;
+    if (s.restitution >= 0.0f) s.restitution = cl(s.restitution, 0.0f, 1.0f);
+    else s.restitution = -1.0f;
+    if (s.rolling >= 0.0f) s.rolling = cl(s.rolling, 0.0f, 1.0f);
+    else s.rolling = -1.0f;
+    s.cohesion = cl(s.cohesion, 0.0f, 100000.0f);
+    return s;
+}
+inline bool operator==(const SurfaceDesc& a, const SurfaceDesc& b) {
+    return a.friction == b.friction && a.restitution == b.restitution &&
+           a.rolling == b.rolling && a.cohesion == b.cohesion;
+}
+inline bool operator!=(const SurfaceDesc& a, const SurfaceDesc& b) { return !(a == b); }
+// 「どれか 1 つでもシーン設定と違う値を持つか」= 専用の接触材質が要るか。
+inline bool surfaceIsCustom(const SurfaceDesc& s) {
+    return s.friction >= 0.0f || s.restitution >= 0.0f || s.rolling >= 0.0f ||
+           s.cohesion != 0.0f;
+}
+
+// 衝突レイヤ。ボディは 0〜7 のレイヤに属し（既定 0 = 地面もここ）、
+// nocollide に挙げたレイヤの物とは当たらない（Chrono の衝突ファミリ 0〜7。
+// 8〜15 はソフトボディの粒子が使う）。同士討ちしない群れ、素通りする
+// 飾りなどに。Bullet は片側が拒めば当たらないので、片方に書けば足りる。
+constexpr int kCollisionLayers = 8;
+
 struct BodyDesc {
     std::string name;
     ShapeKind shape = ShapeKind::Box;
@@ -336,6 +438,17 @@ struct BodyDesc {
     // 格子の外形、mass は全粒子の合計。
     bool hasSoft = false;
     SoftDesc soft;
+    // 接触の物性（摩擦・反発・転がり・粘着）。既定はシーン設定に従う。
+    SurfaceDesc surface;
+    // 衝突レイヤ（0〜7）と、当たらないレイヤの一覧（文書では nocollide="1 3"）。
+    int layer = 0;
+    std::vector<int> nocollide;
+    // 重力を受けるか（false = 無重力。Chrono の SetUseGravity / SetNoGravity）。
+    bool gravity = true;
+    // 初速。シミュレート開始（と Reset）で置いた姿勢に戻すときに与える。
+    // 速度は m/s、角速度は deg/s（ワールド軸まわり）。
+    Vec3d velocity{0.0, 0.0, 0.0};
+    Vec3d angularVelocity{0.0, 0.0, 0.0};
 
     // 形状から体積を出す。箱・球は密度 = mass / volume を Chrono に渡すので、
     // 形や大きさを変えても質量は指定どおりに保たれる。見た目ではなく
@@ -369,8 +482,58 @@ struct JointDesc {
     int bodyB = -1;
     Vec3d anchor{0.0, 1.0, 0.0};
     Vec3d axis{0.0, 1.0, 0.0};
-    double distance = 0.0;  // Distance のみ。0 = 現在の間隔を維持
+    // Distance: 保つ距離。Spring: 自然長。0 = 現在の間隔をそのまま使う。
+    double distance = 0.0;
+    // 可動範囲（文書では range="lo hi"。書けば limited）。Revolute /
+    // Cylindrical / Universal は角度 (deg)、Prismatic は距離 (m)。他の種類と
+    // モータ付きでは無視（作るときに警告）。
+    bool limited = false;
+    double limitLo = -45.0;
+    double limitHi = 45.0;
+    // 駆動（Revolute / Prismatic のみ。上の MotorMode）。target の単位は
+    // モードと種類で決まる: 角速度 deg/s・角度 deg・トルク N·m、または
+    // 速度 m/s・位置 m・力 N。実行中はイベントの setMotor で書き換えられる。
+    MotorMode motor = MotorMode::None;
+    double motorTarget = 0.0;
+    // ばね・ダンパ。Spring 種類では 2 点間のばね（k N/m, c N·s/m）。Revolute に
+    // 書けば回転ばね（k N·m/rad, c N·m·s/rad、自然角 = 開始姿勢）、Prismatic
+    // に書けば軸方向のばね（両体の中心間、自然長 = 開始時の距離）。0 = 無し。
+    double stiffness = 0.0;
+    double damping = 0.0;
+    // 破断: 拘束の反力（力の大きさ、N）がこれを超えたステップで外れる。
+    // 0 = 切れない。外れると onJointBreak トリガーが発火する。
+    double breakForce = 0.0;
+    // Gear: 変速比（シャフト 2 の角速度 / シャフト 1 の角速度）。Screw:
+    // 1 回転あたりの前進 (m)。
+    double ratio = 1.0;
+    double pitch = 0.01;
+    // Gear の 2 本目のシャフト（ワールド座標）。axis2 が零ベクトルなら axis と
+    // 同じ向き、anchor2 が零ベクトルなら B の中心を使う。
+    Vec3d anchor2{0.0, 0.0, 0.0};
+    Vec3d axis2{0.0, 0.0, 0.0};
 };
+
+// ジョイントの値を常識的な範囲へ。リミットは lo <= hi に並べ替える。
+inline JointDesc clampJoint(JointDesc j) {
+    auto cl = [](double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); };
+    if (j.limitLo > j.limitHi) std::swap(j.limitLo, j.limitHi);
+    j.limitLo = cl(j.limitLo, -100000.0, 100000.0);
+    j.limitHi = cl(j.limitHi, -100000.0, 100000.0);
+    j.motorTarget = cl(j.motorTarget, -1000000.0, 1000000.0);
+    j.stiffness = cl(j.stiffness, 0.0, 1.0e9);
+    j.damping = cl(j.damping, 0.0, 1.0e9);
+    j.breakForce = cl(j.breakForce, 0.0, 1.0e9);
+    if (!std::isfinite(j.ratio) || j.ratio == 0.0) j.ratio = 1.0;
+    j.ratio = cl(j.ratio, -1000.0, 1000.0);
+    j.pitch = cl(j.pitch, -10.0, 10.0);
+    if (j.pitch == 0.0) j.pitch = 0.01;
+    j.distance = cl(j.distance, 0.0, 1000.0);
+    // モータは回転 / 直動にしか付かない。
+    if (j.kind != JointKind::Revolute && j.kind != JointKind::Prismatic) {
+        j.motor = MotorMode::None;
+    }
+    return j;
+}
 
 // ---- ライト -----------------------------------------------------------------
 // Sun は平行光（位置は届く光に影響せず、アイコンの置き場でしかない）、Point は
@@ -585,6 +748,7 @@ enum class NodeKind {
     OnSimStart,   // シミュレート開始の最初のステップ
     OnTimer,      // seconds ごとに繰り返し
     OnGrab,       // マウスで掴んでいる間、毎ステップ（掴んだ物が文脈に乗る）
+    OnJointBreak, // ジョイント（target、-1 = どれでも）が破断した（breakForce）
     // アクション（左の入力ポートで受ける）
     SetColor,        // オブジェクトの色を color へ（実行時のみ）
     ApplyImpulse,    // オブジェクトに速度変化 vec (m/s) を与える
@@ -593,6 +757,8 @@ enum class NodeKind {
     SetLightColor,   // ライトの色を color へ（実行時のみ）
     SetLightIntensity,  // ライトの強さを value へ（実行時のみ）
     CameraLookAt,    // カメラ target の注視点をオブジェクト other へ向ける
+    SetVelocity,     // オブジェクトの速度を vec (m/s) に（value != 0 なら加算）
+    SetMotor,        // ジョイント target のモータ目標値を value に（実行時のみ）
 };
 
 inline const char* nodeKindName(NodeKind k) {
@@ -607,6 +773,9 @@ inline const char* nodeKindName(NodeKind k) {
         case NodeKind::SetLightColor: return "lightColor";
         case NodeKind::SetLightIntensity: return "lightIntensity";
         case NodeKind::CameraLookAt: return "cameraLookAt";
+        case NodeKind::OnJointBreak: return "onJointBreak";
+        case NodeKind::SetVelocity: return "setVelocity";
+        case NodeKind::SetMotor: return "setMotor";
         case NodeKind::OnCollision: break;
     }
     return "onCollision";
@@ -623,18 +792,23 @@ inline NodeKind nodeKindFromName(const std::string& s, NodeKind fallback) {
     if (s == "lightColor") return NodeKind::SetLightColor;
     if (s == "lightIntensity") return NodeKind::SetLightIntensity;
     if (s == "cameraLookAt" || s == "lookAt") return NodeKind::CameraLookAt;
+    if (s == "onJointBreak" || s == "jointBreak") return NodeKind::OnJointBreak;
+    if (s == "setVelocity" || s == "velocity") return NodeKind::SetVelocity;
+    if (s == "setMotor" || s == "motor") return NodeKind::SetMotor;
     return fallback;
 }
 
 // トリガーかアクションか。ワイヤーは「トリガー → アクション」の向きだけ。
 inline bool nodeIsTrigger(NodeKind k) {
     return k == NodeKind::OnCollision || k == NodeKind::OnSimStart ||
-           k == NodeKind::OnTimer || k == NodeKind::OnGrab;
+           k == NodeKind::OnTimer || k == NodeKind::OnGrab ||
+           k == NodeKind::OnJointBreak;
 }
 
 // ノードの target 欄が指す種別。番号の検証・削除時の掃除・保存時の詰め替えは
-// 全部これで分岐する（object と light は保存で番号が詰まるため）。
-enum class NodeTargetKind { None, Object, Light, Camera };
+// 全部これで分岐する（object と light は保存で番号が詰まるため。joint は
+// 端点の消えたものが保存で落ちるので、これも詰め替えが要る）。
+enum class NodeTargetKind { None, Object, Light, Camera, Joint };
 
 inline NodeTargetKind nodeTargetKind(NodeKind k) {
     switch (k) {
@@ -647,6 +821,9 @@ inline NodeTargetKind nodeTargetKind(NodeKind k) {
         case NodeKind::SetLightColor:
         case NodeKind::SetLightIntensity: return NodeTargetKind::Light;
         case NodeKind::CameraLookAt: return NodeTargetKind::Camera;
+        case NodeKind::SetVelocity: return NodeTargetKind::Object;
+        case NodeKind::OnJointBreak:
+        case NodeKind::SetMotor: return NodeTargetKind::Joint;
         case NodeKind::OnSimStart:
         case NodeKind::OnTimer: break;
     }
@@ -678,8 +855,14 @@ struct NodeDesc {
     int other = -2;
     double seconds = 1.0;                // OnTimer の間隔
     Color3 color{0.0f, 0.0f, 0.0f};      // SetColor / SetLightColor（既定 = 黒）
-    Vec3d vec{0.0, 5.0, 0.0};            // ApplyImpulse の速度変化 (m/s)
-    double value = 0.0;                  // SetFixed(0/1) / SetLightIntensity
+    // ApplyImpulse の速度変化 / SetVelocity の速度 (m/s)。OnCollision では
+    // 「求める接触の向き」（対象から見て相手の側へ向く法線。零 = 問わない。
+    // 非零なら法線とのなす角 60° 以内のときだけ発火 = 「上から乗ったら」）。
+    Vec3d vec{0.0, 5.0, 0.0};
+    // 種類ごとの数値: SetFixed(0/1) / SetLightIntensity / GrabPull(倍率) /
+    // OnCollision(最小接触力 N、0 = 何でも) / SetVelocity(0 = 上書き, 1 = 加算) /
+    // SetMotor(モータの目標値。単位はジョイントの motor と同じ)。
+    double value = 0.0;
 };
 
 // トリガーの出力からアクションの入力へ 1 本。多対多を許す（1 トリガーで
@@ -729,8 +912,30 @@ constexpr int kEventOwnerWorld = -1;
 
 // シミュレート側の設定。ここの値はエディタで編集し、シミュレート開始時に
 // PhysicsWorld へ流し込む（実行中の変更も反映される）。
+// 積分器（ChTimestepper::Type）。NSC（相補性）の接触と組める 4 つだけ:
+//   euler       … EULER_IMPLICIT_LINEARIZED（既定・最速）
+//   projected   … EULER_IMPLICIT_PROJECTED（拘束の位置誤差を射影で消す）
+//   implicit    … EULER_IMPLICIT（非線形反復。硬いばねに強いが重い）
+//   trapezoidal … TRAPEZOIDAL_LINEARIZED（2 次精度）
+// HHT / Newmark は滑らかな系（SMC・FEA）向けで NSC では使えない。
+inline bool integratorNameValid(const std::string& s) {
+    return s == "euler" || s == "projected" || s == "implicit" || s == "trapezoidal";
+}
+// ソルバ（Core バックエンドのみ。Multicore は APGD 固定）:
+//   bb … Barzilai-Borwein（既定）、apgd、psor、jacobi、minres
+inline bool solverNameValid(const std::string& s) {
+    return s == "bb" || s == "apgd" || s == "psor" || s == "jacobi" || s == "minres";
+}
+// 2 つの材質から接触の摩擦・反発をどう合成するか（Chrono の
+// ChContactMaterialCompositionStrategy）: min（既定）/ average / max。
+inline bool combineNameValid(const std::string& s) {
+    return s == "min" || s == "average" || s == "max";
+}
+
 struct SimSettings {
-    double gravity = -9.81;  // m/s^2（-Y 方向）
+    double gravity = -9.81;  // m/s^2（Y 成分。斜面・無重力は X / Z と組む）
+    double gravityX = 0.0;   // m/s^2（X 成分）
+    double gravityZ = 0.0;   // m/s^2（Z 成分）
     int hz = 60;             // 物理更新レート
     int substeps = 2;
     int iterations = 60;
@@ -741,6 +946,9 @@ struct SimSettings {
     double linearDamping = 0.15;   // 1/s
     double angularDamping = 0.60;  // 1/s
     bool sleeping = true;
+    std::string integrator = "euler";  // 上の integratorNameValid
+    std::string solver = "bb";         // 上の solverNameValid（Core のみ）
+    std::string combine = "min";       // 上の combineNameValid
 };
 
 // ---- JSON 変換 ------------------------------------------------------------
@@ -896,7 +1104,27 @@ inline nlohmann::json toJson(const BodyDesc& b) {
     j["vehicle"] = b.hasVehicle;  // 車両か（中身の編集は XML で）
     j["prefab"] = b.prefab;
     j["soft"] = toJson(b.soft, b.hasSoft);  // ソフトボディ（Inspector で編集）
+    // 接触の物性・衝突レイヤ・重力・初速（Inspector の「物性」節）。
+    j["surface"] = {{"friction", b.surface.friction},
+                    {"restitution", b.surface.restitution},
+                    {"rolling", b.surface.rolling},
+                    {"cohesion", b.surface.cohesion}};
+    j["layer"] = b.layer;
+    j["nocollide"] = b.nocollide;
+    j["gravity"] = b.gravity;
+    j["velocity"] = toJson(b.velocity);
+    j["angularVelocity"] = toJson(b.angularVelocity);
     return j;
+}
+
+inline SurfaceDesc surfaceFromJson(const nlohmann::json& j, const SurfaceDesc& base) {
+    SurfaceDesc s = base;
+    if (!j.is_object()) return s;
+    s.friction = float(jsonNumber(j, "friction", s.friction));
+    s.restitution = float(jsonNumber(j, "restitution", s.restitution));
+    s.rolling = float(jsonNumber(j, "rolling", s.rolling));
+    s.cohesion = float(jsonNumber(j, "cohesion", s.cohesion));
+    return clampSurface(s);
 }
 
 inline BodyDesc bodyFromJson(const nlohmann::json& j, const BodyDesc& base) {
@@ -944,6 +1172,18 @@ inline BodyDesc bodyFromJson(const nlohmann::json& j, const BodyDesc& base) {
             b.soft = softFromJson(s, b.soft);
         }
     }
+    if (j.contains("surface")) b.surface = surfaceFromJson(j["surface"], b.surface);
+    b.layer = jsonInt(j, "layer", b.layer);
+    if (j.contains("nocollide") && j["nocollide"].is_array()) {
+        b.nocollide.clear();
+        for (const auto& v : j["nocollide"]) {
+            if (v.is_number_integer()) b.nocollide.push_back(v.get<int>());
+        }
+    }
+    if (j.contains("gravity") && j["gravity"].is_boolean()) b.gravity = j["gravity"];
+    b.velocity = vec3FromJson(j.value("velocity", nlohmann::json()), b.velocity);
+    b.angularVelocity =
+        vec3FromJson(j.value("angularVelocity", nlohmann::json()), b.angularVelocity);
     return b;
 }
 
@@ -956,6 +1196,18 @@ inline nlohmann::json toJson(const JointDesc& jt) {
     j["anchor"] = toJson(jt.anchor);
     j["axis"] = toJson(jt.axis);
     j["distance"] = jt.distance;
+    j["limited"] = jt.limited;
+    j["limitLo"] = jt.limitLo;
+    j["limitHi"] = jt.limitHi;
+    j["motor"] = motorModeName(jt.motor);
+    j["motorTarget"] = jt.motorTarget;
+    j["stiffness"] = jt.stiffness;
+    j["damping"] = jt.damping;
+    j["breakForce"] = jt.breakForce;
+    j["ratio"] = jt.ratio;
+    j["pitch"] = jt.pitch;
+    j["anchor2"] = toJson(jt.anchor2);
+    j["axis2"] = toJson(jt.axis2);
     return j;
 }
 
@@ -970,8 +1222,22 @@ inline JointDesc jointFromJson(const nlohmann::json& j, const JointDesc& base) {
     jt.bodyB = j.value("b", jt.bodyB);
     jt.anchor = vec3FromJson(j.value("anchor", nlohmann::json()), jt.anchor);
     jt.axis = vec3FromJson(j.value("axis", nlohmann::json()), jt.axis);
-    jt.distance = j.value("distance", jt.distance);
-    return jt;
+    jt.distance = jsonNumber(j, "distance", jt.distance);
+    if (j.contains("limited") && j["limited"].is_boolean()) jt.limited = j["limited"];
+    jt.limitLo = jsonNumber(j, "limitLo", jt.limitLo);
+    jt.limitHi = jsonNumber(j, "limitHi", jt.limitHi);
+    if (j.contains("motor") && j["motor"].is_string()) {
+        jt.motor = motorModeFromName(j["motor"], jt.motor);
+    }
+    jt.motorTarget = jsonNumber(j, "motorTarget", jt.motorTarget);
+    jt.stiffness = jsonNumber(j, "stiffness", jt.stiffness);
+    jt.damping = jsonNumber(j, "damping", jt.damping);
+    jt.breakForce = jsonNumber(j, "breakForce", jt.breakForce);
+    jt.ratio = jsonNumber(j, "ratio", jt.ratio);
+    jt.pitch = jsonNumber(j, "pitch", jt.pitch);
+    jt.anchor2 = vec3FromJson(j.value("anchor2", nlohmann::json()), jt.anchor2);
+    jt.axis2 = vec3FromJson(j.value("axis2", nlohmann::json()), jt.axis2);
+    return clampJoint(jt);
 }
 
 inline nlohmann::json toJson(const LightDesc& l) {
@@ -1154,11 +1420,9 @@ inline PartDesc clampPart(PartDesc p) {
     if (p.name.size() > 64) p.name.resize(64);
     if (p.socket.size() > 32) p.socket.resize(32);
     p.material = clampMaterial(p.material);
-    // 当たり判定は車体に固定の箱 / 球だけ（車輪に付く部品は動くので複合形状に
-    // できない。円柱 / メッシュの当たり形状は未対応）。
-    if (!p.socket.empty() || (p.kind != PartKind::Box && p.kind != PartKind::Sphere)) {
-        p.collide = false;
-    }
+    // 当たり判定は車体に固定の箱 / 球 / 円柱だけ（車輪に付く部品は動くので
+    // 複合形状にできない。メッシュ部品の当たり形状は未対応）。
+    if (!p.socket.empty() || p.kind == PartKind::Mesh) p.collide = false;
     return p;
 }
 inline nlohmann::json toJson(const PrefabDesc& d) {
@@ -1414,6 +1678,8 @@ inline RenderDesc renderFromJson(const nlohmann::json& j,
 inline nlohmann::json toJson(const SimSettings& s) {
     nlohmann::json j;
     j["gravity"] = s.gravity;
+    j["gravityX"] = s.gravityX;
+    j["gravityZ"] = s.gravityZ;
     j["hz"] = s.hz;
     j["substeps"] = s.substeps;
     j["iterations"] = s.iterations;
@@ -1424,13 +1690,18 @@ inline nlohmann::json toJson(const SimSettings& s) {
     j["linearDamping"] = s.linearDamping;
     j["angularDamping"] = s.angularDamping;
     j["sleeping"] = s.sleeping;
+    j["integrator"] = s.integrator;
+    j["solver"] = s.solver;
+    j["combine"] = s.combine;
     return j;
 }
 
 inline SimSettings simFromJson(const nlohmann::json& j, const SimSettings& base) {
     SimSettings s = base;
     if (!j.is_object()) return s;
-    s.gravity = j.value("gravity", s.gravity);
+    s.gravity = jsonNumber(j, "gravity", s.gravity);
+    s.gravityX = jsonNumber(j, "gravityX", s.gravityX);
+    s.gravityZ = jsonNumber(j, "gravityZ", s.gravityZ);
     s.hz = j.value("hz", s.hz);
     s.substeps = j.value("substeps", s.substeps);
     s.iterations = j.value("iterations", s.iterations);
@@ -1441,6 +1712,9 @@ inline SimSettings simFromJson(const nlohmann::json& j, const SimSettings& base)
     s.linearDamping = j.value("linearDamping", s.linearDamping);
     s.angularDamping = j.value("angularDamping", s.angularDamping);
     s.sleeping = j.value("sleeping", s.sleeping);
+    if (j.contains("integrator") && j["integrator"].is_string()) s.integrator = j["integrator"];
+    if (j.contains("solver") && j["solver"].is_string()) s.solver = j["solver"];
+    if (j.contains("combine") && j["combine"].is_string()) s.combine = j["combine"];
     return s;
 }
 
@@ -1489,6 +1763,8 @@ inline GizmoSettings gizmoFromJson(const nlohmann::json& j,
 inline SimSettings clampSim(SimSettings s) {
     auto cl = [](auto v, auto lo, auto hi) { return v < lo ? lo : (v > hi ? hi : v); };
     s.gravity = cl(s.gravity, -100.0, 100.0);
+    s.gravityX = cl(s.gravityX, -100.0, 100.0);
+    s.gravityZ = cl(s.gravityZ, -100.0, 100.0);
     s.hz = cl(s.hz, 10, 240);
     s.substeps = cl(s.substeps, 1, 8);
     s.iterations = cl(s.iterations, 1, 2000);
@@ -1498,6 +1774,10 @@ inline SimSettings clampSim(SimSettings s) {
     s.restitution = cl(s.restitution, 0.0f, 1.0f);
     s.linearDamping = cl(s.linearDamping, 0.0, 10.0);
     s.angularDamping = cl(s.angularDamping, 0.0, 10.0);
+    // 名前の打ち間違いは既定へ（読み込み側が警告を出す。ここは最後の関所）。
+    if (!integratorNameValid(s.integrator)) s.integrator = "euler";
+    if (!solverNameValid(s.solver)) s.solver = "bb";
+    if (!combineNameValid(s.combine)) s.combine = "min";
     return s;
 }
 
@@ -1515,6 +1795,39 @@ inline BodyDesc clampBody(BodyDesc b) {
     b.position.z = cl(b.position.z, -500.0, 500.0);
     b.soft = clampSoft(b.soft);
     b.material = clampMaterial(b.material);
+    b.surface = clampSurface(b.surface);
+    b.layer = int(cl(double(b.layer), 0.0, double(kCollisionLayers - 1)));
+    {
+        // レイヤ一覧: 範囲内の値だけ、重複なし、昇順。
+        std::vector<int> nc;
+        for (int v : b.nocollide) {
+            if (v < 0 || v >= kCollisionLayers) continue;
+            if (std::find(nc.begin(), nc.end(), v) == nc.end()) nc.push_back(v);
+        }
+        std::sort(nc.begin(), nc.end());
+        b.nocollide = nc;
+    }
+    b.velocity.x = cl(b.velocity.x, -1000.0, 1000.0);
+    b.velocity.y = cl(b.velocity.y, -1000.0, 1000.0);
+    b.velocity.z = cl(b.velocity.z, -1000.0, 1000.0);
+    b.angularVelocity.x = cl(b.angularVelocity.x, -36000.0, 36000.0);
+    b.angularVelocity.y = cl(b.angularVelocity.y, -36000.0, 36000.0);
+    b.angularVelocity.z = cl(b.angularVelocity.z, -36000.0, 36000.0);
+    // Trimesh は当たり判定だけの値。見た目に書かれたらメッシュ（名前が
+    // あれば）か箱へ。当たり判定の trimesh はメッシュ形状にしか付かない。
+    if (b.shape == ShapeKind::Trimesh) {
+        b.shape = b.mesh.empty() ? ShapeKind::Box : ShapeKind::Model;
+        if (b.shape == ShapeKind::Box && b.collision == ShapeKind::Trimesh) {
+            b.collision = ShapeKind::Box;
+        }
+    }
+    if (b.collision == ShapeKind::Trimesh && b.shape != ShapeKind::Model) {
+        b.collision = b.shape;
+    }
+    // ソフトボディの格子は箱か球。凸包 / 三角メッシュの当たり判定は付かない。
+    if (b.hasSoft && (b.collision == ShapeKind::Trimesh || b.collision == ShapeKind::Model)) {
+        b.collision = ShapeKind::Box;
+    }
     // geom の無いボディ: 当たり判定も無し（部品だけ）。ソフトボディにはできない
     // （格子は箱か球）ので箱へ倒す。
     if (b.hasSoft && b.shape == ShapeKind::None) {
@@ -1573,13 +1886,23 @@ inline NodeDesc clampNode(NodeDesc n) {
     // other は注視先のオブジェクト番号なので、-1（未設定）が下限。
     if (n.kind == NodeKind::CameraLookAt && n.other < -1) n.other = -1;
     n.seconds = cl(n.seconds, 0.05, 3600.0);
+    // OnCollision の vec は「求める接触の向き」（零 = 問わない）。NodeDesc の
+    // 既定 (0, 5, 0) は ApplyImpulse のためのものなので、そのまま残すと作った
+    // ばかりの衝突トリガーが「上から乗ったとき」だけになる。既定値のままなら
+    // 零へ倒す（旧 JSON の衝突ノードもこれで従来どおり何でも拾う）。
+    if (n.kind == NodeKind::OnCollision && n.vec.x == 0.0 && n.vec.y == 5.0 &&
+        n.vec.z == 0.0) {
+        n.vec = Vec3d{0.0, 0.0, 0.0};
+    }
     n.vec.x = cl(n.vec.x, -100.0, 100.0);
     n.vec.y = cl(n.vec.y, -100.0, 100.0);
     n.vec.z = cl(n.vec.z, -100.0, 100.0);
     // value の意味は種類ごと: SetFixed は 0/1、GrabPull は強さの倍率
     // （0 以下 = 既定の 1 倍）、SetLightIntensity はルーメン。
-    if (n.kind == NodeKind::SetFixed) {
+    if (n.kind == NodeKind::SetFixed || n.kind == NodeKind::SetVelocity) {
         n.value = n.value != 0.0 ? 1.0 : 0.0;
+    } else if (n.kind == NodeKind::SetMotor) {
+        n.value = cl(n.value, -1000000.0, 1000000.0);  // モータの目標値は負もある
     } else if (n.kind == NodeKind::GrabPull) {
         n.value = n.value <= 0.0 ? 1.0 : cl(n.value, 0.1, 10.0);
     } else {

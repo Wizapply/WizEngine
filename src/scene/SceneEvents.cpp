@@ -218,6 +218,7 @@ void Scene::runEventGraph(double dt) {
     }
     if (graphRt_.instances.empty()) {
         graphRt_.startFired = true;  // 後から足した OnSimStart を発火させない
+        graphRt_.brokenJoints.clear();
         return;
     }
 
@@ -235,8 +236,14 @@ void Scene::runEventGraph(double dt) {
     // 今ステップの接触をオブジェクト番号のペア（-1 = 地面）に引き直し、
     // 前ステップに無かったものだけを「新しくぶつかった」として残す。NSC では
     // 積まれているだけでも毎ステップ接触が立つので、差分を取らないと乗って
-    // いるだけで発火し続ける。
-    std::vector<std::pair<int, int>> newPairs;
+    // いるだけで発火し続ける。ペアごとに一番強い接触点の力と法線も持つ
+    // （OnCollision の「最小接触力」「向き」の絞り込みに使う）。
+    struct NewPair {
+        int a = -1, b = -1;
+        double force = 0.0;
+        double nx = 0.0, ny = 0.0, nz = 0.0;  // a から b へ向く法線
+    };
+    std::vector<NewPair> newPairs;
     if (wantContacts) {
         // physId -> オブジェクト番号。ボディは他にも居る（地面・静的メッシュ・
         // 作り直しで退場した旧ボディ）ので、生きている物だけを引く。
@@ -246,30 +253,42 @@ void Scene::runEventGraph(double dt) {
                 byPhys[boxes_[i].physId] = int(i);
             }
         }
-        std::set<std::pair<int, int>> now;
-        for (const auto& pr : physics_.activeContactPairs()) {
+        std::map<std::pair<int, int>, NewPair> now;
+        for (const ContactInfo& c : physics_.activeContacts()) {
             int a = 0, b = 0;
-            const auto ia = byPhys.find(pr.first);
-            const auto ib = byPhys.find(pr.second);
+            const auto ia = byPhys.find(c.a);
+            const auto ib = byPhys.find(c.b);
             if (ia != byPhys.end()) a = ia->second;
-            else if (pr.first == groundPhysId_) a = -1;
+            else if (c.a == groundPhysId_) a = -1;
             else continue;  // 退場済みボディや静的メッシュは対象外
             if (ib != byPhys.end()) b = ib->second;
-            else if (pr.second == groundPhysId_) b = -1;
+            else if (c.b == groundPhysId_) b = -1;
             else continue;
-            if (a > b) std::swap(a, b);
-            now.insert({a, b});
+            NewPair np;
+            np.a = a;
+            np.b = b;
+            np.force = c.force;
+            np.nx = c.nx; np.ny = c.ny; np.nz = c.nz;
+            if (a > b) {
+                std::swap(np.a, np.b);
+                np.nx = -np.nx; np.ny = -np.ny; np.nz = -np.nz;
+            }
+            auto& slot = now[{np.a, np.b}];
+            if (slot.a == -1 && slot.b == -1 && slot.force == 0.0) slot = np;
+            else if (np.force > slot.force) slot = np;
         }
         // 最初のパスは今の接触を覚えるだけで発火させない。シミュレート開始の
         // 時点で既に触れていたペア（積んである箱・地面の上の箱）まで「新しく
         // ぶつかった」ことになってしまうため。
+        std::set<std::pair<int, int>> nowKeys;
+        for (const auto& kv : now) nowKeys.insert(kv.first);
         if (graphRt_.contactsPrimed) {
-            for (const auto& p : now) {
-                if (!graphRt_.prevContacts.count(p)) newPairs.push_back(p);
+            for (const auto& kv : now) {
+                if (!graphRt_.prevContacts.count(kv.first)) newPairs.push_back(kv.second);
             }
         }
         graphRt_.contactsPrimed = true;
-        graphRt_.prevContacts.swap(now);
+        graphRt_.prevContacts.swap(nowKeys);
     }
 
     // 掴んでいるカメラぶん（カメラごとに違う物を掴める）。
@@ -285,17 +304,28 @@ void Scene::runEventGraph(double dt) {
     // 付いている相手」。どちらも無い（ワールド付け）なら「どのオブジェクト
     // でも」。相手フィルタ（other）は対象でない側に掛かる。合ったときは
     // 対象側の番号を hit に返す（アクションへ渡す文脈になる）。
-    auto collisionMatches = [](const ed::NodeDesc& n, int owner, int a, int b,
+    // 加えて value = 最小接触力（0 = 問わない）、vec = 求める向き（対象から
+    // 見て相手の側へ向く接触法線と 60° 以内。零 = 問わない）で絞る。
+    auto collisionMatches = [](const ed::NodeDesc& n, int owner, const NewPair& p,
                                int& hit) {
         const int want = n.target >= 0 ? n.target : owner;
-        auto pairOk = [&n, want](int self, int partner) {
+        if (n.value > 0.0 && p.force < n.value) return false;
+        auto pairOk = [&n, want, &p](int self, int partner, double sx, double sy,
+                                     double sz) {
             if (want >= 0 && self != want) return false;
             if (want < 0 && self < 0) return false;  // 地面は対象ではない
-            if (n.other == -2) return true;
-            return partner == n.other;
+            if (n.other != -2 && partner != n.other) return false;
+            const double len2 = n.vec.x * n.vec.x + n.vec.y * n.vec.y + n.vec.z * n.vec.z;
+            if (len2 > 1e-12) {
+                // (sx, sy, sz) = 対象から相手へ向く法線。
+                const double dot = (n.vec.x * sx + n.vec.y * sy + n.vec.z * sz) /
+                                   std::sqrt(len2);
+                if (dot < 0.5) return false;  // cos 60°
+            }
+            return true;
         };
-        if (pairOk(a, b)) { hit = a; return true; }
-        if (pairOk(b, a)) { hit = b; return true; }
+        if (pairOk(p.a, p.b, p.nx, p.ny, p.nz)) { hit = p.a; return true; }
+        if (pairOk(p.b, p.a, -p.nx, -p.ny, -p.nz)) { hit = p.b; return true; }
         return false;
     };
 
@@ -350,12 +380,23 @@ void Scene::runEventGraph(double dt) {
                 case ed::NodeKind::OnCollision:
                     for (const auto& p : newPairs) {
                         int hit = -1;
-                        if (!collisionMatches(n, inst.owner, p.first, p.second,
-                                              hit)) {
-                            continue;
-                        }
+                        if (!collisionMatches(n, inst.owner, p, hit)) continue;
                         GraphContext c = base;
                         c.object = hit;
+                        fires.push_back(c);
+                    }
+                    break;
+                case ed::NodeKind::OnJointBreak:
+                    // このステップで外れたジョイント。target = -1 はどれでも。
+                    // 文脈の物はジョイントの A 側（地面なら B 側）。
+                    for (const int jointIndex : graphRt_.brokenJoints) {
+                        if (n.target >= 0 && n.target != jointIndex) continue;
+                        GraphContext c = base;
+                        const auto joints = editor_.joints();
+                        if (jointIndex >= 0 && std::size_t(jointIndex) < joints.size()) {
+                            const ed::JointDesc& jd = joints[std::size_t(jointIndex)];
+                            c.object = jd.bodyA >= 0 ? jd.bodyA : jd.bodyB;
+                        }
                         fires.push_back(c);
                     }
                     break;
@@ -379,6 +420,7 @@ void Scene::runEventGraph(double dt) {
         }
     }
     graphRt_.startFired = true;
+    graphRt_.brokenJoints.clear();  // 破断は 1 ステップだけのイベント
 }
 
 void Scene::runGraphAction(const ed::NodeDesc& n, const GraphContext& ctx,
@@ -490,6 +532,28 @@ void Scene::runGraphAction(const ed::NodeDesc& n, const GraphContext& ctx,
             l.stateDirty = true;
             return;
         }
+        case ed::NodeKind::SetVelocity: {
+            if (!objectAlive(obj)) return;
+            const GameObject& o = boxes_[std::size_t(obj)];
+            if (o.physId == GameObject::kInvalidId) return;
+            // value != 0 なら今の速度に足す、0 なら上書き。角速度は保つ。
+            chrono::ChVector3d v(n.vec.x, n.vec.y, n.vec.z);
+            if (n.value != 0.0) v += physics_.bodyVelocity(o.physId);
+            physics_.setBodyVelocity(o.physId, v, physics_.bodyAngularVelocity(o.physId));
+            return;
+        }
+        case ed::NodeKind::SetMotor: {
+            // ジョイントは番号で明示する（付け先になれない）。文書の単位
+            // （回転モータは度）で書かれた目標値を物理の単位へ直して渡す。
+            if (n.target < 0 || std::size_t(n.target) >= jointPhysIds_.size()) return;
+            const std::size_t phys = jointPhysIds_[std::size_t(n.target)];
+            if (phys == PhysicsWorld::kInvalidJoint) return;
+            const auto joints = editor_.joints();
+            if (std::size_t(n.target) >= joints.size()) return;
+            physics_.setJointMotorTarget(
+                phys, motorTargetToPhysics(joints[std::size_t(n.target)], n.value));
+            return;
+        }
         case ed::NodeKind::CameraLookAt: {
             if (n.target < 0 || std::size_t(n.target) >= cameras_.size() ||
                 !cameraActive(std::size_t(n.target))) {
@@ -547,6 +611,21 @@ void Scene::resetGraphRuntime() {
             l.hasRuntimeColor = false;
             l.hasRuntimeIntensity = false;
             l.stateDirty = true;
+        }
+    }
+}
+
+void Scene::pruneJointNodes(int removedIndex) {
+    // そのジョイントを指すノードは消し、後ろの番号を指すノードは 1 つ前へ
+    // （ジョイントの一覧は詰めるので、番号がずれる）。-1（どれでも）は触らない。
+    for (const auto& asset : editor_.eventAssets()) {
+        for (const auto& n : asset.nodes) {
+            if (ed::nodeTargetKind(n.kind) != ed::NodeTargetKind::Joint) continue;
+            if (n.target == removedIndex) {
+                editor_.removeGraphNode(asset.name, n.id);
+            } else if (n.target > removedIndex) {
+                editor_.updateGraphNode(asset.name, n.id, {{"target", n.target - 1}});
+            }
         }
     }
 }

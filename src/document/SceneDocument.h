@@ -21,7 +21,12 @@
 //
 // ---- 書式（MJCF に寄せた点・違う点）----------------------------------------
 //   <wizengine model="名前" version="4">
-//     <option .../>                     ... シミュレート設定（MuJoCo の option）
+//     <option gravity="x y z" integrator solver combine .../>
+//                                       ... シミュレート設定（MuJoCo の option）。
+//                                           integrator = euler / projected /
+//                                           implicit / trapezoidal、solver = bb /
+//                                           apgd / psor / jacobi / minres、
+//                                           combine = min / average / max
 //     <visual>                          ... 描画品質（MuJoCo の visual）。
 //       <quality shadowMap cascades shadow contactShadows msaa taa fxaa/>
 //       <postprocess enabled ssao ssaoIntensity bloom ssr dof dofBlur vignette/>
@@ -47,7 +52,10 @@
 //       <ground size="10" visual="8" texture="textures/ground.png" tile="2"/>
 //       <light .../> <camera .../>
 //       <body name pos euler fixed>
-//         <geom type size mass rgba/>
+//         <geom type size mass rgba collision="trimesh"
+//               friction restitution rolling cohesion   ... ボディごとの接触物性
+//               layer nocollide="1 3" gravity="false"  ... 衝突レイヤ・重力オフ
+//               velocity="x y z" angvel="x y z"/>       ... 初速 (m/s, deg/s)
 //         <event name="blink"/>            ... このオブジェクトに付ける
 //         <vehicle ...>                    ... 車両（vehicle/VehicleXml.h）
 //         <prefab name="sedan"/>           ... 付けるプレハブ（見た目の部品）
@@ -56,7 +64,17 @@
 //                                              ばね。EditorTypes.h の SoftDesc）
 //       </body>
 //     </worldbody>
-//     <equality> <joint type body1 body2 anchor axis/> </equality>
+//     <equality>
+//       <joint type body1 body2 anchor axis
+//              range="lo hi"             ... 可動範囲（hinge は度、slide は m）
+//              motor="speed|position|force" target=".."  ... 駆動（hinge / slide）
+//              stiffness damping         ... ばね・ダンパ（spring / hinge / slide）
+//              breakforce=".."           ... この反力 (N) を超えたら外れる
+//              ratio anchor2 axis2       ... gear、pitch ... screw/>
+//                type は weld / hinge / ball / slide / distance に加えて
+//                universal / cylindrical / planar / pointline / pointplane /
+//                gear / screw / spring（Chrono の ChLink* に対応）
+//     </equality>
 //     <events>  <event name="pickup"/>  </events>   ... ワールドに付ける
 //   </wizengine>
 //

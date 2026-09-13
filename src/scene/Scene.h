@@ -20,6 +20,7 @@
 #include "scene/GameObject.h"
 #include "scene/SceneComponent.h"
 #include "document/SceneDocument.h"
+#include "physics/MeshCollision.h"  // CollisionTriangles
 #include "physics/PhysicsWorld.h"  // for BodyTransform
 
 namespace wizengine {
@@ -142,7 +143,21 @@ public:
         bool loadFailed = false;  // 読めなかった（毎フレーム試さない）
         std::vector<chrono::ChVector3d> hull;  // 凸包の点群（空 = 無し）
         bool hullTried = false;
+        // 三角メッシュそのまま（<geom collision="trimesh">）。凸包と同じく
+        // 最初に使うときに読む。
+        wizengine::CollisionTriangles trimesh;
+        bool trimeshTried = false;
     };
+
+    // ジョイントの計測値（直前のステップの反力と破断）。物理スレッドが
+    // stepPhysics で書き、HTTP スレッド（/scene）と RENDER スレッド（線の
+    // 表示）が読む。poseMutex_ の下。
+    struct JointStat {
+        double force = 0.0;   // 拘束の反力 (N)。ばねはばね力
+        double torque = 0.0;  // 反トルク (N·m)。モータの出力もここ
+        bool broken = false;  // breakForce を超えて外れた
+    };
+    std::vector<JointStat> jointStats();
 
     // Pick the object under a screen position, given in normalised device
     // coords (x, y in [-1, 1], y up), through the given camera. Selects it (or
@@ -281,6 +296,8 @@ private:
 
     // メッシュの凸包（最初に使うときに読み込む）。nullptr = 読めない。
     const std::vector<chrono::ChVector3d>* meshHull(int meshIndex);
+    // メッシュの三角形（同上。collision="trimesh" 用）。
+    const wizengine::CollisionTriangles* meshTrimesh(int meshIndex);
     // 設計値から Chrono のボディを 1 個（createObject / rebuildBody 共通）。
     // ソフトボディ（desc.hasSoft）なら粒子の格子を作り、その設計図を lattice
     // へ返す（剛体なら nullptr）。戻り値は physId（ソフトなら代表番号）。
@@ -307,6 +324,11 @@ private:
     void rebuildChildren(std::size_t index);
     // 文書のジョイントを Chrono に作り直す（シミュレート開始時）。
     void buildJoints();
+    // 直前のステップの反力・破断を jointStats_ へ（stepPhysics から）。
+    void updateJointStats();
+    // ジョイントを 1 本消したあとの後始末: それを指すノードを消し、後ろの
+    // 番号を指すノードを 1 つ前へずらす（ジョイントは番号で参照するため）。
+    void pruneJointNodes(int removedIndex);
 
     // ---- イベントグラフの実行（PHYSICS スレッド）--------------------------
     // シミュレートの 1 サブステップごとに、**付いているイベントアセット**の
@@ -391,6 +413,11 @@ private:
     EditorState editor_;
     // 地面の物理ボディ。ジョイントの「ワールド側」に使う。
     std::size_t groundPhysId_ = GameObject::kInvalidId;
+    // 文書のジョイント番号 → PhysicsWorld のジョイント番号（作れなかった /
+    // シミュレートしていないものは kInvalidJoint）。buildJoints が作り、
+    // イベントの setMotor と計測（updateJointStats）が引く。物理スレッド専用。
+    std::vector<std::size_t> jointPhysIds_;
+    std::vector<JointStat> jointStats_;  // poseMutex_ の下
     // メッシュアセットのカタログ（文書の <asset>）。構造は objectsMutex_。
     std::vector<MeshAsset> meshes_;
     // 地面と環境光（文書の <ground> / <environment>）。書くのは物理スレッド
@@ -449,6 +476,9 @@ private:
         // SetFixed アクションが触ったオブジェクト番号。停止時にこれだけ
         // desc.fixed へ戻す（全ボディを毎回触らないための記録）。
         std::set<std::size_t> fixedTouched;
+        // 直前のステップで破断したジョイント（文書の番号）。OnJointBreak が
+        // 見て、そのパスの終わりで空にする。
+        std::vector<int> brokenJoints;
     };
     GraphRuntime graphRt_;
 

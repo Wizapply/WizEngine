@@ -71,9 +71,81 @@ inline JointType toJointType(ed::JointKind k) {
         case ed::JointKind::Spherical: return JointType::Spherical;
         case ed::JointKind::Prismatic: return JointType::Prismatic;
         case ed::JointKind::Distance: return JointType::Distance;
+        case ed::JointKind::Universal: return JointType::Universal;
+        case ed::JointKind::Cylindrical: return JointType::Cylindrical;
+        case ed::JointKind::Planar: return JointType::Planar;
+        case ed::JointKind::PointLine: return JointType::PointLine;
+        case ed::JointKind::PointPlane: return JointType::PointPlane;
+        case ed::JointKind::Gear: return JointType::Gear;
+        case ed::JointKind::Screw: return JointType::Screw;
+        case ed::JointKind::Spring: return JointType::Spring;
         case ed::JointKind::Revolute: break;
     }
     return JointType::Revolute;
+}
+inline MotorType toMotorType(ed::MotorMode m) {
+    switch (m) {
+        case ed::MotorMode::Speed: return MotorType::Speed;
+        case ed::MotorMode::Position: return MotorType::Position;
+        case ed::MotorMode::Force: return MotorType::Force;
+        case ed::MotorMode::None: break;
+    }
+    return MotorType::None;
+}
+
+// 文書のジョイント（度・m・N）を PhysicsWorld の指定（rad）へ。角度で持つ
+// 欄がどれかは種類とモータで決まるので、変換はここ 1 か所に置く。
+// bodyA / bodyB（physId）は呼び出し側が入れる。
+inline JointSpec toJointSpec(const ed::JointDesc& j) {
+    JointSpec s;
+    s.type = toJointType(j.kind);
+    s.anchor = chrono::ChVector3d(j.anchor.x, j.anchor.y, j.anchor.z);
+    s.axis = chrono::ChVector3d(j.axis.x, j.axis.y, j.axis.z);
+    s.distance = j.distance;
+    const bool angular = j.kind == ed::JointKind::Revolute ||
+                         j.kind == ed::JointKind::Cylindrical ||
+                         j.kind == ed::JointKind::Universal;
+    const double toRad = scenemath::kPi / 180.0;
+    s.limited = j.limited;
+    s.limitLo = angular ? j.limitLo * toRad : j.limitLo;
+    s.limitHi = angular ? j.limitHi * toRad : j.limitHi;
+    s.motor = toMotorType(j.motor);
+    // 回転モータの速度と角度は度で書かれている（力 / トルクはそのまま）。
+    const bool motorAngular =
+        j.kind == ed::JointKind::Revolute && j.motor != ed::MotorMode::Force;
+    s.motorTarget = motorAngular ? j.motorTarget * toRad : j.motorTarget;
+    s.stiffness = j.stiffness;
+    s.damping = j.damping;
+    s.breakForce = j.breakForce;
+    s.ratio = j.ratio;
+    s.pitch = j.pitch;
+    s.hasAnchor2 = j.anchor2.x != 0.0 || j.anchor2.y != 0.0 || j.anchor2.z != 0.0;
+    s.hasAxis2 = j.axis2.x != 0.0 || j.axis2.y != 0.0 || j.axis2.z != 0.0;
+    s.anchor2 = chrono::ChVector3d(j.anchor2.x, j.anchor2.y, j.anchor2.z);
+    s.axis2 = chrono::ChVector3d(j.axis2.x, j.axis2.y, j.axis2.z);
+    return s;
+}
+// イベントの setMotor が書く目標値も同じ換算（度 → rad）。
+inline double motorTargetToPhysics(const ed::JointDesc& j, double value) {
+    const bool motorAngular =
+        j.kind == ed::JointKind::Revolute && j.motor != ed::MotorMode::Force;
+    return motorAngular ? value * scenemath::kPi / 180.0 : value;
+}
+
+// ボディの物性・レイヤ・重力を PhysicsWorld の指定へ。
+inline BodyOptions toBodyOptions(const ed::BodyDesc& d) {
+    BodyOptions o;
+    o.friction = d.surface.friction;
+    o.restitution = d.surface.restitution;
+    o.rolling = d.surface.rolling;
+    o.cohesion = d.surface.cohesion;
+    o.layer = d.layer;
+    o.nocollide = 0;
+    for (const int L : d.nocollide) {
+        if (L >= 0 && L < ed::kCollisionLayers) o.nocollide |= (1u << L);
+    }
+    o.gravity = d.gravity;
+    return o;
 }
 
 // ジョイントの種類ごとの線の色（リニア RGB）。ビューを見ただけで何の拘束か
@@ -84,6 +156,14 @@ inline filament::math::float3 jointColor(ed::JointKind k) {
         case ed::JointKind::Spherical: return {0.95f, 0.45f, 0.85f};  // 桃
         case ed::JointKind::Prismatic: return {0.35f, 0.90f, 0.90f};  // 水
         case ed::JointKind::Distance: return {0.60f, 0.95f, 0.40f};   // 黄緑
+        case ed::JointKind::Universal: return {0.95f, 0.30f, 0.30f};  // 赤
+        case ed::JointKind::Cylindrical: return {0.30f, 0.60f, 0.95f};  // 青
+        case ed::JointKind::Planar: return {0.70f, 0.70f, 0.95f};     // 藤
+        case ed::JointKind::PointLine: return {0.95f, 0.95f, 0.60f};  // 淡黄
+        case ed::JointKind::PointPlane: return {0.60f, 0.95f, 0.95f}; // 淡水
+        case ed::JointKind::Gear: return {0.85f, 0.85f, 0.85f};       // 銀
+        case ed::JointKind::Screw: return {0.75f, 0.55f, 0.35f};      // 銅
+        case ed::JointKind::Spring: return {0.40f, 0.95f, 0.60f};     // 緑
         case ed::JointKind::Revolute: break;
     }
     return {1.0f, 0.55f, 0.15f};  // 橙

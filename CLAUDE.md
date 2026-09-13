@@ -60,10 +60,14 @@ PhysicsWorld.step(dt)
   まとめて作り直す**。スライダーを動かすたびに剛体を捨てないための遅延。
 - **ジョイントはシミュレート開始のたびに作り直す**（`Scene::buildJoints`）。
   エディタで物を動かしたあとも、拘束が今の位置に合った状態で張られる。
-  停止時は `removeAllJoints()`。種類は `PhysicsWorld::JointType` の 5 種で、
-  Chrono の `ChLinkLockLock` / `...Revolute` / `...Spherical` / `...Prismatic` /
+  停止時は `removeAllJoints()`。種類は `PhysicsWorld::JointType` の 13 種
+  （下の「Chrono の拘束・物性」の章）。基本 5 種は Chrono の
+  `ChLinkLockLock` / `...Revolute` / `...Spherical` / `...Prismatic` /
   `ChLinkDistance`。**Revolute と Prismatic はリンク座標系の Z 軸が基準**なので、
-  ユーザー指定のワールド軸を Z に合わせる四元数を作って渡している。
+  ユーザー指定のワールド軸を Z に合わせる四元数を作って渡している
+  （直動モータ `ChLinkMotorLinear*` と PointLine だけは X 軸基準 =
+  `quatFromXAxis`）。文書のジョイント → `JointSpec` の変換（度 → rad）は
+  `SceneInternal.h` の `toJointSpec` 1 か所。
 - **`objectsMutex_` は「一覧の構造」だけを守る**。書くのは物理スレッドだけなので
   そのスレッドは読むときにロック不要。他のスレッド（HTTP の階層 JSON、INPUT の
   選択、RENDER の反映）は `Scene::lockObjects()` を取る。`applyToRenderer()` は
@@ -597,6 +601,128 @@ Lua を見ない: ノード → Lua ソース → LuaJIT、はエンジンの中
 - **未**: タイヤ以外（サス・エンジン曲線）の差し替え口、vec3 型、ノードの
   値のライブ表示（デバッグバッジ）。
 
+## Chrono の拘束・物性（`PhysicsWorld::JointSpec` / `BodyOptions`）
+
+Chrono が持っていて WizEngine が使っていなかった機能のうち、既存の
+`PhysicsWorld` の口を広げるだけで入るもの（「A」の一群）。文書の定義は
+`SceneDocument.h` 冒頭、値の型は `EditorTypes.h`、Chrono への変換は
+`SceneInternal.h`（`toJointSpec` / `toBodyOptions`）に 1 か所ずつ。見本は
+`assets/scenes/mechanisms.xml`。
+
+- **ジョイント 13 種**（`JointKind` / `JointType`）。基本 5 種に加えて
+  Universal（`ChLinkUniversal`、axis = シャフト）、Cylindrical、Planar
+  （axis = 面の法線）、PointLine（axis = 線）、PointPlane、Gear
+  （`ChLinkLockGear`、`ratio` と 2 本目のシャフト `anchor2` / `axis2`。
+  シャフト座標系はボディローカルへ手計算で直す `worldToBodyLocal`）、Screw
+  （`ChLinkLockScrew`、`pitch` m/回転）、Spring（`ChLinkTSDA`、拘束ではなく
+  力。地面側の取り付け点はアンカー、ボディ側は中心）。文書の type 名は
+  `weld / hinge / ball / slide / distance / universal / cylindrical / planar /
+  pointline / pointplane / gear / screw / spring`。歯車とねじはヘッダを
+  `__has_include` で見て、無い版では「作らない」で済ませる（Distance と同じ）。
+- **可動範囲 `range="lo hi"`**（hinge / cylindrical は度、slide は m。
+  `ChLinkLock::LimitRz()` / `LimitZ()`）。**モータ `motor="speed|position|
+  force" target=".."`**（hinge / slide のみ。`ChLinkMotorRotationSpeed /
+  Angle / Torque`、`ChLinkMotorLinearSpeed / Position / Force`。拘束ごと
+  置き換わるので range と併用不可 = 読み込みが警告して range を落とす。
+  目標値は `ChFunctionConst` で持ち、`setJointMotorTarget` が実行中に
+  書き換える = イベントの `setMotor`）。**ばね `stiffness damping`**
+  （spring 種類は 2 点間、hinge は `ChLinkRSDA` を拘束に添える、slide は
+  中心間の TSDA）。**破断 `breakforce`**（`step()` の末尾 `checkJointBreaks`
+  が `GetReaction2()` の力の大きさを見て `RemoveLink`。外れた番号は
+  `takeBrokenJoints()` → Scene が文書の番号に直して `onJointBreak`
+  トリガーへ。線も消える）。
+- **反力の計測**（`jointReaction`。ばねはばね力）。Scene が毎ステップ
+  `jointStats_`（poseMutex_ の下）へ写し、`/scene` の joints[] に `force /
+  torque / broken`、UI の一覧に出る。モータの出力トルクもこれ。
+- **ボディごとの接触物性 `<geom friction restitution rolling cohesion>`**
+  （`SurfaceDesc`、負 = シーン設定に従う = 書かない）。指定のあるボディだけ
+  専用の `ChContactMaterialNSC` を持ち（`materialFor`）、シーン設定の変更は
+  「シーン任せ」の欄に追従する（`setSurfaceMaterial` が再解決）。共有材質の
+  ボディを実行中に専用へ変えるのは形状に焼き込まれていて無理なので、
+  `setBodySurface` が false を返し Scene が `physDirty` で作り直す。
+  **合成方式 `<option combine="min|average|max">`**（`CombineStrategy`。
+  Chrono の `ChContactMaterialCompositionStrategy` の仮想関数を上書き。
+  `override` は付けない - 版によって無い関数があるため）。
+- **衝突レイヤ `<geom layer="0..7" nocollide="1 3">`**（Chrono の衝突
+  ファミリ。剛体が 0〜7、**ソフトボディの粒子は 8〜15**（以前の 1〜14 から
+  移した）。Bullet は片側が拒めば当たらないので片方に書けば足りる。変更は
+  衝突モデルの作り直し = `physDirty`）。当たらない相手とは接触も生まれない
+  ので衝突トリガーも鳴らない。
+- **接触の力と法線**（`activeContacts()`。`ReportContactCallback` の
+  react_forces と plane_coord の X 軸。`activeContactPairs()` はここから
+  導出）。`onCollision` ノードの `minforce`（value）と `normal`（vec =
+  対象から相手へ向く法線と 60° 以内。零 = 問わない）がこれで絞る。vec の
+  既定 (0,5,0) は impulse 用なので、`clampNode` が衝突ノードでは零へ倒す。
+- **重力 3 成分 `<option gravity="x y z">`**（`SimSettings::gravityX / Z`、
+  `setGravity`）と**ボディ別の重力オフ `<geom gravity="false">`**
+  （`SetUseGravity` / `SetNoGravity` を SFINAE。Multicore は自前の積分で
+  効かない版がある）。
+- **積分器 `<option integrator="euler|projected|implicit|trapezoidal">`**
+  （NSC で組める 4 つだけ。HHT / Newmark は滑らかな系向け）と**ソルバ
+  `solver="bb|apgd|psor|jacobi|minres"`**。どちらも Core のみ（Multicore は
+  `setIntegrator` / `setSolver` が false を返し、既定以外を頼まれたときだけ
+  1 回警告）。ソルバを替えたあとに反復回数を入れ直す順序に注意。
+- **初速 `<geom velocity="x y z" angvel="x y z">`**（m/s, deg/s。
+  `restoreAuthoredPoses` が置き直しの直後に `setBodyVelocity`。Reset でも
+  同じ）と**イベントの `setVelocity`**（vec、value = 1 で加算）。
+- **円柱部品の当たり判定**（`ExtraShape::cylinder`、`ChCollisionShapeCylinder`。
+  Chrono の円柱は Z 軸なので部品の X 軸へ回す。固定の持ち主では 1 部品だけ
+  の `addFrame` にする - 単独の円柱ボディの口は無い）と**三角メッシュの
+  当たり判定 `<geom type="mesh" collision="trimesh">`**（`ShapeKind::Trimesh`
+  は当たり判定だけの値。`ChCollisionShapeTriangleMesh`、`MeshCollision` の
+  `loadCollisionTriangles`。凹形状の器・トンネル用で**固定の物に向く**。
+  無い版・読めない場合は凸包へ倒す）。車輪のレイ（VehicleComponent）は
+  円柱部品には当たらない（箱 / 球のみ、従来どおり）。
+- **ジョイントの番号参照**（`onJointBreak` / `setMotor` の target、
+  `NodeTargetKind::Joint`）。ジョイントを消したら `pruneJointNodes` が
+  そのノードを消し、後ろの番号を 1 つ前へずらす。保存では端点の消えた
+  ジョイントが落ちるので `jointRemap` で付け替える。
+- **ブラウザ側**: Inspector の「物性」節（摩擦・反発・転がり・粘着・レイヤ・
+  当てないレイヤ・重力・初速）、ジョイント節の追加行（`renderJointForm` が
+  種類に合う行だけ出す。一覧の行クリックでフォームへ読込、✎ で
+  `edit.joint.set`）、Physics タブの重力 X/Z・積分器・ソルバ・合成。
+  コマンドは edit.set の新キー（surface / layer / nocollide / gravity /
+  velocity / angularVelocity）、edit.joint.add の追加キー、edit.joint.set。
+- **Multicore バックエンドでの扱い**（`kBackend` の既定は Multicore）。
+  Chrono::Multicore は自前の積分で、リンクが `IntLoadResidual_F` で足す力
+  （`ChLinkTSDA` / `ChLinkRSDA` / トルク・力モータ）を拾わず、速度モータ
+  （`ChLinkMotor*Speed`）は専用の一覧に登録されて `RemoveLink` で外れない
+  （停止 → 再開で解放済みのポインタを触る）。そのため Multicore では
+  **ばねとトルク / 力モータを手計算の力積**（`JointRec::Manual`、
+  `applyManualJoints` を `DoStepDynamics` の前に。ソフトボディのばねと
+  同じ流儀）にし、**速度モータは角度 / 位置モータ + ランプ関数**
+  （`ChFunctionRamp`、傾き = 速度。目標変更は今の角度から引き直す）で
+  作る。Core では Chrono のリンクをそのまま使う。**可動範囲も Multicore は
+  手計算**: Chrono の `ChLinkLimit`（片側拘束）は Multicore で範囲に
+  当たった瞬間に系全体が NaN になった（実機で確認: 初速付きの振り子が
+  ±60° に達する step 7 で全ジョイントの反力が NaN）。そちらでは接触と
+  同じ速度レベルの力積（範囲を超えて進む相対角速度 / 速度だけを打ち消し、
+  めり込みは 1 ステップ 20% で押し戻す）にする。Core は `ChLinkLimit`。
+- **破断は `RemoveLink` ではなく `SetDisabled`**（`checkJointBreaks`）。走行中に
+  リンクを外して `Setup()` を呼ぶと Multicore のデータマネージャが崩れ、
+  拘束の付いた物が全部 NaN になった（実機で確認: 1 ステップ目に距離拘束が
+  325 N を返して破断 → 5 ステップ後に全 NaN）。無効化したリンクは停止時の
+  `removeAllJoints` がまとめて外す。開始直後 10 ステップは反力が収束途中で
+  跳ねるので破断を見ない（`kWarmupSteps`）。
+- **ボディ別の重力オフは手計算**。Chrono 9.0 には `SetNoGravity` /
+  `SetUseGravity` が無い（SFINAE が両方落ちた）ので、`step()` が重力ぶんの
+  速度を毎ステップ打ち消す（両バックエンド共通）。
+- **衝突ファミリは `AddBody` の前に付ける**（`prepareBody`）。登録後に
+  `SetFamily` すると Bullet はモデルを Remove / Add し直し、Multicore の
+  衝突系は Remove が未実装で例外を投げる（ソフトボディの粒子が先に
+  この順序だった理由）。
+- **物理スレッドは例外を捕まえる**（main.cpp の `guarded`）。Chrono の
+  例外はそれまでプロセスごと落として原因が残らなかった。捕まえたら
+  `LOGE` とステータスに理由を出してエディタへ戻し、3 回続いたら物理を
+  止めて描画だけ続ける。「シミュレート開始で落ちる」の切り分けはまず
+  コンソールのこの行を見る。
+- **未検証**: この一群は Chrono を持たない環境で書いた。文書層（XML / JSON
+  の往復・警告）は `g++ -fsyntax-only` と往復テストで通したが、
+  `PhysicsWorld.cpp` / Scene は Chrono 9.0 のヘッダ名を前提にした
+  SFINAE で書いてあり、実機ビルドでの確認が要る。特に
+  `ChContactMaterialCompositionStrategy` の仮想関数名、`ChLinkLock::LimitRz()`
+  の戻り型、`ChBody::SetUseGravity` の有無。
+
 ## ソフトボディ（`src/scene/SoftLattice.{h,cpp}` + `PhysicsWorld::addSoftBody` + `Renderer::addSoftShape`）
 
 **質点ばね方式**。Chrono の FEA モジュールは使わず、小さな球の剛体
@@ -638,8 +764,8 @@ Box / Soft Ball** タイルと Inspector の「ソフトボディ」節（チェ
   硬くするなら rate / substeps / iterations を上げる）。Chrono の ChLinkTSDA
   を使わないのは、BB / APGD の反復ソルバは剛性行列を持たず結局陽解法に
   なるのと、Core / Multicore で同じ結果にするため。
-- **同じソフトボディの粒子どうしは衝突しない**（衝突ファミリ 1〜14 を順に
-  割り当て、`SetFamily` + `DisallowCollisionsWith`。旧 API 名にも SFINAE で
+- **同じソフトボディの粒子どうしは衝突しない**（衝突ファミリ 8〜15 を順に
+  割り当て（0〜7 は剛体の衝突レイヤ）、`SetFamily` + `DisallowCollisionsWith`。旧 API 名にも SFINAE で
   落ち、無ければ粒子どうしも当たるが半径を小さくしてあるので静止では
   触れない）。**粒子は眠らせない**（一部だけ眠るとばねの相手が動いても
   起きず形が固まる。`setSleepingEnabled` が粒子を飛ばす）。
@@ -1257,6 +1383,11 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
 
 - 済: エディタモード（配置・プロパティ編集・ジョイント設計・シーンの保存/読込）と
   シミュレートモードの分割。
+- 済（実機未検証）: Chrono の拘束・物性の拡張（13 種のジョイント・可動範囲・
+  モータ・ばね・破断・反力計測、ボディ別の接触物性と合成方式、衝突レイヤ、
+  接触の力 / 法線によるトリガー、重力 3 成分とボディ別重力、積分器 / ソルバの
+  選択、初速、円柱部品と三角メッシュの当たり判定。上の「Chrono の拘束・
+  物性」の章）。
 - 済: シーン文書の MuJoCo 風 XML 化（`assets/scenes/*.xml`、`/scene.xml`、
   `kStartupScene`。上の「シーン文書（XML）」の章を参照）。
 - 済: glTF モデルの文書化（`<asset><mesh/>` + `<geom type="mesh" mesh=...>`。

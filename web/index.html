@@ -490,6 +490,65 @@
             <span>固定（土台）</span>
             <input id="edFixed" type="checkbox" onchange="applyFixed()">
           </div>
+          <!-- 物性・衝突レイヤ・重力・初速（Chrono のボディごとの設定。
+               XML では <geom friction restitution rolling cohesion layer
+               nocollide gravity velocity angvel/>）。空欄 = シーン設定に従う。 -->
+          <div class="edLabel">物性（空欄 = シーン設定）</div>
+          <div class="edRow">
+            <span>摩擦</span>
+            <input id="edSurfFric" class="num" type="number" step="0.05" min="0" max="2"
+                   placeholder="シーン" onchange="applySurface()">
+          </div>
+          <div class="edRow">
+            <span>反発</span>
+            <input id="edSurfRest" class="num" type="number" step="0.05" min="0" max="1"
+                   placeholder="シーン" onchange="applySurface()">
+          </div>
+          <div class="edRow">
+            <span>転がり摩擦</span>
+            <input id="edSurfRoll" class="num" type="number" step="0.001" min="0" max="1"
+                   placeholder="シーン" onchange="applySurface()">
+          </div>
+          <div class="edRow">
+            <span>粘着 (N)</span>
+            <input id="edSurfCoh" class="num" type="number" step="1" min="0"
+                   onchange="applySurface()">
+          </div>
+          <div class="edRow" title="0〜7。nocollide に挙げたレイヤの物とは当たらない">
+            <span>衝突レイヤ</span>
+            <select id="edLayer" class="strSel" onchange="applyLayer()">
+              <option value="0">0</option><option value="1">1</option>
+              <option value="2">2</option><option value="3">3</option>
+              <option value="4">4</option><option value="5">5</option>
+              <option value="6">6</option><option value="7">7</option>
+            </select>
+          </div>
+          <div class="edRow" title="チェックしたレイヤの物とは当たらない">
+            <span>当てないレイヤ</span>
+            <span id="edNoCollide" class="ndVec"></span>
+          </div>
+          <div class="edRow">
+            <span>重力を受ける</span>
+            <input id="edGravityOn" type="checkbox" onchange="applyBodyGravity()">
+          </div>
+          <div class="trRow" title="シミュレート開始時の速度 (m/s)">
+            <span class="trName">初速</span>
+            <label class="trCell"><span class="axis axX">X</span>
+              <input id="edVX" class="num" type="number" step="0.5" onchange="applyVelocity()"></label>
+            <label class="trCell"><span class="axis axY">Y</span>
+              <input id="edVY" class="num" type="number" step="0.5" onchange="applyVelocity()"></label>
+            <label class="trCell"><span class="axis axZ">Z</span>
+              <input id="edVZ" class="num" type="number" step="0.5" onchange="applyVelocity()"></label>
+          </div>
+          <div class="trRow" title="シミュレート開始時の角速度 (deg/s、ワールド軸)">
+            <span class="trName">初角速度</span>
+            <label class="trCell"><span class="axis axX">X</span>
+              <input id="edWX" class="num" type="number" step="30" onchange="applyVelocity()"></label>
+            <label class="trCell"><span class="axis axY">Y</span>
+              <input id="edWY" class="num" type="number" step="30" onchange="applyVelocity()"></label>
+            <label class="trCell"><span class="axis axZ">Z</span>
+              <input id="edWZ" class="num" type="number" step="30" onchange="applyVelocity()"></label>
+          </div>
           <div class="edRow">
             <span>色</span>
             <input id="edColor" class="col" type="color" onchange="applyColor()">
@@ -733,12 +792,20 @@
         <div class="sbSecHead">ジョイント</div>
         <div class="edRow">
           <span>種類</span>
-          <select id="edJointKind" class="strSel">
+          <select id="edJointKind" class="strSel" onchange="renderJointForm()">
             <option value="revolute">ちょうつがい (Revolute)</option>
             <option value="spherical">ボール (Spherical)</option>
             <option value="fixed">固定 (Fixed)</option>
             <option value="prismatic">直動 (Prismatic)</option>
             <option value="distance">距離 (Distance)</option>
+            <option value="universal">自在継手 (Universal)</option>
+            <option value="cylindrical">円筒 (Cylindrical)</option>
+            <option value="planar">平面 (Planar)</option>
+            <option value="pointLine">点‐線 (Point-Line)</option>
+            <option value="pointPlane">点‐面 (Point-Plane)</option>
+            <option value="gear">歯車 (Gear)</option>
+            <option value="screw">ねじ (Screw)</option>
+            <option value="spring">ばね (Spring)</option>
           </select>
         </div>
         <div class="edRow">
@@ -757,10 +824,57 @@
           <button onclick="setJointPartner()">選択中を B に</button>
           <button onclick="clearJointPartner()">B = 地面</button>
         </div>
+        <!-- Chrono の拘束の追加設定（A の導入）。種類に合う行だけ
+             renderJointForm() が出す。値は「作る」と一覧の ✎ の両方で使う。 -->
+        <div class="edRow" id="jtRowLimit" title="可動範囲。回転は度、直動は m">
+          <span><input id="jtLimited" type="checkbox"> 可動範囲</span>
+          <span class="ndVec">
+            <input id="jtLimitLo" class="num" type="number" step="5" value="-45" title="下限">
+            <input id="jtLimitHi" class="num" type="number" step="5" value="45" title="上限">
+          </span>
+        </div>
+        <div class="edRow" id="jtRowMotor"
+             title="モータ。速度 = deg/s または m/s、位置 = deg または m、力 = N·m または N">
+          <span>モータ</span>
+          <span class="ndVec">
+            <select id="jtMotor" class="strSel" onchange="renderJointForm()">
+              <option value="none">なし</option>
+              <option value="speed">速度</option>
+              <option value="position">位置</option>
+              <option value="force">力</option>
+            </select>
+            <input id="jtMotorTarget" class="num" type="number" step="10" value="0" title="目標値">
+          </span>
+        </div>
+        <div class="edRow" id="jtRowSpring"
+             title="ばね定数と減衰。spring: N/m と N·s/m、hinge: N·m/rad、slide: N/m">
+          <span>ばね k / c</span>
+          <span class="ndVec">
+            <input id="jtStiff" class="num" type="number" step="10" min="0" value="0" title="ばね定数">
+            <input id="jtDamp" class="num" type="number" step="1" min="0" value="0" title="減衰">
+          </span>
+        </div>
+        <div class="edRow" id="jtRowDistance" title="保つ距離 / 自然長。0 = 今の間隔">
+          <span>距離 (m)</span>
+          <input id="jtDistance" class="num" type="number" step="0.1" min="0" value="0">
+        </div>
+        <div class="edRow" id="jtRowBreak" title="拘束の反力がこの値 (N) を超えたら外れる。0 = 切れない">
+          <span>破断 (N)</span>
+          <input id="jtBreak" class="num" type="number" step="50" min="0" value="0">
+        </div>
+        <div class="edRow" id="jtRowRatio" title="歯車比（B の角速度 / A の角速度）">
+          <span>歯車比</span>
+          <input id="jtRatio" class="num" type="number" step="0.5" value="1">
+        </div>
+        <div class="edRow" id="jtRowPitch" title="1 回転あたりの前進 (m)">
+          <span>ピッチ (m/回転)</span>
+          <input id="jtPitch" class="num" type="number" step="0.005" value="0.01">
+        </div>
         <button class="wide" onclick="createJoint()">＋ 選択中と B を繋ぐ</button>
         <div class="edHint">A は現在の選択。軸の位置は 2 体の中点（相手が地面
           なら選択中の位置）になります。一覧は選択中のオブジェクトが関わる
-          ジョイントだけを表示します。</div>
+          ジョイントだけで、シミュレート中は反力 (N) と反トルク (N·m) が
+          出ます。✎ で上の設定をそのジョイントに書き込みます。</div>
         <div id="edJointList" class="list scroll jointList"></div>
       </section>
     </div><!-- /paneEditor -->
@@ -771,9 +885,18 @@
       <section class="sbSec">
         <div class="sbSecHead">シミュレート設定（シーンに保存）</div>
         <div class="edRow">
-          <span>重力 (m/s²)</span>
+          <span>重力 Y (m/s²)</span>
           <input id="edGravity" class="num" type="number" step="0.5" min="-100"
                  max="100" onchange="applySim()">
+        </div>
+        <div class="edRow" title="横向きの重力（斜面・遠心力の代用）。ふつうは 0">
+          <span>重力 X / Z</span>
+          <span class="ndVec">
+            <input id="edGravityX" class="num" type="number" step="0.5" min="-100"
+                   max="100" onchange="applySim()">
+            <input id="edGravityZ" class="num" type="number" step="0.5" min="-100"
+                   max="100" onchange="applySim()">
+          </span>
         </div>
         <div class="edRow">
           <span>摩擦</span>
@@ -798,6 +921,34 @@
         <div class="edRow">
           <span>スリープ</span>
           <input id="edSleeping" type="checkbox" onchange="applySim()">
+        </div>
+        <!-- Chrono の積分器・ソルバ・材質合成（Core バックエンドのみ切替可）。 -->
+        <div class="edRow" title="Chrono の積分器。NSC で使える 4 つ。Multicore は固定">
+          <span>積分器</span>
+          <select id="edIntegrator" class="strSel" onchange="applySim()">
+            <option value="euler">Euler 線形化（既定）</option>
+            <option value="projected">Euler 射影</option>
+            <option value="implicit">Euler 陰解法</option>
+            <option value="trapezoidal">台形則</option>
+          </select>
+        </div>
+        <div class="edRow" title="接触ソルバ（Core のみ。Multicore は APGD）">
+          <span>ソルバ</span>
+          <select id="edSolver" class="strSel" onchange="applySim()">
+            <option value="bb">Barzilai-Borwein（既定）</option>
+            <option value="apgd">APGD</option>
+            <option value="psor">PSOR</option>
+            <option value="jacobi">Jacobi</option>
+            <option value="minres">MINRES</option>
+          </select>
+        </div>
+        <div class="edRow" title="2 つの物の摩擦・反発をどう合成するか">
+          <span>材質の合成</span>
+          <select id="edCombine" class="strSel" onchange="applySim()">
+            <option value="min">小さい方（既定）</option>
+            <option value="average">平均</option>
+            <option value="max">大きい方</option>
+          </select>
         </div>
       </section>
 

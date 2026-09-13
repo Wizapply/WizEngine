@@ -247,7 +247,8 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         args["index"] = index;
         for (const char* key : {"name", "shape", "collision", "mass", "fixed",
                                 "color", "size", "position", "rotation",
-                                "soft"}) {
+                                "soft", "surface", "layer", "nocollide",
+                                "gravity", "velocity", "angularVelocity"}) {
             if (msg.contains(key)) args[key] = msg[key];
         }
         EditorState::Op op;
@@ -271,6 +272,13 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         if (j.bodyA < 0 && j.bodyB < 0) return true;  // 地面同士は無意味
 
         nlohmann::json args = ed::toJson(j);
+        // リミット・モータ・ばね・破断・歯車比など（送られたものだけ。
+        // jointFromJson が「無いキーは今の値」なので部分指定がそのまま通る）。
+        for (const char* key : {"limited", "limitLo", "limitHi", "motor", "motorTarget",
+                                "stiffness", "damping", "breakForce", "ratio", "pitch",
+                                "anchor2", "axis2"}) {
+            if (msg.contains(key)) args[key] = msg[key];
+        }
         // アンカーと軸: 指定があればそれ、無ければ物理スレッド側で
         // 2 体の中点を使う（"anchor" を落として渡すのが合図）。
         if (msg.contains("anchor")) {
@@ -303,6 +311,27 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         EditorState::Op op;
         op.kind = "joint.remove";
         op.args = {{"index", msg.value("index", -1)}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // 既にあるジョイントの値の変更（種類・軸・リミット・モータ・ばね・破断
+    // など。送られたキーだけ）。シミュレート中なら作り直して即反映する。
+    if (what == "joint.set") {
+        const int index = ed::jsonInt(msg, "index", -1);
+        if (index < 0) return true;
+        nlohmann::json args;
+        args["index"] = index;
+        for (const char* key : {"name", "kind", "a", "b", "anchor", "axis", "distance",
+                                "limited", "limitLo", "limitHi", "motor", "motorTarget",
+                                "stiffness", "damping", "breakForce", "ratio", "pitch",
+                                "anchor2", "axis2"}) {
+            if (msg.contains(key)) args[key] = msg[key];
+        }
+        EditorState::Op op;
+        op.kind = "joint.set";
+        op.args = std::move(args);
         op.camera = camIndex;
         state.push(std::move(op));
         return true;
@@ -365,6 +394,11 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         }
         args["kind"] = ed::nodeKindName(kind);  // 名前の揺れはここで正規化
         args["asset"] = eventAssetName(msg);
+        // 衝突トリガーの「向き」は零（問わない）から始める - NodeDesc の vec の
+        // 既定は ApplyImpulse 向けの (0, 5, 0) なので。
+        if (kind == ed::NodeKind::OnCollision && !msg.contains("vec")) {
+            args["vec"] = {{"x", 0.0}, {"y", 0.0}, {"z", 0.0}};
+        }
         // オブジェクトを対象にするノードは、対象を省いたら -1 のまま
         // （= 付いている相手 / トリガーが渡した物）。アセットは付け回す
         // 部品なので、作った瞬間に特定の番号へ縛らない。ライトとカメラは
@@ -382,6 +416,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
                     }
                     break;
                 case ed::NodeTargetKind::Object:
+                case ed::NodeTargetKind::Joint:  // -1 = どのジョイントでも
                 case ed::NodeTargetKind::None:
                     break;
             }

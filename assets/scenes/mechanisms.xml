@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Chrono の拘束・材質・レイヤ・初速の見本（A の導入）。
+     エディタで開いてシミュレートすると:
+       * モータ付きちょうつがいの腕 (motor_arm) が一定角速度で回り、先の球を振る
+       * 可動範囲付きの振り子 (swing) が ±60° で止まる
+       * ばね (spring_box) が天井の点から吊られて上下に揺れる
+       * 歯車 (gear_a / gear_b) が 1:2 で連動する
+       * 破断ジョイント (weak_rod) が反力 300 N を超えると外れ、onJointBreak が色を変える
+       * 氷 (ice) と ゴム (rubber) は摩擦・反発がボディごとに違う
+       * ghost はレイヤ 1 でレイヤ 0（地面と他の物）と当たらず落ち続ける
+       * shot は初速を持って発射され、無重力の float は浮いたまま -->
+<wizengine model="mechanisms" version="4">
+  <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="80" envelope="0.002"
+          recovery="0.2" friction="0.6" restitution="0" lineardamping="0.05"
+          angulardamping="0.1" sleeping="false" integrator="euler" solver="bb" combine="min"/>
+  <asset>
+    <event name="break_paint">
+      <node id="1" type="onJointBreak" pos="40 40" target="-1"/>
+      <node id="2" type="setColor" pos="300 40" target="-1" rgba="0.95 0.2 0.2 1"/>
+      <wire from="1" to="2"/>
+    </event>
+    <event name="motor_reverse">
+      <node id="1" type="onTimer" pos="40 40" seconds="4"/>
+      <node id="2" type="setMotor" pos="300 40" target="0" value="-90"/>
+      <wire from="1" to="2"/>
+    </event>
+    <event name="hard_hit">
+      <node id="1" type="onCollision" pos="40 40" target="-1" other="-2" minforce="200"/>
+      <node id="2" type="setColor" pos="300 40" target="-1" rgba="1 0.85 0.2 1"/>
+      <wire from="1" to="2"/>
+    </event>
+  </asset>
+  <worldbody>
+    <ground size="12" visual="10" tile="2"/>
+    <light name="key" type="sun" pos="0 8 0" euler="35 -25 0" intensity="100000" castshadow="true"/>
+    <light name="fill" type="point" pos="-3 4 3" intensity="60000" falloff="20" castshadow="false"/>
+    <camera name="cam0" target="0 1.2 0" azimuth="35" elevation="18" radius="11"/>
+
+    <!-- モータ付きの腕: post に hinge で留め、速度モータで 90 deg/s。4 秒ごとに逆回転 -->
+    <body name="motor_post" pos="-3 1 0" fixed="true">
+      <geom type="box" size="0.08 1 0.08" mass="10" rgba="0.4 0.42 0.48 1"/>
+    </body>
+    <body name="motor_arm" pos="-2.4 2 0">
+      <geom type="box" size="0.6 0.05 0.05" mass="1" rgba="0.9 0.5 0.2 1"/>
+    </body>
+    <body name="motor_ball" pos="-1.8 2 0">
+      <geom type="sphere" size="0.15" mass="0.8" rgba="0.3 0.6 0.9 1"/>
+    </body>
+
+    <!-- 可動範囲付きの振り子（±60°） -->
+    <body name="swing_post" pos="0 1.5 0" fixed="true">
+      <geom type="box" size="0.06 1.5 0.06" mass="10" rgba="0.4 0.42 0.48 1"/>
+    </body>
+    <body name="swing" pos="0.7 2.9 0" euler="0 0 0">
+      <geom type="box" size="0.7 0.04 0.04" mass="0.5" rgba="0.5 0.85 0.3 1"
+            velocity="0 -3 0"/>
+    </body>
+
+    <!-- ばねで吊った箱（天井の点は地面側のアンカー） -->
+    <body name="spring_box" pos="2.5 1.6 0">
+      <geom type="box" size="0.2 0.2 0.2" mass="2" rgba="0.85 0.75 0.3 1"/>
+    </body>
+
+    <!-- 歯車: 2 枚の円盤を各々の軸で回し、ギアで 1:2 に結ぶ。A に力モータ -->
+    <body name="gear_a" pos="-3 0.6 3" euler="0 0 90">
+      <geom type="box" size="0.4 0.05 0.4" mass="1" rgba="0.8 0.8 0.85 1" metallic="1" roughness="0.3"/>
+    </body>
+    <body name="gear_b" pos="-2.4 0.6 3" euler="0 0 90">
+      <geom type="box" size="0.2 0.05 0.2" mass="0.5" rgba="0.8 0.8 0.85 1" metallic="1" roughness="0.3"/>
+    </body>
+
+    <!-- 破断: 細い棒で重い球を吊る。落とすと反力が 300 N を超えて外れ、赤くなる -->
+    <body name="weak_post" pos="2.5 1.5 3" fixed="true">
+      <geom type="box" size="0.06 1.5 0.06" mass="10" rgba="0.4 0.42 0.48 1"/>
+    </body>
+    <body name="weak_ball" pos="3.3 2.9 3">
+      <geom type="sphere" size="0.2" mass="6" rgba="0.6 0.6 0.9 1"/>
+      <event name="break_paint"/>
+    </body>
+
+    <!-- 材質の違い: 同じ坂を氷は滑り、ゴムは止まる -->
+    <body name="ramp" pos="0 0.4 -3" euler="0 0 -18" fixed="true">
+      <geom type="box" size="1.5 0.05 0.8" mass="50" rgba="0.6 0.62 0.66 1"/>
+    </body>
+    <body name="ice" pos="1 1.05 -3.4">
+      <geom type="box" size="0.15 0.15 0.15" mass="0.5" rgba="0.75 0.9 1 1"
+            friction="0.02" restitution="0.1"/>
+    </body>
+    <body name="rubber" pos="1 1.05 -2.6">
+      <geom type="box" size="0.15 0.15 0.15" mass="0.5" rgba="0.2 0.2 0.22 1"
+            friction="1.2" restitution="0.6" rolling="0.01"/>
+    </body>
+
+    <!-- レイヤ 1: 地面（レイヤ 0）と当たらない = 落ち続ける幽霊 -->
+    <body name="ghost" pos="4 1 0">
+      <geom type="box" size="0.15 0.15 0.15" mass="0.3" rgba="0.9 0.9 0.9 1"
+            layer="1" nocollide="0"/>
+    </body>
+
+    <!-- 初速で撃ち出す球（強くぶつかると黄色）と、無重力で浮く箱 -->
+    <body name="shot" pos="-4 0.5 -3">
+      <geom type="sphere" size="0.12" mass="2" rgba="0.95 0.3 0.3 1"
+            velocity="6 3 0"/>
+      <event name="hard_hit"/>
+    </body>
+    <body name="float" pos="4 2.5 -3">
+      <geom type="box" size="0.2 0.2 0.2" mass="1" rgba="0.6 0.9 0.6 1"
+            gravity="false" angvel="0 45 0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <joint name="motor" type="hinge" body1="motor_arm" body2="motor_post" anchor="-3 2 0" axis="0 0 1"
+           motor="speed" target="90"/>
+    <joint name="arm_ball" type="weld" body1="motor_ball" body2="motor_arm" anchor="-1.9 2 0" axis="0 1 0"/>
+    <joint name="swing" type="hinge" body1="swing" body2="swing_post" anchor="0.35 2.9 0" axis="0 0 1"
+           range="-60 60" damping="0.05"/>
+    <joint name="spring" type="spring" body1="spring_box" body2="world" anchor="2.5 3 0" axis="0 1 0"
+           distance="1" stiffness="120" damping="2"/>
+    <joint name="gear_a_axle" type="hinge" body1="gear_a" body2="world" anchor="-3 0.6 3" axis="0 0 1"
+           motor="force" target="0.4"/>
+    <joint name="gear_b_axle" type="hinge" body1="gear_b" body2="world" anchor="-2.4 0.6 3" axis="0 0 1"/>
+    <joint name="gears" type="gear" body1="gear_a" body2="gear_b" anchor="-3 0.6 3" axis="0 0 1"
+           ratio="2" anchor2="-2.4 0.6 3" axis2="0 0 1"/>
+    <joint name="weak_rod" type="distance" body1="weak_ball" body2="weak_post" anchor="3 2.9 3" axis="0 1 0"
+           breakforce="300"/>
+  </equality>
+  <events>
+    <event name="motor_reverse"/>
+  </events>
+</wizengine>

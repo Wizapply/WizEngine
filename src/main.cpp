@@ -637,6 +637,33 @@ int run(int argc, char** argv) {
         double simAdvanced = 0.0;  // simulated seconds in this window
         double simTotal = 0.0;     // simulated seconds since start (see PerfStats)
 
+        // Chrono が投げた例外（未実装の口・壊れた拘束など）はこのスレッドで
+        // 捕まえないとプロセスごと落ちて、原因がコンソールにも残らない。
+        // 捕まえたら理由をログとステータスに出してエディタへ戻す（拘束を外して
+        // 設計状態へ）。それでも続けて投げるなら物理を止めて描画だけ続ける。
+        int physicsFailures = 0;
+        auto guarded = [&](const char* what, auto&& fn) {
+            try {
+                fn();
+                return true;
+            } catch (const std::exception& e) {
+                ++physicsFailures;
+                LOGE("physics", "exception in %s: %s", what, e.what());
+                scene.editor().setStatus(std::string("物理で例外: ") + e.what());
+            } catch (...) {
+                ++physicsFailures;
+                LOGE("physics", "unknown exception in %s", what);
+                scene.editor().setStatus("物理で例外（詳細不明）");
+            }
+            if (physicsFailures < 3) {
+                scene.editor().requestMode(wizengine::editor::AppMode::Editor);
+            } else {
+                LOGE("physics", "physics keeps throwing - stepping stopped (reload a "
+                                "scene or restart)");
+            }
+            return false;
+        };
+
         while (g_run) {
             if (!gActive.load()) {
                 // Nobody is watching: no stepping at all, and no backlog to
@@ -646,11 +673,15 @@ int run(int argc, char** argv) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 continue;
             }
+            if (physicsFailures >= 3) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
 
             // 編集操作とモード切替はどちらのモードでも処理する（シミュレート
             // 中に設定を変えたり、物を足したりできるように）。Chrono を触る
             // のはこのスレッドだけ、という約束はここで守られる。
-            scene.applyPendingEdits();
+            if (!guarded("edit / mode switch", [&] { scene.applyPendingEdits(); })) continue;
 
             if (scene.mode() == wizengine::editor::AppMode::Editor) {
                 // エディタモード: 物理は進めない。掴んだ物の置き直しと姿勢の
@@ -704,12 +735,19 @@ int run(int argc, char** argv) {
 
             const auto t0 = std::chrono::steady_clock::now();
             int stepped = 0;
-            while (accumulator >= stepDt && stepped < kMaxCatchUp) {
-                for (int i = 0; i < substeps; ++i) {
-                    scene.stepPhysics(subDt);
-                    const StepTimers t = physics.timers();  // seconds
-                    solverMs += t.solver * 1000.0;
-                    collisionMs += t.collision * 1000.0;
+            bool stepOk = true;
+            while (stepOk && accumulator >= stepDt && stepped < kMaxCatchUp) {
+                stepOk = guarded("physics step", [&] {
+                    for (int i = 0; i < substeps; ++i) {
+                        scene.stepPhysics(subDt);
+                        const StepTimers t = physics.timers();  // seconds
+                        solverMs += t.solver * 1000.0;
+                        collisionMs += t.collision * 1000.0;
+                    }
+                });
+                if (!stepOk) {
+                    accumulator = 0.0;
+                    break;
                 }
                 accumulator -= stepDt;
                 simAdvanced += stepDt;

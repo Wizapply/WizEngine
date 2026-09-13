@@ -111,9 +111,16 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     j["joints"] = nlohmann::json::array();
     {
         const auto joints = editor_.joints();
+        // 計測値（反力・破断）。ロック順 objects → editor → poses のまま。
+        const std::vector<JointStat> stats = jointStats();
         for (std::size_t i = 0; i < joints.size(); ++i) {
             nlohmann::json e = ed::toJson(joints[i]);
             e["index"] = int(i);
+            if (i < stats.size()) {
+                e["force"] = stats[i].force;
+                e["torque"] = stats[i].torque;
+                e["broken"] = stats[i].broken;
+            }
             j["joints"].push_back(e);
         }
     }
@@ -305,8 +312,12 @@ ed::SceneDocument Scene::document() {
         doc.bodies.push_back(boxes_[i].desc);
     }
 
-    for (const auto& j : editor_.joints()) {
-        ed::JointDesc copy = j;
+    // ジョイントも番号で参照される（onJointBreak / setMotor）ので、端点が
+    // 消えて落ちたぶんを詰めた対応表を作る。
+    const auto allJoints = editor_.joints();
+    std::vector<int> jointRemap(allJoints.size(), -1);
+    for (std::size_t k = 0; k < allJoints.size(); ++k) {
+        ed::JointDesc copy = allJoints[k];
         auto fix = [&](int& ref) {
             if (ref < 0) return true;  // 地面はそのまま
             if (std::size_t(ref) >= remap.size() || remap[std::size_t(ref)] < 0)
@@ -315,6 +326,7 @@ ed::SceneDocument Scene::document() {
             return true;
         };
         if (!fix(copy.bodyA) || !fix(copy.bodyB)) continue;
+        jointRemap[k] = int(doc.joints.size());
         doc.joints.push_back(copy);
     }
 
@@ -346,6 +358,14 @@ ed::SceneDocument Scene::document() {
                         ok = false;
                     } else {
                         n.target = lightRemap[std::size_t(n.target)];
+                    }
+                }
+                if (ok && tk == ed::NodeTargetKind::Joint && n.target >= 0) {
+                    if (std::size_t(n.target) >= jointRemap.size() ||
+                        jointRemap[std::size_t(n.target)] < 0) {
+                        ok = false;
+                    } else {
+                        n.target = jointRemap[std::size_t(n.target)];
                     }
                 }
                 if (ok && ed::nodeOtherIsObject(n.kind)) {

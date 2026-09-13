@@ -134,6 +134,7 @@ const char* geomTypeName(ShapeKind s) {
         case ShapeKind::Sphere: return "sphere";
         case ShapeKind::Model: return "mesh";
         case ShapeKind::None: return "none";   // 書き出しでは <geom> ごと省く
+        case ShapeKind::Trimesh: return "trimesh";  // collision= にだけ出る
         case ShapeKind::Box: break;
     }
     return "box";
@@ -143,6 +144,7 @@ ShapeKind geomTypeFromName(const std::string& s, ShapeKind fallback) {
     if (s == "sphere") return ShapeKind::Sphere;
     if (s == "mesh" || s == "model") return ShapeKind::Model;
     if (s == "none") return ShapeKind::None;
+    if (s == "trimesh") return ShapeKind::Trimesh;
     return fallback;
 }
 
@@ -154,6 +156,15 @@ const char* jointTypeName(JointKind k) {
         case JointKind::Spherical: return "ball";
         case JointKind::Prismatic: return "slide";
         case JointKind::Distance: return "distance";
+        // 以下は MJCF に無い WizEngine の拡張（Chrono の ChLink* に対応）。
+        case JointKind::Universal: return "universal";
+        case JointKind::Cylindrical: return "cylindrical";
+        case JointKind::Planar: return "planar";
+        case JointKind::PointLine: return "pointline";
+        case JointKind::PointPlane: return "pointplane";
+        case JointKind::Gear: return "gear";
+        case JointKind::Screw: return "screw";
+        case JointKind::Spring: return "spring";
         case JointKind::Revolute: break;
     }
     return "hinge";
@@ -161,8 +172,10 @@ const char* jointTypeName(JointKind k) {
 JointKind jointTypeFromName(const std::string& s, JointKind fallback) {
     if (s == "weld") return JointKind::Fixed;
     if (s == "slide") return JointKind::Prismatic;
-    return jointFromName(s, fallback);  // fixed / hinge / ball / rod ...
+    return jointFromName(s, fallback);  // fixed / hinge / ball / rod / gear ...
 }
+// モータの種類名（<joint motor="speed|position|force">）。
+const char* motorTypeName(MotorMode m) { return motorModeName(m); }
 
 const char* lightTypeName(LightKind k) {
     switch (k) {
@@ -227,7 +240,7 @@ int bodyRefIndex(const std::vector<BodyDesc>& bodies, const std::string& text,
 // ---- 各節の書き出し ---------------------------------------------------------
 xml::Element optionElement(const SimSettings& s) {
     xml::Element o("option");
-    const double gravity[3] = {0.0, s.gravity, 0.0};
+    const double gravity[3] = {s.gravityX, s.gravity, s.gravityZ};
     o.setNumbers("gravity", gravity, 3);
     o.setInt("rate", s.hz);  // MuJoCo の timestep に相当（こちらは Hz）
     o.setInt("substeps", s.substeps);
@@ -239,6 +252,10 @@ xml::Element optionElement(const SimSettings& s) {
     o.setNumber("lineardamping", s.linearDamping);
     o.setNumber("angulardamping", s.angularDamping);
     o.setBool("sleeping", s.sleeping);
+    // 積分器・ソルバ・材質の合成（EditorTypes.h の *NameValid が語彙）。
+    o.set("integrator", s.integrator);
+    o.set("solver", s.solver);
+    o.set("combine", s.combine);
     return o;
 }
 
@@ -337,11 +354,16 @@ RenderDesc visualFromXml(const xml::Element& e, const RenderDesc& base,
     return clampRender(r);
 }
 
-SimSettings optionFromXml(const xml::Element& o, SimSettings base) {
-    double gravity[3] = {0.0, base.gravity, 0.0};
+SimSettings optionFromXml(const xml::Element& o, SimSettings base, Warn& warn) {
+    double gravity[3] = {base.gravityX, base.gravity, base.gravityZ};
     const std::size_t got = o.numbers("gravity", gravity, 3);
-    if (got >= 3) base.gravity = gravity[1];
-    else if (got == 1) base.gravity = gravity[0];  // スカラー表記も受ける
+    if (got >= 3) {
+        base.gravityX = gravity[0];
+        base.gravity = gravity[1];
+        base.gravityZ = gravity[2];
+    } else if (got == 1) {
+        base.gravity = gravity[0];  // スカラー表記（Y だけ）も受ける
+    }
     if (o.has("rate")) {
         base.hz = o.integer("rate", base.hz);
     } else if (o.has("timestep")) {
@@ -358,7 +380,81 @@ SimSettings optionFromXml(const xml::Element& o, SimSettings base) {
     base.linearDamping = o.number("lineardamping", base.linearDamping);
     base.angularDamping = o.number("angulardamping", base.angularDamping);
     base.sleeping = o.boolean("sleeping", base.sleeping);
+    // 名前の打ち間違いは黙って既定にせず伝える（clampSim が既定へ戻す）。
+    const std::string integ = o.attr("integrator", base.integrator.c_str());
+    if (!integratorNameValid(integ)) {
+        warn("<option integrator=\"" + integ +
+             "\"> is unknown (euler / projected / implicit / trapezoidal) - "
+             "reading as euler");
+    }
+    base.integrator = integ;
+    const std::string solver = o.attr("solver", base.solver.c_str());
+    if (!solverNameValid(solver)) {
+        warn("<option solver=\"" + solver +
+             "\"> is unknown (bb / apgd / psor / jacobi / minres) - reading as bb");
+    }
+    base.solver = solver;
+    const std::string combine = o.attr("combine", base.combine.c_str());
+    if (!combineNameValid(combine)) {
+        warn("<option combine=\"" + combine +
+             "\"> is unknown (min / average / max) - reading as min");
+    }
+    base.combine = combine;
     return base;
+}
+
+// ---- 接触の物性・レイヤ・重力・初速（<geom> または geom の無い <body>）------
+// **既定と同じ値は書かない**（材質と同じ流儀）。負 = シーン設定に従う、は
+// 書かないことで表す。
+void setSurfaceAttrs(xml::Element& e, const BodyDesc& b) {
+    if (b.surface.friction >= 0.0f) e.setNumber("friction", b.surface.friction, 4);
+    if (b.surface.restitution >= 0.0f) {
+        e.setNumber("restitution", b.surface.restitution, 4);
+    }
+    if (b.surface.rolling >= 0.0f) e.setNumber("rolling", b.surface.rolling, 4);
+    if (b.surface.cohesion != 0.0f) e.setNumber("cohesion", b.surface.cohesion, 4);
+    if (b.layer != 0) e.setInt("layer", b.layer);
+    if (!b.nocollide.empty()) {
+        std::vector<double> v(b.nocollide.begin(), b.nocollide.end());
+        e.setNumbers("nocollide", v.data(), v.size(), 0);
+    }
+    if (!b.gravity) e.setBool("gravity", false);
+    const bool hasVel = b.velocity.x != 0.0 || b.velocity.y != 0.0 || b.velocity.z != 0.0;
+    const bool hasAng = b.angularVelocity.x != 0.0 || b.angularVelocity.y != 0.0 ||
+                        b.angularVelocity.z != 0.0;
+    if (hasVel) setVec3(e, "velocity", b.velocity);
+    if (hasAng) setVec3(e, "angvel", b.angularVelocity);
+}
+void getSurfaceAttrs(const xml::Element& e, BodyDesc& b, const std::string& label,
+                     Warn& warn) {
+    b.surface.friction = float(e.number("friction", b.surface.friction));
+    b.surface.restitution = float(e.number("restitution", b.surface.restitution));
+    b.surface.rolling = float(e.number("rolling", b.surface.rolling));
+    b.surface.cohesion = float(e.number("cohesion", b.surface.cohesion));
+    b.layer = e.integer("layer", b.layer);
+    if (b.layer < 0 || b.layer >= kCollisionLayers) {
+        warn("<body name=\"" + label + "\">: layer=\"" + std::to_string(b.layer) +
+             "\" is out of range (0-" + std::to_string(kCollisionLayers - 1) +
+             ") - reading as 0");
+        b.layer = 0;
+    }
+    if (e.has("nocollide")) {
+        double v[kCollisionLayers] = {0};
+        const std::size_t got = e.numbers("nocollide", v, kCollisionLayers);
+        b.nocollide.clear();
+        for (std::size_t i = 0; i < got; ++i) {
+            const int L = int(v[i]);
+            if (L < 0 || L >= kCollisionLayers) {
+                warn("<body name=\"" + label + "\">: nocollide layer " +
+                     std::to_string(L) + " is out of range - skipped");
+                continue;
+            }
+            b.nocollide.push_back(L);
+        }
+    }
+    b.gravity = e.boolean("gravity", b.gravity);
+    b.velocity = getVec3(e, "velocity", b.velocity);
+    b.angularVelocity = getVec3(e, "angvel", b.angularVelocity);
 }
 
 // <body> の geom 以外の子（イベント・プレハブ・車両・ソフト）。geom の
@@ -403,6 +499,7 @@ xml::Element bodyElement(const BodyDesc& b) {
     // 質量だけ body に付ける。
     if (b.shape == ShapeKind::None) {
         body.setNumber("mass", b.mass);
+        setSurfaceAttrs(body, b);  // geom が無いので body に付ける
         appendBodyChildren(body, b);
         return body;
     }
@@ -427,6 +524,7 @@ xml::Element bodyElement(const BodyDesc& b) {
     if (b.collision != b.shape) {
         geom.set("collision", geomTypeName(b.collision));
     }
+    setSurfaceAttrs(geom, b);  // 物性・レイヤ・重力・初速（既定は書かない）
     body.append(std::move(geom));
     appendBodyChildren(body, b);
     return body;
@@ -579,12 +677,21 @@ BodyDesc bodyFromXml(const xml::Element& e,
         }
         b.mass = g->number("mass", b.mass);
         b.color = getColor(*g, "rgba", b.color);
+        getSurfaceAttrs(*g, b, label, warn);
+        // 三角メッシュの当たり判定はメッシュ形状にだけ付く。
+        if (b.collision == ShapeKind::Trimesh && b.shape != ShapeKind::Model) {
+            warn("<body name=\"" + label +
+                 "\">: collision=\"trimesh\" needs geom type=\"mesh\" - using "
+                 "the visual shape");
+            b.collision = b.shape;
+        }
     } else {
         // geom の無い body = 部品（プレハブ）だけのフレーム。見た目も当たり
         // 判定も部品が持つので、プレハブが無ければ何も見えない - 伝える。
         b.shape = ShapeKind::None;
         b.collision = ShapeKind::None;
         b.mass = e.number("mass", b.mass);
+        getSurfaceAttrs(e, b, label, warn);
         if (b.prefab.empty()) {
             warn("<body name=\"" + label +
                  "\"> has no <geom> and no <prefab> - an invisible frame");
@@ -673,7 +780,29 @@ xml::Element jointElement(const JointDesc& j,
     e.set("body2", bodyRefText(bodies, j.bodyB));
     setVec3(e, "anchor", j.anchor);
     setVec3(e, "axis", j.axis);
-    if (j.kind == JointKind::Distance) e.setNumber("distance", j.distance);
+    if (j.kind == JointKind::Distance || j.kind == JointKind::Spring) {
+        e.setNumber("distance", j.distance);
+    }
+    // 以下は使うときだけ書く（既定と同じ値は書かない）。
+    if (j.limited) {
+        const double range[2] = {j.limitLo, j.limitHi};
+        e.setNumbers("range", range, 2);  // MJCF の joint range
+    }
+    if (j.motor != MotorMode::None) {
+        e.set("motor", motorTypeName(j.motor));
+        e.setNumber("target", j.motorTarget);
+    }
+    if (j.stiffness != 0.0) e.setNumber("stiffness", j.stiffness);
+    if (j.damping != 0.0) e.setNumber("damping", j.damping);
+    if (j.breakForce != 0.0) e.setNumber("breakforce", j.breakForce);
+    if (j.kind == JointKind::Gear) {
+        e.setNumber("ratio", j.ratio);
+        const bool hasA2 = j.anchor2.x != 0.0 || j.anchor2.y != 0.0 || j.anchor2.z != 0.0;
+        const bool hasX2 = j.axis2.x != 0.0 || j.axis2.y != 0.0 || j.axis2.z != 0.0;
+        if (hasA2) setVec3(e, "anchor2", j.anchor2);
+        if (hasX2) setVec3(e, "axis2", j.axis2);
+    }
+    if (j.kind == JointKind::Screw) e.setNumber("pitch", j.pitch);
     return e;
 }
 
@@ -704,7 +833,60 @@ JointDesc jointFromXml(const xml::Element& e,
         j.axis = Vec3d{0.0, 1.0, 0.0};
     }
     j.distance = e.number("distance", j.distance);
-    return j;
+    // 可動範囲（書いてあれば有効）。
+    if (e.has("range")) {
+        double range[2] = {j.limitLo, j.limitHi};
+        const std::size_t got = e.numbers("range", range, 2);
+        if (got == 2) {
+            j.limited = true;
+            j.limitLo = range[0];
+            j.limitHi = range[1];
+        } else {
+            warn(label + " range=\"" + e.attr("range") +
+                 "\" needs two numbers (lo hi) - ignored");
+        }
+        const bool limitable = j.kind == JointKind::Revolute ||
+                               j.kind == JointKind::Prismatic ||
+                               j.kind == JointKind::Cylindrical ||
+                               j.kind == JointKind::Universal;
+        if (j.limited && !limitable) {
+            warn(label + " range= only applies to hinge / slide / cylindrical / "
+                 "universal - ignored");
+            j.limited = false;
+        }
+    }
+    // モータ（hinge / slide のみ）。
+    if (e.has("motor")) {
+        const std::string m = e.attr("motor");
+        if (unknownName(motorModeFromName, m, MotorMode::None, MotorMode::Speed)) {
+            warn(label + " motor=\"" + m +
+                 "\" is unknown (speed / position / force) - ignored");
+        }
+        j.motor = motorModeFromName(m, MotorMode::None);
+        if (j.motor != MotorMode::None && j.kind != JointKind::Revolute &&
+            j.kind != JointKind::Prismatic) {
+            warn(label + " motor= only applies to hinge / slide - ignored");
+            j.motor = MotorMode::None;
+        }
+        if (j.motor != MotorMode::None && j.limited) {
+            warn(label + " has both motor= and range= - Chrono motors carry no "
+                 "limit, range is ignored");
+            j.limited = false;
+        }
+    }
+    j.motorTarget = e.number("target", j.motorTarget);
+    j.stiffness = e.number("stiffness", j.stiffness);
+    j.damping = e.number("damping", j.damping);
+    j.breakForce = e.number("breakforce", j.breakForce);
+    j.ratio = e.number("ratio", j.ratio);
+    j.pitch = e.number("pitch", j.pitch);
+    j.anchor2 = getVec3(e, "anchor2", j.anchor2);
+    j.axis2 = getVec3(e, "axis2", j.axis2);
+    if (j.kind == JointKind::Gear && j.ratio == 0.0) {
+        warn(label + " ratio=\"0\" is not a gear ratio - using 1");
+        j.ratio = 1.0;
+    }
+    return clampJoint(j);
 }
 
 // イベントグラフ（MuJoCo には無い WizEngine の拡張）。種類ごとに意味のある
@@ -723,11 +905,21 @@ xml::Element nodeElement(const NodeDesc& n) {
     if (n.kind == NodeKind::SetColor || n.kind == NodeKind::SetLightColor) {
         setColor(e, "rgba", n.color);
     }
-    if (n.kind == NodeKind::ApplyImpulse) setVec3(e, "velocity", n.vec);
+    if (n.kind == NodeKind::ApplyImpulse || n.kind == NodeKind::SetVelocity) {
+        setVec3(e, "velocity", n.vec);
+    }
+    // OnCollision の絞り込み: 最小接触力 (N) と求める接触の向き（零 = 問わない）。
+    if (n.kind == NodeKind::OnCollision) {
+        if (n.value != 0.0) e.setNumber("minforce", n.value);
+        if (n.vec.x != 0.0 || n.vec.y != 0.0 || n.vec.z != 0.0) {
+            setVec3(e, "normal", n.vec);
+        }
+    }
     // value の意味は種類ごと（EditorTypes.h の clampNode）。GrabPull では
-    // 引き寄せる強さの倍率。
+    // 引き寄せる強さの倍率、SetVelocity では 1 = 加算、SetMotor では目標値。
     if (n.kind == NodeKind::SetFixed || n.kind == NodeKind::SetLightIntensity ||
-        n.kind == NodeKind::GrabPull) {
+        n.kind == NodeKind::GrabPull || n.kind == NodeKind::SetVelocity ||
+        n.kind == NodeKind::SetMotor) {
         e.setNumber("value", n.value);
     }
     return e;
@@ -751,8 +943,14 @@ NodeDesc nodeFromXml(const xml::Element& e, Warn& warn) {
     n.other = e.integer("other", n.other);
     n.seconds = e.number("seconds", n.seconds);
     n.color = getColor(e, "rgba", n.color);
-    n.vec = getVec3(e, "velocity", n.vec);
-    n.value = e.number("value", n.value);
+    if (n.kind == NodeKind::OnCollision) {
+        // 既定の vec は impulse 用の (0,5,0) なので、ここでは零から読む。
+        n.vec = getVec3(e, "normal", Vec3d{0.0, 0.0, 0.0});
+        n.value = e.number("minforce", 0.0);
+    } else {
+        n.vec = getVec3(e, "velocity", n.vec);
+        n.value = e.number("value", n.value);
+    }
     return clampNode(n);
 }
 
@@ -763,8 +961,8 @@ NodeDesc nodeFromXml(const xml::Element& e, Warn& warn) {
 EventAssetDesc eventAssetFromXml(const xml::Element& e,
                                  const std::vector<BodyDesc>& bodies,
                                  const std::vector<LightDesc>& lights,
-                                 bool hasLights, const std::string& label,
-                                 Warn& warn) {
+                                 bool hasLights, std::size_t jointCount,
+                                 const std::string& label, Warn& warn) {
     EventAssetDesc asset;
     warnUnknownChildren(e, {"node", "wire"}, label.c_str(), warn);
 
@@ -790,6 +988,12 @@ EventAssetDesc eventAssetFromXml(const xml::Element& e,
             std::size_t(nd.target) >= lights.size()) {
             warn(nodeLabel + " target=" + std::to_string(nd.target) +
                  " is out of range (lights) - cleared");
+            nd.target = -1;
+        }
+        if (tk == NodeTargetKind::Joint && nd.target >= 0 &&
+            std::size_t(nd.target) >= jointCount) {
+            warn(nodeLabel + " target=" + std::to_string(nd.target) +
+                 " is out of range (joints) - cleared");
             nd.target = -1;
         }
         if (nodeOtherIsObject(nd.kind) && nd.other >= 0 &&
@@ -1029,7 +1233,7 @@ SceneDocument fromXml(const xml::Element& root,
         "<wizengine>", warn);
 
     if (const xml::Element* o = root.first("option")) {
-        doc.sim = clampSim(optionFromXml(*o, doc.sim));
+        doc.sim = clampSim(optionFromXml(*o, doc.sim, warn));
         doc.hasSim = true;
     }
 
@@ -1266,6 +1470,7 @@ SceneDocument fromXml(const xml::Element& root,
             }
             EventAssetDesc a =
                 eventAssetFromXml(*e, doc.bodies, doc.lights, doc.hasLights,
+                                  doc.joints.size(),
                                   "<event name=\"" + name + "\">", warn);
             a.name = name;
             doc.eventAssets.push_back(std::move(a));
@@ -1285,7 +1490,8 @@ SceneDocument fromXml(const xml::Element& root,
                 name = "events" + std::to_string(n);
             }
             EventAssetDesc a = eventAssetFromXml(
-                *ev, doc.bodies, doc.lights, doc.hasLights, "<events>", warn);
+                *ev, doc.bodies, doc.lights, doc.hasLights, doc.joints.size(),
+                "<events>", warn);
             a.name = name;
             warn("<events>: <node> / <wire> written directly here is the old "
                  "format - imported as event asset \"" + name +

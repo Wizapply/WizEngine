@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -23,5 +24,14 @@ namespace wizengine {
 // Scene の <asset><mesh/>（凸包の当たり判定）がこれを使う。
 std::vector<chrono::ChVector3d> loadCollisionPoints(
     const std::string& name, double scale, std::size_t maxPoints = 512);
+
+// 三角形をそのまま（頂点と 3 つ組の添字）。凹形状の当たり判定
+// （<geom collision="trimesh">、PhysicsWorld::addTriangleMesh）用。
+// 読めなければ両方空。
+struct CollisionTriangles {
+    std::vector<chrono::ChVector3d> vertices;
+    std::vector<std::array<int, 3>> triangles;
+};
+CollisionTriangles loadCollisionTriangles(const std::string& name, double scale);
 
 }  // namespace wizengine

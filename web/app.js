@@ -1513,6 +1513,47 @@
   function applyFixed() {
     applyEdit({ fixed: document.getElementById('edFixed').checked });
   }
+  // 物性（空欄 = -1 = シーン設定に従う）。
+  function applySurface() {
+    const opt = (id) => {
+      const v = parseFloat(document.getElementById(id).value);
+      return Number.isFinite(v) ? v : -1;
+    };
+    applyEdit({ surface: {
+      friction: opt('edSurfFric'),
+      restitution: opt('edSurfRest'),
+      rolling: opt('edSurfRoll'),
+      cohesion: Math.max(0, num('edSurfCoh', 0))
+    } });
+  }
+  function applyLayer() {
+    const nc = [];
+    document.querySelectorAll('#edNoCollide input[type=checkbox]').forEach((cb) => {
+      if (cb.checked) nc.push(parseInt(cb.value, 10));
+    });
+    applyEdit({ layer: parseInt(document.getElementById('edLayer').value, 10) || 0,
+                nocollide: nc });
+  }
+  function applyBodyGravity() {
+    applyEdit({ gravity: document.getElementById('edGravityOn').checked });
+  }
+  function applyVelocity() {
+    applyEdit({
+      velocity: { x: num('edVX', 0), y: num('edVY', 0), z: num('edVZ', 0) },
+      angularVelocity: { x: num('edWX', 0), y: num('edWY', 0), z: num('edWZ', 0) }
+    });
+  }
+  // 「当てないレイヤ」のチェック 8 個は最初の 1 回だけ作る。
+  function ensureNoCollideBoxes() {
+    const host = document.getElementById('edNoCollide');
+    if (!host || host.children.length) return;
+    let h = '';
+    for (let i = 0; i < 8; i++) {
+      h += '<label title="レイヤ ' + i + '"><input type="checkbox" value="' + i +
+           '" onchange="applyLayer()">' + i + '</label>';
+    }
+    host.innerHTML = h;
+  }
   function applyColor() {
     applyEdit({ color: document.getElementById('edColor').value });
   }
@@ -1819,31 +1860,96 @@
   }
   function clearJointPartner() { jointPartner = -1; renderEditor(); }
 
+  // ジョイント節の追加設定（可動範囲・モータ・ばね・破断・歯車比・ピッチ）。
+  // 「作る」と一覧の ✎（既存のジョイントへ書き込む）で同じ値を使う。
+  function jointFormValues() {
+    return {
+      kind: document.getElementById('edJointKind').value,
+      limited: document.getElementById('jtLimited').checked,
+      limitLo: num('jtLimitLo', -45),
+      limitHi: num('jtLimitHi', 45),
+      motor: document.getElementById('jtMotor').value,
+      motorTarget: num('jtMotorTarget', 0),
+      stiffness: num('jtStiff', 0),
+      damping: num('jtDamp', 0),
+      distance: num('jtDistance', 0),
+      breakForce: num('jtBreak', 0),
+      ratio: num('jtRatio', 1),
+      pitch: num('jtPitch', 0.01)
+    };
+  }
+  // 種類に合う行だけ見せる（hinge / slide にしかモータは付かない、など。
+  // サーバー側も同じ規則で弾くが、出しておくと迷わせる）。
+  function renderJointForm() {
+    const kind = document.getElementById('edJointKind').value;
+    const motor = document.getElementById('jtMotor').value;
+    const show = (id, on) => { document.getElementById(id).hidden = !on; };
+    const motorable = kind === 'revolute' || kind === 'prismatic';
+    const limitable = (kind === 'revolute' || kind === 'prismatic' ||
+                       kind === 'cylindrical') && !(motorable && motor !== 'none');
+    show('jtRowLimit', limitable);
+    show('jtRowMotor', motorable);
+    show('jtRowSpring', kind === 'spring' || motorable);
+    show('jtRowDistance', kind === 'distance' || kind === 'spring');
+    show('jtRowBreak', kind !== 'spring');
+    show('jtRowRatio', kind === 'gear');
+    show('jtRowPitch', kind === 'screw');
+    show('edJointAxis', kind !== 'distance' && kind !== 'spring' && kind !== 'spherical' &&
+                        kind !== 'fixed');
+  }
   function createJoint() {
     const sel = mySelectedDesc();
     if (!sel) return;
     const axis = document.getElementById('edJointAxis').value;
-    send('edit.joint.add', {
-      kind: document.getElementById('edJointKind').value,
+    send('edit.joint.add', Object.assign(jointFormValues(), {
       a: sel.index,
       b: jointPartner,
       ax: axis === 'x' ? 1 : 0,
       ay: axis === 'y' ? 1 : 0,
       az: axis === 'z' ? 1 : 0
-    });
+    }));
   }
   function removeJoint(index) { send('edit.joint.remove', { index: index }); }
+  // 一覧の ✎: いまのフォームの値（種類も含む）をそのジョイントへ書き込む。
+  // 端点と軸の位置はそのまま。
+  function applyJointSettings(index) {
+    send('edit.joint.set', Object.assign({ index: index }, jointFormValues()));
+  }
+  // 一覧の行をクリックしたら、そのジョイントの値をフォームへ読み込む
+  // （見て・直して ✎、の流れ）。
+  function loadJointToForm(index) {
+    const j = (sceneData.joints || []).find((x) => x.index === index);
+    if (!j) return;
+    setField('edJointKind', j.kind);
+    setField('jtLimited', j.limited);
+    setField('jtLimitLo', j.limitLo);
+    setField('jtLimitHi', j.limitHi);
+    setField('jtMotor', j.motor || 'none');
+    setField('jtMotorTarget', j.motorTarget);
+    setField('jtStiff', j.stiffness);
+    setField('jtDamp', j.damping);
+    setField('jtDistance', j.distance);
+    setField('jtBreak', j.breakForce);
+    setField('jtRatio', j.ratio);
+    setField('jtPitch', j.pitch);
+    renderJointForm();
+  }
 
   // シミュレート設定（Physics タブ）。物理レートはここでは送らない - Rate
   // セクション（rate コマンド）が受け持ち、サーバー側で保存値にも映る。
   function applySim() {
     send('edit.sim', {
       gravity: num('edGravity', -9.81),
+      gravityX: num('edGravityX', 0),
+      gravityZ: num('edGravityZ', 0),
       friction: num('edFriction', 0.6),
       restitution: num('edRestitution', 0),
       linearDamping: num('edLinDamp', 0.15),
       angularDamping: num('edAngDamp', 0.6),
-      sleeping: document.getElementById('edSleeping').checked
+      sleeping: document.getElementById('edSleeping').checked,
+      integrator: document.getElementById('edIntegrator').value,
+      solver: document.getElementById('edSolver').value,
+      combine: document.getElementById('edCombine').value
     });
   }
   function applyCustomRate() {
@@ -1948,12 +2054,16 @@
 
   const JOINT_LABEL = {
     revolute: 'ちょうつがい', spherical: 'ボール', fixed: '固定',
-    prismatic: '直動', distance: '距離'
+    prismatic: '直動', distance: '距離', universal: '自在継手',
+    cylindrical: '円筒', planar: '平面', pointLine: '点‐線', pointPlane: '点‐面',
+    gear: '歯車', screw: 'ねじ', spring: 'ばね'
   };
   // ビューに引く線と同じ色。どの線がどの行かを目で追えるようにする。
   const JOINT_COLOR = {
     revolute: '#ff8c26', spherical: '#f273d9', fixed: '#f2d933',
-    prismatic: '#59e6e6', distance: '#99f266'
+    prismatic: '#59e6e6', distance: '#99f266', universal: '#f24d4d',
+    cylindrical: '#4d99f2', planar: '#b3b3f2', pointLine: '#f2f299',
+    pointPlane: '#99f2f2', gear: '#d9d9d9', screw: '#bf8c59', spring: '#66f299'
   };
 
   // このページのカメラがエディタカメラか。違うページでは Inspector タブを
@@ -2162,6 +2272,24 @@
       setField('edMass', round2(sel.mass));
       setField('edFixed', sel.fixed);
       setField('edColor', sel.color);
+      // 物性・レイヤ・重力・初速。負 = シーン設定なので空欄で見せる。
+      ensureNoCollideBoxes();
+      const sf = sel.surface || {};
+      const optField = (id, v) => setField(id, (v !== undefined && v >= 0) ? round2(v) : '');
+      optField('edSurfFric', sf.friction);
+      optField('edSurfRest', sf.restitution);
+      optField('edSurfRoll', sf.rolling);
+      setField('edSurfCoh', round2(sf.cohesion || 0));
+      setField('edLayer', String(sel.layer || 0));
+      const nc = sel.nocollide || [];
+      document.querySelectorAll('#edNoCollide input[type=checkbox]').forEach((cb) => {
+        if (cb !== document.activeElement) cb.checked = nc.indexOf(parseInt(cb.value, 10)) >= 0;
+      });
+      setField('edGravityOn', sel.gravity !== false);
+      const vel = sel.velocity || { x: 0, y: 0, z: 0 };
+      const ang = sel.angularVelocity || { x: 0, y: 0, z: 0 };
+      setField('edVX', round2(vel.x)); setField('edVY', round2(vel.y)); setField('edVZ', round2(vel.z));
+      setField('edWX', round2(ang.x)); setField('edWY', round2(ang.y)); setField('edWZ', round2(ang.z));
       if (sel.material) {
         setField('edRough', round2(sel.material.roughness));
         setField('edMetal', round2(sel.material.metallic));
@@ -2200,19 +2328,37 @@
     // 一覧はその選択が関わるものに絞る（どのジョイントにも地面でない体が
     // 必ずあるので、どれかを選べば必ず一覧に届く）。
     document.getElementById('secJoint').hidden = !sel;
+    if (sel) renderJointForm();
     const joints = (sceneData.joints || []).filter(
       (j) => sel && (j.a === sel.index || j.b === sel.index));
     document.getElementById('edJointList').innerHTML = joints.length
       ? joints.map((j) => {
           const a = j.a < 0 ? '地面' : '#' + j.a;
           const b = j.b < 0 ? '地面' : '#' + j.b;
-          return '<div class="jointItem">' +
+          // 付いている設定の要約（可動範囲・モータ・ばね・破断）と、
+          // シミュレート中の計測値（反力・反トルク）。
+          const tags = [];
+          if (j.limited) tags.push('範囲 ' + round2(j.limitLo) + '…' + round2(j.limitHi));
+          if (j.motor && j.motor !== 'none') tags.push('モータ ' + j.motor + ' ' + round2(j.motorTarget));
+          if (j.stiffness) tags.push('k ' + round2(j.stiffness));
+          if (j.breakForce) tags.push('破断 ' + round2(j.breakForce) + ' N');
+          let stat = '';
+          if (j.broken) stat = ' <b class="warn">切断</b>';
+          else if (!editing && j.force !== undefined) {
+            stat = ' <span class="val">' + round2(j.force) + ' N / ' +
+                   round2(j.torque) + ' N·m</span>';
+          }
+          return '<div class="jointItem" onclick="loadJointToForm(' + j.index + ')" ' +
+            'title="クリックで値をフォームへ">' +
             '<span class="dot" style="background:' +
               (JOINT_COLOR[j.kind] || '#888') + '"></span>' +
             '<span>' + (JOINT_LABEL[j.kind] || j.kind) + ' ' + a + ' ↔ ' + b +
+            (tags.length ? ' <small>(' + tags.join(', ') + ')</small>' : '') + stat +
             '</span>' +
-            '<span class="x" title="削除" onclick="removeJoint(' + j.index +
-            ')">✕</span></div>';
+            '<span class="x" title="フォームの設定をこのジョイントへ書き込む" ' +
+            'onclick="event.stopPropagation();applyJointSettings(' + j.index + ')">✎</span>' +
+            '<span class="x" title="削除" onclick="event.stopPropagation();removeJoint(' +
+            j.index + ')">✕</span></div>';
         }).join('')
       : '<div class="edHint">このオブジェクトのジョイントはまだありません。</div>';
 
@@ -2220,6 +2366,11 @@
     const s = sceneData.sim;
     if (s) {
       setField('edGravity', round2(s.gravity));
+      setField('edGravityX', round2(s.gravityX || 0));
+      setField('edGravityZ', round2(s.gravityZ || 0));
+      setField('edIntegrator', s.integrator || 'euler');
+      setField('edSolver', s.solver || 'bb');
+      setField('edCombine', s.combine || 'min');
       setField('edFriction', round2(s.friction));
       setField('edRestitution', round2(s.restitution));
       setField('edLinDamp', round2(s.linearDamping));
@@ -2495,6 +2646,9 @@
     lightColor:     { icon: '💡', label: 'ライトの色', trigger: false, target: 'light' },
     lightIntensity: { icon: '🔆', label: 'ライトの強さ', trigger: false, target: 'light' },
     cameraLookAt:   { icon: '🎥', label: '注視する',   trigger: false, target: 'camera' },
+    onJointBreak:   { icon: '💥', label: 'ジョイントが切れたら', trigger: true, target: 'joint' },
+    setVelocity:    { icon: '💨', label: '速度を与える', trigger: false, target: 'object' },
+    setMotor:       { icon: '⚙️', label: 'モータの目標', trigger: false, target: 'joint' },
   };
   let nodeEdOpen = false;
   let ndGraphKey = '';   // 前回組み立てたグラフ+選択肢のキー（変化検知）
@@ -2908,9 +3062,9 @@
   window.addEventListener('blur', hideContextMenu);
 
   // ノード追加メニューの並び（NODE_DEF から見出しとラベルを作る）。
-  const NODE_MENU_TRIGGERS = ['onCollision', 'onStart', 'onTimer', 'onGrab'];
-  const NODE_MENU_ACTIONS = ['setColor', 'impulse', 'setFixed', 'grabPull',
-                             'lightColor', 'lightIntensity', 'cameraLookAt'];
+  const NODE_MENU_TRIGGERS = ['onCollision', 'onStart', 'onTimer', 'onGrab', 'onJointBreak'];
+  const NODE_MENU_ACTIONS = ['setColor', 'impulse', 'setVelocity', 'setFixed', 'grabPull',
+                             'setMotor', 'lightColor', 'lightIntensity', 'cameraLookAt'];
   function nodeMenuItems(x, y) {
     const item = (kind) => {
       const def = NODE_DEF[kind];
@@ -3181,6 +3335,13 @@
     return (sceneData.cameras || []).filter((c) => c.active !== false)
       .map((c) => ({ v: c.index, t: cameraName(c.index) }));
   }
+  function ndJointItems() {
+    return (sceneData.joints || []).map((j) => ({
+      v: j.index,
+      t: (j.name ? j.name : (JOINT_LABEL[j.kind] || j.kind)) + ' #' + j.index +
+         (j.motor && j.motor !== 'none' ? ' (モータ)' : '')
+    }));
+  }
   function ndSelHtml(id, field, items, cur, head) {
     let found = false;
     let h = '<select class="strSel" onchange="ndPatch(' + id + ',{' + field +
@@ -3223,10 +3384,43 @@
     } else if (def.target === 'camera') {
       h += ndRow('対象', ndSelHtml(n.id, 'target', ndCamItems(), n.target,
                                    [[-1, '(選んでください)']]));
+    } else if (def.target === 'joint') {
+      h += ndRow('ジョイント', ndSelHtml(n.id, 'target', ndJointItems(), n.target,
+                                         n.kind === 'onJointBreak' ? [[-1, '(どれでも)']]
+                                                                   : [[-1, '(選んでください)']]));
     }
     if (n.kind === 'onCollision') {
       h += ndRow('相手', ndSelHtml(n.id, 'other', ndObjItems(), n.other,
                                    [[-2, '(何でも)'], [-1, '地面']]));
+      // 絞り込み: 最小の接触力と、求める向き（対象から見て相手のある側。
+      // 0 0 0 = 問わない。0 1 0 なら「上に何か乗ったら」）。
+      h += ndRow('最小の力 N', '<input class="num" type="number" step="1" min="0" value="' +
+                 (n.value || 0) + '" title="0 = 何でも" onchange="ndPatch(' + n.id +
+                 ',{value:parseFloat(this.value)||0})">');
+      const nrm = (ax, val) =>
+        '<input class="num" type="number" step="1" min="-1" max="1" value="' + val +
+        '" title="向き ' + ax.toUpperCase() + '（対象から相手へ。0 0 0 = 問わない）" data-vec="' + ax +
+        '" onchange="ndVecChange(' + n.id + ',this)">';
+      h += ndRow('向き', '<span class="ndVec">' + nrm('x', n.vec.x) + nrm('y', n.vec.y) +
+                 nrm('z', n.vec.z) + '</span>');
+    }
+    if (n.kind === 'setVelocity') {
+      const vecIn = (ax, val) =>
+        '<input class="num" type="number" step="0.5" value="' + val +
+        '" title="' + ax.toUpperCase() + ' (m/s)" data-vec="' + ax +
+        '" onchange="ndVecChange(' + n.id + ',this)">';
+      h += ndRow('v', '<span class="ndVec">' + vecIn('x', n.vec.x) +
+                 vecIn('y', n.vec.y) + vecIn('z', n.vec.z) + '</span>');
+      h += ndRow('動作', '<select class="strSel" onchange="ndPatch(' + n.id +
+                 ',{value:parseFloat(this.value)})">' +
+                 '<option value="0"' + (!n.value ? ' selected' : '') + '>上書き</option>' +
+                 '<option value="1"' + (n.value ? ' selected' : '') + '>加算</option>' +
+                 '</select>');
+    }
+    if (n.kind === 'setMotor') {
+      h += ndRow('目標値', '<input class="num" type="number" step="10" value="' +
+                 (n.value || 0) + '" title="単位はジョイントのモータと同じ（deg/s・deg・N·m / m/s・m・N）" ' +
+                 'onchange="ndPatch(' + n.id + ',{value:parseFloat(this.value)||0})">');
     }
     if (n.kind === 'cameraLookAt') {
       h += ndRow('注視', ndSelHtml(n.id, 'other', ndObjItems(), n.other,

@@ -551,6 +551,9 @@
     margin-left: auto; color: #8b8f99; cursor: pointer; padding: 0 4px;
   }
   .jointItem .x:hover { color: #e7b4b4; }
+  .jointItem small { color: #9aa3ad; }
+  .jointItem .warn { color: #ff8a8a; }
+  .jointItem .val { color: #9fd3a0; font-weight: normal; }
 
   /* ---- 下部アセットパネル（Unity の Project ビュー相当）------------------ */
   /* 背景・境界・見出しはサイドバーと同じ見た目。高さは textarea と同じ

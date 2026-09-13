@@ -20,9 +20,10 @@ std::vector<PhysicsWorld::ExtraShape> Scene::collisionShapes(const ed::BodyDesc&
         if (p.name != desc.prefab) continue;
         for (const ed::PartDesc& part : p.parts) {
             if (!part.collide || !part.socket.empty()) continue;
-            if (part.kind != ed::PartKind::Box && part.kind != ed::PartKind::Sphere) continue;
+            if (part.kind == ed::PartKind::Mesh) continue;  // メッシュ部品は見た目だけ
             PhysicsWorld::ExtraShape s;
             s.sphere = part.kind == ed::PartKind::Sphere;
+            s.cylinder = part.kind == ed::PartKind::Cylinder;  // x = 長さ、y = 直径
             s.size = ChVector3d(part.size.x, part.size.y, part.size.z);
             s.pos = ChVector3d(part.position.x, part.position.y, part.position.z);
             s.rot = quatFromEuler(part.rotation);
@@ -93,16 +94,34 @@ std::size_t Scene::createBody(
     const bool separate = desc.fixed && !parts.empty();
     const std::vector<PhysicsWorld::ExtraShape> extras =
         separate ? std::vector<PhysicsWorld::ExtraShape>{} : parts;
+    // 接触の物性・衝突レイヤ・重力（文書の <geom friction layer gravity ...>）。
+    const BodyOptions opt = toBodyOptions(desc);
     std::size_t physId = GameObject::kInvalidId;
     if (desc.collision == ed::ShapeKind::None) {
         // geom の無いボディ: 部品の当たり判定だけを持つフレーム（階段など）。
-        physId = physics_.addFrame(desc.mass, pos, rot, desc.fixed, extras);
+        physId = physics_.addFrame(desc.mass, pos, rot, desc.fixed, extras, opt);
+    } else if (desc.collision == ed::ShapeKind::Trimesh) {
+        // 三角メッシュそのまま（凹形状）。読めない・この Chrono に形状が無い
+        // ときは凸包へ倒す（さらに無ければ球）。
+        if (const auto* tm = meshTrimesh(meshIndex)) {
+            physId = physics_.addTriangleMesh(tm->vertices, tm->triangles, desc.mass, pos,
+                                              rot, desc.fixed, extras, opt);
+        }
+        if (physId == GameObject::kInvalidId) {
+            if (const auto* hull = meshHull(meshIndex)) {
+                ChVector3d center;
+                physId = physics_.addConvexHull(*hull, desc.mass, pos, rot, extras,
+                                                &center, opt);
+                hullCenter = ed::Vec3d{center.x(), center.y(), center.z()};
+                if (desc.fixed) physics_.setBodyFixed(physId, true);
+            }
+        }
     } else if (desc.collision == ed::ShapeKind::Model) {
         if (const auto* hull = meshHull(meshIndex)) {
             // 質量は文書の値そのもの（密度ではない。PhysicsWorld の注記）。
             ChVector3d center;
             physId = physics_.addConvexHull(*hull, desc.mass, pos, rot, extras,
-                                            &center);
+                                            &center, opt);
             hullCenter = ed::Vec3d{center.x(), center.y(), center.z()};
             if (desc.fixed) physics_.setBodyFixed(physId, true);
         }
@@ -110,18 +129,27 @@ std::size_t Scene::createBody(
     if (physId == GameObject::kInvalidId) {
         physId = desc.collision == ed::ShapeKind::Box
                      ? physics_.addBox(desc.size.x, desc.size.y, desc.size.z,
-                                       desc.density(), pos, rot, desc.fixed, extras)
+                                       desc.density(), pos, rot, desc.fixed, extras, opt)
                      : physics_.addSphere(desc.size.x * 0.5, desc.density(), pos, rot,
-                                          desc.fixed, extras);
+                                          desc.fixed, extras, opt);
     }
     if (separate) {
         for (const PhysicsWorld::ExtraShape& e : parts) {
             const ChVector3d wp = pos + rot.Rotate(e.pos);
             const ChQuaternion<> wr = rot * e.rot;
-            const std::size_t child =
-                e.sphere ? physics_.addSphere(e.size.x() * 0.5, 1000.0, wp, wr, true)
-                         : physics_.addBox(e.size.x(), e.size.y(), e.size.z(), 1000.0, wp,
-                                           wr, true);
+            std::size_t child = GameObject::kInvalidId;
+            if (e.cylinder) {
+                // 円柱の部品は単独のボディにできない（addCylinder は無い）ので、
+                // 1 部品だけの複合形状を持つフレームとして作る。
+                child = physics_.addFrame(1.0, wp, wr, true, {PhysicsWorld::ExtraShape{
+                    false, true, e.size, ChVector3d(0, 0, 0), ChQuaternion<>(1, 0, 0, 0)}},
+                    opt);
+            } else if (e.sphere) {
+                child = physics_.addSphere(e.size.x() * 0.5, 1000.0, wp, wr, true, {}, opt);
+            } else {
+                child = physics_.addBox(e.size.x(), e.size.y(), e.size.z(), 1000.0, wp, wr,
+                                        true, {}, opt);
+            }
             physics_.setAlias(child, physId);
             children.push_back(child);
         }
@@ -177,16 +205,19 @@ void Scene::destroyObject(std::size_t index) {
     }
 
     // 消えたオブジェクトを参照するジョイントも一緒に落とす。残すと次の
-    // シミュレート開始で「端点が無い」と言われ続けるだけ。
+    // シミュレート開始で「端点が無い」と言われ続けるだけ。番号で参照する
+    // ノード（onJointBreak / setMotor）も後ろから順に詰め直す。
     auto joints = editor_.joints();
     const int idx = int(index);
-    const std::size_t before = joints.size();
-    joints.erase(std::remove_if(joints.begin(), joints.end(),
-                                [idx](const ed::JointDesc& j) {
-                                    return j.bodyA == idx || j.bodyB == idx;
-                                }),
-                 joints.end());
-    if (joints.size() != before) {
+    std::vector<int> removedJoints;
+    for (std::size_t k = 0; k < joints.size(); ++k) {
+        if (joints[k].bodyA == idx || joints[k].bodyB == idx) removedJoints.push_back(int(k));
+    }
+    if (!removedJoints.empty()) {
+        for (auto it = removedJoints.rbegin(); it != removedJoints.rend(); ++it) {
+            joints.erase(joints.begin() + *it);
+            pruneJointNodes(*it);
+        }
         editor_.setJoints(std::move(joints));
         if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
     }
@@ -533,11 +564,34 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             next.collision = ed::ShapeKind::Box;
             next.mesh.clear();
         }
+        // 物性は材質を持っていればその場で、無ければ作り直し（形状に焼き込み）。
+        // レイヤは衝突モデルの作り直し。重力と速度はその場で書ける。
+        const bool surfaceChanged = next.surface != before.surface;
+        const bool layerChanged = next.layer != before.layer ||
+                                  next.nocollide != before.nocollide;
+        const bool gravityChanged = next.gravity != before.gravity;
+        const bool velocityChanged =
+            next.velocity.x != before.velocity.x || next.velocity.y != before.velocity.y ||
+            next.velocity.z != before.velocity.z ||
+            next.angularVelocity.x != before.angularVelocity.x ||
+            next.angularVelocity.y != before.angularVelocity.y ||
+            next.angularVelocity.z != before.angularVelocity.z;
+        bool surfaceNeedsRebuild = false;
+        if (surfaceChanged && obj.physId != GameObject::kInvalidId) {
+            surfaceNeedsRebuild = !physics_.setBodySurface(obj.physId, toBodyOptions(next));
+            for (const std::size_t c : obj.childPhysIds) {
+                physics_.setBodySurface(c, toBodyOptions(next));
+            }
+        }
+        if (gravityChanged && obj.physId != GameObject::kInvalidId) {
+            physics_.setBodyGravity(obj.physId, next.gravity);
+        }
         {
             std::lock_guard<std::mutex> lk(objectsMutex_);
             obj.desc = next;
             if (colorChanged) obj.colorDirty = true;
-            if (shapeChanged || sizeChanged || massChanged || softChanged) {
+            if (shapeChanged || sizeChanged || massChanged || softChanged ||
+                layerChanged || surfaceNeedsRebuild) {
                 obj.physDirty = true;
             }
             // レンダラブルを作り直すのは、メッシュが別物になるとき（箱↔球）
@@ -557,6 +611,16 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                                           next.position.z),
                                quatFromEuler(next.rotation));
             if (!obj.childPhysIds.empty()) obj.physDirty = true;  // 部品も付いていく
+        }
+        // 初速はシミュレート中なら即座に効かせる（エディタ中は開始時に
+        // restoreAuthoredPoses が与える）。
+        if (velocityChanged && editor_.mode() == ed::AppMode::Simulate &&
+            obj.physId != GameObject::kInvalidId) {
+            const ed::Vec3d& v = next.velocity;
+            const ed::Vec3d& w = next.angularVelocity;
+            physics_.setBodyVelocity(
+                obj.physId, ChVector3d(v.x, v.y, v.z),
+                ChVector3d(w.x * kDegToRad, w.y * kDegToRad, w.z * kDegToRad));
         }
         // 形が変わったら Chrono のボディを作り直す必要がある。エディタ中は
         // シミュレート開始まで待つ（当たり判定は使っていないので困らない）。
@@ -606,8 +670,27 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     if (op.kind == "joint.remove") {
         const int index = a.value("index", -1);
         if (!editor_.removeJoint(index)) return;
+        pruneJointNodes(index);
         if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
         editor_.setStatus("ジョイントを削除: #" + std::to_string(index));
+        return;
+    }
+
+    // 既存のジョイントの値を書き換える（送られたキーだけ）。シミュレート中
+    // なら全部作り直して即反映（拘束は作り直すしかない）。
+    if (op.kind == "joint.set") {
+        const int index = a.value("index", -1);
+        auto joints = editor_.joints();
+        if (index < 0 || std::size_t(index) >= joints.size()) return;
+        ed::JointDesc j = ed::jointFromJson(a, joints[std::size_t(index)]);
+        if (j.bodyA == j.bodyB) {
+            editor_.setStatus("ジョイント: 同じオブジェクト同士は繋げません");
+            return;
+        }
+        joints[std::size_t(index)] = j;
+        editor_.setJoints(std::move(joints));
+        if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
+        editor_.setStatus("ジョイントを更新: #" + std::to_string(index));
         return;
     }
 

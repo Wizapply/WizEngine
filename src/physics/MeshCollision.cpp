@@ -209,4 +209,17 @@ std::vector<ChVector3d> loadCollisionPoints(const std::string& name,
     return pts;
 }
 
+CollisionTriangles loadCollisionTriangles(const std::string& name, double scale) {
+    CollisionTriangles out;
+    ChTriangleMeshConnected mesh;
+    if (!loadCollisionMesh(name, scale, mesh)) return out;
+    out.vertices = mesh.GetCoordsVertices();
+    const auto& tris = mesh.GetIndicesVertexes();
+    out.triangles.reserve(tris.size());
+    for (const auto& t : tris) {
+        out.triangles.push_back({int(t.x()), int(t.y()), int(t.z())});
+    }
+    return out;
+}
+
 }  // namespace wizengine
