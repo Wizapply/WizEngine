@@ -10,6 +10,9 @@
 #include <chrono/collision/ChCollisionShapeSphere.h>
 #define WIZ_HAVE_COLLISION_SHAPES 1
 #endif
+#include <chrono/collision/bullet/ChCollisionUtilsBullet.h>  // 凸包の体積重心
+#include <chrono/core/ChMatrix33.h>
+#include <chrono/geometry/ChTriangleMeshConnected.h>
 #include <chrono/physics/ChBody.h>
 #include <chrono/physics/ChBodyEasy.h>
 #include <chrono/physics/ChContactContainer.h>
@@ -733,7 +736,13 @@ void PhysicsWorld::applyForce(std::size_t id, const ChVector3d& force,
     }
     auto& b = bodies_[id];
     const double mass = b->GetMass();
-    if (mass <= 0.0) return;
+    // 固定ボディには掛けない（applyForceAtPoint と同じ）。固定の物は位置を
+    // 積分しないので速度を足しても動かないが、**足した速度は残る**。Multicore
+    // の接触拘束は固定ボディの速度も右辺に入れる（= 動く床として扱う）ので、
+    // 固定の台を掴んで毎ステップ速度を積むと、台は動かないまま上の物が
+    // 全部その速度で押し出されて発散する。Core は非アクティブな変数を
+    // 無視するので出ないが、速度が溜まるのは同じ。
+    if (mass <= 0.0 || b->IsFixed()) return;
 
     // A sleeping body ignores everything until something touches it, so wake it
     // first - otherwise pushing a settled box does nothing at all.
@@ -1007,9 +1016,24 @@ std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
 }
 
 std::size_t PhysicsWorld::addConvexHull(
-    const std::vector<ChVector3d>& points, double density,
+    const std::vector<ChVector3d>& points, double mass,
     const ChVector3d& pos, const ChQuaternion<>& rot,
-    const std::vector<ExtraShape>& extras) {
+    const std::vector<ExtraShape>& extras, ChVector3d* hullCenter) {
+    // 凸包の体積重心を先に求める。ChBodyEasyConvexHull は内部で同じ計算を
+    // して頂点をここへ寄せる（ボディの原点 = 重心）ので、呼び出し側が
+    // 見た目を同じだけずらせるように返す。Chrono と同じ道具（Bullet の
+    // 凸包 + 三角メッシュの質量特性）で出すから、寄せ量と一致する。
+    ChVector3d center(0.0, 0.0, 0.0);
+    if (points.size() >= 4) {
+        chrono::ChTriangleMeshConnected hull;
+        chrono::bt_utils::ChConvexHullLibraryWrapper wrapper;
+        wrapper.ComputeHull(points, hull);
+        double volume = 0.0;
+        chrono::ChMatrix33<> inertia;
+        hull.ComputeMassProperties(true, volume, center, inertia);
+    }
+    if (hullCenter) *hullCenter = center;
+
     // visualize=false: our renderer draws the glTF model itself; Chrono's
     // visual assets are unused here.
     //
@@ -1017,11 +1041,35 @@ std::size_t PhysicsWorld::addConvexHull(
     // translates them in place (it moves the barycentre onto the centre of
     // mass) - hence the local copy: the caller's point cloud is shared by
     // every body and must not be mutated.
+    //
+    // 密度 1 で作って、あとから文書の質量へ合わせる。凸包の体積はモデルの
+    // 大きさ次第（文書の size とは無関係）なので、密度から出すと質量が
+    // 桁違いになる - 以前は 1 m のモデルに size 0.05 を書くと 100 kg 超の
+    // 「りんご」ができて、触れた物を弾き飛ばしていた。
     std::vector<ChVector3d> local = points;
     auto b = chrono_types::make_shared<ChBodyEasyConvexHull>(
-        local, density, /*visualize*/ false, /*collide*/ true, mat_);
-    // 凸包は重心へ寄せられるので、部品の位置は「寄せる前の原点」基準のまま
-    // = 原点が中心から離れたモデルではそのぶんずれる（addConvexHull の注記と同じ）。
+        local, /*density*/ 1.0, /*visualize*/ false, /*collide*/ true, mat_);
+    const double unitMass = b->GetMass();  // 密度 1 なので = 凸包の体積
+    if (unitMass > 1e-12 && std::isfinite(unitMass)) {
+        // 慣性は Chrono が凸包から出した形（密度 1）のまま、質量の比で伸縮。
+        b->SetInertia(b->GetInertia() * (mass / unitMass));
+    } else {
+        // 退化した凸包（平ら・点が 4 個未満）: 外接半径の球として扱う。
+        double r2 = 1e-6;
+        for (const auto& p : points) {
+            const ChVector3d d = p - center;
+            r2 = std::max(r2, d.x() * d.x() + d.y() * d.y() + d.z() * d.z());
+        }
+        const double i = 0.4 * mass * r2;
+        b->SetInertiaXX(ChVector3d(i, i, i));
+        LOGW("physics",
+             "convex hull is degenerate (%zu points) - using a sphere inertia",
+             points.size());
+    }
+    b->SetMass(mass);
+    // 部品の位置は「寄せる前の原点」基準のまま = 原点が重心から離れた
+    // モデルではそのぶんずれる（見た目は hullCenter で合わせるが、複合形状
+    // の部品までは動かさない）。
     attachExtraShapes(*b, extras);
     b->SetPos(pos);
     b->SetRot(rot);
@@ -1095,16 +1143,28 @@ void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
 
 void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
     if (id >= bodies_.size()) return;
+    // 固定するときは速度も捨てる（ForceToRest）。走行中に固定された物が
+    // 速度を持ったままだと、Multicore の接触拘束がそれを「動く床」として
+    // 上の物へ伝え続ける（applyForce の注記と同じ理屈）。
     if (SoftBody* soft = softOfRoot(id)) {
         // 全粒子を固定 = 形を保ったまま動かない土台になる。
         for (const std::size_t p : soft->particles) {
             bodies_[p]->SetFixed(fixed);
-            if (!fixed) wakeUp(bodies_[p].get(), 0);
+            if (fixed) bodies_[p]->ForceToRest();
+            else wakeUp(bodies_[p].get(), 0);
         }
         return;
     }
     bodies_[id]->SetFixed(fixed);
-    if (!fixed) wakeUp(bodies_[id].get(), 0);
+    if (fixed) bodies_[id]->ForceToRest();
+    else wakeUp(bodies_[id].get(), 0);
+}
+
+bool PhysicsWorld::bodyFixed(std::size_t id) const {
+    if (id >= bodies_.size()) return false;
+    // ソフトボディは代表粒子で代表させる（setBodyFixed は全粒子を揃えて
+    // 固定するので、代表を見れば足りる）。
+    return bodies_[id]->IsFixed();
 }
 
 void PhysicsWorld::disableBody(std::size_t id) {

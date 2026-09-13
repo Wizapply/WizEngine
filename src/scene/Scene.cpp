@@ -862,8 +862,18 @@ void Scene::applyToRenderer() {
             s = filament::math::float3{float(d.size.x), float(d.size.y),
                                        float(d.size.z)};
         }
-        const auto m = toFilament(poses[k]) * filament::math::mat4f::scaling(s);
+        auto m = toFilament(poses[k]) * filament::math::mat4f::scaling(s);
         if (obj.modelDraw) {
+            // 凸包で当たる物: ボディの原点は凸包の体積重心（Chrono が寄せる）
+            // なので、モデルの原点をそのぶん戻して、見た目と当たり判定を
+            // 重ねる（hullCenter はボディ座標の m。scale の前に掛ける）。
+            const ed::Vec3d& c = obj.hullCenter;
+            if (c.x != 0.0 || c.y != 0.0 || c.z != 0.0) {
+                m = toFilament(poses[k]) *
+                    filament::math::mat4f::translation(filament::math::float3{
+                        float(-c.x), float(-c.y), float(-c.z)}) *
+                    filament::math::mat4f::scaling(s);
+            }
             renderer_.setModelInstanceTransform(obj.renderId, m);
         } else {
             renderer_.setBoxTransform(obj.renderId, m);

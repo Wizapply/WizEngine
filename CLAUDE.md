@@ -251,7 +251,13 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   からの**相対パスのみ**（`..` と絶対パスは警告して弾く）。`scale` はモデル
   単位 → m の素の倍率で**見た目だけ**を決め、当たり判定は geom の
   size / collision（既定はモデルの凸包、読めなければ球）。宣言の無い名前は
-  警告して球で描く。**地面と環境光も文書が持つ**: worldbody 直下の単一要素
+  警告して球で描く。**凸包の質量は `mass` そのもの**（`PhysicsWorld::
+  addConvexHull` は密度ではなく質量を受ける。凸包の体積はモデルの大きさ
+  次第で size とは無関係なので、密度から出すと 1 m のモデルに size 0.05 を
+  書いた「りんご」が 100 kg 超になり、触れた物を弾き飛ばした）。Chrono は
+  凸包を**体積重心へ寄せる**（ボディの原点 = 重心）ので、寄せた量を
+  `GameObject::hullCenter` に持ち、RENDER スレッドが glTF の原点を同じだけ
+  逆にずらして重ねる（原点が底にあるモデルが当たり判定から浮かない）。**地面と環境光も文書が持つ**: worldbody 直下の単一要素
   `<ground size visual texture tile rgba>`（size = 物理の床の半寸法、visual =
   見える地面の半寸法。texture は assets/ 相対、空 = 市松模様）と
   `<environment hdr intensity>`（hdr は assets/ 相対、空 = 環境マップ無し）。
@@ -943,6 +949,14 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
   番号は残す。**Multicore では当たり判定のフラグを触らない** - その衝突系の
   `Remove()` は未実装で、Chrono 9 は "not yet implemented" を出して例外を
   投げるため。固定 + 退避だけで無効化する）、`setGravityY`、そして `addJoint` / `removeAllJoints` を持つ。
+  **固定ボディには力を掛けない**（`applyForce` / `applyForceAtPoint` が
+  `IsFixed` で弾き、`setBodyFixed(true)` は `ForceToRest` で速度も捨てる）:
+  固定の物は位置を積分しないが足した速度は残り、**Multicore の接触拘束は
+  固定ボディの速度も右辺に入れる**（= 動く床）ので、固定の台を掴んで毎
+  ステップ速度を積むと、台は動かないまま上の物が全部押し出されて発散した。
+  Core は非アクティブな変数を無視するので出ない（Chrono 9.0.0 の
+  `ChConstraintTuple.h`）。掴み（GrabPull）は `bodyFixed` を見て引っぱり線
+  ごと諦める。
   **ボディの追加は必ず `registerBody` を通す**: Chrono 9 は衝突モデルを
   最初のステップ（`Initialize` → `BindAll`）でまとめて登録し、**それ以降に
   `AddBody` したボディは Core / Multicore とも衝突系へ渡さない**。

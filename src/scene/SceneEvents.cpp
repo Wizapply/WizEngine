@@ -434,6 +434,10 @@ void Scene::runGraphAction(const ed::NodeDesc& n, const GraphContext& ctx,
             if (!ctx.hasPoint || !objectAlive(obj) || dt <= 0.0) return;
             const GameObject& o = boxes_[std::size_t(obj)];
             if (o.physId == GameObject::kInvalidId) return;
+            // 固定の物（台・土台）は引っぱらない。力を掛けても動かないし、
+            // 引っぱり線だけ出るのも紛らわしい（設計値ではなく実体を見る =
+            // イベントの SetFixed で走行中に固定された物も含む）。
+            if (physics_.bodyFixed(o.physId)) return;
             const double mass = physics_.bodyMass(o.physId);
             if (mass <= 0.0) return;
 

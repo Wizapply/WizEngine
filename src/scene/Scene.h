@@ -286,10 +286,13 @@ private:
     // へ返す（剛体なら nullptr）。戻り値は physId（ソフトなら代表番号）。
     // 固定の持ち主の collide 部品は別の固定ボディ（children に番号）、動く
     // 持ち主のものは本体の複合形状になる。
+    // hullCenter は凸包で当たるとき Chrono が寄せた体積重心（ボディ座標、m。
+    // それ以外は 0）。RENDER スレッドが見た目を同じだけ逆にずらして重ねる。
     std::size_t createBody(
         const wizengine::editor::BodyDesc& desc, int meshIndex,
         std::shared_ptr<const wizengine::softlattice::Lattice>& lattice,
-        std::vector<std::size_t>& children);
+        std::vector<std::size_t>& children,
+        wizengine::editor::Vec3d& hullCenter);
     // プレハブの collide 部品を Chrono の追加形状（複合形状）に直す（createBody 用）。
     std::vector<PhysicsWorld::ExtraShape> collisionShapes(
         const wizengine::editor::BodyDesc& desc) const;

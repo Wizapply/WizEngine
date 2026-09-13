@@ -337,10 +337,12 @@ struct BodyDesc {
     bool hasSoft = false;
     SoftDesc soft;
 
-    // 形状から体積を出す。密度 = mass / volume を Chrono に渡すので、
+    // 形状から体積を出す。箱・球は密度 = mass / volume を Chrono に渡すので、
     // 形や大きさを変えても質量は指定どおりに保たれる。見た目ではなく
     // **当たり判定の形**で計算する（質量は物理側の量なので）。凸包
-    // （collision=Model）は外接する箱の体積を見積もりに使う。
+    // （collision=Model）は密度を使わず mass をそのまま渡す（凸包の体積は
+    // モデルの大きさ次第で size と無関係 = 密度から出すと桁違いになる）。
+    // ここの値は凸包が読めず球へ倒れたときの見積もりにだけ効く。
     double volume() const {
         if (collision == ShapeKind::Sphere) {
             const double r = size.x * 0.5;

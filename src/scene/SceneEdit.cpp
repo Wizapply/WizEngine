@@ -51,8 +51,9 @@ void Scene::markPrefabUsersDirty(const std::string& prefab) {
 std::size_t Scene::createBody(
     const ed::BodyDesc& desc, int meshIndex,
     std::shared_ptr<const wizengine::softlattice::Lattice>& lattice,
-    std::vector<std::size_t>& children) {
+    std::vector<std::size_t>& children, ed::Vec3d& hullCenter) {
     children.clear();
+    hullCenter = ed::Vec3d{0.0, 0.0, 0.0};
     const ChVector3d pos(desc.position.x, desc.position.y, desc.position.z);
     const ChQuaternion<> rot = quatFromEuler(desc.rotation);
     lattice.reset();
@@ -98,7 +99,11 @@ std::size_t Scene::createBody(
         physId = physics_.addFrame(desc.mass, pos, rot, desc.fixed, extras);
     } else if (desc.collision == ed::ShapeKind::Model) {
         if (const auto* hull = meshHull(meshIndex)) {
-            physId = physics_.addConvexHull(*hull, desc.density(), pos, rot, extras);
+            // 質量は文書の値そのもの（密度ではない。PhysicsWorld の注記）。
+            ChVector3d center;
+            physId = physics_.addConvexHull(*hull, desc.mass, pos, rot, extras,
+                                            &center);
+            hullCenter = ed::Vec3d{center.x(), center.y(), center.z()};
             if (desc.fixed) physics_.setBodyFixed(physId, true);
         }
     }
@@ -141,7 +146,8 @@ std::size_t Scene::createObject(const ed::BodyDesc& descIn) {
     }
 
     GameObject obj;
-    obj.physId = createBody(desc, meshIndex, obj.lattice, obj.childPhysIds);
+    obj.physId = createBody(desc, meshIndex, obj.lattice, obj.childPhysIds,
+                            obj.hullCenter);
     obj.meshIndex = meshIndex;
     obj.desc = desc;
     obj.alive = true;
@@ -270,12 +276,15 @@ void Scene::rebuildBody(std::size_t index) {
 
     std::shared_ptr<const wizengine::softlattice::Lattice> lattice;
     std::vector<std::size_t> children;
-    const std::size_t physId = createBody(obj.desc, obj.meshIndex, lattice, children);
+    ed::Vec3d hullCenter;
+    const std::size_t physId =
+        createBody(obj.desc, obj.meshIndex, lattice, children, hullCenter);
 
     std::lock_guard<std::mutex> lk(objectsMutex_);
     obj.physId = physId;
     obj.childPhysIds = children;
     obj.lattice = lattice;
+    obj.hullCenter = hullCenter;
     obj.softRebuildTimer = 0.0;
     obj.physDirty = false;
     obj.renderDirty = true;  // メッシュも作り直す（球↔箱が変わりうる）

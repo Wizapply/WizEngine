@@ -173,14 +173,23 @@ public:
     void setAlias(std::size_t id, std::size_t owner);
 
     // Dynamic body colliding as the convex hull of `points` (metres, already
-    // scaled; see MeshCollision::loadCollisionPoints). Mass = density x hull
-    // volume. NOTE: Chrono re-centres the hull on its barycentre, so a model
-    // whose origin sits far from its centre will render offset from where it
-    // collides - author models with the origin near the middle.
+    // scaled; see MeshCollision::loadCollisionPoints).
+    //
+    // 質量は `mass` そのもの（箱・球のような密度ではない）。凸包の体積は
+    // モデルの大きさ次第で、文書の size とは無関係に決まるので、密度から
+    // 出すと桁違いの質量になる（大きな凸包 = 何でも弾き飛ばす重さ、小さな
+    // 凸包 = 触れただけで飛んでいく軽さ）。慣性は Chrono が凸包から出した
+    // 形のまま、質量の比で伸縮する。
+    //
+    // Chrono は凸包を**体積重心へ寄せる**（ボディの原点 = 重心）。モデルの
+    // 原点が重心から離れていると、そのままでは見た目と当たり判定がずれる
+    // ので、寄せた量（ボディ座標の重心、m）を hullCenter で返す - 呼び出し
+    // 側（Scene）が見た目を同じだけ逆にずらして重ねる。
     std::size_t addConvexHull(const std::vector<chrono::ChVector3d>& points,
-                              double density, const chrono::ChVector3d& pos,
+                              double mass, const chrono::ChVector3d& pos,
                               const chrono::ChQuaternion<>& rot,
-                              const std::vector<ExtraShape>& extras = {});
+                              const std::vector<ExtraShape>& extras = {},
+                              chrono::ChVector3d* hullCenter = nullptr);
 
     // ---- ソフトボディ（質点ばね）------------------------------------------
     // 小さな球の剛体（粒子）の集合を、ばねで結んで 1 つの柔らかい物にする。
@@ -238,6 +247,10 @@ public:
 
     // 土台にする / 動くようにする。
     void setBodyFixed(std::size_t id, bool fixed);
+    // いま固定か（設計値ではなく Chrono の実体。イベントの SetFixed で
+    // 走行中に固定された物も true）。固定の物に力を掛けても動かないので、
+    // 掴みはこれを見て引っぱり線ごと諦める。
+    bool bodyFixed(std::size_t id) const;
 
     // 「削除」。Chrono からボディを取り除くのではなく、当たり判定を切って
     // 固定し、地面のはるか下へ退避させる。Multicore バックエンドはボディの
