@@ -1,16 +1,23 @@
-# WizEngine
+<p align="center">
+  <img src="web/logo.png" alt="Charon" width="260">
+</p>
+
+# Charon
 
 Headless real-time 3D streaming prototype: **Project Chrono** physics and
 **Google Filament** rendering on the server, H.264-encoded with **GStreamer**
 and streamed to browsers over **WebRTC** — with a multi-camera, interactive
-web UI. (Docs below are in Japanese.)
+web UI. Formerly WizEngine. (Docs below are in Japanese.)
 
 サーバー側で **Project Chrono**（物理）と **Google Filament**（描画）をヘッドレスに
 実行し、フレームを **GStreamer** で H.264 エンコードして **WebRTC** でブラウザへ
 配信する、リモートレンダリング／ピクセルストリーミングのプロトタイプです。
 
-現在の版: **1.0.0 “Charon”**（版番号とコードネームの定義は `src/core/Versions.h`
-の 1 か所。起動ログの 1 行目とブラウザの About 節に出ます）。
+現在の版: **Charon 1.0.0**（旧称 WizEngine。製品名と版番号の定義は
+`src/core/Versions.h` の 1 か所で、起動ログの 1 行目とブラウザの About 節に
+出ます。名前空間・実行ファイル `wizengine`・シーン文書のルート要素
+`<wizengine>` は識別子なので旧名のままです）。ロゴは `web/logo.png`
+（ブラウザのサイドバー見出しにも同じファイルが出ます）。
 
 ## 特徴
 
@@ -134,7 +141,7 @@ assets/
 ### Chrono のビルド例（Windows）
 
 Chrono 本体（9.0.0）と Eigen（3.4.0）はサブモジュールで取得済みなので、
-WizEngine のルートから次のとおり（`git submodule update --init` 済みが前提）:
+リポジトリのルートから次のとおり（`git submodule update --init` 済みが前提）:
 
 ```
 cmake -S third_parties/chrono -B chrono_build -G "Visual Studio 17 2022" -A x64 ^
@@ -344,7 +351,7 @@ Assets パネルの **📥 取込** は URDF / OpenSim / ADAMS のモデル
 - `<geom size>` は MuJoCo と同じ**半分の寸法**（box は各辺の半分、sphere と
   mesh は半径）、角度は全部**度**、色は `rgba="r g b a"`（リニア値）です。
 - `body1` / `body2` は**名前でも番号でも**書けます。`world`（または -1）が地面。
-- `<events>` は WizEngine の拡張（イベントグラフ）。MuJoCo には対応物が
+- `<events>` は Charon の拡張（イベントグラフ）。MuJoCo には対応物が
   ありません。
 - **XML はブラウザで直接編集できます**: Assets パネルの **📄 XML** ボタンで
   モーダルエディタが開き、いま組んでいるシーンの XML を編集して

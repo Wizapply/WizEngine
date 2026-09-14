@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>WizEngine</title>
+<title>Charon</title>
 <link rel="icon" href="favicon.ico">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -14,10 +14,13 @@
          （と Tab キー）に一本化した - 畳む口が 2 つあっても片方は必ず
          サイドバーと一緒に消えるので、常に見える方だけを残す。 -->
     <div class="sbHead">
-      <span class="sbTitle">WizEngine</span>
+      <!-- ロゴは web/logo.png（README の先頭と同じファイル）。無ければ
+           文字だけにする（onerror で隠す）。 -->
+      <img class="sbLogo" src="logo.png" alt="" onerror="this.hidden=true">
+      <span class="sbTitle">Charon</span>
       <!-- バージョンはソースコードが正（src/core/Versions.h の kVersion* と
-           kCodename）。/stats の versions.WizEngine / Codename を受けて
-           app.js が "Version 1.0.0 (Charon)" に書き換える。 -->
+           kCodename）。/stats の versions.Charon / Codename を受けて
+           app.js が "Version 1.0.0" に書き換える。 -->
       <span id="appVer" class="sbSub">Version</span>
     </div>
 
@@ -1159,7 +1162,7 @@
 
       <section class="sbSec">
         <div class="sbSecHead">About</div>
-        <div id="versions" class="versions">WizEngine</div>
+        <div id="versions" class="versions">Charon</div>
       </section>
     </div><!-- /panePhysics -->
   </aside>

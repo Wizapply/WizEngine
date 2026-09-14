@@ -16,7 +16,11 @@ Claude Code 向けのプロジェクト前提メモ。作業開始時にまず�
 
 ## これは何か
 
-**WizEngine** は、サーバー側で **Chrono**（物理）＋ **Filament**（描画）を回し、オフスクリーンで
+**Charon**（旧称 WizEngine。名前空間 `wizengine`・実行ファイル `wizengine`・
+シーン文書のルート要素 `<wizengine>` は識別子なので旧名のまま。ユーザーに
+見える名前 - README・起動ログ・ブラウザの見出しと About・`/stats` の
+キー - が Charon。ロゴは `web/logo.png` で README の先頭とサイドバーの
+見出しが同じファイルを使う）は、サーバー側で **Chrono**（物理）＋ **Filament**（描画）を回し、オフスクリーンで
 描いたフレームを **GStreamer** で H.264 にして RTP/UDP で配信するプロトタイプ。
 クライアントは `gst-launch-1.0` のワンライナーで受ける（専用クライアントは未作成）。
 
@@ -133,7 +137,7 @@ PhysicsWorld.step(dt)
   このヘッダーに置き換えた）。**サイドバーを畳む口もここの ☰ だけ**
   （サイドバー内にあった ‹ ＝ #sbClose は廃止。畳んだ瞬間に一緒に消える
   ボタンなので、開く側は結局 ☰ が受け持っていた）。サイドバーのヘッダは
-  「WizEngine / Version 1.0.0 (Charon)」の表記のみで、カメラ名は映像ヘッダーが
+  「ロゴ / Charon / Version 1.0.0」の表記のみで、カメラ名は映像ヘッダーが
   受け持つ。
 - ブラウザ側のタブは **Scene / Inspector / Physics**（`web/index.html` +
   `app.js` の `renderEditor()`。Inspector の内部 id は `tabEditor` /
@@ -1186,12 +1190,14 @@ assets/          実行時に読むもの（materials / textures / scenes）
 third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, json, httplib, cgltf, stb）
 ```
 
-- **版番号とコードネームは `src/core/Versions.h` が唯一の定義**
-  （`kVersionMajor/Minor/Patch` = 1.0.0、`kCodename` = "Charon"）。CMake の
+- **製品名・版番号・コードネームは `src/core/Versions.h` が唯一の定義**
+  （`kProductName` = "Charon"、`kVersionMajor/Minor/Patch` = 1.0.0、
+  `kCodename` = "" - 1.x は製品名そのものなので空）。CMake の
   `project(VERSION)` には持たせない（2 か所に書くと必ずずれる）。起動ログの
-  1 行目（`WizEngine 1.0.0 "Charon"`）、`/stats` の `versions.WizEngine`（素の
-  semver）と `versions.Codename`、ブラウザのサイドバー見出しと About 節
-  （Physics タブ）がここから出る。コードネームは major 版ごと（1.x = Charon）。
+  1 行目（`Charon 1.0.0`）、`/stats` の `versions.Charon`（素の semver。
+  コードネームがある版だけ `versions.Codename` が付く）、ブラウザのサイド
+  バー見出しと About 節（Physics タブ）がここから出る。ブラウザ側は
+  `app.js` の `PRODUCT` が同じ名前を持つ（/stats のキー名を引くため）。
 - **CPU コアの固定**（`src/core/CpuAffinity.{h,cpp}`、Windows / Linux 両対応）。設定は **exe 引数**（`--physics-cores "0-11"` / `--render-cores "12-15"` /
   `--physics-threads N`、`--help` で一覧）。**SceneConfig.h には置かない**（scene はユーザーが
   触るシーン内容、CPU 割り当ては実行環境の設定という分離）。オプションはモードの前後

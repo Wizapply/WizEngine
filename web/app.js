@@ -1,4 +1,4 @@
-// WizEngine web UI logic. Served from web/app.js as a classic script at
+// Charon web UI logic. Served from web/app.js as a classic script at
 // the end of <body>: top-level functions stay global (the inline
 // onclick= handlers in index.html rely on that), and the DOM is fully
 // parsed by the time it runs. Edit + reload, no rebuild needed.
@@ -694,20 +694,21 @@
       if (s.versions && !versionsShown) {
         versionsShown = true;
         const v = s.versions;
-        // サイドバーのバージョン表記。正はソースコード（engineVersion /
-        // engineCodename）で、ここは受け取って埋めるだけ。コードネームは
-        // 版番号の後ろに添える（"Version 1.0.0 (Charon)"）。
+        // サイドバーのバージョン表記。正はソースコード（productName /
+        // engineVersion / engineCodename）で、ここは受け取って埋めるだけ。
+        // コードネームがあれば版番号の後ろに添える（"Version 2.0.0 (Nix)"）。
+        const PRODUCT = 'Charon';
         const code = v['Codename'] ? ' (' + v['Codename'] + ')' : '';
-        if (v['WizEngine']) {
+        if (v[PRODUCT]) {
           document.getElementById('appVer').textContent =
-            'Version ' + v['WizEngine'] + code;
+            'Version ' + v[PRODUCT] + code;
         }
-        let html = '<div class="vTitle">WizEngine ' + (v['WizEngine'] || '') +
+        let html = '<div class="vTitle">' + PRODUCT + ' ' + (v[PRODUCT] || '') +
                    code + '</div>';
         for (const name of Object.keys(v)) {
           // 自分の版とコードネームは見出しに出したので、ライブラリの一覧
           // には並べない。
-          if (name === 'WizEngine' || name === 'Codename') continue;
+          if (name === PRODUCT || name === 'Codename') continue;
           html += '<div class="vLib"><span>' + name + '</span><span>' +
                   v[name] + '</span></div>';
         }

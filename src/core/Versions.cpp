@@ -29,15 +29,18 @@ const char* engineVersion() {
 
 const char* engineCodename() { return kCodename; }
 
+const char* productName() { return kProductName; }
+
 nlohmann::json versionsJson() {
     guint maj = 0, min = 0, mic = 0, nano = 0;
     gst_version(&maj, &min, &mic, &nano);  // runtime, not the build headers
 
     nlohmann::json j;
-    j["WizEngine"] = engineVersion();
-    // コードネームは別キーで（"WizEngine" は素の semver のまま = 機械的に
+    j[productName()] = engineVersion();
+    // コードネームは別キーで（製品名のキーは素の semver のまま = 機械的に
     // 比べられる）。ブラウザは About の見出しへ合成し、一覧には並べない。
-    j["Codename"] = engineCodename();
+    // 無い版（1.x）はキーごと省く。
+    if (kCodename[0] != '\0') j["Codename"] = engineCodename();
     j["Filament"] = WIZ_FILAMENT_VERSION;
     j["Project Chrono"] = CHRONO_VERSION;
     j["GStreamer"] = std::to_string(maj) + "." + std::to_string(min) + "." +

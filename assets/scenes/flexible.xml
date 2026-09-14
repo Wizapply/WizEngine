@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Chrono の FEA・荷重・ブッシュの見本（B の導入）。
+     エディタで開いてシミュレートすると:
+       * ロープ (rope) が天井の固定点から吊られ、先の球 (weight) を支える
+       * 自由端のケーブル (loose) が箸のように垂れて床に触れる
+       * ゴムブッシュ (bushing) で留めた箱 (mount) が小さく揺れて止まる
+       * 定常荷重の箱 (fan) が横向きの力で押され続ける
+     ケーブル・ブッシュ・荷重は Chrono::Multicore が扱えないので、この文書を
+     読むと物理は自動で Core に切り替わる（Physics タブの「バックエンド」）。
+     接触ソルバは admm（FEA の剛性と NSC の接触を同時に解ける。bb は剛性行列が
+     あると例外を投げ、apgd / psor / jacobi は剛性を無視する）。 -->
+<wizengine model="flexible" version="4">
+  <option gravity="0 -9.81 0" rate="120" substeps="2" iterations="80" envelope="0.002"
+          recovery="0.2" friction="0.6" restitution="0" lineardamping="0.05"
+          angulardamping="0.1" sleeping="false" integrator="euler" solver="admm"
+          combine="min" contact="nsc"/>
+  <worldbody>
+    <ground size="12" visual="10" tile="2"/>
+    <light name="key" type="sun" pos="0 8 0" euler="35 -25 0" intensity="100000" castshadow="true"/>
+    <light name="fill" type="point" pos="-3 4 3" intensity="60000" falloff="20" castshadow="false"/>
+    <camera name="cam0" target="0 1.5 0" azimuth="30" elevation="15" radius="10"/>
+
+    <!-- 吊りロープ: 天井の固定点 (0 3.5 0) から weight の中心へ -->
+    <body name="weight" pos="0 1.6 0">
+      <geom type="sphere" size="0.15" mass="2" rgba="0.85 0.3 0.25 1"/>
+    </body>
+    <cable name="rope" body1="world" anchor1="0 3.5 0" body2="weight" anchor2="0 1.6 0"
+           segments="12" diameter="0.02" young="1e7" density="1200" damping="0.03"
+           rgba="0.85 0.75 0.45 1"/>
+
+    <!-- 自由端のケーブル: 固定点から垂れ、床に触れる -->
+    <cable name="loose" body1="world" anchor1="2 2.2 0" body2="none" anchor2="2 0.2 0"
+           segments="16" diameter="0.03" young="2e6" density="900" damping="0.03"
+           rgba="0.4 0.6 0.9 1"/>
+
+    <!-- ブッシュで留めた箱: 台 (mount_post) にゴムブッシュで付く -->
+    <body name="mount_post" pos="-2.5 0.5 0" fixed="true">
+      <geom type="box" size="0.15 0.5 0.15" mass="20" rgba="0.42 0.45 0.5 1"/>
+    </body>
+    <body name="mount" pos="-2.5 1.4 0">
+      <geom type="box" size="0.25 0.25 0.25" mass="3" rgba="0.3 0.8 0.4 1"/>
+    </body>
+
+    <!-- 定常荷重: +X 方向に 12 N で押され続ける箱 -->
+    <body name="fan" pos="3.5 0.25 -2">
+      <geom type="box" size="0.25 0.25 0.25" mass="1" rgba="0.9 0.8 0.2 1" friction="0.2"
+            force="12 0 0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <joint name="bushing" type="bushing" body1="mount" body2="mount_post" anchor="-2.5 1.1 0"
+           axis="0 1 0" stiffness="4000" damping="40" rotstiffness="60" rotdamping="2"/>
+  </equality>
+</wizengine>
