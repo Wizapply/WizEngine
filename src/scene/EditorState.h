@@ -91,6 +91,16 @@ public:
     bool removeJoint(int index);
     std::size_t jointCount() const;
 
+    // ---- ケーブル（FEA）--------------------------------------------------
+    // ジョイントと同じ流儀（mutex_ の下、番号で参照、シミュレート開始で
+    // 実体を作り停止で捨てる）。Scene が cables() を読んで Chrono の FEA
+    // メッシュを組む。
+    std::vector<wizengine::editor::CableDesc> cables() const;
+    void setCables(std::vector<wizengine::editor::CableDesc> cables);
+    int addCable(const wizengine::editor::CableDesc& cable);
+    bool removeCable(int index);
+    std::size_t cableCount() const;
+
     // ---- イベントアセット（ノードベースのスクリプト）------------------------
     // ノードとワイヤーの束を「アセット」として名前で持つ（EditorTypes.h の
     // EventAssetDesc）。アセットは付けて初めて動く: オブジェクトに付いたぶんは
@@ -261,6 +271,7 @@ private:
     std::vector<Op> pending_;
     std::atomic<int> pendingCount_{0};
     std::vector<wizengine::editor::JointDesc> joints_;
+    std::vector<wizengine::editor::CableDesc> cables_;  // 同上（mutex_ の下）
     // イベントアセット（mutex_ の下）。nextNodeId はアセットごとの採番、
     // fireCounts_ は（アセット名, ノード id）-> 発火回数。
     struct EventAssetState {

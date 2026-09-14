@@ -30,6 +30,7 @@
 
 #include "core/AssetError.h"
 #include "components/GizmoComponent.h"
+#include "physics/ModelImport.h"
 #include "physics/PhysicsWorld.h"
 #include "render/Renderer.h"
 #include "scene/MathBridge.h"
@@ -79,6 +80,7 @@ inline JointType toJointType(ed::JointKind k) {
         case ed::JointKind::Gear: return JointType::Gear;
         case ed::JointKind::Screw: return JointType::Screw;
         case ed::JointKind::Spring: return JointType::Spring;
+        case ed::JointKind::Bushing: return JointType::Bushing;
         case ed::JointKind::Revolute: break;
     }
     return JointType::Revolute;
@@ -123,6 +125,29 @@ inline JointSpec toJointSpec(const ed::JointDesc& j) {
     s.hasAxis2 = j.axis2.x != 0.0 || j.axis2.y != 0.0 || j.axis2.z != 0.0;
     s.anchor2 = chrono::ChVector3d(j.anchor2.x, j.anchor2.y, j.anchor2.z);
     s.axis2 = chrono::ChVector3d(j.axis2.x, j.axis2.y, j.axis2.z);
+    s.rotStiffness = j.rotStiffness;
+    s.rotDamping = j.rotDamping;
+    return s;
+}
+
+// 文書のケーブルを PhysicsWorld の指定へ（端の種類と材質。端のボディ番号
+// = physId は呼び出し側が入れる）。
+inline CableSpec toCableSpec(const ed::CableDesc& c) {
+    CableSpec s;
+    s.a = chrono::ChVector3d(c.anchorA.x, c.anchorA.y, c.anchorA.z);
+    s.b = chrono::ChVector3d(c.anchorB.x, c.anchorB.y, c.anchorB.z);
+    auto end = [](int body) {
+        if (body == ed::kCableFreeEnd) return CableSpec::End::Free;
+        return body < 0 ? CableSpec::End::Fixed : CableSpec::End::Body;
+    };
+    s.endA = end(c.bodyA);
+    s.endB = end(c.bodyB);
+    s.segments = c.segments;
+    s.diameter = c.diameter;
+    s.density = c.density;
+    s.young = c.young;
+    s.damping = c.damping;
+    s.collide = c.collide;
     return s;
 }
 // イベントの setMotor が書く目標値も同じ換算（度 → rad）。
@@ -145,7 +170,16 @@ inline BodyOptions toBodyOptions(const ed::BodyDesc& d) {
         if (L >= 0 && L < ed::kCollisionLayers) o.nocollide |= (1u << L);
     }
     o.gravity = d.gravity;
+    o.young = d.surface.young;
+    o.poisson = d.surface.poisson;
+    o.force = chrono::ChVector3d(d.force.x, d.force.y, d.force.z);
+    o.torque = chrono::ChVector3d(d.torque.x, d.torque.y, d.torque.z);
     return o;
+}
+// 定常荷重を持つか（ChLoad = Core 専用。バックエンドの判定に使う）。
+inline bool hasBodyLoads(const ed::BodyDesc& d) {
+    return d.force.x != 0.0 || d.force.y != 0.0 || d.force.z != 0.0 ||
+           d.torque.x != 0.0 || d.torque.y != 0.0 || d.torque.z != 0.0;
 }
 
 // ジョイントの種類ごとの線の色（リニア RGB）。ビューを見ただけで何の拘束か
@@ -164,6 +198,7 @@ inline filament::math::float3 jointColor(ed::JointKind k) {
         case ed::JointKind::Gear: return {0.85f, 0.85f, 0.85f};       // 銀
         case ed::JointKind::Screw: return {0.75f, 0.55f, 0.35f};      // 銅
         case ed::JointKind::Spring: return {0.40f, 0.95f, 0.60f};     // 緑
+        case ed::JointKind::Bushing: return {0.95f, 0.60f, 0.40f};    // 肌色
         case ed::JointKind::Revolute: break;
     }
     return {1.0f, 0.55f, 0.15f};  // 橙

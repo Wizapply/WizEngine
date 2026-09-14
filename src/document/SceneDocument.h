@@ -21,12 +21,17 @@
 //
 // ---- 書式（MJCF に寄せた点・違う点）----------------------------------------
 //   <wizengine model="名前" version="4">
-//     <option gravity="x y z" integrator solver combine .../>
+//     <option gravity="x y z" integrator solver combine contact young poisson modal .../>
 //                                       ... シミュレート設定（MuJoCo の option）。
 //                                           integrator = euler / projected /
-//                                           implicit / trapezoidal、solver = bb /
-//                                           apgd / psor / jacobi / minres、
-//                                           combine = min / average / max
+//                                           implicit / trapezoidal / hht / newmark、
+//                                           solver = bb / apgd / psor / jacobi /
+//                                           minres / sparselu / sparseqr /
+//                                           pardiso / mumps（直接法は smc 専用）、
+//                                           combine = min / average / max、
+//                                           contact = nsc / smc（ペナルティ法。
+//                                           young / poisson は SMC 材質の既定）、
+//                                           modal = 固有振動数を求める本数
 //     <visual>                          ... 描画品質（MuJoCo の visual）。
 //       <quality shadowMap cascades shadow contactShadows msaa taa fxaa/>
 //       <postprocess enabled ssao ssaoIntensity bloom ssr dof dofBlur vignette/>
@@ -54,8 +59,10 @@
 //       <body name pos euler fixed>
 //         <geom type size mass rgba collision="trimesh"
 //               friction restitution rolling cohesion   ... ボディごとの接触物性
+//               young poisson                          ... SMC のヤング率・ポアソン比
 //               layer nocollide="1 3" gravity="false"  ... 衝突レイヤ・重力オフ
-//               velocity="x y z" angvel="x y z"/>       ... 初速 (m/s, deg/s)
+//               velocity="x y z" angvel="x y z"        ... 初速 (m/s, deg/s)
+//               force="x y z" torque="x y z"/>         ... 定常荷重 (N, N·m。ChLoad)
 //         <event name="blink"/>            ... このオブジェクトに付ける
 //         <vehicle ...>                    ... 車両（vehicle/VehicleXml.h）
 //         <prefab name="sedan"/>           ... 付けるプレハブ（見た目の部品）
@@ -63,6 +70,14 @@
 //               iterations="2"/>           ... ソフトボディ（粒子の格子 +
 //                                              ばね。EditorTypes.h の SoftDesc）
 //       </body>
+//       <cable name="rope" body1="hook" anchor1="0 3 0" body2="none" anchor2="0 1 0"
+//              segments="16" diameter="0.02" young="1e7" density="1000" damping="0.01"
+//              collide="true" rgba="..."/>
+//                                    ... FEA のケーブル（ANCF 梁要素）。端は
+//                                        body（名前 / 番号）、world（固定点）、
+//                                        none（自由端）。Core バックエンド専用
+//                                        （Multicore は FEA を扱えない = 自動で
+//                                        Core に切り替わる）
 //     </worldbody>
 //     <equality>
 //       <joint type body1 body2 anchor axis
@@ -70,10 +85,11 @@
 //              motor="speed|position|force" target=".."  ... 駆動（hinge / slide）
 //              stiffness damping         ... ばね・ダンパ（spring / hinge / slide）
 //              breakforce=".."           ... この反力 (N) を超えたら外れる
-//              ratio anchor2 axis2       ... gear、pitch ... screw/>
+//              ratio anchor2 axis2       ... gear、pitch ... screw
+//              rotstiffness rotdamping   ... bushing の回転剛性・減衰/>
 //                type は weld / hinge / ball / slide / distance に加えて
 //                universal / cylindrical / planar / pointline / pointplane /
-//                gear / screw / spring（Chrono の ChLink* に対応）
+//                gear / screw / spring / bushing（Chrono の ChLink* / ChLoad*）
 //     </equality>
 //     <events>  <event name="pickup"/>  </events>   ... ワールドに付ける
 //   </wizengine>
@@ -144,6 +160,9 @@ struct SceneDocument {
     std::vector<CameraPose> cameras;
     std::vector<BodyDesc> bodies;
     std::vector<JointDesc> joints;
+    // ケーブル（<worldbody> の <cable>）。端の bodyA / bodyB はオブジェクト
+    // 番号（-1 = 地面、-2 = 自由端）。
+    std::vector<CableDesc> cables;
     // イベントアセット（<asset> の <event>）と、ワールドに付いているぶん
     // （ルートの <events>）。オブジェクトに付いているぶんは BodyDesc::events。
     std::vector<EventAssetDesc> eventAssets;

@@ -763,7 +763,7 @@
         '<span>frame <b>' + fmt(s.frameMs, 2) + ' ms</b></span>' +
         '<span>bodies <b>' + s.bodies + '</b> (asleep <b>' + s.asleep + '</b>)</span>' +
         '<span>target <b>' + s.physicsTarget + ' Hz / ' + s.targetFps + ' fps</b></span>' +
-        '<span>engine <b>' + s.engine + '</b></span>' +
+        '<span>engine <b>' + s.engine + (s.contact ? ' / ' + s.contact : '') + '</b></span>' +
         '<span>codec <b>' + s.codec + '</b></span>' +
         (s.vehicle
           ? '<span>car <b>' + fmt(s.vehicle.speed * 3.6) + ' km/h</b> ' +
@@ -1212,6 +1212,7 @@
     // 通常の節は隠す（Unity のプレハブモードと同じく、中身だけを見せる）。
     document.getElementById('secObj').hidden = true;
     document.getElementById('secJoint').hidden = true;
+    document.getElementById('secCable').hidden = true;
     document.getElementById('vhPrefabName').textContent =
       '🧩 ' + pe.name + '（' + (pe.objectName || ('#' + pe.index)) + '）';
     document.getElementById('edPrefabInfo').textContent =
@@ -1523,8 +1524,17 @@
       friction: opt('edSurfFric'),
       restitution: opt('edSurfRest'),
       rolling: opt('edSurfRoll'),
-      cohesion: Math.max(0, num('edSurfCoh', 0))
+      cohesion: Math.max(0, num('edSurfCoh', 0)),
+      young: opt('edSurfYoung'),
+      poisson: opt('edSurfPoisson')
     } });
+  }
+  // 定常荷重（ChLoad）。Core 専用: 値を入れるとサーバーが Core へ切り替える。
+  function applyLoads() {
+    applyEdit({
+      force: { x: num('edFX', 0), y: num('edFY', 0), z: num('edFZ', 0) },
+      torque: { x: num('edTX', 0), y: num('edTY', 0), z: num('edTZ', 0) }
+    });
   }
   function applyLayer() {
     const nc = [];
@@ -1875,7 +1885,9 @@
       distance: num('jtDistance', 0),
       breakForce: num('jtBreak', 0),
       ratio: num('jtRatio', 1),
-      pitch: num('jtPitch', 0.01)
+      pitch: num('jtPitch', 0.01),
+      rotStiffness: num('jtRotStiff', 0),
+      rotDamping: num('jtRotDamp', 0)
     };
   }
   // 種類に合う行だけ見せる（hinge / slide にしかモータは付かない、など。
@@ -1889,9 +1901,10 @@
                        kind === 'cylindrical') && !(motorable && motor !== 'none');
     show('jtRowLimit', limitable);
     show('jtRowMotor', motorable);
-    show('jtRowSpring', kind === 'spring' || motorable);
+    show('jtRowSpring', kind === 'spring' || motorable || kind === 'bushing');
+    show('jtRowRot', kind === 'bushing');
     show('jtRowDistance', kind === 'distance' || kind === 'spring');
-    show('jtRowBreak', kind !== 'spring');
+    show('jtRowBreak', kind !== 'spring' && kind !== 'bushing');
     show('jtRowRatio', kind === 'gear');
     show('jtRowPitch', kind === 'screw');
     show('edJointAxis', kind !== 'distance' && kind !== 'spring' && kind !== 'spherical' &&
@@ -1932,7 +1945,34 @@
     setField('jtBreak', j.breakForce);
     setField('jtRatio', j.ratio);
     setField('jtPitch', j.pitch);
+    setField('jtRotStiff', j.rotStiffness || 0);
+    setField('jtRotDamp', j.rotDamping || 0);
     renderJointForm();
+  }
+
+  // ---- ケーブル（FEA）------------------------------------------------------
+  // A は選択中、B はジョイント節の「相手 B」（地面 = 固定点）。free なら B 側
+  // を自由端（-2）にして垂らす。端の位置はサーバーが留め先の中心に決める。
+  function createCable(free) {
+    const sel = mySelectedDesc();
+    if (!sel) return;
+    send('edit.cable.add', {
+      a: sel.index,
+      b: free ? -2 : jointPartner,
+      segments: Math.round(num('cbSegments', 16)),
+      diameter: num('cbDiameter', 0.02),
+      young: num('cbYoung', 1e7),
+      density: num('cbDensity', 1000),
+      damping: num('cbDamping', 0.01),
+      collide: document.getElementById('cbCollide').checked
+    });
+  }
+  function removeCable(index) { send('edit.cable.remove', { index: index }); }
+  // 取込（Chrono::Parsers）。assets/ 相対のファイル名を聞いて足す。
+  function importModel() {
+    const f = window.prompt('取り込むモデル（assets/ からの相対パス。.urdf / .osim / .adm）', 'robot.urdf');
+    if (!f) return;
+    send('edit.import', { file: f.trim() });
   }
 
   // シミュレート設定（Physics タブ）。物理レートはここでは送らない - Rate
@@ -1949,7 +1989,11 @@
       sleeping: document.getElementById('edSleeping').checked,
       integrator: document.getElementById('edIntegrator').value,
       solver: document.getElementById('edSolver').value,
-      combine: document.getElementById('edCombine').value
+      combine: document.getElementById('edCombine').value,
+      contact: document.getElementById('edContact').value,
+      young: num('edSmcYoung', 2e7),
+      poisson: num('edSmcPoisson', 0.3),
+      modal: Math.round(num('edModal', 0))
     });
   }
   function applyCustomRate() {
@@ -2056,14 +2100,15 @@
     revolute: 'ちょうつがい', spherical: 'ボール', fixed: '固定',
     prismatic: '直動', distance: '距離', universal: '自在継手',
     cylindrical: '円筒', planar: '平面', pointLine: '点‐線', pointPlane: '点‐面',
-    gear: '歯車', screw: 'ねじ', spring: 'ばね'
+    gear: '歯車', screw: 'ねじ', spring: 'ばね', bushing: 'ブッシュ'
   };
   // ビューに引く線と同じ色。どの線がどの行かを目で追えるようにする。
   const JOINT_COLOR = {
     revolute: '#ff8c26', spherical: '#f273d9', fixed: '#f2d933',
     prismatic: '#59e6e6', distance: '#99f266', universal: '#f24d4d',
     cylindrical: '#4d99f2', planar: '#b3b3f2', pointLine: '#f2f299',
-    pointPlane: '#99f2f2', gear: '#d9d9d9', screw: '#bf8c59', spring: '#66f299'
+    pointPlane: '#99f2f2', gear: '#d9d9d9', screw: '#bf8c59', spring: '#66f299',
+    bushing: '#f29966'
   };
 
   // このページのカメラがエディタカメラか。違うページでは Inspector タブを
@@ -2280,6 +2325,15 @@
       optField('edSurfRest', sf.restitution);
       optField('edSurfRoll', sf.rolling);
       setField('edSurfCoh', round2(sf.cohesion || 0));
+      optField('edSurfYoung', sf.young);
+      optField('edSurfPoisson', sf.poisson);
+      // SMC の欄は接触モデルが smc のときだけ（NSC では無視される）。
+      document.getElementById('edRowSmc').hidden =
+        !(sceneData.sim && sceneData.sim.contact === 'smc');
+      const fo = sel.force || { x: 0, y: 0, z: 0 };
+      const tq = sel.torque || { x: 0, y: 0, z: 0 };
+      setField('edFX', round2(fo.x)); setField('edFY', round2(fo.y)); setField('edFZ', round2(fo.z));
+      setField('edTX', round2(tq.x)); setField('edTY', round2(tq.y)); setField('edTZ', round2(tq.z));
       setField('edLayer', String(sel.layer || 0));
       const nc = sel.nocollide || [];
       document.querySelectorAll('#edNoCollide input[type=checkbox]').forEach((cb) => {
@@ -2341,6 +2395,7 @@
           if (j.limited) tags.push('範囲 ' + round2(j.limitLo) + '…' + round2(j.limitHi));
           if (j.motor && j.motor !== 'none') tags.push('モータ ' + j.motor + ' ' + round2(j.motorTarget));
           if (j.stiffness) tags.push('k ' + round2(j.stiffness));
+          if (j.rotStiffness) tags.push('回転 k ' + round2(j.rotStiffness));
           if (j.breakForce) tags.push('破断 ' + round2(j.breakForce) + ' N');
           let stat = '';
           if (j.broken) stat = ' <b class="warn">切断</b>';
@@ -2362,6 +2417,24 @@
         }).join('')
       : '<div class="edHint">このオブジェクトのジョイントはまだありません。</div>';
 
+    // ケーブル（FEA）も選択中が関わるものだけ。シミュレート中は張力。
+    document.getElementById('secCable').hidden = !sel;
+    const cables = (sceneData.cables || []).filter(
+      (c) => sel && (c.a === sel.index || c.b === sel.index));
+    document.getElementById('edCableList').innerHTML = cables.length
+      ? cables.map((c) => {
+          const end = (v) => v === -2 ? '自由端' : (v < 0 ? '固定点' : '#' + v);
+          const stat = (!editing && c.tension !== undefined && c.tension > 0)
+            ? ' <span class="val">' + round2(c.tension) + ' N</span>' : '';
+          return '<div class="jointItem"><span class="dot" style="background:#d9bf73"></span>' +
+            '<span>ケーブル ' + end(c.a) + ' ↔ ' + end(c.b) +
+            ' <small>(' + c.segments + ' 分割, E ' + Number(c.young).toExponential(1) +
+            ')</small>' + stat + '</span>' +
+            '<span class="x" title="削除" onclick="event.stopPropagation();removeCable(' +
+            c.index + ')">✕</span></div>';
+        }).join('')
+      : '<div class="edHint">このオブジェクトのケーブルはまだありません。</div>';
+
     // シミュレート設定（Physics タブへ移設済み。全カメラで見える・変えられる）。
     const s = sceneData.sim;
     if (s) {
@@ -2371,6 +2444,33 @@
       setField('edIntegrator', s.integrator || 'euler');
       setField('edSolver', s.solver || 'bb');
       setField('edCombine', s.combine || 'min');
+      setField('edContact', s.contact || 'nsc');
+      setField('edSmcYoung', s.young !== undefined ? s.young : 2e7);
+      setField('edSmcPoisson', s.poisson !== undefined ? round2(s.poisson) : 0.3);
+      setField('edModal', s.modal || 0);
+      document.getElementById('edRowSmcDefaults').hidden = s.contact !== 'smc';
+      // いまの系（バックエンド / 接触）と Core を要した理由。
+      const eng = document.getElementById('edEngine');
+      eng.textContent = sceneData.engineNote || (sceneData.engine || '-');
+      // ビルドに無いモジュールの選択肢は選べなくする。
+      const f = sceneData.features || {};
+      const dis = (id, value, ok) => {
+        const o = document.querySelector('#' + id + ' option[value=' + value + ']');
+        if (o) o.disabled = !ok;
+      };
+      dis('edSolver', 'pardiso', !!f.pardiso);
+      dis('edSolver', 'mumps', !!f.mumps);
+      dis('edSolver', 'sparselu', f.directSolvers !== false);
+      dis('edSolver', 'sparseqr', f.directSolvers !== false);
+      const ml = document.getElementById('edModalList');
+      const modal = sceneData.modal || [];
+      ml.hidden = !(s.modal > 0);
+      if (s.modal > 0) {
+        ml.textContent = modal.length
+          ? '固有振動数 (Hz): ' + modal.map((v) => round2(v)).join(', ')
+          : (f.modal ? 'シミュレート開始時に計算します（Core）'
+                     : 'このビルドには Chrono::Modal がありません');
+      }
       setField('edFriction', round2(s.friction));
       setField('edRestitution', round2(s.restitution));
       setField('edLinDamp', round2(s.linearDamping));

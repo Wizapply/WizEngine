@@ -80,9 +80,13 @@ inline ShapeKind shapeFromName(const std::string& s, ShapeKind fallback) {
 //   Gear        … 2 本のシャフトを歯車で結ぶ（ratio。anchor2 / axis2 が 2 本目）
 //   Screw       … ねじ（axis まわりの回転が pitch [m/回転] の前進になる）
 //   Spring      … 2 点間のばね・ダンパ（拘束ではなく力。stiffness / damping）
+//   Bushing     … ゴムブッシュ（ChLoadBodyBodyBushingMate。並進 3 軸の
+//                  stiffness / damping と回転 3 軸の rotStiffness / rotDamping。
+//                  拘束ではなく荷重 = ChLoad なので Core バックエンド専用）
 enum class JointKind {
     Fixed, Revolute, Spherical, Prismatic, Distance,
-    Universal, Cylindrical, Planar, PointLine, PointPlane, Gear, Screw, Spring
+    Universal, Cylindrical, Planar, PointLine, PointPlane, Gear, Screw, Spring,
+    Bushing
 };
 
 inline const char* jointName(JointKind k) {
@@ -99,6 +103,7 @@ inline const char* jointName(JointKind k) {
         case JointKind::Gear: return "gear";
         case JointKind::Screw: return "screw";
         case JointKind::Spring: return "spring";
+        case JointKind::Bushing: return "bushing";
         case JointKind::Revolute: break;
     }
     return "revolute";
@@ -117,6 +122,7 @@ inline JointKind jointFromName(const std::string& s, JointKind fallback) {
     if (s == "gear") return JointKind::Gear;
     if (s == "screw") return JointKind::Screw;
     if (s == "spring") return JointKind::Spring;
+    if (s == "bushing") return JointKind::Bushing;
     return fallback;
 }
 
@@ -372,6 +378,10 @@ struct SurfaceDesc {
     float restitution = -1.0f;  // 反発係数（-1 = シーン設定）
     float rolling = -1.0f;      // 転がり摩擦（-1 = シーン既定 kRollingFriction）
     float cohesion = 0.0f;      // 粘着力 (N)。0 = 無し
+    // SMC（ペナルティ法）のときだけ効く: ヤング率 (Pa) とポアソン比
+    // （-1 = シーン設定 SimSettings::young / poisson）。NSC では無視。
+    float young = -1.0f;
+    float poisson = -1.0f;
 };
 inline SurfaceDesc clampSurface(SurfaceDesc s) {
     auto cl = [](float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); };
@@ -382,17 +392,22 @@ inline SurfaceDesc clampSurface(SurfaceDesc s) {
     if (s.rolling >= 0.0f) s.rolling = cl(s.rolling, 0.0f, 1.0f);
     else s.rolling = -1.0f;
     s.cohesion = cl(s.cohesion, 0.0f, 100000.0f);
+    if (s.young >= 0.0f) s.young = cl(s.young, 1000.0f, 1.0e12f);
+    else s.young = -1.0f;
+    if (s.poisson >= 0.0f) s.poisson = cl(s.poisson, 0.0f, 0.49f);
+    else s.poisson = -1.0f;
     return s;
 }
 inline bool operator==(const SurfaceDesc& a, const SurfaceDesc& b) {
     return a.friction == b.friction && a.restitution == b.restitution &&
-           a.rolling == b.rolling && a.cohesion == b.cohesion;
+           a.rolling == b.rolling && a.cohesion == b.cohesion &&
+           a.young == b.young && a.poisson == b.poisson;
 }
 inline bool operator!=(const SurfaceDesc& a, const SurfaceDesc& b) { return !(a == b); }
 // 「どれか 1 つでもシーン設定と違う値を持つか」= 専用の接触材質が要るか。
 inline bool surfaceIsCustom(const SurfaceDesc& s) {
     return s.friction >= 0.0f || s.restitution >= 0.0f || s.rolling >= 0.0f ||
-           s.cohesion != 0.0f;
+           s.cohesion != 0.0f || s.young >= 0.0f || s.poisson >= 0.0f;
 }
 
 // 衝突レイヤ。ボディは 0〜7 のレイヤに属し（既定 0 = 地面もここ）、
@@ -449,6 +464,12 @@ struct BodyDesc {
     // 速度は m/s、角速度は deg/s（ワールド軸まわり）。
     Vec3d velocity{0.0, 0.0, 0.0};
     Vec3d angularVelocity{0.0, 0.0, 0.0};
+    // 定常荷重（ワールド座標。力 N は重心へ、トルク N·m はそのまま）。
+    // 風・推力・浮力の代わり。Chrono の ChLoadBodyForce / ChLoadBodyTorque
+    // （荷重コンテナ）なので Core バックエンド専用 - Multicore で使うと
+    // Scene が Core へ自動で切り替える。0 = 無し。
+    Vec3d force{0.0, 0.0, 0.0};
+    Vec3d torque{0.0, 0.0, 0.0};
 
     // 形状から体積を出す。箱・球は密度 = mass / volume を Chrono に渡すので、
     // 形や大きさを変えても質量は指定どおりに保たれる。見た目ではなく
@@ -511,6 +532,10 @@ struct JointDesc {
     // 同じ向き、anchor2 が零ベクトルなら B の中心を使う。
     Vec3d anchor2{0.0, 0.0, 0.0};
     Vec3d axis2{0.0, 0.0, 0.0};
+    // Bushing: 回転 3 軸の剛性 (N·m/rad) と減衰 (N·m·s/rad)。並進は
+    // stiffness / damping（N/m, N·s/m）を 3 軸に同じ値で使う。
+    double rotStiffness = 0.0;
+    double rotDamping = 0.0;
 };
 
 // ジョイントの値を常識的な範囲へ。リミットは lo <= hi に並べ替える。
@@ -523,6 +548,8 @@ inline JointDesc clampJoint(JointDesc j) {
     j.stiffness = cl(j.stiffness, 0.0, 1.0e9);
     j.damping = cl(j.damping, 0.0, 1.0e9);
     j.breakForce = cl(j.breakForce, 0.0, 1.0e9);
+    j.rotStiffness = cl(j.rotStiffness, 0.0, 1.0e9);
+    j.rotDamping = cl(j.rotDamping, 0.0, 1.0e9);
     if (!std::isfinite(j.ratio) || j.ratio == 0.0) j.ratio = 1.0;
     j.ratio = cl(j.ratio, -1000.0, 1000.0);
     j.pitch = cl(j.pitch, -10.0, 10.0);
@@ -917,14 +944,53 @@ constexpr int kEventOwnerWorld = -1;
 //   projected   … EULER_IMPLICIT_PROJECTED（拘束の位置誤差を射影で消す）
 //   implicit    … EULER_IMPLICIT（非線形反復。硬いばねに強いが重い）
 //   trapezoidal … TRAPEZOIDAL_LINEARIZED（2 次精度）
-// HHT / Newmark は滑らかな系（SMC・FEA）向けで NSC では使えない。
+//   hht         … HHT（2 次精度・数値減衰。FEA・SMC 向け。Core のみ）
+//   newmark     … Newmark（同上。Core のみ）
+// HHT / Newmark は滑らかな系（SMC・FEA）向け。NSC の接触と組むと硬い
+// 接触で跳ねやすいので、ケーブルや SMC と一緒に使う。Multicore は自前の
+// ステッパなので、これらを頼まれた文書は Scene が Core へ切り替える。
 inline bool integratorNameValid(const std::string& s) {
-    return s == "euler" || s == "projected" || s == "implicit" || s == "trapezoidal";
+    return s == "euler" || s == "projected" || s == "implicit" || s == "trapezoidal" ||
+           s == "hht" || s == "newmark";
+}
+inline bool integratorNeedsCore(const std::string& s) {
+    return s == "hht" || s == "newmark";
 }
 // ソルバ（Core バックエンドのみ。Multicore は APGD 固定）:
-//   bb … Barzilai-Borwein（既定）、apgd、psor、jacobi、minres
+//   反復（VI）: bb … Barzilai-Borwein（既定）、apgd、psor、jacobi。
+//               FEA の剛性行列は扱えない（bb は例外を投げ、他は無視する）
+//   剛性 + 接触の VI: admm（内側に直接法。FEA のケーブルがある系の既定）、
+//               pminres（KKT を射影 MINRES で解く。Chrono 9 では非推奨扱い）
+//   線形（LS）: minres（反復）、直接法の sparselu / sparseqr（Eigen、Core
+//               組み込み）、pardiso（Chrono::PardisoMKL）、mumps（Chrono::MUMPS）
+//   線形ソルバは片側拘束（NSC の接触・可動範囲）を解けないので contact="smc"
+//   か接触の無い系で使う。NSC のまま頼まれたら bb に戻して警告する。
 inline bool solverNameValid(const std::string& s) {
-    return s == "bb" || s == "apgd" || s == "psor" || s == "jacobi" || s == "minres";
+    return s == "bb" || s == "apgd" || s == "psor" || s == "jacobi" || s == "minres" ||
+           s == "admm" || s == "pminres" ||
+           s == "sparselu" || s == "sparseqr" || s == "pardiso" || s == "mumps";
+}
+// FEA の剛性行列を扱える VI ソルバ（ケーブルのある NSC の系で使えるもの）。
+inline bool solverHandlesStiffness(const std::string& s) {
+    return s == "admm" || s == "pminres" || s == "minres" || s == "sparselu" ||
+           s == "sparseqr" || s == "pardiso" || s == "mumps";
+}
+inline bool solverIsDirect(const std::string& s) {
+    return s == "sparselu" || s == "sparseqr" || s == "pardiso" || s == "mumps";
+}
+// 線形（LS）ソルバ = NSC の接触を解けないもの（直接法 + minres）。
+inline bool solverIsLinear(const std::string& s) {
+    return solverIsDirect(s) || s == "minres";
+}
+// Multicore が持たないソルバ（= 頼まれたら Core へ切り替える）。反復の
+// bb / apgd / psor / jacobi は Multicore では APGD で代用する（切替不要）。
+inline bool solverNeedsCore(const std::string& s) {
+    return s == "minres" || s == "admm" || s == "pminres" || solverIsDirect(s);
+}
+// 接触の解き方: nsc（相補性 = 硬い接触。既定）/ smc（ペナルティ法 =
+// ヤング率で決まる柔らかい接触。粒状体・FEA 向け。Core / Multicore とも可）。
+inline bool contactNameValid(const std::string& s) {
+    return s == "nsc" || s == "smc";
 }
 // 2 つの材質から接触の摩擦・反発をどう合成するか（Chrono の
 // ChContactMaterialCompositionStrategy）: min（既定）/ average / max。
@@ -949,7 +1015,55 @@ struct SimSettings {
     std::string integrator = "euler";  // 上の integratorNameValid
     std::string solver = "bb";         // 上の solverNameValid（Core のみ）
     std::string combine = "min";       // 上の combineNameValid
+    std::string contact = "nsc";       // 上の contactNameValid
+    // SMC の材質の既定（<geom young poisson> が -1 のボディに使う）。
+    double young = 2.0e7;    // Pa（ゴム〜木の中間。剛い物ほど小さな dt が要る）
+    double poisson = 0.3;
+    // モーダル解析: シミュレート開始時に系の固有振動数をこの本数だけ求める
+    // （0 = しない）。Chrono::Modal モジュールと Core バックエンドが要る。
+    int modal = 0;
 };
+
+// ---- ケーブル（FEA）--------------------------------------------------------
+// Chrono の FEA モジュール（ANCF ケーブル要素）で作るロープ・ワイヤ。
+// 2 点の間に segments 本の梁要素を直線に並べ、端を物か地面に留める。
+// 剛体ではないので GameObject ではなく Scene のケーブル一覧が持つ（ジョイント
+// と同じく「シミュレート開始で作り、停止で捨てる」）。Multicore は FEA を
+// 扱えないので、ケーブルのある文書は Scene が Core へ切り替える。
+//   bodyA / bodyB … 端を留める相手。オブジェクト番号、-1 = 地面（固定点）、
+//                   -2 = 何にも留めない（自由端）
+//   anchorA / anchorB … 端の位置（ワールド座標）。留め先の物とはこの点で
+//                   拘束される（ChLinkNodeFrame）
+//   segments … 要素数（2〜64）。diameter … 直径 (m)。density … kg/m^3。
+//   young … ヤング率 (Pa)。1e7 で柔らかいロープ、1e9 で鋼線に近い。
+//   damping … Rayleigh 減衰（0.001〜0.1）。collide … 節点の球で接触するか。
+struct CableDesc {
+    std::string name;
+    int bodyA = -1;
+    int bodyB = -1;
+    Vec3d anchorA{0.0, 2.0, 0.0};
+    Vec3d anchorB{1.0, 2.0, 0.0};
+    int segments = 16;
+    double diameter = 0.02;
+    double density = 1000.0;
+    double young = 1.0e7;
+    double damping = 0.01;
+    bool collide = true;
+    Color3 color{0.85f, 0.75f, 0.45f};
+};
+constexpr int kCableFreeEnd = -2;
+inline CableDesc clampCable(CableDesc c) {
+    auto cl = [](double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); };
+    if (c.segments < 2) c.segments = 2;
+    if (c.segments > 64) c.segments = 64;
+    c.diameter = cl(c.diameter, 0.001, 1.0);
+    c.density = cl(c.density, 1.0, 20000.0);
+    c.young = cl(c.young, 1.0e4, 1.0e12);
+    c.damping = cl(c.damping, 0.0, 1.0);
+    if (c.bodyA < kCableFreeEnd) c.bodyA = -1;
+    if (c.bodyB < kCableFreeEnd) c.bodyB = -1;
+    return c;
+}
 
 // ---- JSON 変換 ------------------------------------------------------------
 // nlohmann の ADL 版（to_json/from_json）ではなく明示的な関数にしてある。
@@ -1108,12 +1222,16 @@ inline nlohmann::json toJson(const BodyDesc& b) {
     j["surface"] = {{"friction", b.surface.friction},
                     {"restitution", b.surface.restitution},
                     {"rolling", b.surface.rolling},
-                    {"cohesion", b.surface.cohesion}};
+                    {"cohesion", b.surface.cohesion},
+                    {"young", b.surface.young},
+                    {"poisson", b.surface.poisson}};
     j["layer"] = b.layer;
     j["nocollide"] = b.nocollide;
     j["gravity"] = b.gravity;
     j["velocity"] = toJson(b.velocity);
     j["angularVelocity"] = toJson(b.angularVelocity);
+    j["force"] = toJson(b.force);
+    j["torque"] = toJson(b.torque);
     return j;
 }
 
@@ -1124,6 +1242,8 @@ inline SurfaceDesc surfaceFromJson(const nlohmann::json& j, const SurfaceDesc& b
     s.restitution = float(jsonNumber(j, "restitution", s.restitution));
     s.rolling = float(jsonNumber(j, "rolling", s.rolling));
     s.cohesion = float(jsonNumber(j, "cohesion", s.cohesion));
+    s.young = float(jsonNumber(j, "young", s.young));
+    s.poisson = float(jsonNumber(j, "poisson", s.poisson));
     return clampSurface(s);
 }
 
@@ -1184,6 +1304,8 @@ inline BodyDesc bodyFromJson(const nlohmann::json& j, const BodyDesc& base) {
     b.velocity = vec3FromJson(j.value("velocity", nlohmann::json()), b.velocity);
     b.angularVelocity =
         vec3FromJson(j.value("angularVelocity", nlohmann::json()), b.angularVelocity);
+    b.force = vec3FromJson(j.value("force", nlohmann::json()), b.force);
+    b.torque = vec3FromJson(j.value("torque", nlohmann::json()), b.torque);
     return b;
 }
 
@@ -1208,6 +1330,8 @@ inline nlohmann::json toJson(const JointDesc& jt) {
     j["pitch"] = jt.pitch;
     j["anchor2"] = toJson(jt.anchor2);
     j["axis2"] = toJson(jt.axis2);
+    j["rotStiffness"] = jt.rotStiffness;
+    j["rotDamping"] = jt.rotDamping;
     return j;
 }
 
@@ -1237,7 +1361,45 @@ inline JointDesc jointFromJson(const nlohmann::json& j, const JointDesc& base) {
     jt.pitch = jsonNumber(j, "pitch", jt.pitch);
     jt.anchor2 = vec3FromJson(j.value("anchor2", nlohmann::json()), jt.anchor2);
     jt.axis2 = vec3FromJson(j.value("axis2", nlohmann::json()), jt.axis2);
+    jt.rotStiffness = jsonNumber(j, "rotStiffness", jt.rotStiffness);
+    jt.rotDamping = jsonNumber(j, "rotDamping", jt.rotDamping);
     return clampJoint(jt);
+}
+
+inline nlohmann::json toJson(const CableDesc& c) {
+    nlohmann::json j;
+    j["name"] = c.name;
+    j["a"] = c.bodyA;
+    j["b"] = c.bodyB;
+    j["anchorA"] = toJson(c.anchorA);
+    j["anchorB"] = toJson(c.anchorB);
+    j["segments"] = c.segments;
+    j["diameter"] = c.diameter;
+    j["density"] = c.density;
+    j["young"] = c.young;
+    j["damping"] = c.damping;
+    j["collide"] = c.collide;
+    j["color"] = colorToHex(c.color);
+    return j;
+}
+inline CableDesc cableFromJson(const nlohmann::json& j, const CableDesc& base) {
+    CableDesc c = base;
+    if (!j.is_object()) return c;
+    if (j.contains("name") && j["name"].is_string()) c.name = j["name"];
+    c.bodyA = jsonInt(j, "a", c.bodyA);
+    c.bodyB = jsonInt(j, "b", c.bodyB);
+    c.anchorA = vec3FromJson(j.value("anchorA", nlohmann::json()), c.anchorA);
+    c.anchorB = vec3FromJson(j.value("anchorB", nlohmann::json()), c.anchorB);
+    c.segments = jsonInt(j, "segments", c.segments);
+    c.diameter = jsonNumber(j, "diameter", c.diameter);
+    c.density = jsonNumber(j, "density", c.density);
+    c.young = jsonNumber(j, "young", c.young);
+    c.damping = jsonNumber(j, "damping", c.damping);
+    if (j.contains("collide") && j["collide"].is_boolean()) c.collide = j["collide"];
+    if (j.contains("color") && j["color"].is_string()) {
+        c.color = colorFromHex(j["color"], c.color);
+    }
+    return clampCable(c);
 }
 
 inline nlohmann::json toJson(const LightDesc& l) {
@@ -1693,6 +1855,10 @@ inline nlohmann::json toJson(const SimSettings& s) {
     j["integrator"] = s.integrator;
     j["solver"] = s.solver;
     j["combine"] = s.combine;
+    j["contact"] = s.contact;
+    j["young"] = s.young;
+    j["poisson"] = s.poisson;
+    j["modal"] = s.modal;
     return j;
 }
 
@@ -1715,6 +1881,10 @@ inline SimSettings simFromJson(const nlohmann::json& j, const SimSettings& base)
     if (j.contains("integrator") && j["integrator"].is_string()) s.integrator = j["integrator"];
     if (j.contains("solver") && j["solver"].is_string()) s.solver = j["solver"];
     if (j.contains("combine") && j["combine"].is_string()) s.combine = j["combine"];
+    if (j.contains("contact") && j["contact"].is_string()) s.contact = j["contact"];
+    s.young = jsonNumber(j, "young", s.young);
+    s.poisson = jsonNumber(j, "poisson", s.poisson);
+    s.modal = jsonInt(j, "modal", s.modal);
     return s;
 }
 
@@ -1778,6 +1948,10 @@ inline SimSettings clampSim(SimSettings s) {
     if (!integratorNameValid(s.integrator)) s.integrator = "euler";
     if (!solverNameValid(s.solver)) s.solver = "bb";
     if (!combineNameValid(s.combine)) s.combine = "min";
+    if (!contactNameValid(s.contact)) s.contact = "nsc";
+    s.young = cl(s.young, 1000.0, 1.0e12);
+    s.poisson = cl(s.poisson, 0.0, 0.49);
+    s.modal = cl(s.modal, 0, 64);
     return s;
 }
 
@@ -1813,6 +1987,8 @@ inline BodyDesc clampBody(BodyDesc b) {
     b.angularVelocity.x = cl(b.angularVelocity.x, -36000.0, 36000.0);
     b.angularVelocity.y = cl(b.angularVelocity.y, -36000.0, 36000.0);
     b.angularVelocity.z = cl(b.angularVelocity.z, -36000.0, 36000.0);
+    for (double* v : {&b.force.x, &b.force.y, &b.force.z}) *v = cl(*v, -1.0e7, 1.0e7);
+    for (double* v : {&b.torque.x, &b.torque.y, &b.torque.z}) *v = cl(*v, -1.0e7, 1.0e7);
     // Trimesh は当たり判定だけの値。見た目に書かれたらメッシュ（名前が
     // あれば）か箱へ。当たり判定の trimesh はメッシュ形状にしか付かない。
     if (b.shape == ShapeKind::Trimesh) {

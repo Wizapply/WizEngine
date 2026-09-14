@@ -514,6 +514,18 @@
             <input id="edSurfCoh" class="num" type="number" step="1" min="0"
                    onchange="applySurface()">
           </div>
+          <!-- SMC（ペナルティ法）のときだけ効く材質。Physics タブの contact が
+               smc のときに見せる（NSC では無視されるので出さない）。 -->
+          <div class="edRow" id="edRowSmc" hidden
+               title="SMC（ペナルティ法）の材質。空欄 = シーン設定">
+            <span>ヤング率 / ポアソン</span>
+            <span class="ndVec">
+              <input id="edSurfYoung" class="num" type="number" step="1000000" min="0"
+                     placeholder="シーン" onchange="applySurface()">
+              <input id="edSurfPoisson" class="num" type="number" step="0.05" min="0"
+                     max="0.49" placeholder="シーン" onchange="applySurface()">
+            </span>
+          </div>
           <div class="edRow" title="0〜7。nocollide に挙げたレイヤの物とは当たらない">
             <span>衝突レイヤ</span>
             <select id="edLayer" class="strSel" onchange="applyLayer()">
@@ -548,6 +560,26 @@
               <input id="edWY" class="num" type="number" step="30" onchange="applyVelocity()"></label>
             <label class="trCell"><span class="axis axZ">Z</span>
               <input id="edWZ" class="num" type="number" step="30" onchange="applyVelocity()"></label>
+          </div>
+          <!-- 定常荷重（ChLoad）。風・推力の代わり。Core バックエンド専用で、
+               値を入れると物理が自動で Core に切り替わる。 -->
+          <div class="trRow" title="常に掛かる力 (N、ワールド座標、重心へ)。Core バックエンド専用（自動で切り替わる）">
+            <span class="trName">荷重 (N)</span>
+            <label class="trCell"><span class="axis axX">X</span>
+              <input id="edFX" class="num" type="number" step="1" onchange="applyLoads()"></label>
+            <label class="trCell"><span class="axis axY">Y</span>
+              <input id="edFY" class="num" type="number" step="1" onchange="applyLoads()"></label>
+            <label class="trCell"><span class="axis axZ">Z</span>
+              <input id="edFZ" class="num" type="number" step="1" onchange="applyLoads()"></label>
+          </div>
+          <div class="trRow" title="常に掛かるトルク (N·m、ワールド座標)">
+            <span class="trName">トルク (N·m)</span>
+            <label class="trCell"><span class="axis axX">X</span>
+              <input id="edTX" class="num" type="number" step="0.5" onchange="applyLoads()"></label>
+            <label class="trCell"><span class="axis axY">Y</span>
+              <input id="edTY" class="num" type="number" step="0.5" onchange="applyLoads()"></label>
+            <label class="trCell"><span class="axis axZ">Z</span>
+              <input id="edTZ" class="num" type="number" step="0.5" onchange="applyLoads()"></label>
           </div>
           <div class="edRow">
             <span>色</span>
@@ -806,6 +838,7 @@
             <option value="gear">歯車 (Gear)</option>
             <option value="screw">ねじ (Screw)</option>
             <option value="spring">ばね (Spring)</option>
+            <option value="bushing">ブッシュ (Bushing・Core)</option>
           </select>
         </div>
         <div class="edRow">
@@ -854,6 +887,14 @@
             <input id="jtDamp" class="num" type="number" step="1" min="0" value="0" title="減衰">
           </span>
         </div>
+        <div class="edRow" id="jtRowRot"
+             title="ブッシュの回転剛性 (N·m/rad) と減衰 (N·m·s/rad)">
+          <span>回転 k / c</span>
+          <span class="ndVec">
+            <input id="jtRotStiff" class="num" type="number" step="10" min="0" value="0" title="回転剛性">
+            <input id="jtRotDamp" class="num" type="number" step="1" min="0" value="0" title="回転減衰">
+          </span>
+        </div>
         <div class="edRow" id="jtRowDistance" title="保つ距離 / 自然長。0 = 今の間隔">
           <span>距離 (m)</span>
           <input id="jtDistance" class="num" type="number" step="0.1" min="0" value="0">
@@ -876,6 +917,43 @@
           ジョイントだけで、シミュレート中は反力 (N) と反トルク (N·m) が
           出ます。✎ で上の設定をそのジョイントに書き込みます。</div>
         <div id="edJointList" class="list scroll jointList"></div>
+      </section>
+
+      <!-- ケーブル（FEA の ANCF 梁）。ジョイントと同じく「選択しているものの
+           内容」: A は選択中、B はジョイント節の「相手 B」。Core 専用なので、
+           1 本でも置くと物理が自動で Core に切り替わる。 -->
+      <section class="sbSec" id="secCable" hidden>
+        <div class="sbSecHead">ケーブル（FEA・Core）</div>
+        <div class="edRow" title="要素数と直径 (m)">
+          <span>分割 / 直径</span>
+          <span class="ndVec">
+            <input id="cbSegments" class="num" type="number" step="1" min="2" max="64" value="16">
+            <input id="cbDiameter" class="num" type="number" step="0.005" min="0.001" value="0.02">
+          </span>
+        </div>
+        <div class="edRow" title="ヤング率 (Pa。1e7 = ロープ、1e9 = 鋼線に近い) と密度 (kg/m³)">
+          <span>ヤング率 / 密度</span>
+          <span class="ndVec">
+            <input id="cbYoung" class="num" type="number" step="1000000" min="10000" value="10000000">
+            <input id="cbDensity" class="num" type="number" step="100" min="1" value="1000">
+          </span>
+        </div>
+        <div class="edRow" title="Rayleigh 減衰（0.001〜0.1）">
+          <span>減衰</span>
+          <input id="cbDamping" class="num" type="number" step="0.005" min="0" max="1" value="0.01">
+        </div>
+        <div class="edRow" title="節点の球で床や物に当たる">
+          <span>接触する</span>
+          <input id="cbCollide" type="checkbox" checked>
+        </div>
+        <div class="edRow btnRow">
+          <button onclick="createCable(false)">＋ 選択中と B を繋ぐ</button>
+          <button onclick="createCable(true)" title="B 側を自由端にする">＋ 垂らす</button>
+        </div>
+        <div class="edHint">端は留め先の中心（地面なら真上 2 m の固定点）。
+          一覧は選択中が関わるケーブルだけで、シミュレート中は張力 (N) が
+          出ます。位置や材質は 📄 XML の &lt;cable&gt; で細かく直せます。</div>
+        <div id="edCableList" class="list scroll jointList"></div>
       </section>
     </div><!-- /paneEditor -->
 
@@ -923,25 +1001,63 @@
           <input id="edSleeping" type="checkbox" onchange="applySim()">
         </div>
         <!-- Chrono の積分器・ソルバ・材質合成（Core バックエンドのみ切替可）。 -->
-        <div class="edRow" title="Chrono の積分器。NSC で使える 4 つ。Multicore は固定">
+        <!-- 接触の解き方（B の 22）。nsc = 相補性（硬い接触。既定）、smc =
+             ペナルティ法（ヤング率で決まる柔らかい接触。粒状体・FEA 向け。
+             直接法ソルバはこちら専用）。切替は系の作り直し。 -->
+        <div class="edRow" title="nsc = 硬い接触（既定）。smc = ペナルティ法（ヤング率で決まる柔らかい接触。直接法はこちら専用）">
+          <span>接触モデル</span>
+          <select id="edContact" class="strSel" onchange="applySim()">
+            <option value="nsc">NSC 相補性（既定）</option>
+            <option value="smc">SMC ペナルティ法</option>
+          </select>
+        </div>
+        <div class="edRow" id="edRowSmcDefaults" hidden
+             title="SMC の材質の既定（ボディ側で空欄のもの）: ヤング率 (Pa) とポアソン比">
+          <span>ヤング率 / ポアソン</span>
+          <span class="ndVec">
+            <input id="edSmcYoung" class="num" type="number" step="1000000" min="1000"
+                   onchange="applySim()">
+            <input id="edSmcPoisson" class="num" type="number" step="0.05" min="0" max="0.49"
+                   onchange="applySim()">
+          </span>
+        </div>
+        <div class="edRow" title="Chrono の積分器。hht / newmark は FEA・SMC 向け（Core のみ = 自動で切り替わる）">
           <span>積分器</span>
           <select id="edIntegrator" class="strSel" onchange="applySim()">
             <option value="euler">Euler 線形化（既定）</option>
             <option value="projected">Euler 射影</option>
             <option value="implicit">Euler 陰解法</option>
             <option value="trapezoidal">台形則</option>
+            <option value="hht">HHT（FEA / SMC・Core）</option>
+            <option value="newmark">Newmark（FEA / SMC・Core）</option>
           </select>
         </div>
-        <div class="edRow" title="接触ソルバ（Core のみ。Multicore は APGD）">
+        <div class="edRow" title="接触ソルバ。反復（bb / apgd / psor / jacobi）は両バックエンド、minres と直接法は Core（自動で切り替わる）。直接法は SMC 専用">
           <span>ソルバ</span>
           <select id="edSolver" class="strSel" onchange="applySim()">
             <option value="bb">Barzilai-Borwein（既定）</option>
             <option value="apgd">APGD</option>
             <option value="psor">PSOR</option>
             <option value="jacobi">Jacobi</option>
-            <option value="minres">MINRES</option>
+            <option value="admm">ADMM（FEA + 接触・Core）</option>
+            <option value="pminres">PMINRES（FEA + 接触・Core）</option>
+            <option value="minres">MINRES 線形（SMC・Core）</option>
+            <option value="sparselu">SparseLU 直接法（SMC・Core）</option>
+            <option value="sparseqr">SparseQR 直接法（SMC・Core）</option>
+            <option value="pardiso">Pardiso MKL 直接法（SMC・Core）</option>
+            <option value="mumps">MUMPS 直接法（SMC・Core）</option>
           </select>
         </div>
+        <div class="edRow" title="シミュレート開始時に求める固有振動数の本数（Chrono::Modal・Core）。0 = しない">
+          <span>モーダル解析</span>
+          <input id="edModal" class="num" type="number" step="1" min="0" max="64"
+                 onchange="applySim()">
+        </div>
+        <div class="edRow" title="いま動いている物理の系と、Core を要した理由">
+          <span>バックエンド</span>
+          <b id="edEngine" class="val">-</b>
+        </div>
+        <div id="edModalList" class="edHint" hidden></div>
         <div class="edRow" title="2 つの物の摩擦・反発をどう合成するか">
           <span>材質の合成</span>
           <select id="edCombine" class="strSel" onchange="applySim()">
@@ -1224,6 +1340,9 @@
         <button onclick="toggleXmlEditor()"
                 title="シーンを XML で見る・編集して適用する"
                 >📄 XML</button>
+        <button onclick="importModel()"
+                title="URDF / OpenSim / ADAMS のモデルを今のシーンに足す（assets/ 相対のファイル名。Chrono::Parsers 付きビルド）"
+                >📥 取込</button>
         <button class="danger" onclick="clearScene()"
                 title="オブジェクトとジョイントを全部消す">🗑 全消し</button>
       </span>

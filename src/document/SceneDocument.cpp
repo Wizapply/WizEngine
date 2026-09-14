@@ -165,6 +165,7 @@ const char* jointTypeName(JointKind k) {
         case JointKind::Gear: return "gear";
         case JointKind::Screw: return "screw";
         case JointKind::Spring: return "spring";
+        case JointKind::Bushing: return "bushing";
         case JointKind::Revolute: break;
     }
     return "hinge";
@@ -256,6 +257,12 @@ xml::Element optionElement(const SimSettings& s) {
     o.set("integrator", s.integrator);
     o.set("solver", s.solver);
     o.set("combine", s.combine);
+    // 接触の解き方（nsc / smc）と SMC の材質の既定。既定（nsc）でも書く -
+    // 積分器・ソルバと同じく「どう解くか」は文書を見れば分かるようにする。
+    o.set("contact", s.contact);
+    if (s.contact == "smc" || s.young != 2.0e7) o.setNumber("young", s.young);
+    if (s.contact == "smc" || s.poisson != 0.3) o.setNumber("poisson", s.poisson, 4);
+    if (s.modal > 0) o.setInt("modal", s.modal);
     return o;
 }
 
@@ -384,16 +391,32 @@ SimSettings optionFromXml(const xml::Element& o, SimSettings base, Warn& warn) {
     const std::string integ = o.attr("integrator", base.integrator.c_str());
     if (!integratorNameValid(integ)) {
         warn("<option integrator=\"" + integ +
-             "\"> is unknown (euler / projected / implicit / trapezoidal) - "
-             "reading as euler");
+             "\"> is unknown (euler / projected / implicit / trapezoidal / hht / "
+             "newmark) - reading as euler");
     }
     base.integrator = integ;
     const std::string solver = o.attr("solver", base.solver.c_str());
     if (!solverNameValid(solver)) {
         warn("<option solver=\"" + solver +
-             "\"> is unknown (bb / apgd / psor / jacobi / minres) - reading as bb");
+             "\"> is unknown (bb / apgd / psor / jacobi / admm / pminres / minres / "
+             "sparselu / sparseqr / pardiso / mumps) - reading as bb");
     }
     base.solver = solver;
+    const std::string contact = o.attr("contact", base.contact.c_str());
+    if (!contactNameValid(contact)) {
+        warn("<option contact=\"" + contact + "\"> is unknown (nsc / smc) - reading as nsc");
+    }
+    base.contact = contact;
+    base.young = o.number("young", base.young);
+    base.poisson = o.number("poisson", base.poisson);
+    base.modal = o.integer("modal", base.modal);
+    // 直接法は片側拘束（NSC の接触）を解けない。読み込みで伝えて、実行側は
+    // bb に戻す（PhysicsWorld::setSolver）。
+    if (solverIsLinear(solver) && contact != "smc") {
+        warn("<option solver=\"" + solver + "\"> is a linear solver and needs "
+             "contact=\"smc\" (NSC contacts are one-sided constraints) - the "
+             "engine falls back to bb until the contact model is changed");
+    }
     const std::string combine = o.attr("combine", base.combine.c_str());
     if (!combineNameValid(combine)) {
         warn("<option combine=\"" + combine +
@@ -413,6 +436,8 @@ void setSurfaceAttrs(xml::Element& e, const BodyDesc& b) {
     }
     if (b.surface.rolling >= 0.0f) e.setNumber("rolling", b.surface.rolling, 4);
     if (b.surface.cohesion != 0.0f) e.setNumber("cohesion", b.surface.cohesion, 4);
+    if (b.surface.young >= 0.0f) e.setNumber("young", b.surface.young);
+    if (b.surface.poisson >= 0.0f) e.setNumber("poisson", b.surface.poisson, 4);
     if (b.layer != 0) e.setInt("layer", b.layer);
     if (!b.nocollide.empty()) {
         std::vector<double> v(b.nocollide.begin(), b.nocollide.end());
@@ -424,6 +449,11 @@ void setSurfaceAttrs(xml::Element& e, const BodyDesc& b) {
                         b.angularVelocity.z != 0.0;
     if (hasVel) setVec3(e, "velocity", b.velocity);
     if (hasAng) setVec3(e, "angvel", b.angularVelocity);
+    // 定常荷重（ChLoad。Core バックエンド専用 - 使えば Core へ切り替わる）。
+    if (b.force.x != 0.0 || b.force.y != 0.0 || b.force.z != 0.0) setVec3(e, "force", b.force);
+    if (b.torque.x != 0.0 || b.torque.y != 0.0 || b.torque.z != 0.0) {
+        setVec3(e, "torque", b.torque);
+    }
 }
 void getSurfaceAttrs(const xml::Element& e, BodyDesc& b, const std::string& label,
                      Warn& warn) {
@@ -431,6 +461,8 @@ void getSurfaceAttrs(const xml::Element& e, BodyDesc& b, const std::string& labe
     b.surface.restitution = float(e.number("restitution", b.surface.restitution));
     b.surface.rolling = float(e.number("rolling", b.surface.rolling));
     b.surface.cohesion = float(e.number("cohesion", b.surface.cohesion));
+    b.surface.young = float(e.number("young", b.surface.young));
+    b.surface.poisson = float(e.number("poisson", b.surface.poisson));
     b.layer = e.integer("layer", b.layer);
     if (b.layer < 0 || b.layer >= kCollisionLayers) {
         warn("<body name=\"" + label + "\">: layer=\"" + std::to_string(b.layer) +
@@ -455,6 +487,8 @@ void getSurfaceAttrs(const xml::Element& e, BodyDesc& b, const std::string& labe
     b.gravity = e.boolean("gravity", b.gravity);
     b.velocity = getVec3(e, "velocity", b.velocity);
     b.angularVelocity = getVec3(e, "angvel", b.angularVelocity);
+    b.force = getVec3(e, "force", b.force);
+    b.torque = getVec3(e, "torque", b.torque);
 }
 
 // <body> の geom 以外の子（イベント・プレハブ・車両・ソフト）。geom の
@@ -794,6 +828,10 @@ xml::Element jointElement(const JointDesc& j,
     }
     if (j.stiffness != 0.0) e.setNumber("stiffness", j.stiffness);
     if (j.damping != 0.0) e.setNumber("damping", j.damping);
+    if (j.kind == JointKind::Bushing) {
+        if (j.rotStiffness != 0.0) e.setNumber("rotstiffness", j.rotStiffness);
+        if (j.rotDamping != 0.0) e.setNumber("rotdamping", j.rotDamping);
+    }
     if (j.breakForce != 0.0) e.setNumber("breakforce", j.breakForce);
     if (j.kind == JointKind::Gear) {
         e.setNumber("ratio", j.ratio);
@@ -877,6 +915,12 @@ JointDesc jointFromXml(const xml::Element& e,
     j.motorTarget = e.number("target", j.motorTarget);
     j.stiffness = e.number("stiffness", j.stiffness);
     j.damping = e.number("damping", j.damping);
+    j.rotStiffness = e.number("rotstiffness", j.rotStiffness);
+    j.rotDamping = e.number("rotdamping", j.rotDamping);
+    if (j.kind == JointKind::Bushing && j.stiffness <= 0.0 && j.rotStiffness <= 0.0) {
+        warn(label + " is a bushing with no stiffness= / rotstiffness= - it will "
+             "not hold anything");
+    }
     j.breakForce = e.number("breakforce", j.breakForce);
     j.ratio = e.number("ratio", j.ratio);
     j.pitch = e.number("pitch", j.pitch);
@@ -887,6 +931,65 @@ JointDesc jointFromXml(const xml::Element& e,
         j.ratio = 1.0;
     }
     return clampJoint(j);
+}
+
+// ---- ケーブル（FEA。MuJoCo の tendon に近いが、こちらは梁要素の実体）------
+// 端の相手は body1 / body2（名前・番号・world。"none" は自由端）、端の位置は
+// anchor1 / anchor2。既定と同じ値は書かない（材質と同じ流儀）。
+std::string cableEndText(const std::vector<BodyDesc>& bodies, int index) {
+    if (index == kCableFreeEnd) return "none";
+    return bodyRefText(bodies, index);
+}
+int cableEndIndex(const std::vector<BodyDesc>& bodies, const std::string& text,
+                  const char* attr, Warn& warn) {
+    if (text == "none" || text == "free") return kCableFreeEnd;
+    return bodyRefIndex(bodies, text, attr, warn);
+}
+xml::Element cableElement(const CableDesc& c, const std::vector<BodyDesc>& bodies) {
+    xml::Element e("cable");
+    if (!c.name.empty()) e.set("name", c.name);
+    e.set("body1", cableEndText(bodies, c.bodyA));
+    e.set("body2", cableEndText(bodies, c.bodyB));
+    setVec3(e, "anchor1", c.anchorA);
+    setVec3(e, "anchor2", c.anchorB);
+    e.setInt("segments", c.segments);
+    e.setNumber("diameter", c.diameter);
+    const CableDesc def;
+    if (c.density != def.density) e.setNumber("density", c.density);
+    e.setNumber("young", c.young);
+    if (c.damping != def.damping) e.setNumber("damping", c.damping);
+    if (!c.collide) e.setBool("collide", false);
+    setColor(e, "rgba", c.color);
+    return e;
+}
+CableDesc cableFromXml(const xml::Element& e, const std::vector<BodyDesc>& bodies, Warn& warn) {
+    CableDesc c;
+    c.name = e.attr("name");
+    const std::string label =
+        c.name.empty() ? std::string("<cable>") : "<cable name=\"" + c.name + "\">";
+    c.bodyA = cableEndIndex(bodies, e.attr("body1", "world"), "body1", warn);
+    c.bodyB = cableEndIndex(bodies, e.attr("body2", "world"), "body2", warn);
+    c.anchorA = getVec3(e, "anchor1", c.anchorA);
+    c.anchorB = getVec3(e, "anchor2", c.anchorB);
+    const double dx = c.anchorB.x - c.anchorA.x, dy = c.anchorB.y - c.anchorA.y,
+                 dz = c.anchorB.z - c.anchorA.z;
+    if (dx * dx + dy * dy + dz * dz < 1e-8) {
+        warn(label + ": anchor1 and anchor2 coincide - a cable needs a length; "
+             "moving anchor2 up by 1 m");
+        c.anchorB.y = c.anchorA.y + 1.0;
+    }
+    c.segments = e.integer("segments", c.segments);
+    if (c.segments < 2 || c.segments > 64) {
+        warn(label + ": segments=\"" + std::to_string(c.segments) +
+             "\" is outside 2-64 - clamped");
+    }
+    c.diameter = e.number("diameter", c.diameter);
+    c.density = e.number("density", c.density);
+    c.young = e.number("young", c.young);
+    c.damping = e.number("damping", c.damping);
+    c.collide = e.boolean("collide", c.collide);
+    c.color = getColor(e, "rgba", c.color);
+    return clampCable(c);
 }
 
 // イベントグラフ（MuJoCo には無い WizEngine の拡張）。種類ごとに意味のある
@@ -1184,6 +1287,7 @@ xml::Element toXml(const SceneDocument& doc) {
         world.append(cameraElement(doc.cameras[i], i));
     }
     for (const auto& b : doc.bodies) world.append(bodyElement(b));
+    for (const auto& c : doc.cables) world.append(cableElement(c, doc.bodies));
     root.append(std::move(world));
 
     if (!doc.joints.empty()) {
@@ -1326,7 +1430,7 @@ SceneDocument fromXml(const xml::Element& root,
 
     if (const xml::Element* world = root.first("worldbody")) {
         warnUnknownChildren(*world,
-                            {"environment", "ground", "light", "camera", "body"},
+                            {"environment", "ground", "light", "camera", "body", "cable"},
                             "<worldbody>", warn);
 
         // 環境光と地面は worldbody 直下の単一要素。2 個目以降は警告して無視。
@@ -1396,6 +1500,10 @@ SceneDocument fromXml(const xml::Element& root,
         // 書かれていたら bodyFromXml が警告する）。
         for (const xml::Element* b : world->all("body")) {
             doc.bodies.push_back(bodyFromXml(*b, doc.meshes, warn));
+        }
+        // ケーブル（FEA）。端の参照は body を全部読んだ後で解く。
+        for (const xml::Element* c : world->all("cable")) {
+            doc.cables.push_back(cableFromXml(*c, doc.bodies, warn));
         }
     }
 

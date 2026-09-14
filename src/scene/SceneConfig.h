@@ -175,11 +175,27 @@ inline const std::vector<filament::math::float3>& cameraColors() {
 // overridden at launch with --codec / --encoder, and per camera from the
 // browser's System > Stream section.
 
-// Physics backend. Multicore parallelises the solver and collision detection
-// (much faster with thousands of bodies) but does not support sleeping. It
-// needs a Chrono built with the MULTICORE module and CMake -DWIZ_USE_MULTICORE=ON;
-// without that this falls back to Core automatically.
-constexpr PhysicsBackend kBackend = PhysicsBackend::Multicore;
+// 物理バックエンドの既定。シーンが何も要求しないときに使う系で、Scene が
+// 文書の中身を見て上書きする（Scene::requiredBackend）:
+//   - Core を要する機能（FEA ケーブル・ChLoad・直接法・HHT・モーダル）が
+//     あれば Core。
+//   - なければ、ソフトボディがある（kMulticoreForSoftBodies）か、ボディの
+//     数が kMulticoreMinBodies 以上なら Multicore（ビルドにあれば）。
+//   - どちらでもなければこの既定。
+// Core（ChSystemNSC + Bullet）は Chrono の全機能が使え、スリープも効き、
+// 数十個の剛体なら Multicore より速いか同等。Multicore はソルバと衝突判定を
+// OpenMP で並列化するので数百〜数千個で効くが、スリープ非対応・ChLoad と
+// TSDA を積分に取り込まない・ボディ削除が不完全（下の「Chrono の B 群」）。
+// Multicore には MULTICORE モジュール付きの Chrono と CMake
+// -DWIZ_USE_MULTICORE=ON が要る。無ければ自動で Core。
+constexpr PhysicsBackend kBackend = PhysicsBackend::Core;
+
+// Multicore を自動で選ぶ条件（Core を要する機能が無いときだけ見る）。
+// ソフトボディは 1 個で resolution^3 個（既定 4^3 = 64、最大 512）の粒子 =
+// 剛体なので、1 個でも Multicore へ。剛体だけのシーンは合計（プレハブの
+// collide 部品も 1 個と数える）がこの数以上で Multicore。0 で無効。
+constexpr bool kMulticoreForSoftBodies = true;
+constexpr int kMulticoreMinBodies = 200;
 
 // In web mode, do nothing at all while no browser holds the viewer session:
 // no physics steps, no rendering, no encoding. Set false to keep simulating in

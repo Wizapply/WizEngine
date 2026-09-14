@@ -393,9 +393,7 @@ void Scene::build() {
     editor_.refreshSceneFiles();
 
     // Must precede body creation.
-    physics_.setCollisionTolerances(kCollisionEnvelope, kCollisionMargin);
-    physics_.setContactSettings(kContactRecovery, kSolverTolerance);
-    physics_.setRollingFriction(kRollingFriction, kSpinningFriction);
+    configurePhysicsDefaults();
     applySimSettings();  // 重力・摩擦・減衰・スリープ・反復回数
     // Ground: 物理の床はここで作る（物理は最初のステップから要る）。見える
     // 地面と環境光は desc + dirty で持ち、最初の applyToRenderer（RENDER
@@ -451,7 +449,16 @@ void Scene::build() {
                  kStartupScene, reason.c_str());
         }
     }
+    // 起動シーンが Core 専用の機能（ケーブルなど）を使っていれば、ここで
+    // 切り替えておく（読めなかったときも既定の系を確認する）。
+    syncBackend();
     snapshot();  // initial poses so the first frame shows the boxes in place
+}
+
+void Scene::configurePhysicsDefaults() {
+    physics_.setCollisionTolerances(kCollisionEnvelope, kCollisionMargin);
+    physics_.setContactSettings(kContactRecovery, kSolverTolerance);
+    physics_.setRollingFriction(kRollingFriction, kSpinningFriction);
 }
 
 void Scene::stepPhysics(double dt) {
@@ -550,18 +557,34 @@ void Scene::applySimSettings() {
     physics_.setDamping(s.linearDamping, s.angularDamping);
     physics_.setSleepingEnabled(s.sleeping, kSleepSeconds, kSleepMinLinVel,
                                 kSleepMinAngVel);
+    physics_.setSmcDefaults(s.young, s.poisson);
     // 積分器とソルバは Core だけ切り替わる（Multicore は自前のステッパと
     // APGD）。既定以外を頼まれて効かないときだけ 1 回伝える。
-    static bool warnedInteg = false, warnedSolver = false;
+    static bool warnedInteg = false, warnedSolver = false, warnedCable = false;
     if (!physics_.setIntegrator(s.integrator) && s.integrator != "euler" && !warnedInteg) {
         warnedInteg = true;
         LOGW("editor", "integrator '%s' is not available on the %s backend - "
                        "keeping the default", s.integrator.c_str(), physics_.backendName());
     }
-    if (!physics_.setSolver(s.solver) && s.solver != "bb" && !warnedSolver) {
+    // ケーブル（FEA）は剛性行列を扱えるソルバが要る。Chrono 9 の bb は剛性
+    // 行列があると例外を投げ（実機で確認）、apgd / psor / jacobi は Schur 補元
+    // で解くので剛性を黙って無視する。剛性と NSC の接触を同時に解けるのは
+    // admm と pminres なので、ケーブルのある系では admm に置き換える（minres と
+    // 直接法は線形ソルバ = contact="smc" のときだけ PhysicsWorld がそのまま使う）。
+    std::string solver = s.solver;
+    if (physics_.backend() == PhysicsBackend::Core && editor_.cableCount() > 0 &&
+        !ed::solverHandlesStiffness(solver)) {
+        if (!warnedCable) {
+            warnedCable = true;
+            LOGW("editor", "solver '%s' cannot handle FEA stiffness - using admm while the "
+                           "scene has cables", solver.c_str());
+        }
+        solver = "admm";
+    }
+    if (!physics_.setSolver(solver) && solver != "bb" && !warnedSolver) {
         warnedSolver = true;
         LOGW("editor", "solver '%s' is not available on the %s backend - "
-                       "keeping the default", s.solver.c_str(), physics_.backendName());
+                       "keeping the default", solver.c_str(), physics_.backendName());
     }
     // ソルバを替えると反復回数の器も替わるので、その後に入れる。
     physics_.setSolverIterations(s.iterations);
@@ -613,6 +636,9 @@ void Scene::enterMode(ed::AppMode target) {
     // ライト・固定）を設計値へ戻すため。
     resetGraphRuntime();
     if (target == ed::AppMode::Simulate) {
+        // 文書が Core 専用の機能を使っていれば、まず系を切り替える（全部
+        // 作り直すので、下の physDirty の反映もそこで済む）。
+        syncBackend();
         // エディタ中に形や大きさを変えたぶんを、ここでまとめて実体に反映する。
         for (std::size_t i = 0; i < boxes_.size(); ++i) {
             if (boxes_[i].alive && boxes_[i].physDirty) rebuildBody(i);
@@ -622,14 +648,19 @@ void Scene::enterMode(ed::AppMode target) {
         restoreAuthoredPoses();
         applySimSettings();
         buildJoints();
+        buildCables();  // FEA のケーブルもジョイントと同じタイミング
         physics_.wakeAll();
+        runModalAnalysis();  // <option modal="N"> のときだけ
     } else {
         // 止める = 設計状態へ巻き戻す。拘束を先に外さないと、置き直した
         // 姿勢と食い違ったまま次のステップで暴れる。
+        removeAllCables();
         physics_.removeAllJoints();
         jointPhysIds_.clear();
         updateJointStats();  // 計測値も空に（破断表示を消す）
         restoreAuthoredPoses();
+        std::lock_guard<std::mutex> lk(poseMutex_);
+        modalHz_.clear();
     }
     snapshot();
     editor_.setMode(target);
@@ -794,9 +825,318 @@ void Scene::snapshot() {
             physics_.softParticlePositions(obj.physId, soft[i]);
         }
     }
+    // ケーブルの節点（シミュレート中だけ実体がある。無ければ空 = 描画側は
+    // 設計値の直線を描く）。
+    std::vector<std::vector<float>> cables(cablePhysIds_.size());
+    std::vector<double> tension(cablePhysIds_.size(), 0.0);
+    for (std::size_t i = 0; i < cablePhysIds_.size(); ++i) {
+        if (cablePhysIds_[i] == PhysicsWorld::kInvalidId) continue;
+        physics_.cableNodePositions(cablePhysIds_[i], cables[i]);
+        tension[i] = physics_.cableTension(cablePhysIds_[i]);
+    }
     std::lock_guard<std::mutex> lk(poseMutex_);
     latestPoses_.swap(poses);
     latestSoft_.swap(soft);
+    latestCables_.swap(cables);
+    cableTension_.swap(tension);
+}
+
+bool Scene::latestCable(std::size_t index, std::vector<float>& out) {
+    std::lock_guard<std::mutex> lk(poseMutex_);
+    if (index >= latestCables_.size() || latestCables_[index].empty()) return false;
+    out = latestCables_[index];
+    return true;
+}
+
+std::string Scene::backendNote() {
+    std::lock_guard<std::mutex> lk(poseMutex_);
+    return backendNote_;
+}
+
+std::vector<double> Scene::modalFrequencies() {
+    std::lock_guard<std::mutex> lk(poseMutex_);
+    return modalHz_;
+}
+
+// ---- バックエンドの自動切替（B）---------------------------------------------
+// 1. Multicore が扱えない機能を文書が使っていれば Core。
+// 2. なければ、ソフトボディがある・ボディが多い（SceneConfig.h の
+//    kMulticoreForSoftBodies / kMulticoreMinBodies）なら Multicore（ビルドに
+//    あれば）。
+// 3. どちらでもなければ既定（kBackend）。
+// 接触の解き方（nsc / smc）も系の種類なので一緒に見る。呼ぶのは物理スレッド
+// （シミュレート開始・設定変更・読込・ジョイント / ケーブルの編集）。
+// オブジェクトの増減では呼ばない: シミュレート中に系を作り直すと全部が設計値
+// の姿勢へ戻るので、規模による切替は次のシミュレート開始で効く。
+
+PhysicsBackend Scene::requiredBackend(ContactMethod& contact, std::string& reason) {
+    const ed::SimSettings s = editor_.sim();
+    contact = s.contact == "smc" ? ContactMethod::SMC : ContactMethod::NSC;
+    reason.clear();
+
+    // 1. Core を要する機能
+    std::vector<std::string> why;
+    if (editor_.cableCount() > 0) why.push_back("FEA cable");
+    for (const auto& j : editor_.joints()) {
+        if (j.kind == ed::JointKind::Bushing) {
+            why.push_back("bushing (ChLoad)");
+            break;
+        }
+    }
+    for (const auto& obj : boxes_) {
+        if (obj.alive && hasBodyLoads(obj.desc)) {
+            why.push_back("constant body load (ChLoad)");
+            break;
+        }
+    }
+    if (ed::solverNeedsCore(s.solver)) why.push_back("solver '" + s.solver + "'");
+    if (ed::integratorNeedsCore(s.integrator)) why.push_back("integrator '" + s.integrator + "'");
+    if (s.modal > 0) why.push_back("modal analysis");
+    if (!why.empty()) {
+        for (std::size_t i = 0; i < why.size(); ++i) reason += (i ? ", " : "") + why[i];
+        return PhysicsBackend::Core;
+    }
+
+    // 2. 規模: ソフトボディ（粒子 = 剛体の集まり）か大量の剛体なら Multicore
+    if (multicoreAvailable()) {
+        std::size_t rigid = 0;
+        std::size_t particles = 0;
+        int softs = 0;
+        for (const auto& obj : boxes_) {
+            if (!obj.alive) continue;
+            if (obj.lattice) {
+                ++softs;
+                particles += obj.lattice->particleCount();
+            } else if (obj.desc.hasSoft) {
+                // 実体がまだ無い（エディタで切り替えた直後）: 設計値から見積もる
+                ++softs;
+                const std::size_t n = std::size_t(std::max(2, obj.desc.soft.resolution));
+                particles += n * n * n;
+            } else {
+                ++rigid;
+            }
+            rigid += obj.childPhysIds.size();  // 固定の持ち主の collide 部品
+        }
+        const std::size_t total = rigid + particles;
+        if (kMulticoreForSoftBodies && softs > 0) {
+            reason = std::to_string(softs) + " soft " + (softs == 1 ? "body" : "bodies") + ", " +
+                     std::to_string(particles) + " particles";
+            return PhysicsBackend::Multicore;
+        }
+        if (kMulticoreMinBodies > 0 && total >= std::size_t(kMulticoreMinBodies)) {
+            reason = std::to_string(total) + " bodies (>= " + std::to_string(kMulticoreMinBodies) + ")";
+            return PhysicsBackend::Multicore;
+        }
+    }
+
+    // 3. 既定
+    PhysicsBackend want = scenePhysicsBackend();
+    if (want == PhysicsBackend::Multicore && !multicoreAvailable()) {
+        want = PhysicsBackend::Core;  // ビルドに無い（PhysicsWorld も Core に落とす）
+    }
+    return want;
+}
+
+void Scene::syncBackend() {
+    ContactMethod contact;
+    std::string reason;
+    const PhysicsBackend want = requiredBackend(contact, reason);
+    const bool same = want == physics_.backend() && contact == physics_.contactMethod();
+    std::string note = std::string(physics_.backendName()) + " / " + physics_.contactName();
+    if (!same) {
+        LOGI("scene", "switching physics: %s/%s -> %s/%s%s%s", physics_.backendName(),
+             physics_.contactName(), want == PhysicsBackend::Multicore ? "multicore" : "core",
+             contact == ContactMethod::SMC ? "smc" : "nsc", reason.empty() ? "" : " because: ",
+             reason.c_str());
+        rebuildPhysicsWorld(want, contact);
+        note = std::string(physics_.backendName()) + " / " + physics_.contactName();
+        editor_.setStatus(std::string("物理を切り替えました: ") + note +
+                          (reason.empty() ? "" : "（" + reason + "）"));
+    }
+    if (!reason.empty()) note += " (" + reason + ")";
+    std::lock_guard<std::mutex> lk(poseMutex_);
+    backendNote_ = note;
+}
+
+void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
+    const bool simulating = editor_.mode() == ed::AppMode::Simulate;
+    // 古い系のものは全部無効になる。番号を先に捨てる（作り直しで
+    // disableBody を呼ばせない）。
+    removeAllCables();
+    physics_.removeAllJoints();
+    jointPhysIds_.clear();
+    physics_.recreate(backend, contact);
+    configurePhysicsDefaults();
+    applySimSettings();
+    groundPhysId_ = GameObject::kInvalidId;
+    rebuildGroundBody();
+    for (std::size_t i = 0; i < boxes_.size(); ++i) {
+        GameObject& obj = boxes_[i];
+        if (!obj.alive) continue;
+        {
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            obj.physId = GameObject::kInvalidId;
+            obj.childPhysIds.clear();
+            obj.physDirty = true;
+        }
+        rebuildBody(i);
+    }
+    if (simulating) {
+        restoreAuthoredPoses();
+        buildJoints();
+        buildCables();
+        physics_.wakeAll();
+    } else {
+        updateJointStats();
+    }
+    snapshot();
+}
+
+// ---- ケーブル（FEA）--------------------------------------------------------
+
+void Scene::buildCables() {
+    physics_.removeAllCables();
+    const auto cables = editor_.cables();
+    cablePhysIds_.assign(cables.size(), PhysicsWorld::kInvalidId);
+    if (cables.empty()) return;
+    std::size_t made = 0;
+    for (std::size_t i = 0; i < cables.size(); ++i) {
+        const ed::CableDesc& c = cables[i];
+        CableSpec spec = toCableSpec(c);
+        bool ok = true;
+        // 留め先のボディの「外接半径 + 節点の半径 + 余裕」。この内側の節点は
+        // 接触させない（ケーブルが自分の留め先を弾かないように）。
+        auto clearRadius = [&](int body) {
+            if (body < 0 || std::size_t(body) >= boxes_.size()) return 0.0;
+            const ed::BodyDesc& d = boxes_[std::size_t(body)].desc;
+            double r = 0.0;
+            if (d.collision == ed::ShapeKind::Sphere || d.collision == ed::ShapeKind::Model ||
+                d.collision == ed::ShapeKind::Trimesh) {
+                r = d.size.x * 0.5;
+            } else {
+                r = 0.5 * std::sqrt(d.size.x * d.size.x + d.size.y * d.size.y +
+                                    d.size.z * d.size.z);
+            }
+            return r + c.diameter * 0.5 + 0.02;
+        };
+        auto endBody = [&](int body, CableSpec::End end, std::size_t& out, double& clear) {
+            if (end != CableSpec::End::Body) return;
+            out = jointBodyId(body);
+            if (out == GameObject::kInvalidId) ok = false;
+            clear = clearRadius(body);
+        };
+        endBody(c.bodyA, spec.endA, spec.bodyA, spec.clearA);
+        endBody(c.bodyB, spec.endB, spec.bodyB, spec.clearB);
+        if (!ok) {
+            LOGW("editor", "cable '%s': endpoint is gone - skipped", c.name.c_str());
+            continue;
+        }
+        cablePhysIds_[i] = physics_.addCable(spec);
+        if (cablePhysIds_[i] != PhysicsWorld::kInvalidId) ++made;
+    }
+    LOGI("editor", "cables: %zu / %zu created", made, cables.size());
+}
+
+void Scene::removeAllCables() {
+    physics_.removeAllCables();
+    cablePhysIds_.clear();
+}
+
+void Scene::runModalAnalysis() {
+    const int count = editor_.sim().modal;
+    std::vector<double> hz;
+    if (count > 0) {
+        std::string why;
+        if (physics_.modalFrequencies(count, hz, why)) {
+            std::string list;
+            for (const double f : hz) {
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%s%.3f", list.empty() ? "" : ", ", f);
+                list += buf;
+            }
+            LOGI("scene", "modal analysis: %zu frequencies (Hz): %s", hz.size(), list.c_str());
+            editor_.setStatus("モーダル解析: " + std::to_string(hz.size()) + " 本");
+        } else {
+            LOGW("scene", "modal analysis failed: %s", why.c_str());
+            editor_.setStatus("モーダル解析ができません: " + why);
+        }
+    }
+    std::lock_guard<std::mutex> lk(poseMutex_);
+    modalHz_ = hz;
+}
+
+// RENDER スレッド。ケーブルは節点を結ぶ円柱の連なり（ShapeMesh::Cylinder =
+// 軸 X の単位円柱）。シミュレート中は節点のスナップショット、エディタ中は
+// 設計値の直線。applyToRenderer のロック中に呼ぶ（editor_.cables() は
+// objects → editor の順で問題ない）。
+void Scene::syncCables() {
+    using filament::math::float3;
+    using filament::math::mat4f;
+    const auto cables = editor_.cables();
+    std::vector<std::vector<float>> pts;
+    {
+        std::lock_guard<std::mutex> pl(poseMutex_);
+        pts = latestCables_;
+    }
+    auto release = [&](CableRender& r) {
+        for (const std::size_t id : r.renderIds) renderer_.removeShape(id);
+        r.renderIds.clear();
+        r.colorSet = false;
+    };
+    for (std::size_t i = cables.size(); i < cableRender_.size(); ++i) release(cableRender_[i]);
+    cableRender_.resize(cables.size());
+
+    std::vector<float> line;
+    for (std::size_t i = 0; i < cables.size(); ++i) {
+        const ed::CableDesc& c = cables[i];
+        CableRender& r = cableRender_[i];
+        const std::size_t n = std::size_t(std::max(2, c.segments));
+        if (r.renderIds.size() != n) {
+            release(r);
+            for (std::size_t k = 0; k < n; ++k) {
+                r.renderIds.push_back(renderer_.addShape(wizengine::ShapeMesh::Cylinder));
+            }
+        }
+        if (!r.colorSet || r.color.r != c.color.r || r.color.g != c.color.g ||
+            r.color.b != c.color.b) {
+            for (const std::size_t id : r.renderIds) {
+                renderer_.setShapeColor(id, {c.color.r, c.color.g, c.color.b});
+                renderer_.setShapeMaterial(id, wizengine::toRendererMaterial(ed::MaterialDesc{}));
+            }
+            r.color = c.color;
+            r.colorSet = true;
+        }
+        // 節点: スナップショットがあればそれ、無ければ設計値の直線。
+        const float* p = nullptr;
+        if (i < pts.size() && pts[i].size() == (n + 1) * 3) {
+            p = pts[i].data();
+        } else {
+            line.resize((n + 1) * 3);
+            for (std::size_t k = 0; k <= n; ++k) {
+                const double t = double(k) / double(n);
+                line[k * 3 + 0] = float(c.anchorA.x + (c.anchorB.x - c.anchorA.x) * t);
+                line[k * 3 + 1] = float(c.anchorA.y + (c.anchorB.y - c.anchorA.y) * t);
+                line[k * 3 + 2] = float(c.anchorA.z + (c.anchorB.z - c.anchorA.z) * t);
+            }
+            p = line.data();
+        }
+        for (std::size_t k = 0; k < n; ++k) {
+            const Eigen::Vector3d a(p[k * 3], p[k * 3 + 1], p[k * 3 + 2]);
+            const Eigen::Vector3d b(p[k * 3 + 3], p[k * 3 + 4], p[k * 3 + 5]);
+            const Eigen::Vector3d d = b - a;
+            const double len = d.norm();
+            if (!(len > 1e-6)) continue;
+            // 単位円柱の X 軸を節点の向きへ。
+            const Eigen::Quaterniond q =
+                Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d::UnitX(), d);
+            const Eigen::Vector3d mid = (a + b) * 0.5;
+            const BodyTransform t{mid.x(), mid.y(), mid.z(), q.w(), q.x(), q.y(), q.z()};
+            const mat4f m = toFilament(t) * mat4f::scaling(float3{float(len * 1.02),
+                                                                  float(c.diameter),
+                                                                  float(c.diameter)});
+            renderer_.setBoxTransform(r.renderIds[k], m);
+        }
+    }
 }
 
 // RENDER スレッド。まだ実体の無いオブジェクトのレンダラブルを作り、消された
@@ -895,6 +1235,7 @@ void Scene::applyToRenderer() {
     syncGround();
 
     for (auto& c : components_) c->onRender(*this);
+    syncCables();  // FEA のケーブル（円柱の連なり）
 
     std::vector<BodyTransform> poses;
     std::vector<std::vector<float>> softPts;

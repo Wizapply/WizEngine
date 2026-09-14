@@ -526,6 +526,8 @@ int run(int argc, char** argv) {
                     endpoints[camIndex]->webrtc->bitrateBps() / 1000;
                 j["versions"] = wizengine::versionsJson();
                 j["engine"] = physics.backendName();
+                j["contact"] = physics.contactName();
+                j["engineNote"] = scene.backendNote();
                 j["codec"] = endpoints[camIndex]->webrtc->codecName();
                 j["camera"] = int(camIndex);
                 j["cameraCount"] = int(scene.cameraCount());
@@ -721,8 +723,19 @@ int run(int argc, char** argv) {
                 physics.setCollisionTolerances(env, env);
                 tuning.envelope.store(env);
             }
-            const int substeps = tuning.substeps.load();
-            const int hz = tuning.physicsHz.load();
+            // レートとサブステップはシーン設定（SimSettings）が正: System タブ
+            // （PhysicsControlComponent）も Physics タブ（edit.sim）も同じ値を
+            // ミラーしているし、シーンの読込（<option rate substeps>）はそこに
+            // しか書かない。以前は起動時に 1 回だけ tuning へ写していたので、
+            // rate="120" のシーンを読んでも 30 Hz のまま回っていた（ケーブルの
+            // ような硬い系が暴れる原因）。tuning にも写して /stats の目標値を揃える。
+            // windows.h の max マクロと衝突するので std::max は使わない。
+            int substeps = scene.substeps();
+            if (substeps < 1) substeps = 1;
+            int hz = scene.physicsHz();
+            if (hz < 1) hz = 1;
+            tuning.substeps.store(substeps);
+            tuning.physicsHz.store(hz);
             const double stepDt = 1.0 / hz;  // physics timestep, not the frame time
             const double subDt = stepDt / substeps;
             stats.substeps.store(substeps);

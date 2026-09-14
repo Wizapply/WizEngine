@@ -1,6 +1,6 @@
 #pragma once
 
-#include <chrono/physics/ChContactMaterialNSC.h>
+#include <chrono/physics/ChContactMaterial.h>
 #include <chrono/physics/ChSystem.h>
 
 #include <array>
@@ -14,6 +14,12 @@
 namespace chrono {
 class ChLinkBase;
 class ChFunction;
+class ChLoadBase;
+class ChLoadContainer;
+namespace fea {
+class ChMesh;
+class ChNodeFEAxyzD;
+}
 }
 
 // Where the time went inside the last physics step (seconds), straight from
@@ -39,6 +45,26 @@ enum class PhysicsBackend {
 // True when this build can actually use PhysicsBackend::Multicore.
 bool multicoreAvailable();
 
+// 接触の解き方（B の 22）。
+//   NSC … 相補性（硬い接触。既定。1/60 s でも床を抜けない）
+//   SMC … ペナルティ法（ヤング率で決まる柔らかい接触。粒状体・FEA 向け。
+//         剛い材質ほど小さな dt が要る）
+// Core は ChSystemNSC / ChSystemSMC、Multicore は ChSystemMulticoreNSC /
+// ChSystemMulticoreSMC。切替は系の作り直し（recreate）。
+enum class ContactMethod { NSC, SMC };
+
+// このビルドが持っている B の機能（CMake / ヘッダの有無）。Scene が
+// 「Core へ切り替えれば使えるか」を判断するのに使う。
+struct PhysicsFeatures {
+    bool fea = false;         // FEA のケーブル（chrono/fea）
+    bool loads = false;       // ChLoad（ブッシュ・定常荷重）
+    bool directSolvers = true;  // SparseLU / SparseQR（Eigen、常に有る）
+    bool pardiso = false;     // Chrono::PardisoMKL
+    bool mumps = false;       // Chrono::MUMPS
+    bool modal = false;       // Chrono::Modal
+};
+PhysicsFeatures physicsFeatures();
+
 // Rigid-body transform snapshot passed to the render side.
 // Position in metres, rotation as a unit quaternion (w, x, y, z).
 struct BodyTransform {
@@ -62,9 +88,13 @@ struct BodyTransform {
 //   Gear       … 歯車（ChLinkLockGear。2 本のシャフトの角速度比 ratio）
 //   Screw      … ねじ（ChLinkLockScrew。1 回転で pitch [m] 進む）
 //   Spring     … 2 点間のばね・ダンパ（ChLinkTSDA。拘束ではなく力）
+//   Bushing    … ゴムブッシュ（ChLoadBodyBodyBushingMate。並進・回転の
+//                剛性と減衰を持つ荷重。Core 専用 - Multicore は荷重
+//                コンテナを積分に取り込まない）
 enum class JointType {
     Fixed, Revolute, Spherical, Prismatic, Distance,
-    Universal, Cylindrical, Planar, PointLine, PointPlane, Gear, Screw, Spring
+    Universal, Cylindrical, Planar, PointLine, PointPlane, Gear, Screw, Spring,
+    Bushing
 };
 
 // ジョイントの駆動。Revolute → ChLinkMotorRotationSpeed / Angle / Torque、
@@ -106,6 +136,10 @@ struct JointSpec {
     bool hasAxis2 = false;
     chrono::ChVector3d anchor2{0.0, 0.0, 0.0};
     chrono::ChVector3d axis2{0.0, 0.0, 1.0};
+    // Bushing: 回転の剛性 (N·m/rad) と減衰 (N·m·s/rad)。並進は stiffness /
+    // damping を 3 軸に同じ値で使う。
+    double rotStiffness = 0.0;
+    double rotDamping = 0.0;
 };
 
 // ボディの追加時に渡す、接触の物性・衝突レイヤ・重力。負の値は「シーンの
@@ -121,6 +155,40 @@ struct BodyOptions {
     int layer = 0;
     unsigned nocollide = 0;
     bool gravity = true;     // false = このボディだけ無重力
+    // SMC（ペナルティ法）の材質。負 = シーン設定（setSmcDefaults）。NSC では無視。
+    float young = -1.0f;
+    float poisson = -1.0f;
+    // 定常荷重（ワールド座標。ChLoadBodyForce / ChLoadBodyTorque = 荷重
+    // コンテナ）。Core 専用。零 = 無し。
+    chrono::ChVector3d force{0.0, 0.0, 0.0};
+    chrono::ChVector3d torque{0.0, 0.0, 0.0};
+};
+
+// ---- ケーブル（FEA。B の 15）-----------------------------------------------
+// ANCF ケーブル要素（ChBuilderCableANCF）を a → b の直線に segments 本
+// 並べる。端は「固定点」「ボディに留める」「自由」のどれか。Core 専用
+// （Multicore のデータマネージャは FEA 要素を持たない）。
+struct CableSpec {
+    enum class End { Free, Fixed, Body };
+    chrono::ChVector3d a{0.0, 2.0, 0.0};
+    chrono::ChVector3d b{1.0, 2.0, 0.0};
+    End endA = End::Fixed;
+    End endB = End::Free;
+    std::size_t bodyA = 0;  // endA == Body のとき
+    std::size_t bodyB = 0;
+    int segments = 16;
+    double diameter = 0.02;   // m
+    double density = 1000.0;  // kg/m^3
+    double young = 1.0e7;     // Pa
+    double damping = 0.01;    // Rayleigh 減衰
+    bool collide = true;      // 節点の球で接触する
+    BodyOptions options;      // 接触の物性（collide のとき）
+    // 留め先のボディの中心からこの距離 (m) 以内にある節点は接触面に入れない。
+    // 端の節点はボディの中心に留まるので、そのまま接触させるとケーブルが
+    // 自分の留め先と深くめり込んだ接触を作り、留め先が弾き飛ばされる
+    // （実機で確認: おもりが暴れた）。呼び出し側がボディの大きさから決める。
+    double clearA = 0.0;
+    double clearB = 0.0;
 };
 
 // 直前の step() が作った接触 1 点ぶん（activeContacts）。
@@ -142,10 +210,25 @@ constexpr int kCollisionLayerCount = 8;
 // It holds no scene of its own - bodies are added by the Scene via addBox().
 class PhysicsWorld {
 public:
-    explicit PhysicsWorld(PhysicsBackend backend = PhysicsBackend::Core);
+    explicit PhysicsWorld(PhysicsBackend backend = PhysicsBackend::Core,
+                          ContactMethod contact = ContactMethod::NSC);
 
     // "core" or "multicore" - what actually got created.
     const char* backendName() const;
+    PhysicsBackend backend() const { return backend_; }
+    // "nsc" or "smc".
+    const char* contactName() const;
+    ContactMethod contactMethod() const { return contact_; }
+
+    // 系をまるごと作り直す（B の自動切替）。ボディ・ジョイント・ケーブルは
+    // 全部消える（番号も無効になる）ので、呼び出し側（Scene）が作り直す。
+    // 設定（重力・反復回数・許容差・スレッド数・スリープ・減衰・材質の
+    // 既定）は覚えていて、新しい系にそのまま当て直す。Multicore を頼まれて
+    // ビルドに無ければ Core になる（コンストラクタと同じ）。
+    void recreate(PhysicsBackend backend, ContactMethod contact);
+    // SMC の材質の既定（<option young poisson>）。専用材質を持たないボディに
+    // 使う。NSC では覚えるだけ。
+    void setSmcDefaults(double young, double poisson);
 
     void step(double dt);
 
@@ -362,9 +445,15 @@ public:
 
     // 積分器 / ソルバの切替（名前は editor::integratorNameValid /
     // solverNameValid の語彙）。Multicore は自前のステッパと APGD なので
-    // どちらも false を返して何もしない。
+    // どちらも false を返して何もしない。Core では直接法（sparselu /
+    // sparseqr / pardiso / mumps）と hht / newmark も選べる（B の 16）。
+    // 直接法は片側拘束を解けないので、NSC のまま頼まれたら bb に戻して
+    // 警告する（true を返す = 「処理した」）。ビルドに無いモジュール
+    // （pardiso / mumps）も同じく bb に戻す。
     bool setIntegrator(const std::string& name);
     bool setSolver(const std::string& name);
+    // いま実際に使っているソルバ名（bb に戻したときはそれが分かる）。
+    const std::string& solverName() const { return solverName_; }
     // 2 材質の合成（min = Chrono の既定 / average / max）。
     void setMaterialCombine(CombineMode mode);
 
@@ -424,22 +513,51 @@ public:
     // 直前の step() で外れたジョイント番号（取り出すと空になる）。
     std::vector<std::size_t> takeBrokenJoints();
 
+    // ---- ケーブル（FEA）----------------------------------------------------
+    // 戻り値はケーブル番号（作れなければ kInvalidId: FEA の無いビルド・
+    // Multicore・端のボディが無い）。ジョイントと同じくシミュレート開始で
+    // 作り、停止で removeAllCables。節点の位置は cableNodePositions で
+    // 3 個ずつ float に詰める（描画スレッドへのスナップショット用）。
+    std::size_t addCable(const CableSpec& spec);
+    void removeAllCables();
+    std::size_t cableCount() const;
+    void cableNodePositions(std::size_t cable, std::vector<float>& out) const;
+    // ケーブルの張力の目安（端の拘束の反力 N。無ければ 0）。
+    double cableTension(std::size_t cable) const;
+
+    // ---- モーダル解析（Chrono::Modal。B の 20）-----------------------------
+    // いまの系（剛体 + FEA + 拘束）の非減衰固有振動数を count 本求める
+    // （Hz、昇順）。接触は入らない。Core 専用で、モジュールの無いビルド・
+    // Multicore・失敗は false と理由（英語）。数十 ms〜数秒かかるので
+    // シミュレート開始時に 1 回だけ呼ぶ。
+    bool modalFrequencies(int count, std::vector<double>& hz, std::string& why);
+
 private:
     // Either a ChSystemNSC (serial core) or a ChSystemMulticoreNSC, chosen at
     // build time by WIZ_USE_MULTICORE. Everything above this class is unaware
     // of which one is in use.
     // 追加したボディを逆引きマップにも登録する（activeContactPairs 用）。
     void registerBody(const std::shared_ptr<chrono::ChBody>& body);
+    // 眠りの計時を今からにする（置き直し・固定解除・新規・wakeAll）。
+    void resetSleepTimer(chrono::ChBody& b);
     // 衝突系が既に初期化済みなら、いま足したボディの衝突モデルを登録する
     // （Chrono 9 は自動でやらない。詳細は .cpp）。
     void bindCollision(const std::shared_ptr<chrono::ChBody>& body);
     // 追加の当たり形状を本体に足す（AddBody の前に呼ぶ）。
     void attachExtraShapes(chrono::ChBody& body, const std::vector<ExtraShape>& extras,
-                           const std::shared_ptr<chrono::ChContactMaterialNSC>& mat);
-    // ボディの物性を決める材質（指定が無ければ共有の mat_）。
-    std::shared_ptr<chrono::ChContactMaterialNSC> materialFor(const BodyOptions& o);
+                           const std::shared_ptr<chrono::ChContactMaterial>& mat);
+    // ボディの物性を決める材質（指定が無ければ共有の mat_）。NSC / SMC の
+    // どちらの材質になるかは contact_ で決まる。
+    std::shared_ptr<chrono::ChContactMaterial> materialFor(const BodyOptions& o);
+    std::shared_ptr<chrono::ChContactMaterial> makeMaterial() const;
     // シーン設定と合成した値を材質へ書く（負 = シーン設定）。
-    void applySurface(chrono::ChContactMaterialNSC& m, const BodyOptions& o) const;
+    void applySurface(chrono::ChContactMaterial& m, const BodyOptions& o) const;
+    // Chrono の系を（作り直しも含めて）組む。コンストラクタと recreate が呼ぶ。
+    void createSystem();
+    // 本当に系から外す（Core。Multicore は退避だけ）。disableBody から。
+    void detachBody(std::size_t id);
+    // 定常荷重（force / torque）を荷重コンテナへ。finishBody から。
+    void attachBodyLoads(std::size_t id, const BodyOptions& options);
     // AddBody の**前**に呼ぶ: 衝突レイヤ（ファミリ）と重力オフ。ファミリは
     // 衝突系に登録する前に決めておく - 登録後に変えると Bullet はモデルを
     // 一度 Remove して入れ直し、Multicore の衝突系は Remove が未実装で
@@ -447,7 +565,7 @@ private:
     void prepareBody(chrono::ChBody& body, const BodyOptions& options);
     // AddBody の後: 逆引き登録・材質とオプションの記録。
     void finishBody(const std::shared_ptr<chrono::ChBody>& body,
-                    const std::shared_ptr<chrono::ChContactMaterialNSC>& mat,
+                    const std::shared_ptr<chrono::ChContactMaterial>& mat,
                     const BodyOptions& options);
     // 破断の判定（step の末尾）。
     void checkJointBreaks();
@@ -481,7 +599,27 @@ private:
     std::size_t representative(std::size_t id) const;
 
     std::shared_ptr<chrono::ChSystem> sys_;
-    std::shared_ptr<chrono::ChContactMaterialNSC> mat_;
+    std::shared_ptr<chrono::ChContactMaterial> mat_;  // NSC か SMC（contact_）
+    ContactMethod contact_ = ContactMethod::NSC;
+    double smcYoung_ = 2.0e7;
+    double smcPoisson_ = 0.3;
+    // 荷重コンテナ（ChLoad。Core のみ）。ジョイント（ブッシュ）とボディの
+    // 定常荷重で分けてある - ジョイントは停止で全部捨てるため。
+    std::shared_ptr<chrono::ChLoadContainer> jointLoads_;
+    std::shared_ptr<chrono::ChLoadContainer> bodyLoads_;
+    // bodies_ と並ぶ: そのボディの定常荷重（無ければ空）。
+    std::vector<std::vector<std::shared_ptr<chrono::ChLoadBase>>> loadsOf_;
+    // recreate で当て直すための設定の控え。
+    double envelope_ = 0.002;
+    double margin_ = 0.001;
+    double recoverySpeed_ = 0.2;
+    double contactTolerance_ = 1e-3;
+    int threads_ = 0;
+    int iterations_ = 150;
+    chrono::ChVector3d gravity_{0.0, -9.81, 0.0};
+    CombineMode combine_ = CombineMode::Min;
+    std::string solverName_ = "bb";
+    std::string integratorName_ = "euler";
     // シーン設定の値（専用材質を持つボディの「シーン任せ」の欄を解くため）。
     float friction_ = 0.6f;
     float restitution_ = 0.0f;
@@ -489,7 +627,7 @@ private:
     float spinning_ = 0.0f;
     std::vector<std::shared_ptr<chrono::ChBody>> bodies_;
     // bodies_ と並ぶ: 専用の材質（共有なら nullptr）とオプション。
-    std::vector<std::shared_ptr<chrono::ChContactMaterialNSC>> mats_;
+    std::vector<std::shared_ptr<chrono::ChContactMaterial>> mats_;
     std::vector<BodyOptions> options_;
     // 接触コールバックが返す ChBody* から physId への逆引き。ボディは
     // 削除されない（disableBody は退場させるだけ）ので、追加時に足すだけ。
@@ -513,6 +651,8 @@ private:
         // 傾きで引き直す。
         std::shared_ptr<chrono::ChLinkBase> rampMotor;  // 角度 / 位置モータ
         bool rampLinear = false;
+        // Bushing（荷重。jointLoads_ に入っている）。
+        std::shared_ptr<chrono::ChLoadBase> load;
         JointType type = JointType::Revolute;
         double breakForce = 0.0;
         bool broken = false;
@@ -542,6 +682,14 @@ private:
     };
     std::vector<JointRec> joints_;
     std::vector<std::size_t> brokenPending_;  // 直前の step で外れた番号
+    // ケーブル（FEA メッシュ + 端の拘束）。removeAllCables でまとめて外す。
+    struct CableRec {
+        std::shared_ptr<chrono::fea::ChMesh> mesh;
+        std::vector<std::shared_ptr<chrono::fea::ChNodeFEAxyzD>> nodes;
+        std::vector<std::shared_ptr<chrono::ChLinkBase>> links;  // 端の拘束
+        bool valid = false;
+    };
+    std::vector<CableRec> cables_;
     int diagSteps_ = 0;  // 診断ログ用のステップ数（removeAllJoints で 0 に）
     bool diagNanReported_ = false;
     PhysicsBackend backend_ = PhysicsBackend::Core;

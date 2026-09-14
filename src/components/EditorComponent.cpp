@@ -6,6 +6,7 @@
 
 #include "document/EditorTypes.h"
 #include "core/Log.h"
+#include "physics/ModelImport.h"
 #include "scene/PrefabDefaults.h"
 #include "scene/Scene.h"
 #include "document/SceneDocument.h"
@@ -248,7 +249,8 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         for (const char* key : {"name", "shape", "collision", "mass", "fixed",
                                 "color", "size", "position", "rotation",
                                 "soft", "surface", "layer", "nocollide",
-                                "gravity", "velocity", "angularVelocity"}) {
+                                "gravity", "velocity", "angularVelocity",
+                                "force", "torque"}) {
             if (msg.contains(key)) args[key] = msg[key];
         }
         EditorState::Op op;
@@ -276,7 +278,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         // jointFromJson が「無いキーは今の値」なので部分指定がそのまま通る）。
         for (const char* key : {"limited", "limitLo", "limitHi", "motor", "motorTarget",
                                 "stiffness", "damping", "breakForce", "ratio", "pitch",
-                                "anchor2", "axis2"}) {
+                                "anchor2", "axis2", "rotStiffness", "rotDamping"}) {
             if (msg.contains(key)) args[key] = msg[key];
         }
         // アンカーと軸: 指定があればそれ、無ければ物理スレッド側で
@@ -326,12 +328,80 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         for (const char* key : {"name", "kind", "a", "b", "anchor", "axis", "distance",
                                 "limited", "limitLo", "limitHi", "motor", "motorTarget",
                                 "stiffness", "damping", "breakForce", "ratio", "pitch",
-                                "anchor2", "axis2"}) {
+                                "anchor2", "axis2", "rotStiffness", "rotDamping"}) {
             if (msg.contains(key)) args[key] = msg[key];
         }
         EditorState::Op op;
         op.kind = "joint.set";
         op.args = std::move(args);
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- ケーブル（FEA）----------------------------------------------------
+    // ジョイントと同じ配管。a を省いたらこのカメラの選択、b を省いたら地面
+    // （固定点）。端の位置（anchorA / anchorB）を省いたら物理スレッド側で
+    // 留め先の中心（地面なら真上）にする。
+    if (what == "cable.add") {
+        nlohmann::json args;
+        args["a"] = ed::jsonInt(msg, "a", selectionOf(scene, camIndex));
+        args["b"] = ed::jsonInt(msg, "b", -1);
+        if (ed::jsonInt(args, "a", -1) < -2 || ed::jsonInt(args, "b", -1) < -2) return true;
+        for (const char* key : {"name", "anchorA", "anchorB", "segments", "diameter",
+                                "density", "young", "damping", "collide", "color"}) {
+            if (msg.contains(key)) args[key] = msg[key];
+        }
+        EditorState::Op op;
+        op.kind = "cable.add";
+        op.args = std::move(args);
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+    if (what == "cable.remove") {
+        EditorState::Op op;
+        op.kind = "cable.remove";
+        op.args = {{"index", ed::jsonInt(msg, "index", -1)}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+    if (what == "cable.set") {
+        const int index = ed::jsonInt(msg, "index", -1);
+        if (index < 0) return true;
+        nlohmann::json args;
+        args["index"] = index;
+        for (const char* key : {"name", "a", "b", "anchorA", "anchorB", "segments",
+                                "diameter", "density", "young", "damping", "collide",
+                                "color"}) {
+            if (msg.contains(key)) args[key] = msg[key];
+        }
+        EditorState::Op op;
+        op.kind = "cable.set";
+        op.args = std::move(args);
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- 取込（URDF / OpenSim / ADAMS。Chrono::Parsers）------------------
+    // ファイル名は assets/ 相対のみ（他の assets 参照と同じ関所）。パース
+    // そのものは物理スレッド（一時的な Chrono の系を作るため）。
+    if (what == "import") {
+        const std::string file = msg.value("file", std::string());
+        if (!ed::assetFileAllowed(file)) {
+            state.setStatus("取込: ファイル名が不正です（assets/ 相対のみ）");
+            return true;
+        }
+        if (!wizengine::importAvailable()) {
+            state.setStatus("取込: このビルドには Chrono::Parsers がありません "
+                            "(-DWIZ_WITH_CHRONO_PARSERS=ON)");
+            return true;
+        }
+        EditorState::Op op;
+        op.kind = "import";
+        op.args = {{"file", file}};
         op.camera = camIndex;
         state.push(std::move(op));
         return true;

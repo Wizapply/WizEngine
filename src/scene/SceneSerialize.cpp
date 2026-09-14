@@ -94,6 +94,24 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     j["mode"] = ed::modeName(editor_.mode());
     j["editorCam"] = int(editorCamera());
     j["sim"] = ed::toJson(editor_.sim());
+    // いまの物理の系（バックエンド / 接触の解き方）と、Core を要した理由。
+    // このビルドが持つ B の機能も送る（UI が選択肢を灰色にする）。
+    j["engine"] = physics_.backendName();
+    j["contact"] = physics_.contactName();
+    j["engineNote"] = backendNote();
+    j["solverUsed"] = physics_.solverName();
+    {
+        const PhysicsFeatures f = physicsFeatures();
+        j["features"] = {{"multicore", multicoreAvailable()},
+                         {"fea", f.fea},
+                         {"loads", f.loads},
+                         {"directSolvers", f.directSolvers},
+                         {"pardiso", f.pardiso},
+                         {"mumps", f.mumps},
+                         {"modal", f.modal},
+                         {"parsers", wizengine::importAvailable()}};
+    }
+    j["modal"] = modalFrequencies();
     j["gizmo"] = ed::toJson(editor_.gizmo());
     j["status"] = editor_.status();
     j["sceneFile"] = editor_.sceneFile();
@@ -122,6 +140,22 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
                 e["broken"] = stats[i].broken;
             }
             j["joints"].push_back(e);
+        }
+    }
+    // ケーブル（FEA）。張力はシミュレート中だけ（端の拘束の反力）。
+    j["cables"] = nlohmann::json::array();
+    {
+        const auto cables = editor_.cables();
+        std::vector<double> tension;
+        {
+            std::lock_guard<std::mutex> pl(poseMutex_);
+            tension = cableTension_;
+        }
+        for (std::size_t i = 0; i < cables.size(); ++i) {
+            nlohmann::json e = ed::toJson(cables[i]);
+            e["index"] = int(i);
+            if (i < tension.size()) e["tension"] = tension[i];
+            j["cables"].push_back(e);
         }
     }
 
@@ -329,6 +363,19 @@ ed::SceneDocument Scene::document() {
         jointRemap[k] = int(doc.joints.size());
         doc.joints.push_back(copy);
     }
+    // ケーブル。端の物が消えていたら固定点（-1）にする（アンカーは残る）。
+    for (const auto& cIn : editor_.cables()) {
+        ed::CableDesc c = cIn;
+        auto fix = [&](int& ref) {
+            if (ref < 0) return;  // 地面 / 自由端はそのまま
+            ref = (std::size_t(ref) < remap.size() && remap[std::size_t(ref)] >= 0)
+                      ? remap[std::size_t(ref)]
+                      : -1;
+        };
+        fix(c.bodyA);
+        fix(c.bodyB);
+        doc.cables.push_back(c);
+    }
 
     // ---- イベントアセット --------------------------------------------------
     // 中身（ノード）はそのまま。ノードの対象番号だけ詰めた番号へ付け替える
@@ -401,8 +448,10 @@ std::string Scene::documentXml() {
 void Scene::loadDocument(const ed::SceneDocument& doc) {
     // いま在るものを全部畳んでから作り直す。番号は 0 から振り直されるので、
     // 掴んでいる選択も落とす。
+    removeAllCables();
     physics_.removeAllJoints();
     editor_.setJoints({});
+    editor_.setCables({});
     for (std::size_t i = 0; i < boxes_.size(); ++i) destroyObject(i);
     for (auto& c : controllers_) c->setSelected(BoxController::kNone);
     editor_.clearSel();
@@ -502,6 +551,16 @@ void Scene::loadDocument(const ed::SceneDocument& doc) {
         joints.push_back(j);
     }
     editor_.setJoints(std::move(joints));
+    {
+        std::vector<ed::CableDesc> cables;
+        for (const auto& cIn : doc.cables) {
+            ed::CableDesc c = cIn;
+            if (c.bodyA >= 0) c.bodyA += int(base);
+            if (c.bodyB >= 0) c.bodyB += int(base);
+            cables.push_back(c);
+        }
+        editor_.setCables(std::move(cables));
+    }
 
     // イベントアセット。中身のノードの対象番号は、ジョイントと同じく今回
     // 足されたぶんの先頭（base / lightBase）だけずらす（カメラはスロット
@@ -538,6 +597,73 @@ void Scene::loadDocument(const ed::SceneDocument& doc) {
         resetEventsToDefaults();
     }
 
-    if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
+    // 文書が Core 専用の機能を使っていれば系を切り替える（使わなくなって
+    // いれば既定へ戻す）。シミュレート中ならジョイントとケーブルも張り直す。
+    syncBackend();
+    if (editor_.mode() == ed::AppMode::Simulate) {
+        buildJoints();
+        buildCables();
+    }
+    snapshot();
+}
+
+// 文書の中身を今のシーンへ足す（取込用）。読込（loadDocument）と違って
+// 何も消さない: メッシュ・プレハブは名前が重ならないものだけ足し、ボディは
+// 後ろに追加、ジョイント・ケーブルの参照は追加ぶんの先頭番号だけずらす。
+// 設定（option / visual / ground / ライト / カメラ / イベント）は文書に
+// あっても無視する（取り込む物の「構造」だけが欲しいので）。
+void Scene::appendDocument(const ed::SceneDocument& doc) {
+    {
+        std::lock_guard<std::mutex> lk(objectsMutex_);
+        for (const auto& m : doc.meshes) {
+            bool dup = false;
+            for (const auto& have : meshes_) dup = dup || have.desc.name == m.name;
+            if (dup) continue;
+            MeshAsset a;
+            a.desc = m;
+            meshes_.push_back(std::move(a));
+        }
+    }
+    {
+        auto prefabs = editor_.prefabAssets();
+        for (const auto& p : doc.prefabs) {
+            bool dup = false;
+            for (const auto& have : prefabs) dup = dup || have.name == p.name;
+            if (!dup) prefabs.push_back(p);
+        }
+        editor_.setPrefabAssets(std::move(prefabs));
+    }
+    const std::size_t base = boxes_.size();
+    for (const auto& bIn : doc.bodies) {
+        ed::BodyDesc b = ed::clampBody(bIn);
+        b.vehicle.formulas.clear();
+        createObject(b);
+    }
+    {
+        auto joints = editor_.joints();
+        for (const auto& jIn : doc.joints) {
+            ed::JointDesc j = jIn;
+            if (j.bodyA >= 0) j.bodyA += int(base);
+            if (j.bodyB >= 0) j.bodyB += int(base);
+            joints.push_back(j);
+        }
+        editor_.setJoints(std::move(joints));
+    }
+    {
+        auto cables = editor_.cables();
+        for (const auto& cIn : doc.cables) {
+            ed::CableDesc c = cIn;
+            if (c.bodyA >= 0) c.bodyA += int(base);
+            if (c.bodyB >= 0) c.bodyB += int(base);
+            cables.push_back(c);
+        }
+        editor_.setCables(std::move(cables));
+    }
+    editor_.bumpGraphVersion();
+    syncBackend();
+    if (editor_.mode() == ed::AppMode::Simulate) {
+        buildJoints();
+        buildCables();
+    }
     snapshot();
 }

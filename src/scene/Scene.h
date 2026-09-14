@@ -159,6 +159,22 @@ public:
     };
     std::vector<JointStat> jointStats();
 
+    // ---- バックエンドの自動切替（B）------------------------------------------
+    // 既定は SceneConfig.h の kBackend（Core）。Multicore が扱えない機能
+    // （FEA のケーブル・ChLoad のブッシュ / 定常荷重・直接法と MINRES・
+    // HHT / Newmark・モーダル解析）を文書が使っていたら Core、無くて
+    // ソフトボディがあるかボディが多ければ Multicore（kMulticoreForSoftBodies /
+    // kMulticoreMinBodies）、どちらでもなければ既定。接触の解き方（nsc /
+    // smc）も系の種類なので同じ口。
+    // 判定と切替はシミュレート開始・設定変更・読込のたび（syncBackend）。
+    // いま何で動いていて、なぜかは backendNote（/scene と /stats に出す）。
+    std::string backendNote();
+    // 直近のモーダル解析の結果（Hz、昇順。無ければ空）。poseMutex_ の下。
+    std::vector<double> modalFrequencies();
+    // ケーブル（FEA）の節点位置のスナップショット（RENDER スレッド用。
+    // シミュレートしていないときは空 = 設計値の直線で描く）。
+    bool latestCable(std::size_t index, std::vector<float>& out);
+
     // Pick the object under a screen position, given in normalised device
     // coords (x, y in [-1, 1], y up), through the given camera. Selects it (or
     // clears that camera's selection on a miss) and returns the index or
@@ -330,6 +346,31 @@ private:
     // 番号を指すノードを 1 つ前へずらす（ジョイントは番号で参照するため）。
     void pruneJointNodes(int removedIndex);
 
+    // ---- バックエンド・ケーブル・モーダル（PHYSICS スレッド）---------------
+    // 文書が要求するバックエンドと接触の解き方。reason には Core を要する
+    // 理由、または規模で Multicore を選んだ理由（英語、ログ用）。
+    PhysicsBackend requiredBackend(ContactMethod& contact, std::string& reason);
+    // 要求と今の系が違えば作り直す（rebuildPhysicsWorld）。
+    void syncBackend();
+    // 系をまるごと作り直し、地面・全オブジェクト（設計値から）・シミュレート
+    // 中ならジョイントとケーブルも組み直す。
+    void rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact);
+    // 許容差・接触設定・転がり摩擦（SceneConfig の定数）を PhysicsWorld へ。
+    // build と rebuildPhysicsWorld から。
+    void configurePhysicsDefaults();
+    // 文書のケーブルを Chrono の FEA に作り直す / 捨てる（ジョイントと同じ
+    // タイミング: シミュレート開始と停止）。
+    void buildCables();
+    void removeAllCables();
+    // <option modal="N">: 固有振動数を求めてログと /scene に出す。
+    void runModalAnalysis();
+    // RENDER thread: ケーブルの見た目（円柱の連なり）を作り、節点の
+    // スナップショット（無ければ設計値の直線）に沿って置く。
+    void syncCables();
+    // 文書の中身を今のシーンへ**足す**（URDF などの取込。loadDocument は
+    // 置き換え）。ボディ・ジョイント・ケーブル・メッシュ・プレハブが対象。
+    void appendDocument(const wizengine::editor::SceneDocument& doc);
+
     // ---- イベントグラフの実行（PHYSICS スレッド）--------------------------
     // シミュレートの 1 サブステップごとに、**付いているイベントアセット**の
     // トリガー（衝突・開始・タイマー・掴み）を判定し、ワイヤーで繋がった
@@ -418,6 +459,21 @@ private:
     // イベントの setMotor と計測（updateJointStats）が引く。物理スレッド専用。
     std::vector<std::size_t> jointPhysIds_;
     std::vector<JointStat> jointStats_;  // poseMutex_ の下
+    // 文書のケーブル番号 → PhysicsWorld のケーブル番号（buildCables が作る）。
+    std::vector<std::size_t> cablePhysIds_;
+    // ケーブルの節点位置（3 個で 1 節点、ケーブル番号ごと）。snapshot() が
+    // 書き、RENDER スレッドが読む。poseMutex_ の下。
+    std::vector<std::vector<float>> latestCables_;
+    std::vector<double> cableTension_;  // 同上（N）
+    std::vector<double> modalHz_;       // 同上
+    std::string backendNote_;           // 同上（"core: FEA cable" など）
+    // RENDER スレッド専用: ケーブルごとの円柱スロット。
+    struct CableRender {
+        std::vector<std::size_t> renderIds;
+        wizengine::editor::Color3 color;
+        bool colorSet = false;
+    };
+    std::vector<CableRender> cableRender_;
     // メッシュアセットのカタログ（文書の <asset>）。構造は objectsMutex_。
     std::vector<MeshAsset> meshes_;
     // 地面と環境光（文書の <ground> / <environment>）。書くのは物理スレッド

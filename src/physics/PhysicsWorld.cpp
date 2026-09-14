@@ -27,12 +27,64 @@
 #include <chrono/physics/ChBodyEasy.h>
 #include <chrono/physics/ChContactContainer.h>
 #include <chrono/physics/ChContactMaterial.h>  // 材質の合成方式
+#include <chrono/physics/ChContactMaterialNSC.h>
+#include <chrono/physics/ChContactMaterialSMC.h>
 #include <chrono/physics/ChLinkDistance.h>
 #include <chrono/physics/ChLinkLock.h>
 #include <chrono/physics/ChSystemNSC.h>
+#include <chrono/physics/ChSystemSMC.h>
+#include <chrono/solver/ChIterativeSolver.h>
 #include <chrono/solver/ChIterativeSolverVI.h>
 #include <chrono/solver/ChSolver.h>
 #include <chrono/timestepper/ChTimestepper.h>
+// ---- B の導入で足したヘッダ。どれも __has_include で見て、無い版・無い
+// ビルドではその機能だけ「無い」と答える（physicsFeatures）。
+// 直接法（Eigen の SparseLU / SparseQR は Core 組み込み）。
+#if __has_include(<chrono/solver/ChDirectSolverLS.h>)
+#include <chrono/solver/ChDirectSolverLS.h>
+#define WIZ_HAVE_DIRECT_SOLVERS 1
+#endif
+// ADMM（FEA の剛性行列と NSC の接触を同時に解ける VI ソルバ。内側は直接法）。
+#if __has_include(<chrono/solver/ChSolverADMM.h>)
+#include <chrono/solver/ChSolverADMM.h>
+#define WIZ_HAVE_ADMM 1
+#endif
+#if __has_include(<chrono_pardisomkl/ChSolverPardisoMKL.h>) && defined(WIZ_WITH_PARDISO)
+#include <chrono_pardisomkl/ChSolverPardisoMKL.h>
+#define WIZ_HAVE_PARDISO 1
+#endif
+#if __has_include(<chrono_mumps/ChSolverMumps.h>) && defined(WIZ_WITH_MUMPS)
+#include <chrono_mumps/ChSolverMumps.h>
+#define WIZ_HAVE_MUMPS 1
+#endif
+// 荷重（ChLoad）: ブッシュと定常荷重。
+#if __has_include(<chrono/physics/ChLoadContainer.h>) && __has_include(<chrono/physics/ChLoadsBody.h>)
+#include <chrono/physics/ChLoadContainer.h>
+#include <chrono/physics/ChLoadsBody.h>
+#define WIZ_HAVE_LOADS 1
+#endif
+// FEA のケーブル（ANCF）。Chrono 9 は ChLinkNodeFrame、旧版は ChLinkPointFrame。
+#if __has_include(<chrono/fea/ChBuilderBeam.h>) && __has_include(<chrono/fea/ChMesh.h>)
+#include <chrono/fea/ChBeamSectionCable.h>
+#include <chrono/fea/ChBuilderBeam.h>
+#include <chrono/fea/ChContactSurfaceNodeCloud.h>
+#include <chrono/fea/ChElementCableANCF.h>
+#include <chrono/fea/ChMesh.h>
+#include <chrono/fea/ChNodeFEAxyzD.h>
+#if __has_include(<chrono/fea/ChLinkNodeFrame.h>)
+#include <chrono/fea/ChLinkNodeFrame.h>
+using WizNodeFrameLink = chrono::fea::ChLinkNodeFrame;
+#else
+#include <chrono/fea/ChLinkPointFrame.h>
+using WizNodeFrameLink = chrono::fea::ChLinkPointFrame;
+#endif
+#define WIZ_HAVE_FEA 1
+#endif
+// モーダル解析（Chrono::Modal。CMake の WIZ_WITH_CHRONO_MODAL）。
+#if defined(WIZ_WITH_CHRONO_MODAL) && __has_include(<chrono_modal/ChEigenvalueSolver.h>)
+#include <chrono_modal/ChEigenvalueSolver.h>
+#define WIZ_HAVE_MODAL 1
+#endif
 // ジョイントの拡張（A の導入）: モータ・自在継手・歯車・ねじ・ばね。
 // Chrono 9 のヘッダ名。歯車とねじは版で置き場が変わったので __has_include
 // で見て、無ければその種類だけ「作らない」で済ませる（Distance と同じ扱い）。
@@ -78,6 +130,7 @@ using WizRampFunction = chrono::ChFunction_Ramp;
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <memory>
 #include <cstdio>
 #include <thread>
@@ -91,6 +144,31 @@ bool multicoreAvailable() {
 #else
     return false;
 #endif
+}
+
+PhysicsFeatures physicsFeatures() {
+    PhysicsFeatures f;
+#ifdef WIZ_HAVE_FEA
+    f.fea = true;
+#endif
+#ifdef WIZ_HAVE_LOADS
+    f.loads = true;
+#endif
+#ifdef WIZ_HAVE_DIRECT_SOLVERS
+    f.directSolvers = true;
+#else
+    f.directSolvers = false;
+#endif
+#ifdef WIZ_HAVE_PARDISO
+    f.pardiso = true;
+#endif
+#ifdef WIZ_HAVE_MUMPS
+    f.mumps = true;
+#endif
+#ifdef WIZ_HAVE_MODAL
+    f.modal = true;
+#endif
+    return f;
 }
 
 namespace {
@@ -167,6 +245,23 @@ template <typename T>
 auto getLinVel(T* b, long) -> decltype(b->GetPos_dt()) {
     return b->GetPos_dt();
 }
+
+// 眠りの計時のやり直しに使う 2 つ（下の resetSleepTimer）。項目ごとの時計
+// ChObj::SetChTime と ChBody::TrySleeping は Chrono 9.0 にあるが、無い版では
+// 何もしない（そのときは計時のやり直しが効かないだけで、動作は従来どおり）。
+template <typename T>
+auto setItemTime(T* obj, double t, int) -> decltype(obj->SetChTime(t), void()) {
+    obj->SetChTime(t);
+}
+template <typename T>
+void setItemTime(T*, double, long) {}
+
+template <typename T>
+auto trySleeping(T* b, int) -> decltype(b->TrySleeping(), void()) {
+    b->TrySleeping();
+}
+template <typename T>
+void trySleeping(T*, long) {}
 
 template <typename T>
 auto getAngVel(T* b, int) -> decltype(b->GetAngVelParent()) {
@@ -407,24 +502,185 @@ int linkCountOf(S*, ...) {
     return -1;
 }
 
-// 積分器の種類（名前は editor::integratorNameValid の語彙）。
+// 積分器の種類（名前は editor::integratorNameValid の語彙）。hht / newmark は
+// 滑らかな系（FEA・SMC）向け（B の 16）。
 bool timestepperFromName(const std::string& name, chrono::ChTimestepper::Type& out) {
     using T = chrono::ChTimestepper::Type;
     if (name == "euler") { out = T::EULER_IMPLICIT_LINEARIZED; return true; }
     if (name == "projected") { out = T::EULER_IMPLICIT_PROJECTED; return true; }
     if (name == "implicit") { out = T::EULER_IMPLICIT; return true; }
     if (name == "trapezoidal") { out = T::TRAPEZOIDAL_LINEARIZED; return true; }
+    if (name == "hht") { out = T::HHT; return true; }
+    if (name == "newmark") { out = T::NEWMARK; return true; }
     return false;
 }
+// SetSolverType で作れるソルバ。反復の VI（bb / apgd / psor / jacobi と、
+// 剛性行列も扱える pminres）と、線形ソルバの minres（Chrono 9 では
+// ChIterativeSolverLS 側 = 片側拘束を解けない。専用ヘッダは無いので種類名で
+// 作る）。admm と直接法（sparselu / sparseqr / pardiso / mumps）は setSolver が
+// オブジェクトを作って渡す。
+//
+// **FEA（ケーブル）があるときの注意**: bb は剛性行列があると例外を投げる
+// （"Do NOT use Barzilai-Borwein solver if there are stiffness matrices"、
+// 実機で確認）。apgd / psor / jacobi は Schur 補元で解くので剛性を黙って
+// 無視する。剛性と NSC の接触を同時に解けるのは admm と pminres だけ。
 bool solverFromName(const std::string& name, chrono::ChSolver::Type& out) {
     using T = chrono::ChSolver::Type;
     if (name == "bb") { out = T::BARZILAIBORWEIN; return true; }
     if (name == "apgd") { out = T::APGD; return true; }
     if (name == "psor") { out = T::PSOR; return true; }
     if (name == "jacobi") { out = T::PJACOBI; return true; }
+    if (name == "pminres") { out = T::PMINRES; return true; }
     if (name == "minres") { out = T::MINRES; return true; }
     return false;
 }
+bool solverNameIsDirect(const std::string& s) {
+    return s == "sparselu" || s == "sparseqr" || s == "pardiso" || s == "mumps";
+}
+// 線形（LS）ソルバ = 片側拘束（NSC の接触・可動範囲）を解けないもの。
+bool solverNameIsLinear(const std::string& s) {
+    return solverNameIsDirect(s) || s == "minres";
+}
+
+// ---- 荷重（ChLoad）の版差 --------------------------------------------------
+#ifdef WIZ_HAVE_LOADS
+// コンテナから外す。Chrono 9.0 の ChLoadContainer には Remove が無く、
+// GetLoadList() が配列をそのまま返す（非 const）ので、そこから消す。
+// Remove を持つ版が来たらそちらを使う。
+template <typename C>
+auto removeLoadFrom(C* c, const std::shared_ptr<chrono::ChLoadBase>& l, int)
+    -> decltype(c->Remove(l), bool()) {
+    c->Remove(l);
+    return true;
+}
+template <typename C>
+auto removeLoadFrom(C* c, const std::shared_ptr<chrono::ChLoadBase>& l, long)
+    -> decltype(c->GetLoadList().erase(c->GetLoadList().begin()), bool()) {
+    auto& list = c->GetLoadList();
+    const auto it = std::find(list.begin(), list.end(), l);
+    if (it == list.end()) return false;
+    list.erase(it);
+    return true;
+}
+template <typename C>
+bool removeLoadFrom(C*, const std::shared_ptr<chrono::ChLoadBase>&, ...) {
+    return false;
+}
+template <typename C>
+auto clearLoads(C* c, int) -> decltype(c->RemoveAllLoads(), void()) {
+    c->RemoveAllLoads();
+}
+template <typename C>
+auto clearLoads(C* c, long) -> decltype(c->GetLoadList().clear(), void()) {
+    c->GetLoadList().clear();
+}
+template <typename C>
+void clearLoads(C*, ...) {}
+// ブッシュの荷重の力・トルク（ChLoadBodyBody::GetForce / GetTorque）。
+template <typename L>
+auto loadReaction(const L* l, double& force, double& torque, int)
+    -> decltype(l->GetForce().Length(), l->GetTorque().Length(), bool()) {
+    force = l->GetForce().Length();
+    torque = l->GetTorque().Length();
+    return true;
+}
+template <typename L>
+bool loadReaction(const L*, double&, double&, long) {
+    return false;
+}
+// ブッシュの生成: Chrono 9 は取り付け座標系が ChFrame<>、旧版は ChCoordsys<>。
+template <typename L>
+auto makeBushing(const std::shared_ptr<chrono::ChBody>& a,
+                 const std::shared_ptr<chrono::ChBody>& b, const chrono::ChFrame<>& f,
+                 const chrono::ChVector3d& k, const chrono::ChVector3d& c,
+                 const chrono::ChVector3d& kr, const chrono::ChVector3d& cr, int)
+    -> decltype(chrono_types::make_shared<L>(a, b, f, k, c, kr, cr)) {
+    return chrono_types::make_shared<L>(a, b, f, k, c, kr, cr);
+}
+template <typename L>
+auto makeBushing(const std::shared_ptr<chrono::ChBody>& a,
+                 const std::shared_ptr<chrono::ChBody>& b, const chrono::ChFrame<>& f,
+                 const chrono::ChVector3d& k, const chrono::ChVector3d& c,
+                 const chrono::ChVector3d& kr, const chrono::ChVector3d& cr, long)
+    -> decltype(chrono_types::make_shared<L>(a, b, chrono::ChCoordsys<>(f.GetPos(), f.GetRot()),
+                                             k, c, kr, cr)) {
+    return chrono_types::make_shared<L>(a, b, chrono::ChCoordsys<>(f.GetPos(), f.GetRot()), k,
+                                        c, kr, cr);
+}
+#endif
+
+// ---- FEA（ケーブル）の版差 --------------------------------------------------
+#ifdef WIZ_HAVE_FEA
+template <typename S>
+auto setSectionDensity(S* s, double d, int) -> decltype(s->SetDensity(d), void()) {
+    s->SetDensity(d);
+}
+template <typename S>
+void setSectionDensity(S*, double, long) {}
+// Rayleigh 減衰: Chrono 9 は SetRayleighDamping、旧版は SetBeamRaleyghDamping。
+template <typename S>
+auto setSectionDamping(S* s, double r, int) -> decltype(s->SetRayleighDamping(r), void()) {
+    s->SetRayleighDamping(r);
+}
+template <typename S>
+auto setSectionDamping(S* s, double r, long) -> decltype(s->SetBeamRaleyghDamping(r), void()) {
+    s->SetBeamRaleyghDamping(r);
+}
+template <typename S>
+void setSectionDamping(S*, double, ...) {}
+// 節点雲の接触面: Chrono 9 は AddAllNodes(mesh, radius)、旧版は AddAllNodes(radius)。
+template <typename C, typename M>
+auto addAllNodes(C* c, M& mesh, double r, int) -> decltype(c->AddAllNodes(mesh, r), void()) {
+    c->AddAllNodes(mesh, r);
+}
+template <typename C, typename M>
+auto addAllNodes(C* c, M&, double r, long) -> decltype(c->AddAllNodes(r), void()) {
+    c->AddAllNodes(r);
+}
+template <typename M>
+auto setMeshGravity(M* m, bool on, int) -> decltype(m->SetAutomaticGravity(on), void()) {
+    m->SetAutomaticGravity(on);
+}
+template <typename M>
+void setMeshGravity(M*, bool, long) {}
+template <typename S, typename M>
+auto removeMeshFrom(S* s, const M& mesh, int) -> decltype(s->RemoveMesh(mesh), void()) {
+    s->RemoveMesh(mesh);
+}
+template <typename S, typename M>
+auto removeMeshFrom(S* s, const M& mesh, long) -> decltype(s->Remove(mesh), void()) {
+    s->Remove(mesh);
+}
+#endif
+
+// ---- モーダル解析の版差（質量・剛性・拘束ヤコビアンの取り出し）----------
+#ifdef WIZ_HAVE_MODAL
+template <typename S>
+auto systemMatrices(S* s, chrono::ChSparseMatrix& M, chrono::ChSparseMatrix& K,
+                    chrono::ChSparseMatrix& Cq, int)
+    -> decltype(s->GetMassMatrix(M), s->GetStiffnessMatrix(K),
+                s->GetConstraintJacobianMatrix(Cq), bool()) {
+    s->GetMassMatrix(M);
+    s->GetStiffnessMatrix(K);
+    s->GetConstraintJacobianMatrix(Cq);
+    return true;
+}
+template <typename S>
+auto systemMatrices(S* s, chrono::ChSparseMatrix& M, chrono::ChSparseMatrix& K,
+                    chrono::ChSparseMatrix& Cq, long)
+    -> decltype(s->GetMassMatrix(&M), s->GetStiffnessMatrix(&K),
+                s->GetConstraintJacobianMatrix(&Cq), bool()) {
+    s->GetMassMatrix(&M);
+    s->GetStiffnessMatrix(&K);
+    s->GetConstraintJacobianMatrix(&Cq);
+    return true;
+}
+template <typename S>
+bool systemMatrices(S*, chrono::ChSparseMatrix&, chrono::ChSparseMatrix&,
+                    chrono::ChSparseMatrix&, ...) {
+    return false;
+}
+#endif
 
 // 2 材質の合成方式。Chrono の既定は min（滑りやすい方が勝つ）。average /
 // max にすると氷の上のゴムのような組み合わせの手触りが変わる。
@@ -629,6 +885,10 @@ const char* PhysicsWorld::backendName() const {
     return backend_ == PhysicsBackend::Multicore ? "multicore" : "core";
 }
 
+const char* PhysicsWorld::contactName() const {
+    return contact_ == ContactMethod::SMC ? "smc" : "nsc";
+}
+
 void PhysicsWorld::registerBody(const std::shared_ptr<chrono::ChBody>& body) {
     bodyIndex_[body.get()] = bodies_.size();
     bodies_.push_back(body);
@@ -637,26 +897,54 @@ void PhysicsWorld::registerBody(const std::shared_ptr<chrono::ChBody>& body) {
     alias_.push_back(kNoSoft);
     mats_.push_back(nullptr);  // finishBody が専用材質なら書く
     options_.push_back(BodyOptions{});
+    loadsOf_.emplace_back();
     bindCollision(body);
+    resetSleepTimer(*body);  // 新規ボディの計時は 0 = 最初のステップで眠る
 }
 
 // ---- 接触の物性・レイヤ・重力（A の導入）------------------------------------
+// 材質は contact_ で NSC / SMC のどちらか。共通の欄（摩擦・反発）は基底に、
+// 転がり・スピン・粘着は NSC に、ヤング率・ポアソン比・付着は SMC にある。
 
-void PhysicsWorld::applySurface(ChContactMaterialNSC& m, const BodyOptions& o) const {
+void PhysicsWorld::applySurface(ChContactMaterial& m, const BodyOptions& o) const {
     m.SetFriction(o.friction >= 0.0f ? o.friction : friction_);
     m.SetRestitution(o.restitution >= 0.0f ? o.restitution : restitution_);
-    m.SetRollingFriction(o.rolling >= 0.0f ? o.rolling : rolling_);
-    m.SetSpinningFriction(o.rolling >= 0.0f ? o.rolling : spinning_);
-    m.SetCohesion(o.cohesion);
+    if (auto* n = dynamic_cast<ChContactMaterialNSC*>(&m)) {
+        n->SetRollingFriction(o.rolling >= 0.0f ? o.rolling : rolling_);
+        n->SetSpinningFriction(o.rolling >= 0.0f ? o.rolling : spinning_);
+        n->SetCohesion(o.cohesion);
+    } else if (auto* s = dynamic_cast<ChContactMaterialSMC*>(&m)) {
+        s->SetYoungModulus(float(o.young >= 0.0f ? o.young : smcYoung_));
+        s->SetPoissonRatio(float(o.poisson >= 0.0f ? o.poisson : smcPoisson_));
+        s->SetAdhesion(o.cohesion);  // 粘着 = SMC の付着力（同じ意味の欄）
+    }
 }
 
-std::shared_ptr<ChContactMaterialNSC> PhysicsWorld::materialFor(const BodyOptions& o) {
+std::shared_ptr<ChContactMaterial> PhysicsWorld::makeMaterial() const {
+    if (contact_ == ContactMethod::SMC) {
+        return chrono_types::make_shared<ChContactMaterialSMC>();
+    }
+    return chrono_types::make_shared<ChContactMaterialNSC>();
+}
+
+std::shared_ptr<ChContactMaterial> PhysicsWorld::materialFor(const BodyOptions& o) {
     const bool custom = o.friction >= 0.0f || o.restitution >= 0.0f ||
-                        o.rolling >= 0.0f || o.cohesion != 0.0f;
+                        o.rolling >= 0.0f || o.cohesion != 0.0f || o.young >= 0.0f ||
+                        o.poisson >= 0.0f;
     if (!custom) return mat_;
-    auto m = chrono_types::make_shared<ChContactMaterialNSC>();
+    auto m = makeMaterial();
     applySurface(*m, o);
     return m;
+}
+
+void PhysicsWorld::setSmcDefaults(double young, double poisson) {
+    smcYoung_ = young;
+    smcPoisson_ = poisson;
+    if (contact_ != ContactMethod::SMC) return;
+    applySurface(*mat_, BodyOptions{});
+    for (std::size_t i = 0; i < mats_.size(); ++i) {
+        if (mats_[i]) applySurface(*mats_[i], options_[i]);
+    }
 }
 
 void PhysicsWorld::prepareBody(ChBody& body, const BodyOptions& options) {
@@ -688,12 +976,52 @@ void PhysicsWorld::prepareBody(ChBody& body, const BodyOptions& options) {
 }
 
 void PhysicsWorld::finishBody(const std::shared_ptr<chrono::ChBody>& body,
-                              const std::shared_ptr<chrono::ChContactMaterialNSC>& mat,
+                              const std::shared_ptr<chrono::ChContactMaterial>& mat,
                               const BodyOptions& options) {
     registerBody(body);
     const std::size_t id = bodies_.size() - 1;
     mats_[id] = (mat == mat_) ? nullptr : mat;
     options_[id] = options;
+    attachBodyLoads(id, options);
+}
+
+// 定常荷重（<geom force torque>）。荷重コンテナ経由 = Core だけが積分に
+// 取り込む（Multicore は IntLoadResidual_F を使わない。ばねと同じ）。
+// Multicore で頼まれたら Scene が先に Core へ切り替えているはずだが、
+// 万一のときは黙って捨てず 1 回だけ伝える。
+void PhysicsWorld::attachBodyLoads(std::size_t id, const BodyOptions& options) {
+    const bool hasForce = options.force.Length2() > 0.0;
+    const bool hasTorque = options.torque.Length2() > 0.0;
+    if (!hasForce && !hasTorque) return;
+    static bool warned = false;
+#ifdef WIZ_HAVE_LOADS
+    if (backend_ == PhysicsBackend::Multicore || !bodyLoads_) {
+        if (!warned) {
+            warned = true;
+            LOGW("physics", "constant body loads need the core backend - ignored");
+        }
+        return;
+    }
+    auto& body = bodies_[id];
+    if (hasForce) {
+        auto f = chrono_types::make_shared<ChLoadBodyForce>(body, options.force,
+                                                            /*local_force*/ false, VNULL,
+                                                            /*local_point*/ true);
+        bodyLoads_->Add(f);
+        loadsOf_[id].push_back(f);
+    }
+    if (hasTorque) {
+        auto t = chrono_types::make_shared<ChLoadBodyTorque>(body, options.torque,
+                                                             /*local_torque*/ false);
+        bodyLoads_->Add(t);
+        loadsOf_[id].push_back(t);
+    }
+#else
+    if (!warned) {
+        warned = true;
+        LOGW("physics", "this Chrono build has no ChLoad - constant body loads are ignored");
+    }
+#endif
 }
 
 void PhysicsWorld::setBodyGravity(std::size_t id, bool enabled) {
@@ -741,9 +1069,8 @@ bool PhysicsWorld::setBodySurface(std::size_t id, const BodyOptions& options) {
 void PhysicsWorld::setMaterialCombine(CombineMode mode) {
     // min は Chrono の既定そのもの。既定のままなら Chrono 自身の戦略オブジェクト
     // を残す（差し替えるのは average / max を頼まれたときだけ）。
-    static CombineMode current = CombineMode::Min;
-    if (mode == current) return;
-    current = mode;
+    if (mode == combine_) return;
+    combine_ = mode;
     sys_->SetMaterialCompositionStrategy(std::make_unique<CombineStrategy>(mode));
     LOGI("physics", "material composition: %s",
          mode == CombineMode::Average ? "average" : mode == CombineMode::Max ? "max" : "min");
@@ -1010,8 +1337,40 @@ PhysicsWorld::activeContactPairs() const {
     return pairs;
 }
 
-PhysicsWorld::PhysicsWorld(PhysicsBackend backend) {
+PhysicsWorld::PhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
     backend_ = backend;
+    contact_ = contact;
+    createSystem();
+}
+
+// 系をまるごと作り直す（B の自動切替: Multicore ⇄ Core、NSC ⇄ SMC）。
+// ボディ・ジョイント・ケーブル・荷重は全部捨てる - 番号は無効になるので、
+// Scene が設計値から作り直す（Scene::rebuildPhysicsWorld）。
+void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
+    joints_.clear();
+    brokenPending_.clear();
+    cables_.clear();
+    bodies_.clear();
+    mats_.clear();
+    options_.clear();
+    loadsOf_.clear();
+    bodyIndex_.clear();
+    active_.clear();
+    softOf_.clear();
+    alias_.clear();
+    softBodies_.clear();
+    jointLoads_.reset();
+    bodyLoads_.reset();
+    diagSteps_ = 0;
+    diagNanReported_ = false;
+    backend_ = backend;
+    contact_ = contact;
+    sys_.reset();  // 古い系を先に壊す（Multicore の OpenMP プールを 2 つ持たない）
+    createSystem();
+    LOGI("physics", "world recreated: backend=%s contact=%s", backendName(), contactName());
+}
+
+void PhysicsWorld::createSystem() {
     if (backend_ == PhysicsBackend::Multicore && !multicoreAvailable()) {
         std::puts(
             "physics: Chrono::Multicore not built in "
@@ -1028,11 +1387,24 @@ PhysicsWorld::PhysicsWorld(PhysicsBackend backend) {
     // ---- Chrono::Multicore ----------------------------------------------
     // Parallel APGD solver plus the module's own parallel collision detection.
     // Its tuning lives in a settings struct rather than in ChSystem setters.
-    auto mc = chrono_types::make_shared<ChSystemMulticoreNSC>();
+    std::shared_ptr<ChSystemMulticore> mc;
+    if (contact_ == ContactMethod::SMC) {
+        // ペナルティ法（B の 22）。材質のヤング率・ポアソン比から接触剛性を
+        // 出す（use_material_properties）。Hertz 接触 + 1 ステップの接線変位。
+        auto smc = chrono_types::make_shared<ChSystemMulticoreSMC>();
+        smc->GetSettings()->solver.contact_force_model = ChSystemSMC::ContactForceModel::Hertz;
+        smc->GetSettings()->solver.tangential_displ_mode =
+            ChSystemSMC::TangentialDisplacementModel::OneStep;
+        smc->GetSettings()->solver.use_material_properties = true;
+        mc = smc;
+    } else {
+        auto nsc = chrono_types::make_shared<ChSystemMulticoreNSC>();
+        nsc->ChangeSolverType(SolverType::APGD);
+        mc = nsc;
+    }
     // Use the module's own parallel collision system, not Bullet: the two are
     // separate code paths and the multicore solver expects this one.
     mc->SetCollisionSystemType(ChCollisionSystem::Type::MULTICORE);
-    mc->ChangeSolverType(SolverType::APGD);
 
     auto* st = mc->GetSettings();
     // SPINNING mode also solves rolling/spinning resistance. In SLIDING mode
@@ -1071,7 +1443,14 @@ PhysicsWorld::PhysicsWorld(PhysicsBackend backend) {
 #endif
     {
     // ---- Chrono core (serial) -------------------------------------------
-    auto core = chrono_types::make_shared<ChSystemNSC>();
+    std::shared_ptr<ChSystem> core;
+    if (contact_ == ContactMethod::SMC) {
+        auto smc = chrono_types::make_shared<ChSystemSMC>();
+        smc->SetContactForceModel(ChSystemSMC::ContactForceModel::Hertz);
+        core = smc;
+    } else {
+        core = chrono_types::make_shared<ChSystemNSC>();
+    }
     core->SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
     // BARZILAI-BORWEIN converges much better than the default SOR on stacked
     // contacts. More iterations = steadier stacks, more CPU.
@@ -1082,31 +1461,61 @@ PhysicsWorld::PhysicsWorld(PhysicsBackend backend) {
     sys_ = core;
     }
 
-    sys_->SetGravitationalAcceleration(ChVector3d(0, -9.81, 0));
-    setSolverIterations(150);  // Scene overrides this
+    // 覚えている設定を当て直す（初回は既定値 = 従来どおり）。
+    sys_->SetGravitationalAcceleration(gravity_);
+    setSolverIterations(iterations_);
 
     // Default: several cores for the solver and collision detection, leaving a
     // couple for the render thread and the encoder. The Scene can override
     // this (see setNumThreads) to match a pinned set of cores.
     {
-        const unsigned hw = std::thread::hardware_concurrency();
-        const int threads = (hw >= 4) ? int(hw) - 2 : 1;
-        sys_->SetNumThreads(threads, threads, 1);
+        int threads = threads_;
+        if (threads < 1) {
+            const unsigned hw = std::thread::hardware_concurrency();
+            threads = (hw >= 4) ? int(hw) - 2 : 1;
+        }
+        // 3 つ目は FEA（ケーブルの要素の並列化）。Core だけが使う。
+        sys_->SetNumThreads(threads, threads, threads);
     }
 
     // Sleeping is off until the Scene enables it (see setSleepingEnabled).
     // Note: Chrono::Multicore does not support sleeping - the call is harmless
     // there, but sleepingCount() will simply stay at 0.
-    allowSleeping(sys_.get(), false, 0);
+    allowSleeping(sys_.get(), sleepingEnabled_, 0);
 
-    mat_ = chrono_types::make_shared<ChContactMaterialNSC>();
-    mat_->SetFriction(friction_);
+    mat_ = makeMaterial();
     // No bounce: even a little restitution keeps settled boxes micro-bouncing.
-    mat_->SetRestitution(restitution_);
+    applySurface(*mat_, BodyOptions{});
+
+    // 荷重コンテナ（ChLoad）。Core だけが積分に取り込むので、そちらでだけ作る。
+#ifdef WIZ_HAVE_LOADS
+    if (backend_ != PhysicsBackend::Multicore) {
+        jointLoads_ = chrono_types::make_shared<ChLoadContainer>();
+        bodyLoads_ = chrono_types::make_shared<ChLoadContainer>();
+        sys_->Add(jointLoads_);
+        sys_->Add(bodyLoads_);
+    }
+#endif
+
+    // 許容差・接触・合成方式・積分器・ソルバも当て直す（recreate 用。初回は
+    // 既定値なので何も変わらない）。
+    setCollisionTolerances(envelope_, margin_);
+    setContactSettings(recoverySpeed_, contactTolerance_);
+    if (combine_ != CombineMode::Min) {
+        sys_->SetMaterialCompositionStrategy(std::make_unique<CombineStrategy>(combine_));
+    }
+    {
+        const std::string integ = integratorName_, solver = solverName_;
+        integratorName_ = "euler";
+        solverName_ = "bb";
+        if (integ != "euler") setIntegrator(integ);
+        if (solver != "bb") setSolver(solver);
+    }
 }
 
 void PhysicsWorld::setGravity(double gx, double gy, double gz) {
-    sys_->SetGravitationalAcceleration(ChVector3d(gx, gy, gz));
+    gravity_ = ChVector3d(gx, gy, gz);
+    sys_->SetGravitationalAcceleration(gravity_);
 }
 
 void PhysicsWorld::setBodyVelocity(std::size_t id, const ChVector3d& linear,
@@ -1132,21 +1541,88 @@ bool PhysicsWorld::setIntegrator(const std::string& name) {
     ChTimestepper::Type type;
     if (!timestepperFromName(name, type)) return false;
     // 同じ種類なら触らない（シミュレート開始のたびに呼ばれる）。
-    if (sys_->GetTimestepperType() == type) return true;
+    if (name == integratorName_ && sys_->GetTimestepperType() == type) return true;
     sys_->SetTimestepperType(type);
+    integratorName_ = name;
     LOGI("physics", "integrator: %s", name.c_str());
     return true;
 }
 
 bool PhysicsWorld::setSolver(const std::string& name) {
     if (backend_ == PhysicsBackend::Multicore) return false;  // APGD 固定
+    if (name == solverName_) return true;  // 毎回作り直さない（反復回数が飛ぶ）
+    // 直接法はソルバのオブジェクトを作って渡す（B の 16）。直接法と MINRES は
+    // 線形ソルバで片側拘束（NSC の接触・可動範囲）を解けないので、NSC の
+    // ままなら bb に戻して伝える。
+    std::shared_ptr<ChSolver> solver;
+    std::string used = name;
+    if (name == "admm") {
+#ifdef WIZ_HAVE_ADMM
+        // 既定のコンストラクタは内側の直接法が SparseQR（遅いが依存なし）。
+        // Pardiso / MUMPS があればそちらを内側に使う。
+#ifdef WIZ_HAVE_PARDISO
+        solver = chrono_types::make_shared<ChSolverADMM>(
+            chrono_types::make_shared<ChSolverPardisoMKL>());
+#elif defined(WIZ_HAVE_MUMPS)
+        solver = chrono_types::make_shared<ChSolverADMM>(chrono_types::make_shared<ChSolverMumps>());
+#else
+        solver = chrono_types::make_shared<ChSolverADMM>();
+#endif
+#else
+        LOGW("physics", "this Chrono has no ChSolverADMM - using pminres");
+        used = "pminres";
+#endif
+    } else if (solverNameIsLinear(name)) {
+        if (contact_ != ContactMethod::SMC) {
+            LOGW("physics", "solver '%s' is a linear solver and cannot handle NSC "
+                            "(one-sided) contacts - using bb (set contact=\"smc\" to use it)",
+                 name.c_str());
+            used = "bb";
+        } else if (name == "minres") {
+            // 種類名で作る（SetSolverType が ChSolverMINRES を作る）。
+        } else if (name == "sparselu" || name == "sparseqr") {
+#ifdef WIZ_HAVE_DIRECT_SOLVERS
+            if (name == "sparselu") solver = chrono_types::make_shared<ChSolverSparseLU>();
+            else solver = chrono_types::make_shared<ChSolverSparseQR>();
+#else
+            LOGW("physics", "this Chrono has no ChSolverSparseLU / QR - using bb");
+            used = "bb";
+#endif
+        } else if (name == "pardiso") {
+#ifdef WIZ_HAVE_PARDISO
+            solver = chrono_types::make_shared<ChSolverPardisoMKL>();
+#else
+            LOGW("physics", "Chrono::PardisoMKL is not built in (-DWIZ_WITH_PARDISO=ON) - "
+                            "using bb");
+            used = "bb";
+#endif
+        } else if (name == "mumps") {
+#ifdef WIZ_HAVE_MUMPS
+            solver = chrono_types::make_shared<ChSolverMumps>();
+#else
+            LOGW("physics", "Chrono::MUMPS is not built in (-DWIZ_WITH_MUMPS=ON) - using bb");
+            used = "bb";
+#endif
+        }
+    }
+    if (solver) {
+        sys_->SetSolver(solver);
+        solverName_ = used;
+        LOGI("physics", "solver: %s", used.c_str());
+        setSolverIterations(iterations_);
+        return true;
+    }
     ChSolver::Type type;
-    if (!solverFromName(name, type)) return false;
-    // 同じ種類なら触らない: SetSolverType はソルバとシステム記述子を作り直す
-    // ので、毎回呼ぶと反復回数やウォームスタートの設定が飛ぶ。
-    if (sys_->GetSolver() && sys_->GetSolver()->GetType() == type) return true;
-    sys_->SetSolverType(type);
-    LOGI("physics", "solver: %s", name.c_str());
+    if (!solverFromName(used, type)) return false;
+    // SetSolverType はソルバとシステム記述子を作り直すので、同じ種類なら
+    // 触らない（反復回数やウォームスタートの設定が飛ぶ）。
+    const bool sameType = sys_->GetSolver() && sys_->GetSolver()->GetType() == type;
+    if (!sameType) {
+        sys_->SetSolverType(type);
+        LOGI("physics", "solver: %s", used.c_str());
+    }
+    solverName_ = used;
+    setSolverIterations(iterations_);
     return true;
 }
 
@@ -1184,8 +1660,29 @@ std::size_t PhysicsWorld::sleepingCount() const {
     return n;
 }
 
+// 眠りの計時をやり直す（Core。Multicore は眠らない）。
+// Chrono の sleep_starttime（protected）は「最後に速度がしきい値を超えた
+// 時刻」で、TrySleeping() の中でしか更新されない。置き直して静止させた
+// ボディや作ったばかりのボディはこれが前回の走行のまま（新規は 0）なので、
+// 最初のステップの ManageSleepingBodies（積分の前に走る）が
+// (now - starttime) > sleep_time を満たし、宙に浮いたまま眠る（Core の実機で
+// 確認: シミュレート開始で一部の物がその場で止まる）。しきい値を超える
+// 速度を一瞬与えて TrySleeping を呼び、時刻を今にしてから速度を戻す。
+void PhysicsWorld::resetSleepTimer(ChBody& b) {
+    if (!sleepingEnabled_ || !b.IsSleepingAllowed() || b.IsFixed() || b.IsSleeping()) return;
+    // 項目の時計は Update() でしか進まないので、作ったばかりのボディは 0。
+    setItemTime(&b, sys_->GetChTime(), 0);
+    const ChVector3d v = getLinVel(&b, 0);
+    setLinVel(&b, ChVector3d(1e6, 0, 0), 0);
+    trySleeping(&b, 0);  // 速度が大きい = 眠れない = sleep_starttime を今にする
+    setLinVel(&b, v, 0);
+}
+
 void PhysicsWorld::wakeAll() {
-    for (auto& b : bodies_) wakeUp(b.get(), 0);
+    for (auto& b : bodies_) {
+        wakeUp(b.get(), 0);
+        resetSleepTimer(*b);
+    }
     // Waking from outside ManageSleepingBodies() changes how many bodies the
     // solver has to handle, and Chrono only rebuilds that layout in Setup().
     // Without this the "woken" bodies can stay out of the solve - i.e. they
@@ -1194,9 +1691,11 @@ void PhysicsWorld::wakeAll() {
 }
 
 void PhysicsWorld::setCollisionTolerances(double envelope, double margin) {
+    envelope_ = envelope;
+    margin_ = margin;
 #ifdef WIZ_USE_MULTICORE
     // The multicore collision system keeps the envelope in its settings.
-    if (auto* mc = dynamic_cast<ChSystemMulticoreNSC*>(sys_.get())) {
+    if (auto* mc = dynamic_cast<ChSystemMulticore*>(sys_.get())) {
         // Never go below the floor value - see the note in the constructor.
         mc->GetSettings()->collision.collision_envelope =
             std::max(envelope, kMulticoreMinEnvelope);
@@ -1218,8 +1717,10 @@ StepTimers PhysicsWorld::timers() const {
 }
 
 void PhysicsWorld::setContactSettings(double recoverySpeed, double tolerance) {
+    recoverySpeed_ = recoverySpeed;
+    contactTolerance_ = tolerance;
 #ifdef WIZ_USE_MULTICORE
-    if (auto* mc = dynamic_cast<ChSystemMulticoreNSC*>(sys_.get())) {
+    if (auto* mc = dynamic_cast<ChSystemMulticore*>(sys_.get())) {
         mc->GetSettings()->solver.contact_recovery_speed = recoverySpeed;
         mc->GetSettings()->solver.tolerance = tolerance;
         return;
@@ -1229,8 +1730,9 @@ void PhysicsWorld::setContactSettings(double recoverySpeed, double tolerance) {
 }
 
 void PhysicsWorld::setContactRecoverySpeed(double recoverySpeed) {
+    recoverySpeed_ = recoverySpeed;
 #ifdef WIZ_USE_MULTICORE
-    if (auto* mc = dynamic_cast<ChSystemMulticoreNSC*>(sys_.get())) {
+    if (auto* mc = dynamic_cast<ChSystemMulticore*>(sys_.get())) {
         mc->GetSettings()->solver.contact_recovery_speed = recoverySpeed;
         return;
     }
@@ -1337,16 +1839,17 @@ double PhysicsWorld::bodyMass(std::size_t id) const {
 
 void PhysicsWorld::setNumThreads(int threads) {
     if (threads < 1) return;
-    // Chrono takes (solver, collision, FEA); the last stays at 1 since no FEA
-    // is used here.
-    sys_->SetNumThreads(threads, threads, 1);
+    threads_ = threads;
+    // Chrono takes (solver, collision, FEA). FEA はケーブル（Core）が使う。
+    sys_->SetNumThreads(threads, threads, threads);
     LOGI("physics", "threads: %d", threads);
 }
 
 void PhysicsWorld::setSolverIterations(int iterations) {
+    iterations_ = iterations;
 #ifdef WIZ_USE_MULTICORE
     // APGD iterates on the sliding (frictional) contacts.
-    if (auto* mc = dynamic_cast<ChSystemMulticoreNSC*>(sys_.get())) {
+    if (auto* mc = dynamic_cast<ChSystemMulticore*>(sys_.get())) {
         mc->GetSettings()->solver.max_iteration_sliding = iterations;
         return;
     }
@@ -1359,6 +1862,8 @@ void PhysicsWorld::setSolverIterations(int iterations) {
             std::dynamic_pointer_cast<ChIterativeSolverVI>(sys_->GetSolver())) {
         iterative->SetMaxIterations(iterations);
         enableWarmStart(iterative.get(), 0);
+    } else if (auto ls = std::dynamic_pointer_cast<ChIterativeSolver>(sys_->GetSolver())) {
+        ls->SetMaxIterations(iterations);  // MINRES（LS 側の反復）
     }
     }
 }
@@ -1483,7 +1988,7 @@ bool addShapeImpl(B&, std::shared_ptr<chrono::ChCollisionShape>, const chrono::C
 }  // namespace
 
 void PhysicsWorld::attachExtraShapes(ChBody& body, const std::vector<ExtraShape>& extras,
-                                     const std::shared_ptr<ChContactMaterialNSC>& mat) {
+                                     const std::shared_ptr<ChContactMaterial>& mat) {
     if (extras.empty()) return;
     static bool warned = false;
     static bool warnedCylinder = false;
@@ -1557,8 +2062,7 @@ void PhysicsWorld::setDamping(double linearPerSecond, double angularPerSecond) {
 void PhysicsWorld::setSurfaceMaterial(float friction, float restitution) {
     friction_ = friction;
     restitution_ = restitution;
-    mat_->SetFriction(friction);
-    mat_->SetRestitution(restitution);
+    applySurface(*mat_, BodyOptions{});
     // 専用材質のボディも「シーン任せ」の欄はこの値に追従する。
     for (std::size_t i = 0; i < mats_.size(); ++i) {
         if (mats_[i]) applySurface(*mats_[i], options_[i]);
@@ -1567,11 +2071,11 @@ void PhysicsWorld::setSurfaceMaterial(float friction, float restitution) {
 
 void PhysicsWorld::setRollingFriction(float rolling, float spinning) {
     // NSC materials expose these directly; they are ignored by solvers that do
-    // not model rolling resistance, which is harmless.
+    // not model rolling resistance, which is harmless. SMC の材質には無い
+    // （applySurface が種類を見て入れる）。
     rolling_ = rolling;
     spinning_ = spinning;
-    mat_->SetRollingFriction(rolling);
-    mat_->SetSpinningFriction(spinning);
+    applySurface(*mat_, BodyOptions{});
     for (std::size_t i = 0; i < mats_.size(); ++i) {
         if (mats_[i]) applySurface(*mats_[i], options_[i]);
     }
@@ -1847,6 +2351,7 @@ void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
     b->SetRot(rot);
     b->ForceToRest();
     wakeUp(b.get(), 0);
+    resetSleepTimer(*b);  // 静止させた直後に眠らせない
     // setBodyPose と違って落下速度は与えない。エディタで置いた物は、
     // シミュレートを始めるまでその場に止まっていてほしい。
 }
@@ -1866,8 +2371,12 @@ void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
         return;
     }
     bodies_[id]->SetFixed(fixed);
-    if (fixed) bodies_[id]->ForceToRest();
-    else wakeUp(bodies_[id].get(), 0);
+    if (fixed) {
+        bodies_[id]->ForceToRest();
+    } else {
+        wakeUp(bodies_[id].get(), 0);
+        resetSleepTimer(*bodies_[id]);  // 固定を外した直後に眠らせない
+    }
 }
 
 bool PhysicsWorld::bodyFixed(std::size_t id) const {
@@ -1907,6 +2416,41 @@ void PhysicsWorld::disableBody(std::size_t id) {
     // 版があるので、位置でも確実に無関係にしておく。
     b->SetPos(ChVector3d(0, -1000.0, 0));
     active_[id] = false;
+    // Core では本当に系から外す（B の 18）。粒子も同じ。
+    if (SoftBody* soft = softOfRoot(id)) {
+        for (const std::size_t p : soft->particles) detachBody(p);
+    } else {
+        detachBody(id);
+    }
+}
+
+// Core（Bullet）は RemoveBody を実装しているので、退場したボディは系から
+// 本当に外す: ソルバと衝突系がその変数・形状を見なくなり、エディタで
+// 大きさを何度も変えても空のボディが溜まらない。ChBody のオブジェクト自体は
+// bodies_ に残す（番号を詰めない・接触コールバックの逆引きが壊れない）。
+// Multicore は衝突系の Remove が未実装なので触らない（退避のみ）。
+void PhysicsWorld::detachBody(std::size_t id) {
+    if (backend_ == PhysicsBackend::Multicore || id >= bodies_.size()) return;
+    auto& b = bodies_[id];
+    if (!b->GetSystem()) return;  // 既に外れている
+    // 定常荷重を先に外す（ボディの変数が系から消えた後に荷重が残ると、
+    // 古いオフセットへ書き込む）。
+#ifdef WIZ_HAVE_LOADS
+    if (bodyLoads_ && !loadsOf_[id].empty()) {
+        bool removed = true;
+        for (auto& l : loadsOf_[id]) removed = removeLoadFrom(bodyLoads_.get(), l, 0) && removed;
+        if (!removed) {
+            // Remove の無い版: 全部捨てて、残っている物のぶんを入れ直す。
+            clearLoads(bodyLoads_.get(), 0);
+            for (std::size_t i = 0; i < loadsOf_.size(); ++i) {
+                if (i == id || !active_[i]) continue;
+                for (auto& l : loadsOf_[i]) bodyLoads_->Add(l);
+            }
+        }
+        loadsOf_[id].clear();
+    }
+#endif
+    sys_->RemoveBody(b);
 }
 
 bool PhysicsWorld::bodyActive(std::size_t id) const {
@@ -2295,9 +2839,40 @@ std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
             }
             break;
         }
+        case JointType::Bushing: {
+            // ゴムブッシュ（B の 19）: 拘束ではなく荷重コンテナの力。並進 3 軸は
+            // stiffness / damping、回転 3 軸は rotStiffness / rotDamping。
+            // 取り付け座標系はアンカー + 指定軸を Z にした向き。
+#ifdef WIZ_HAVE_LOADS
+            if (manualMode || !jointLoads_) {
+                LOGW("physics", "bushing: needs the core backend (loads are not integrated "
+                                "by Chrono::Multicore) - skipped");
+                return kInvalidJoint;
+            }
+            const ChVector3d k(spec.stiffness, spec.stiffness, spec.stiffness);
+            const ChVector3d c(spec.damping, spec.damping, spec.damping);
+            const ChVector3d kr(spec.rotStiffness, spec.rotStiffness, spec.rotStiffness);
+            const ChVector3d cr(spec.rotDamping, spec.rotDamping, spec.rotDamping);
+            auto load = makeBushing<ChLoadBodyBodyBushingMate>(
+                a, b, ChFrame<>(anchor, frameRot), k, c, kr, cr, 0);
+            jointLoads_->Add(load);
+            rec.load = load;
+            wantLimit = false;
+            if (spec.breakForce > 0.0) {
+                LOGW("physics", "bushing: breakforce is not supported on a load - ignored");
+                rec.breakForce = 0.0;
+            }
+#else
+            LOGW("physics", "bushing: this Chrono build has no ChLoad - skipped");
+            return kInvalidJoint;
+#endif
+            break;
+        }
     }
 
-    if (!link && rec.manual.kind == JointRec::Manual::Kind::None) return kInvalidJoint;
+    if (!link && !rec.load && rec.manual.kind == JointRec::Manual::Kind::None) {
+        return kInvalidJoint;
+    }
     if (wantLimit && !limitDone) {
         LOGW("physics", "joint: limits could not be applied (this joint type or "
                         "Chrono version has no limit API) - ignored");
@@ -2437,12 +3012,20 @@ void PhysicsWorld::applyManualJoints(double dt) {
 void PhysicsWorld::removeAllJoints() {
     diagSteps_ = 0;  // 次のシミュレート開始で診断行を出し直す
     diagNanReported_ = false;
+    bool anyLoad = false;
     for (auto& j : joints_) {
         // 破断したリンクも無効化されて系に残っている（走行中の RemoveLink は
         // Multicore を壊す）ので、ここでまとめて外す。
         if (j.link) sys_->RemoveLink(j.link);
         if (j.extra) sys_->RemoveLink(j.extra);
+        if (j.load) anyLoad = true;
     }
+#ifdef WIZ_HAVE_LOADS
+    // ブッシュはジョイント用の荷重コンテナにだけ入っているので、まとめて捨てる。
+    if (anyLoad && jointLoads_) clearLoads(jointLoads_.get(), 0);
+#else
+    (void)anyLoad;
+#endif
     joints_.clear();
     brokenPending_.clear();
     // 拘束の増減はソルバの構成を変えるので、Setup で作り直させる
@@ -2498,6 +3081,12 @@ bool PhysicsWorld::jointReaction(std::size_t joint, double& force, double& torqu
         torque = std::max(lt, j.manual.lastTorque);
         return true;
     }
+#ifdef WIZ_HAVE_LOADS
+    if (j.load) {
+        auto bushing = std::dynamic_pointer_cast<ChLoadBodyBodyBushingMate>(j.load);
+        return bushing && loadReaction(bushing.get(), force, torque, 0);
+    }
+#endif
     if (!j.link) return false;
     if (j.type == JointType::Spring) {
         // ばねは拘束ではないので反力の口が無い。ばね力を返す。
@@ -2527,7 +3116,7 @@ void PhysicsWorld::checkJointBreaks() {
     if (diagSteps_ < kWarmupSteps) return;
     for (std::size_t i = 0; i < joints_.size(); ++i) {
         JointRec& j = joints_[i];
-        if (j.broken || j.breakForce <= 0.0) continue;
+        if (j.broken || j.breakForce <= 0.0 || j.load) continue;
         double force = 0.0, torque = 0.0;
         if (!jointReaction(i, force, torque)) continue;
         if (!std::isfinite(force) || force <= j.breakForce) continue;
@@ -2547,4 +3136,216 @@ void PhysicsWorld::checkJointBreaks() {
         LOGI("physics", "joint #%zu broke (reaction %.1f N > %.1f N)", i, force,
              j.breakForce);
     }
+}
+
+// ---- ケーブル（FEA。B の 15）-----------------------------------------------
+// ANCF ケーブル要素を直線に並べ、端を固定点 / ボディ / 自由にする。節点の
+// 球で接触する（ChContactSurfaceNodeCloud）。Core 専用: Multicore のデータ
+// マネージャは剛体しか持たず、FEA の要素は積分に乗らない。
+
+std::size_t PhysicsWorld::addCable(const CableSpec& spec) {
+#ifdef WIZ_HAVE_FEA
+    static bool warnedBackend = false;
+    if (backend_ == PhysicsBackend::Multicore) {
+        if (!warnedBackend) {
+            warnedBackend = true;
+            LOGW("physics", "cable: needs the core backend (Chrono::Multicore has no FEA) - "
+                            "skipped");
+        }
+        return kInvalidId;
+    }
+    auto endOk = [&](CableSpec::End end, std::size_t id, const char* which) {
+        if (end != CableSpec::End::Body) return true;
+        if (id >= bodies_.size() || !active_[id] || softOf_[id] != kNoSoft) {
+            LOGW("physics", "cable: end %s refers to a missing or soft body (%zu) - skipped",
+                 which, id);
+            return false;
+        }
+        return true;
+    };
+    if (!endOk(spec.endA, spec.bodyA, "A") || !endOk(spec.endB, spec.bodyB, "B")) {
+        return kInvalidId;
+    }
+    const int n = std::max(2, std::min(64, spec.segments));
+    const double length = (spec.b - spec.a).Length();
+    if (length < 1e-6) {
+        LOGW("physics", "cable: zero length - skipped");
+        return kInvalidId;
+    }
+
+    auto mesh = chrono_types::make_shared<fea::ChMesh>();
+    auto section = chrono_types::make_shared<fea::ChBeamSectionCable>();
+    section->SetDiameter(spec.diameter);
+    section->SetYoungModulus(spec.young);
+    setSectionDensity(section.get(), spec.density, 0);
+    setSectionDamping(section.get(), spec.damping, 0);
+
+    fea::ChBuilderCableANCF builder;
+    builder.BuildBeam(mesh, section, n, spec.a, spec.b);
+    CableRec rec;
+    rec.mesh = mesh;
+    rec.nodes = builder.GetLastBeamNodes();
+    if (rec.nodes.size() < 2) {
+        LOGW("physics", "cable: the beam builder produced no nodes - skipped");
+        return kInvalidId;
+    }
+
+    if (spec.collide) {
+        // 節点ごとの球（半径 = ケーブルの半径）。材質は剛体と同じ流儀。
+        // 面はメッシュを知っている必要がある: コンストラクタで渡し、
+        // AddContactSurface でも結び直される。
+        auto mat = materialFor(spec.options);
+        auto surf = chrono_types::make_shared<fea::ChContactSurfaceNodeCloud>(mat, mesh.get());
+        mesh->AddContactSurface(surf);
+        // 留め先のボディの内側にある節点は入れない（端の節点はボディの中心に
+        // 留まるので、入れると自分の留め先と深くめり込んだ接触ができて
+        // 留め先が暴れる）。
+        const double radius = spec.diameter * 0.5;
+        std::size_t added = 0;
+        for (const auto& node : rec.nodes) {
+            const ChVector3d p = node->GetPos();
+            if (spec.endA == CableSpec::End::Body && (p - spec.a).Length() < spec.clearA) continue;
+            if (spec.endB == CableSpec::End::Body && (p - spec.b).Length() < spec.clearB) continue;
+            surf->AddNode(node, radius);
+            ++added;
+        }
+        if (added == 0) {
+            LOGW("physics", "cable: every node lies inside an attached body - no contact");
+        }
+    }
+    setMeshGravity(mesh.get(), true, 0);
+    sys_->Add(mesh);
+    // 衝突系が初期化済みなら登録する（ボディと同じ理由: Chrono 9 は後から
+    // 足した物を BindAll で拾わない）。
+    if (spec.collide) {
+        auto coll = sys_->GetCollisionSystem();
+        if (coll && coll->IsInitialized()) coll->BindItem(mesh);
+    }
+
+    auto attach = [&](const std::shared_ptr<fea::ChNodeFEAxyzD>& node, CableSpec::End end,
+                      std::size_t id) {
+        if (end == CableSpec::End::Fixed) {
+            node->SetFixed(true);
+            return;
+        }
+        if (end != CableSpec::End::Body) return;
+        auto link = chrono_types::make_shared<WizNodeFrameLink>();
+        link->Initialize(node, bodies_[id]);
+        sys_->AddLink(link);
+        rec.links.push_back(link);
+        wakeUp(bodies_[id].get(), 0);
+    };
+    attach(rec.nodes.front(), spec.endA, spec.bodyA);
+    attach(rec.nodes.back(), spec.endB, spec.bodyB);
+    rec.valid = true;
+    cables_.push_back(std::move(rec));
+    sys_->Setup();
+    LOGI("physics", "cable #%zu: %d elements, %zu nodes, length %.2f m, young %.3g Pa, "
+                    "collide %d",
+         cables_.size() - 1, n, cables_.back().nodes.size(), length, spec.young,
+         int(spec.collide));
+    return cables_.size() - 1;
+#else
+    (void)spec;
+    static bool warned = false;
+    if (!warned) {
+        warned = true;
+        LOGW("physics", "this Chrono build has no FEA headers - cables are skipped");
+    }
+    return kInvalidId;
+#endif
+}
+
+void PhysicsWorld::removeAllCables() {
+#ifdef WIZ_HAVE_FEA
+    if (cables_.empty()) return;
+    for (auto& c : cables_) {
+        for (auto& l : c.links) sys_->RemoveLink(l);
+        if (c.mesh) removeMeshFrom(sys_.get(), c.mesh, 0);
+    }
+    cables_.clear();
+    sys_->Setup();
+#endif
+}
+
+std::size_t PhysicsWorld::cableCount() const {
+    return cables_.size();
+}
+
+void PhysicsWorld::cableNodePositions(std::size_t cable, std::vector<float>& out) const {
+    out.clear();
+#ifdef WIZ_HAVE_FEA
+    if (cable >= cables_.size() || !cables_[cable].valid) return;
+    const CableRec& c = cables_[cable];
+    out.reserve(c.nodes.size() * 3);
+    for (const auto& node : c.nodes) {
+        const ChVector3d p = node->GetPos();
+        out.push_back(float(p.x()));
+        out.push_back(float(p.y()));
+        out.push_back(float(p.z()));
+    }
+#else
+    (void)cable;
+#endif
+}
+
+double PhysicsWorld::cableTension(std::size_t cable) const {
+    if (cable >= cables_.size()) return 0.0;
+    double best = 0.0;
+    for (const auto& l : cables_[cable].links) {
+        double f = 0.0, t = 0.0;
+        if (linkReaction(l.get(), f, t, 0) && std::isfinite(f)) best = std::max(best, f);
+    }
+    return best;
+}
+
+// ---- モーダル解析（Chrono::Modal。B の 20）--------------------------------
+// 系の質量行列 M・剛性行列 K・拘束ヤコビアン Cq を取り出して、非減衰の
+// 一般化固有値問題を Lanczos で解く。接触は入らない（K に無い）。剛体だけの
+// 系では拘束のモードしか出ないので、ケーブル（FEA）がある系で意味を持つ。
+
+bool PhysicsWorld::modalFrequencies(int count, std::vector<double>& hz, std::string& why) {
+    hz.clear();
+#ifdef WIZ_HAVE_MODAL
+    if (backend_ == PhysicsBackend::Multicore) {
+        why = "modal analysis needs the core backend";
+        return false;
+    }
+    if (count < 1) {
+        why = "count must be >= 1";
+        return false;
+    }
+    try {
+        sys_->Setup();
+        sys_->Update();
+        ChSparseMatrix M, K, Cq;
+        if (!systemMatrices(sys_.get(), M, K, Cq, 0)) {
+            why = "this Chrono has no system matrix accessors";
+            return false;
+        }
+        if (M.rows() == 0) {
+            why = "the system is empty";
+            return false;
+        }
+        modal::ChModalSolveUndamped solver(count, 1e-5, 500, 1e-10, false,
+                                           modal::ChGeneralizedEigenvalueSolverLanczos());
+        ChMatrixDynamic<std::complex<double>> V;
+        ChVectorDynamic<std::complex<double>> eig;
+        ChVectorDynamic<double> freq;
+        solver.Solve(M, K, Cq, V, eig, freq);
+        for (int i = 0; i < freq.size(); ++i) {
+            if (std::isfinite(freq(i))) hz.push_back(freq(i));
+        }
+        std::sort(hz.begin(), hz.end());
+        if (int(hz.size()) > count) hz.resize(std::size_t(count));
+        return true;
+    } catch (const std::exception& e) {
+        why = e.what();
+        return false;
+    }
+#else
+    (void)count;
+    why = "Chrono::Modal is not built in (configure with -DWIZ_WITH_CHRONO_MODAL=ON)";
+    return false;
+#endif
 }

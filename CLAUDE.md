@@ -60,7 +60,7 @@ PhysicsWorld.step(dt)
   まとめて作り直す**。スライダーを動かすたびに剛体を捨てないための遅延。
 - **ジョイントはシミュレート開始のたびに作り直す**（`Scene::buildJoints`）。
   エディタで物を動かしたあとも、拘束が今の位置に合った状態で張られる。
-  停止時は `removeAllJoints()`。種類は `PhysicsWorld::JointType` の 13 種
+  停止時は `removeAllJoints()`。種類は `PhysicsWorld::JointType` の 14 種（ブッシュは B 群の章）
   （下の「Chrono の拘束・物性」の章）。基本 5 種は Chrono の
   `ChLinkLockLock` / `...Revolute` / `...Spherical` / `...Prismatic` /
   `ChLinkDistance`。**Revolute と Prismatic はリンク座標系の Z 軸が基準**なので、
@@ -122,6 +122,10 @@ PhysicsWorld.step(dt)
   rate / substeps / solver / envelope / recovery を PhysicsTuning に書くとき、
   同じ値を EditorState の SimSettings にもミラーする。シーン保存はそちらを
   書き出すので、怠ると「見ている物理」と「保存される物理」が食い違う。
+  **物理ループが毎パス読むレートとサブステップも SimSettings**（main.cpp が
+  `scene.physicsHz()` / `scene.substeps()` を読んで tuning に写す）。以前は
+  起動時に 1 回だけ tuning へ写していたので、`<option rate="120">` のシーンを
+  読んでも 30 Hz のまま回り、FEA のケーブルが暴れた。
 - **映像エリアの上にヘッダー**（`#viewHead`）: サイドバーの表示/非表示（☰、
   Tab キーと同じ）・シーンタイトル（sceneFile、無題は "(無題のシーン)"）・
   カメラ名・エディタ⇄シミュレートのモードボタン。**モードボタンはここの
@@ -683,7 +687,7 @@ Chrono が持っていて WizEngine が使っていなかった機能のうち�
   `edit.joint.set`）、Physics タブの重力 X/Z・積分器・ソルバ・合成。
   コマンドは edit.set の新キー（surface / layer / nocollide / gravity /
   velocity / angularVelocity）、edit.joint.add の追加キー、edit.joint.set。
-- **Multicore バックエンドでの扱い**（`kBackend` の既定は Multicore）。
+- **Multicore バックエンドでの扱い**（ソフトボディや大量の剛体のシーンで自動的に選ばれる系。下の「バックエンドの自動切替」）。
   Chrono::Multicore は自前の積分で、リンクが `IntLoadResidual_F` で足す力
   （`ChLinkTSDA` / `ChLinkRSDA` / トルク・力モータ）を拾わず、速度モータ
   （`ChLinkMotor*Speed`）は専用の一覧に登録されて `RemoveLink` で外れない
@@ -716,12 +720,146 @@ Chrono が持っていて WizEngine が使っていなかった機能のうち�
   `LOGE` とステータスに理由を出してエディタへ戻し、3 回続いたら物理を
   止めて描画だけ続ける。「シミュレート開始で落ちる」の切り分けはまず
   コンソールのこの行を見る。
-- **未検証**: この一群は Chrono を持たない環境で書いた。文書層（XML / JSON
-  の往復・警告）は `g++ -fsyntax-only` と往復テストで通したが、
-  `PhysicsWorld.cpp` / Scene は Chrono 9.0 のヘッダ名を前提にした
-  SFINAE で書いてあり、実機ビルドでの確認が要る。特に
-  `ChContactMaterialCompositionStrategy` の仮想関数名、`ChLinkLock::LimitRz()`
-  の戻り型、`ChBody::SetUseGravity` の有無。
+- **実機で確認済み（Windows / Multicore、`mechanisms.xml`）**: モータ付きの
+  腕・可動範囲付きの振り子・ばね・歯車・破断・材質違い・レイヤ・初速・
+  無重力が動く。上の Multicore 向けの手計算（ばね / トルクモータ /
+  可動範囲）・`SetDisabled` 方式の破断・重力オフの手計算は、その確認の
+  過程で NaN と例外の原因を潰して辿り着いた形。**Core バックエンドの
+  Chrono リンク経路**（`ChLinkTSDA` / `ChLinkRSDA` / `ChLinkLimit` /
+  `ChLinkMotor*Speed`）は実機で未検証（Core を既定にしてから見つかったのは
+  スリープの計時の問題だけ - 上の PhysicsWorld の項）。文書層は `g++ -fsyntax-only` と
+  往復テストで通している。
+- **診断ログ**（`PhysicsWorld::step`）: シミュレート開始の 2 ステップ目と
+  1 秒後に `diag step ...`（バックエンド・ボディ数・リンク数・接触数）、
+  最初の 2 秒で NaN を検出したらジョイントごとの反力の有限性を `LOGE`。
+  `joint #N: ...` は生成ごと。「拘束の付いた物が消える」はまずこれを見る。
+
+## Chrono の B 群（FEA ケーブル・荷重・直接法・SMC・モーダル・取込）と バックエンドの自動切替
+
+Chrono の「中規模」の機能（新モジュールのリンクか設計変更が要るもの。
+車両 Chrono::Vehicle は自前実装があるので対象外）。**バックエンドは Scene が
+文書の中身から自動で選ぶ**（`Scene::requiredBackend` / `syncBackend` /
+`rebuildPhysicsWorld`）: ①Multicore が扱えない機能を使っていれば Core、
+②無くてソフトボディがあるかボディが `kMulticoreMinBodies`（既定 200、
+粒子と collide 部品も数える）以上なら Multicore、③どちらでもなければ
+`kBackend`（既定 **Core**）。見本は `assets/scenes/flexible.xml`。
+
+- **なぜ Core が既定か**。Core（`ChSystemNSC` + Bullet）は Chrono の全機能が
+  そのまま使え（B 群は全部 Core 専用、A 群のばね / トルクモータ / 可動範囲も
+  Chrono のリンクをそのまま）、スリープが効き、数十個の剛体なら Multicore より
+  速いか同等（Multicore は OpenMP のスレッド起動と Blaze の行列組み立てが
+  毎ステップ固定費で乗る）。Multicore が勝つのは接触が大量に立つ場面 =
+  ソフトボディ（1 個で最大 512 粒子）と数百個以上の剛体なので、その 2 条件で
+  だけ選ぶ。**Core も一部は並列**: `SetNumThreads(solver, collision, FEA)` の
+  3 つ全部に `--physics-threads` を渡していて、Bullet の衝突判定・FEA の内力と
+  ヤコビアン（ケーブル）・Eigen（admm の内側の直接法）はスレッドを使う。
+  NSC の接触ソルバ（bb / apgd）自体は Core では逐次。「互いに干渉しない
+  群ごとに別スレッド」（島分割）は Chrono の系を複数持つ設計になり、島は
+  動的（あとで落ちてきて触れる）なので今は持たない。
+- **規模の判定はオブジェクトの増減では呼ばない**。シミュレート中に系を作り
+  直すと全部が設計値の姿勢へ戻るので、ソフトボディを足した・箱が 200 個を
+  超えたぶんは**次のシミュレート開始**で Multicore になる（`enterMode`）。
+  Core 専用の機能の増減（ケーブル・ブッシュ・荷重・edit.sim）は従来どおり
+  その場で切り替える。
+
+- **自動切替の仕組み**。`PhysicsWorld::recreate(backend, contact)` が
+  Chrono の系をまるごと作り直す（設定 = 重力・反復回数・許容差・スレッド
+  数・スリープ・減衰・合成方式・積分器・ソルバ名は PhysicsWorld が控えて
+  いて当て直す）。ボディ番号は全部無効になるので、`Scene::rebuildPhysicsWorld`
+  が地面 → 全オブジェクト（設計値から `rebuildBody`）→ シミュレート中なら
+  ジョイントとケーブルの順で組み直す。判定（`requiredBackend`）は Core を
+  要する理由を英文で集め、`backendNote()`（`/scene` の `engineNote`、
+  `/stats` の `engineNote`、Physics タブの「バックエンド」）に出す。Core を
+  要するのは **FEA ケーブル・ブッシュ / 定常荷重（ChLoad）・MINRES と直接法・
+  HHT / Newmark・モーダル解析**。呼ぶのはシミュレート開始（`enterMode`）・
+  `edit.sim`・読込 / 全消し / 取込・ジョイント / ケーブルの増減・荷重の
+  変更。**Multicore がビルドに無ければ常に Core**（`multicoreAvailable`
+  を見るので毎回作り直しにはならない）。接触モデル（nsc / smc）も系の種類
+  なので同じ口で切り替わる。
+- **FEA ケーブル（15）**: `<worldbody>` の `<cable name body1 anchor1 body2
+  anchor2 segments diameter young density damping collide rgba>`
+  （`CableDesc`。端は名前 / 番号 / world = 固定点 / none = 自由端）。
+  `PhysicsWorld::addCable` が `ChBuilderCableANCF` で ANCF 梁を直線に並べ、
+  端を `SetFixed` / `ChLinkNodeFrame` で留め、`ChContactSurfaceNodeCloud`
+  （半径 = ケーブルの半径）で接触させる。**留め先のボディの内側にある節点は
+  接触面に入れない**（`CableSpec::clearA / clearB` = 外接半径 + 節点半径 +
+  2 cm。Scene が BodyDesc の大きさから出す）: 端の節点はボディの中心に留まる
+  ので、入れるとケーブルが自分の留め先と深くめり込んだ接触を作り、留め先が
+  暴れた（実機で確認）。**ジョイントと同じくシミュレート
+  開始で作り停止で捨てる**（`Scene::buildCables` / `removeAllCables`、
+  `cablePhysIds_`）。節点位置は `snapshot()` が `latestCables_` に積み、
+  RENDER の `Scene::syncCables` が **円柱（ShapeMesh::Cylinder）の連なり**で
+  描く（エディタ中は設計値の直線）。**ソルバは admm か pminres が要る**:
+  Chrono 9 の bb は剛性行列があると例外を投げ（実機で確認: "Do NOT use
+  Barzilai-Borwein solver if there are stiffness matrices"）、apgd / psor /
+  jacobi は Schur 補元で解くので剛性を黙って無視する。ケーブルのある系では
+  `applySimSettings` が **admm に置き換える**（`ed::solverHandlesStiffness`。
+  admm の内側の直接法は Pardiso / MUMPS があればそれ、無ければ SparseQR）。
+  minres と直接法は線形ソルバなので `contact="smc"` のときだけ使える。編集は
+  Inspector の「ケーブル」節（edit.cable.add / remove / set、EditorState の
+  `cables()`）。オブジェクトを消すと端は固定点（-1）に付け替わる。
+- **直接法ソルバと HHT / Newmark（16）**: `<option solver="sparselu|sparseqr|
+  pardiso|mumps">` と `integrator="hht|newmark"`。SparseLU / QR は Chrono
+  本体（`ChDirectSolverLS.h`）、Pardiso / MUMPS は CMake の `WIZ_WITH_PARDISO`
+  / `WIZ_WITH_MUMPS` でモジュールをリンク（無ければ bb に戻して警告）。
+  **直接法は片側拘束（NSC の接触・可動範囲）を解けない**ので、`contact="smc"`
+  でないときは `setSolver` が bb に戻して警告する（読込も同じ警告）。
+  `PhysicsWorld::solverName()` が実際に使っている名前（`/scene` の
+  `solverUsed`）。
+- **ボディの本当の削除（18）**: Core では `disableBody` が退避のあとに
+  `detachBody` = `ChSystem::RemoveBody`（Bullet は Remove を実装している）。
+  ChBody のオブジェクトは `bodies_` に残す（番号を詰めない・接触の逆引きが
+  壊れない）。Multicore は従来どおり退避だけ。定常荷重は先に荷重コンテナから
+  外す（変数が消えた後に荷重が残ると古いオフセットへ書く）。
+- **ChLoad（19）**: ブッシュ = `JointKind::Bushing`（`<joint type="bushing"
+  stiffness damping rotstiffness rotdamping>`、`ChLoadBodyBodyBushingMate`）と
+  定常荷重 = `<geom force="x y z" torque="x y z">`（`BodyDesc::force /
+  torque`、`ChLoadBodyForce / ChLoadBodyTorque`）。どちらも `ChLoadContainer`
+  経由（ジョイント用 `jointLoads_` とボディ用 `bodyLoads_` を分けてあり、
+  停止時はジョイント側だけ `RemoveAllLoads`）。**Multicore は荷重コンテナを
+  積分に取り込まない**（TSDA と同じ理由）ので Core 専用 = 自動切替の対象。
+  ブッシュの反力は `GetForce / GetTorque`、破断は付かない。
+- **モーダル解析（20）**: `<option modal="N">`。シミュレート開始時に
+  `PhysicsWorld::modalFrequencies` が M / K / Cq を取り出して
+  `ChModalSolveUndamped`（Lanczos）で N 本の固有振動数を求め、ログ・
+  ステータス・`/scene` の `modal`（Physics タブに一覧）に出す。CMake の
+  `WIZ_WITH_CHRONO_MODAL`（`chrono_modal/ChEigenvalueSolver.h`、Chrono 9.0.0
+  の API）。接触は入らないので、ケーブルのある系で意味を持つ。
+- **取込（21）**: `src/physics/ModelImport.{h,cpp}`。`edit.import {file}`
+  （assets/ 相対。.urdf / .osim / .adm）を物理スレッドが受け、一時的な
+  `ChSystemNSC` に Chrono::Parsers で読ませてから歩いて `SceneDocument` に
+  直し、`Scene::appendDocument` で今のシーンに**足す**。当たり形状が箱 / 球
+  1 個ならそのまま geom、それ以外は geom の無いフレーム + collide 部品の
+  プレハブ（凸包・三角メッシュは外接箱で警告）。リンクは ChLinkLock 系・
+  モータ・自在継手・距離・TSDA（可動範囲 `LimitRz / LimitZ` も拾う）。URDF は
+  Z-up なので X まわり -90° で Y-up に置く。見た目のメッシュは読まない。CMake の
+  `WIZ_WITH_CHRONO_PARSERS`。Assets パネルの「📥 取込」。
+- **SMC（22）**: `<option contact="nsc|smc" young poisson>` と `<geom young
+  poisson>`（`SurfaceDesc::young / poisson`、-1 = シーン設定）。Core は
+  `ChSystemSMC`、Multicore は `ChSystemMulticoreSMC`（`use_material_properties`
+  で材質から接触剛性を出す）。**材質は `ChContactMaterial` 基底で持ち**
+  （`mat_` / `mats_`）、`applySurface` が NSC（転がり・スピン・粘着）と SMC
+  （ヤング率・ポアソン比・付着 = cohesion）を dynamic_cast で振り分ける。
+  剛い材質ほど小さな dt が要る（rate を上げる）。
+- **ビルドの有無は `physicsFeatures()`**（`/scene` の `features`。UI が
+  選べない選択肢を灰色にする）。FEA と ChLoad は Chrono 本体なので常にある
+  （ヘッダを `__has_include` で見る）。Parsers / Modal / Pardiso / MUMPS は
+  CMake オプション（既定 OFF = 素の Chrono で configure が通る）。
+- **未検証（実機待ち）**: この B 群は Chrono / Filament の無い環境で書いた
+  （文書層は往復テスト、UI は構文検査のみ）。使っている Chrono の API 名は
+  **9.0.0 のヘッダ（GitHub のタグ 9.0.0）と照合済み**: `ChBeamSectionCable::
+  SetRayleighDamping`、`ChContactSurfaceNodeCloud(material, mesh)` +
+  `AddAllNodes(radius)`、`ChLoadBodyBodyBushingMate(a, b, ChFrame, k, c, kr,
+  cr)`、`ChLoadContainer::GetLoadList()`（Remove は無いので配列から消す）、
+  `ChSystem::RemoveMesh / GetMassMatrix(ChSparseMatrix&)`、
+  `ChModalSolveUndamped::Solve(M, K, Cq, V, eig, freq)`、
+  `ChCollisionModel::GetShapeInstances`、`ChLinkBase::GetFrame2Abs`、
+  `ChSolverSparseLU / QR`（`ChDirectSolverLS.h`）。**MINRES は Chrono 9 では
+  線形ソルバ**（`ChIterativeSolverLS.h`。専用ヘッダは無いので
+  `SetSolverType(MINRES)` で作る）= NSC の接触を解けないので直接法と同じ
+  扱い。それでもコンパイルが止まったら該当ヘッダの名前を見る（A 群と同じ
+  手口で直す）。実機での確認は Multicore → Core の切替が起きること、
+  ケーブルが垂れること、ブッシュの箱が止まること、荷重の箱が押されることの順。
 
 ## ソフトボディ（`src/scene/SoftLattice.{h,cpp}` + `PhysicsWorld::addSoftBody` + `Renderer::addSoftShape`）
 
@@ -1028,7 +1166,7 @@ src/
   main.cpp       起動・引数解析・2 スレッドのループ
   core/          Log, AssetError, Versions, Stats, CpuAffinity, PortScan
                  （エンジン非依存の土台）
-  physics/       PhysicsWorld（Chrono）, MeshCollision（glTF 凸包）, PhysicsTuning
+  physics/       PhysicsWorld（Chrono）, MeshCollision（glTF 凸包）, ModelImport（URDF 等の取込）, PhysicsTuning
   render/        Renderer（Filament）, GltfLoader, EnvironmentLoader, ImageLoader
   streaming/     HttpServer, WebRtcStreamer, VideoStreamer（GStreamer）
   document/      EditorTypes, SceneDocument, SceneXml（シーン文書。エンジン非依存）
@@ -1097,6 +1235,16 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
   （`SetUseSleeping` / `SetSleepMinSpeed` / `SetSleepMinWvel`）にも自動で
   フォールバックする。眠ったボディは接触でしか起きないため、しきい値は既定より
   厳しめ（1.0s / 0.02 m/s / 0.02 rad/s）。リセット時は `wakeAll()`。
+  **眠りの計時は起こすたびにやり直す**（`resetSleepTimer`: 置き直し・固定
+  解除・新規ボディ・`wakeAll`）。Chrono の `sleep_starttime`（protected）は
+  「最後に速度がしきい値を超えた時刻」で `TrySleeping()` の中でしか更新され
+  ず、`SetSleeping(false)` では戻らない。置き直して静止させた物（新規は 0）は
+  これが前回の走行のままなので、最初のステップの `ManageSleepingBodies`
+  （積分の前に走る）で `(now − starttime) > sleep_time` が成り立ち、宙に浮いた
+  まま眠る（Core の実機で確認: シミュレート開始で一部の物がその場で止まる。
+  Multicore は眠らないので出なかった）。直し方はしきい値を超える速度を一瞬
+  与えて `TrySleeping()` を呼び、時刻を今にしてから速度を戻す（項目の時計
+  `SetChTime` も系の時刻に合わせる: `Update()` でしか進まないため）。
 - **フレーム読み戻しは非同期**（`Renderer::renderFrame`）。以前は `readPixels` の直後に
   `flushAndWait()` で完了を待っており、これが描画スレッドのストールになっていた。現在は
   ビューごとに**キャプチャバッファ 2 枚**を持ち、GPU が片方を埋めている間にもう片方を
@@ -1306,10 +1454,11 @@ CRT を変えたときは build フォルダを削除してから再 configure�
 物理バックエンドの選択は2段構え。
 1. CMake `-DWIZ_USE_MULTICORE=ON`（既定 OFF）… Multicore モジュールを**リンクして使える
    状態にする**だけ。`find_package(Chrono COMPONENTS Multicore)` になる。
-2. `SceneConfig.h` の `kBackend`（`PhysicsBackend::Core` / `::Multicore`）… **実際にどちらを
-   使うか**。他のシーン設定と同じ場所で切り替える。
-CMake が OFF のまま `kBackend = Multicore` にした場合は、起動時にメッセージを出して
-自動的に Core にフォールバックする。Multicore は `ChSystemMulticoreNSC`＋APGD で設定は
+2. `SceneConfig.h` の `kBackend`（`PhysicsBackend::Core` / `::Multicore`、既定 Core）…
+   **シーンが何も要求しないときの系**。実際には Scene が文書の中身で選ぶ
+   （Core 専用機能 → Core、ソフトボディ / `kMulticoreMinBodies` 以上 → Multicore。
+   上の「Chrono の B 群」の章）。
+CMake が OFF なら Multicore を選ぶ条件でも Core のまま（起動時にメッセージ）。Multicore は `ChSystemMulticoreNSC`＋APGD で設定は
 `GetSettings()` 経由。**スリープ非対応**なので `asleep` は 0 のまま。起動ログとブラウザの
 計測表示に `engine core|multicore` が出る。
 
@@ -1383,7 +1532,12 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
 
 - 済: エディタモード（配置・プロパティ編集・ジョイント設計・シーンの保存/読込）と
   シミュレートモードの分割。
-- 済（実機未検証）: Chrono の拘束・物性の拡張（13 種のジョイント・可動範囲・
+- 済（未検証・実機待ち）: Chrono の B 群 - FEA ケーブル、ChLoad（ブッシュ・
+  定常荷重）、直接法ソルバと HHT / Newmark、Core での本当のボディ削除、
+  SMC（ペナルティ法）、モーダル解析、URDF / OpenSim / ADAMS の取込、そして
+  **Multicore が扱えない機能を使ったら Core へ自動で切り替える**仕組み
+  （上の「Chrono の B 群」の章）。
+- 済（Multicore 実機で確認）: Chrono の拘束・物性の拡張（13 種のジョイント・可動範囲・
   モータ・ばね・破断・反力計測、ボディ別の接触物性と合成方式、衝突レイヤ、
   接触の力 / 法線によるトリガー、重力 3 成分とボディ別重力、積分器 / ソルバの
   選択、初速、円柱部品と三角メッシュの当たり判定。上の「Chrono の拘束・

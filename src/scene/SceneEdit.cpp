@@ -222,6 +222,21 @@ void Scene::destroyObject(std::size_t index) {
         if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
     }
 
+    // ケーブルの端がこの物だったら固定点に付け替える（アンカーの位置は
+    // そのまま意味を持つので、ジョイントと違ってケーブル自体は残す）。
+    {
+        auto cables = editor_.cables();
+        bool changed = false;
+        for (auto& c : cables) {
+            if (c.bodyA == idx) { c.bodyA = -1; changed = true; }
+            if (c.bodyB == idx) { c.bodyB = -1; changed = true; }
+        }
+        if (changed) {
+            editor_.setCables(std::move(cables));
+            if (editor_.mode() == ed::AppMode::Simulate) buildCables();
+        }
+    }
+
     // このオブジェクトを見張る / 動かすイベントノードも一緒に掃除する
     // （付いていたアセットは desc ごと残るが、実体の一覧からは外れる）。
     pruneGraphForRemoved(ed::NodeTargetKind::Object, int(index));
@@ -570,6 +585,12 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         const bool layerChanged = next.layer != before.layer ||
                                   next.nocollide != before.nocollide;
         const bool gravityChanged = next.gravity != before.gravity;
+        // 定常荷重（ChLoad）はボディの作り直しで付け替える。Core 専用なので
+        // バックエンドの判定もやり直す。
+        const bool loadsChanged =
+            next.force.x != before.force.x || next.force.y != before.force.y ||
+            next.force.z != before.force.z || next.torque.x != before.torque.x ||
+            next.torque.y != before.torque.y || next.torque.z != before.torque.z;
         const bool velocityChanged =
             next.velocity.x != before.velocity.x || next.velocity.y != before.velocity.y ||
             next.velocity.z != before.velocity.z ||
@@ -591,7 +612,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             obj.desc = next;
             if (colorChanged) obj.colorDirty = true;
             if (shapeChanged || sizeChanged || massChanged || softChanged ||
-                layerChanged || surfaceNeedsRebuild) {
+                layerChanged || surfaceNeedsRebuild || loadsChanged) {
                 obj.physDirty = true;
             }
             // レンダラブルを作り直すのは、メッシュが別物になるとき（箱↔球）
@@ -624,6 +645,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         }
         // 形が変わったら Chrono のボディを作り直す必要がある。エディタ中は
         // シミュレート開始まで待つ（当たり判定は使っていないので困らない）。
+        if (loadsChanged) syncBackend();  // 荷重は Core 専用（系ごと作り直すことがある）
         if (obj.physDirty && editor_.mode() == ed::AppMode::Simulate) {
             rebuildBody(std::size_t(index));
         }
@@ -661,6 +683,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             }
         }
         const int index = editor_.addJoint(j);
+        if (j.kind == ed::JointKind::Bushing) syncBackend();  // Core 専用
         if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
         editor_.setStatus("ジョイントを追加: #" + std::to_string(index) + " (" +
                           ed::jointName(j.kind) + ")");
@@ -689,8 +712,71 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         }
         joints[std::size_t(index)] = j;
         editor_.setJoints(std::move(joints));
+        syncBackend();  // ブッシュへ / から変わっていれば系ごと
         if (editor_.mode() == ed::AppMode::Simulate) buildJoints();
         editor_.setStatus("ジョイントを更新: #" + std::to_string(index));
+        return;
+    }
+
+    // ---- ケーブル（FEA）------------------------------------------------------
+    // ジョイントと同じ配管。Core 専用なので、増減のたびにバックエンドを見直す
+    // （最初の 1 本で Core へ、最後の 1 本が消えたら既定へ戻る）。
+    if (op.kind == "cable.add") {
+        ed::CableDesc c = ed::cableFromJson(a, ed::CableDesc{});
+        if (c.bodyA >= 0 && c.bodyA == c.bodyB) {
+            editor_.setStatus("ケーブル: 同じオブジェクト同士は繋げません");
+            return;
+        }
+        auto endOk = [&](int body) {
+            return body < 0 || jointBodyId(body) != GameObject::kInvalidId;
+        };
+        if (!endOk(c.bodyA) || !endOk(c.bodyB)) {
+            editor_.setStatus("ケーブル: 対象が見つかりません");
+            return;
+        }
+        // 端の位置を省いたら、留め先の物の中心（地面なら真上 2 m の点）。
+        auto defaultAnchor = [&](int body, const ed::Vec3d& other, ed::Vec3d& out) {
+            if (body >= 0) {
+                const BodyTransform t = physics_.bodyTransform(jointBodyId(body));
+                out = {t.px, t.py, t.pz};
+            } else {
+                out = {other.x, other.y + 2.0, other.z};
+            }
+        };
+        if (!a.contains("anchorA") && !a.contains("anchorB")) {
+            if (c.bodyA >= 0) defaultAnchor(c.bodyA, c.anchorB, c.anchorA);
+            if (c.bodyB >= 0) defaultAnchor(c.bodyB, c.anchorA, c.anchorB);
+            if (c.bodyA < 0) defaultAnchor(c.bodyA, c.anchorB, c.anchorA);
+            if (c.bodyB < 0) defaultAnchor(c.bodyB, c.anchorA, c.anchorB);
+        } else {
+            if (!a.contains("anchorA")) defaultAnchor(c.bodyA, c.anchorB, c.anchorA);
+            if (!a.contains("anchorB")) defaultAnchor(c.bodyB, c.anchorA, c.anchorB);
+        }
+        c = ed::clampCable(c);
+        const int index = editor_.addCable(c);
+        syncBackend();
+        if (editor_.mode() == ed::AppMode::Simulate) buildCables();
+        editor_.setStatus("ケーブルを追加: #" + std::to_string(index));
+        return;
+    }
+
+    if (op.kind == "cable.remove") {
+        const int index = a.value("index", -1);
+        if (!editor_.removeCable(index)) return;
+        syncBackend();
+        if (editor_.mode() == ed::AppMode::Simulate) buildCables();
+        editor_.setStatus("ケーブルを削除: #" + std::to_string(index));
+        return;
+    }
+
+    if (op.kind == "cable.set") {
+        const int index = a.value("index", -1);
+        auto cables = editor_.cables();
+        if (index < 0 || std::size_t(index) >= cables.size()) return;
+        cables[std::size_t(index)] = ed::cableFromJson(a, cables[std::size_t(index)]);
+        editor_.setCables(std::move(cables));
+        if (editor_.mode() == ed::AppMode::Simulate) buildCables();
+        editor_.setStatus("ケーブルを更新: #" + std::to_string(index));
         return;
     }
 
@@ -1226,6 +1312,8 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     if (op.kind == "sim") {
         editor_.setSim(ed::clampSim(ed::simFromJson(a, editor_.sim())));
         applySimSettings();
+        // 接触の解き方（nsc / smc）・直接法・HHT・モーダルは系の種類を変える。
+        syncBackend();
         editor_.setStatus("シミュレート設定を更新");
         return;
     }
@@ -1286,8 +1374,10 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     }
 
     if (op.kind == "clear") {
+        removeAllCables();
         physics_.removeAllJoints();
         editor_.setJoints({});
+        editor_.setCables({});
         for (std::size_t i = 0; i < boxes_.size(); ++i) destroyObject(i);
         {
             // メッシュアセットの宣言もシーンの一部。
@@ -1310,7 +1400,32 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         editor_.clearSel();
         editor_.setSceneFile("");
         editor_.setStatus("シーンを空にしました");
+        syncBackend();  // Core 専用の物もソフトボディも無くなれば既定へ戻す
         snapshot();
+        return;
+    }
+
+    // ---- 取込（Chrono::Parsers。URDF / OpenSim / ADAMS）--------------------
+    // ファイルは assets/ 相対。中身は SceneDocument に直してから今のシーンへ
+    // 足す（置き換えではない）。パースは物理スレッドで済ませる（一時的な
+    // Chrono の系を作るため - 他のスレッドに Chrono を触らせない約束）。
+    if (op.kind == "import") {
+        const std::string file = a.value("file", std::string());
+        ed::SceneDocument doc;
+        std::string error;
+        std::vector<std::string> warnings;
+        if (!wizengine::importModel(file, doc, error, warnings)) {
+            editor_.setStatus("取込できません: " + error);
+            LOGW("editor", "import '%s': %s", file.c_str(), error.c_str());
+            return;
+        }
+        for (const auto& w : warnings) LOGW("editor", "import '%s': %s", file.c_str(), w.c_str());
+        appendDocument(doc);
+        editor_.setStatus("取込: " + file + "（" + std::to_string(doc.bodies.size()) +
+                          " 体, " + std::to_string(doc.joints.size()) + " ジョイント" +
+                          (warnings.empty() ? "" : ", 警告 " + std::to_string(warnings.size()) +
+                                                       " 件") +
+                          "）");
         return;
     }
 

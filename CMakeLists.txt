@@ -103,11 +103,47 @@ endif()
 option(WIZ_USE_MULTICORE
        "Use Chrono::Multicore (parallel) instead of the serial Chrono solver" OFF)
 
+# ---- B の任意モジュール（どれも OFF が既定 = 素の Chrono で configure が
+# 通る）。ON にすると find_package にコンポーネントを足し、コードは
+# WIZ_WITH_* と __has_include で該当ヘッダを取り込む。
+#   PARSERS … URDF / OpenSim / ADAMS の取込（chrono_parsers。URDF は
+#             Chrono 側で urdfdom が要る）
+#   MODAL   … モーダル解析（chrono_modal。Spectra 同梱）
+#   PARDISO … 直接法ソルバ PardisoMKL（Intel MKL が要る）
+#   MUMPS   … 直接法ソルバ MUMPS
+# FEA（ケーブル）と ChLoad（ブッシュ・定常荷重）は Chrono 本体に入っている
+# のでオプションは無い。どれも Core バックエンドで動く（Scene が自動で切替）。
+option(WIZ_WITH_CHRONO_PARSERS "Link Chrono::Parsers (URDF / OpenSim / ADAMS import)" OFF)
+option(WIZ_WITH_CHRONO_MODAL "Link Chrono::Modal (modal analysis)" OFF)
+option(WIZ_WITH_PARDISO "Link Chrono::PardisoMKL (direct solver)" OFF)
+option(WIZ_WITH_MUMPS "Link Chrono::MUMPS (direct solver)" OFF)
+
+set(_wiz_chrono_components "")
 if(WIZ_USE_MULTICORE)
-    find_package(Chrono COMPONENTS Multicore CONFIG REQUIRED)
-    message(STATUS "WizEngine: physics engine = Chrono::Multicore (parallel)")
+    list(APPEND _wiz_chrono_components Multicore)
+endif()
+if(WIZ_WITH_CHRONO_PARSERS)
+    list(APPEND _wiz_chrono_components Parsers)
+endif()
+if(WIZ_WITH_CHRONO_MODAL)
+    list(APPEND _wiz_chrono_components Modal)
+endif()
+if(WIZ_WITH_PARDISO)
+    list(APPEND _wiz_chrono_components PardisoMKL)
+endif()
+if(WIZ_WITH_MUMPS)
+    list(APPEND _wiz_chrono_components Mumps)
+endif()
+
+if(_wiz_chrono_components)
+    find_package(Chrono COMPONENTS ${_wiz_chrono_components} CONFIG REQUIRED)
+    message(STATUS "WizEngine: Chrono modules = ${_wiz_chrono_components}")
 else()
     find_package(Chrono CONFIG REQUIRED)
+endif()
+if(WIZ_USE_MULTICORE)
+    message(STATUS "WizEngine: physics engine = Chrono::Multicore (parallel, core fallback for FEA / loads / direct solvers)")
+else()
     message(STATUS "WizEngine: physics engine = Chrono core (serial)")
 endif()
 
@@ -278,6 +314,7 @@ set(WIZ_CORE_SOURCES
     src/core/Versions.cpp)
 set(WIZ_PHYSICS_SOURCES
     src/physics/MeshCollision.cpp
+    src/physics/ModelImport.cpp
     src/physics/PhysicsWorld.cpp)
 set(WIZ_RENDER_SOURCES
     src/render/EnvironmentLoader.cpp
@@ -356,6 +393,18 @@ endif()
 
 if(WIZ_USE_MULTICORE)
     target_compile_definitions(wizengine PRIVATE WIZ_USE_MULTICORE)
+endif()
+if(WIZ_WITH_CHRONO_PARSERS)
+    target_compile_definitions(wizengine PRIVATE WIZ_WITH_CHRONO_PARSERS)
+endif()
+if(WIZ_WITH_CHRONO_MODAL)
+    target_compile_definitions(wizengine PRIVATE WIZ_WITH_CHRONO_MODAL)
+endif()
+if(WIZ_WITH_PARDISO)
+    target_compile_definitions(wizengine PRIVATE WIZ_WITH_PARDISO)
+endif()
+if(WIZ_WITH_MUMPS)
+    target_compile_definitions(wizengine PRIVATE WIZ_WITH_MUMPS)
 endif()
 
 target_include_directories(wizengine PRIVATE

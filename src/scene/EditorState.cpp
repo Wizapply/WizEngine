@@ -68,6 +68,34 @@ std::size_t EditorState::jointCount() const {
     return joints_.size();
 }
 
+std::vector<wizengine::editor::CableDesc> EditorState::cables() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return cables_;
+}
+
+void EditorState::setCables(std::vector<wizengine::editor::CableDesc> cables) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    cables_ = std::move(cables);
+}
+
+int EditorState::addCable(const wizengine::editor::CableDesc& cable) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    cables_.push_back(cable);
+    return int(cables_.size()) - 1;
+}
+
+bool EditorState::removeCable(int index) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (index < 0 || std::size_t(index) >= cables_.size()) return false;
+    cables_.erase(cables_.begin() + index);
+    return true;
+}
+
+std::size_t EditorState::cableCount() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return cables_.size();
+}
+
 // ---- イベントアセット -------------------------------------------------------
 // 変更は必ず graphVersion_ を進める（物理スレッドが実行キャッシュを取り直す
 // 合図）。mutex_ の下で書き、読みはコピーで返す - ジョイントと同じ流儀。
