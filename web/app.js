@@ -696,7 +696,7 @@
         const v = s.versions;
         // サイドバーのバージョン表記。正はソースコード（productName /
         // engineVersion / engineCodename）で、ここは受け取って埋めるだけ。
-        // コードネームがあれば版番号の後ろに添える（"Version 2.0.0 (Nix)"）。
+        // コードネームがあれば版番号の後ろに添える（"Version 1.0.0 (WizEngine)"）。
         const PRODUCT = 'Charon';
         const code = v['Codename'] ? ' (' + v['Codename'] + ')' : '';
         if (v[PRODUCT]) {

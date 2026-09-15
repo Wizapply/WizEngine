@@ -2304,6 +2304,9 @@ std::size_t PhysicsWorld::bodyCount() const {
 }
 
 BodyTransform PhysicsWorld::bodyTransform(std::size_t id) const {
+    // 番号は系の作り直し（recreate）で全部無効になる。古い番号で呼ばれても
+    // 落ちないよう、範囲外は単位姿勢を返す（他の bodyXxx と同じ守り）。
+    if (id >= bodies_.size()) return BodyTransform{0, 0, 0, 1, 0, 0, 0};
     if (const SoftBody* soft = softOfRoot(id)) return softTransform(*soft);
     const auto& b = bodies_[id];
     const ChVector3d p = b->GetPos();

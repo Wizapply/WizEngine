@@ -4,144 +4,102 @@
 
 # Charon
 
-Headless real-time 3D streaming prototype: **Project Chrono** physics and
-**Google Filament** rendering on the server, H.264-encoded with **GStreamer**
-and streamed to browsers over **WebRTC** — with a multi-camera, interactive
-web UI. Formerly WizEngine. (Docs below are in Japanese.)
+**Charon** は、サーバー側で物理シミュレーション（Project Chrono）と描画
+（Google Filament）をヘッドレスに実行し、映像を WebRTC でブラウザへ配信する
+リアルタイム 3D エンジンです。ブラウザからシーンを組み立て、走らせ、
+保存できます。専用クライアントは要りません。
 
-サーバー側で **Project Chrono**（物理）と **Google Filament**（描画）をヘッドレスに
-実行し、フレームを **GStreamer** で H.264 エンコードして **WebRTC** でブラウザへ
-配信する、リモートレンダリング／ピクセルストリーミングのプロトタイプです。
+Headless real-time 3D engine: Chrono physics + Filament rendering on the
+server, streamed to browsers over WebRTC with an interactive web editor.
+Codename "WizEngine". (Docs below are in Japanese.)
 
-現在の版: **Charon 1.0.0**（旧称 WizEngine。製品名と版番号の定義は
-`src/core/Versions.h` の 1 か所で、起動ログの 1 行目とブラウザの About 節に
-出ます。名前空間・実行ファイル `wizengine`・シーン文書のルート要素
-`<wizengine>` は識別子なので旧名のままです）。ロゴは `web/logo.png`
-（ブラウザのサイドバー見出しにも同じファイルが出ます）。
+現在の版: **Charon 1.0.0 "WizEngine"**（WizEngine は 1.x のコードネーム。
+名前空間・実行ファイル `wizengine`・シーン文書のルート要素 `<wizengine>` も
+この名前です）。
 
-## 特徴
+## 目次
 
-- **エディタモード / シミュレートモード**: 物理を止めて配置・設計する
-  「エディタ」と、それを走らせる「シミュレート」をブラウザから切り替え。
-  ボックス・球の追加／削除／複製、位置・回転・大きさ・質量・色の編集、
-  14 種類のジョイント（固定・ちょうつがい・ボール・直動・距離・自在継手・
-  円筒・平面・点‐線・点‐面・歯車・ねじ・ばね・ブッシュ。可動範囲・モータ・ばね・
-  破断付き）の設計、ボディごとの摩擦 / 反発 / 粘着・衝突レイヤ・重力オフ・
-  初速、
-  重力や摩擦などのシミュレート設定、`assets/scenes/*.xml`（**MuJoCo 風の
-  XML**）への保存・読込
-- **マルチカメラ Web UI**: カメラごとに専用ページ（ポート 8080, 8081, ...）。
-  オービット / パン / ズーム、オブジェクトのドラッグ（グラブ）、クリック選択、
-  シーン階層サイドバー（カメラ・ライト・オブジェクト）、インスペクタ、
-  ソルバーやレートをその場で変えられる物理チューニングパネル
-- **物理**: Chrono Core / Multicore（OpenMP 並列）を切り替え可能。スリープ、
-  固定タイムステップ + キャッチアップ制御。既定シーンは
-  `assets/scenes/default.xml`（箱スタック + 球。シーンの中身はコードではなく
-  XML が持つ）
-- **描画**: Filament ヘッドレス（Vulkan / OpenGL）。HDR パノラマ（Radiance .hdr）を
-  **起動時に GPU 上でキューブマップ化・プリフィルタ**する IBL —
-  ファイル差し替えは再起動だけで反映、ビルド不要
-- **フォトリアル描画**: PBR 材質（粗さ・金属・クリアコート・自己発光）、
-  PCSS のやわらかい影、SSAO、スクリーン空間反射、ブルーム、被写界深度、
-  MSAA / TAA、**物理カメラの露出**（F 値・シャッター・ISO）と ACES などの
-  トーンマップ。すべてシーン文書の `<visual>` に入り、ブラウザから
-  Draft / Standard / Photo のプリセットで切り替えられる
-  （見本: `assets/scenes/photoreal.xml`、解説: `docs/photorealism.md`）
-- **シーン定義は 1 ファイル**: グリッド構成・形状・摩擦・カメラ・ライト・
-  ストリーミング・ソルバーまで全パラメータが `src/scene/SceneConfig.h` に集約
-- **構造化ログ**: 時刻(ms)・レベル・スレッド名・タグ付き、色分け、
-  `WIZENGINE_LOG=debug|info|warn|error` でレベル制御
-- **CPU 制御**: `--physics-cores` / `--render-cores` / `--physics-threads` で
-  物理と描画をコアに固定（Chrono::Multicore の OpenMP ワーカー含む）
-- 誰も見ていない間は物理も描画も止まる省電力ゲーティング（web モード）
+1. [できること](#できること)
+2. [構成](#構成)
+3. [ビルド](#ビルド)
+4. [実行](#実行)
+5. [ブラウザでの使い方](#ブラウザでの使い方)
+6. [シーン文書（XML）](#シーン文書xml)
+7. [物理](#物理)
+8. [描画](#描画)
+9. [設定の場所](#設定の場所)
+10. [トラブルシューティング](#トラブルシューティング)
+11. [ライセンス](#ライセンス)
 
-## アーキテクチャ
+## できること
+
+| 領域 | 内容 |
+|---|---|
+| エディタ | ブラウザ上で箱・球・glTF モデル・ライト・カメラを置き、Unity 風のギズモで移動 / 回転 / 拡縮。物理を止めた「エディタ」と走らせる「シミュレート」を切り替え、止めれば配置は元に戻る |
+| 物理 | Project Chrono。14 種のジョイント（可動範囲・モータ・ばね・破断付き）、ボディごとの材質・衝突レイヤ・初速、FEA ケーブル、ソフトボディ（質点ばね）、レイキャスト式の車両、URDF / OpenSim / ADAMS の取込 |
+| バックエンド | Chrono Core と Multicore（OpenMP 並列）をシーンの中身で自動選択 |
+| イベント | Node-RED 風のノードエディタで「衝突したら色を変える」などを設計。名前付きアセットとしてオブジェクトに付け回せる |
+| 描画 | Filament（Vulkan / OpenGL、ヘッドレス）。PBR 材質、PCSS 影、SSAO、SSR、ブルーム、被写界深度、物理カメラの露出、ACES トーンマップ、HDR 環境マップ（起動時に GPU でプリフィルタ） |
+| 配信 | GStreamer + WebRTC。H.264（GPU エンコード対応）/ H.265 / AV1 / VP9。カメラごとに独立したページと視聴セッション |
+| 保存形式 | MuJoCo（MJCF）風の XML 1 ファイル。テキストエディタで読め、ブラウザからも直接編集できる |
+
+## 構成
 
 ```
-[input thread]  ブラウザからの JSON コマンド
-      └─ Scene::dispatchCommand → SceneComponent 群
-         （CameraControl / BoxControl / PhysicsControl / Editor）
-[physics thread] 編集キューの適用 → モードで分岐
-      ├ Simulate: 固定タイムステップで Chrono を実行 → 姿勢スナップショット
-      └ Editor  : 積分せず、掴んだ物の置き直しだけ → 姿勢スナップショット
-[main/render thread] スナップショットを Filament に反映 → 描画
-      → 非同期 readPixels → GStreamer appsrc → H.264 → WebRTC
-[http threads]  カメラごとの HTTP サーバ（UI 配信・シグナリング・stats）
+[入力スレッド]   ブラウザからの JSON コマンド → Scene::dispatchCommand
+[物理スレッド]   編集キューの適用 → Simulate なら Chrono を固定ステップで実行
+                                   → Editor なら掴んだ物の置き直しだけ
+[描画スレッド]   姿勢スナップショットを Filament へ → 描画 → 非同期 readPixels
+                 → GStreamer → WebRTC
+[HTTP スレッド]  UI 配信・WebRTC シグナリング・/scene・/stats
 ```
 
-オブジェクトの追加・削除は 2 段階で行われます。Chrono を触ってよいのは物理
-スレッド、Filament を触ってよいのは描画スレッド、という既存の分担を崩さない
-ためです。ブラウザの操作は `EditorState` のキューに積まれ、物理スレッドが
-剛体を作り、描画スレッドがその次のフレームでレンダラブルを作ります。
+Chrono を触るのは物理スレッド、Filament を触るのは描画スレッドだけです。
+ブラウザの操作はキューに積まれ、物理スレッドが剛体を作り、描画スレッドが次の
+フレームで見た目を作ります。
 
-主なソース:
+主なディレクトリ:
 
 ```
 src/
-  main.cpp                 引数解析・スレッド起動・物理/描画ループ
-  core/                    Log（構造化ログ）, AssetError, Versions, Stats,
-                           CpuAffinity, PortScan - エンジン非依存の土台
-  physics/                 PhysicsWorld（Chrono ラッパ、Core / Multicore）,
-                           MeshCollision（glTF の凸包）, PhysicsTuning
-  render/                  Renderer（Filament ヘッドレス描画・ビュー/読み戻し）,
-                           GltfLoader, EnvironmentLoader（HDR → IBL）, ImageLoader
-  streaming/               HttpServer / WebRtcStreamer / VideoStreamer（配信と制御）
-  document/                EditorTypes.h（文書の型 + JSON）, SceneDocument（⇄ MuJoCo
-                           風 XML = 保存形式の定義）, SceneXml（最小 XML DOM）
-  scene/                   SceneConfig.h（エンジン既定値。まずここを編集）,
-                           Scene（実体管理。Scene.cpp / SceneEdit.cpp /
-                           SceneEvents.cpp / SceneSerialize.cpp）, EditorState
-                           （モード・編集キュー・アセット・シーンファイル）,
-                           CameraObject, BoxController, GameObject, SceneMath,
-                           MathBridge, PrefabDefaults, PrefabFrame
-  components/              EditorComponent（編集コマンド受付）, GizmoComponent,
-                           PhysicsControlComponent, StreamControlComponent,
-                           VehicleComponent, PrefabComponent
-  vehicle/                 車両モデルとノード式（Chrono / Filament 非依存）
-tests/vehicle/             車両モデルの単体テスト（単独 configure 可）
-cmake/LuaJIT.cmake         LuaJIT の検出とビルド
-web/index.html             ブラウザ UI（ビルド時にコピー、リロードで反映）
-assets/
-  materials/*.mat          matc でビルド時に .filamat へコンパイル
-  textures/ground.png      地面テクスチャ（差し替え可）
-  scenes/*.xml             エディタで保存したシーン（MuJoCo 風 XML。
-                           sample_joints.xml 同梱、旧 *.json も読込可）
-  *.hdr / *.glb            環境マップ・モデル（各自配置、git 管理外）
+  main.cpp        起動・引数・2 スレッドのループ
+  core/           ログ・版・アセットエラー・CPU 固定
+  physics/        PhysicsWorld（Chrono ラッパ）、glTF 凸包、モデル取込
+  render/         Renderer（Filament）、glTF・HDR・画像の読み込み
+  streaming/      HTTP サーバ、WebRTC、GStreamer
+  document/       シーン文書の型と XML の読み書き（エンジン非依存）
+  scene/          Scene（実体管理）、EditorState、SceneConfig.h（既定値）
+  components/     エディタ・ギズモ・物理設定・車両・プレハブ
+  vehicle/        車両モデルとノード式（純粋な数値ライブラリ）
+web/              ブラウザ UI（index.html / style.css / app.js / logo.png）
+assets/           実行時に読むもの（materials / textures / scenes）
+third_parties/    依存ライブラリのサブモジュール
 ```
 
-## 必要なもの
+## ビルド
 
-- C++17 コンパイラ、CMake ≥ 3.21
-- **Filament**: CMake が公式プレビルドを自動ダウンロードします（既定 1.74.0、
-  `-DFILAMENT_VERSION=` で変更、`-DFILAMENT_ROOT=` でローカル展開品を使用）
-- **Project Chrono** ≥ 9.0: ソースからビルドしてインストール（下記。
-  ソースは `third_parties/chrono` サブモジュール＝9.0.0 を利用可能）
-- **Eigen**（Chrono の必須依存・ヘッダのみ）:
-  `third_parties/eigen` サブモジュール（3.4.0）をそのまま指定できる
-  （Linux は `sudo apt install libeigen3-dev` でも可）
-- **GStreamer** runtime + development:
-  - Windows: <https://gstreamer.freedesktop.org/download/> の MSVC 64-bit 両 MSI
-    （Complete 推奨）。pkg-config（例 `choco install pkgconfiglite`）と
-    `PKG_CONFIG_PATH` の設定は `CMakePresets.json` の windows プリセット参照
-  - Linux: `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev` と
-    plugins-base / good / ugly（H.264 の `x264enc` は ugly）
-  - H.264 エンコーダは AMD AMF → Media Foundation → x264 → openh264 の順で
-    自動選択されます（起動ログに採用されたものが出ます）
-- cpp-httplib / nlohmann-json / cgltf / stb_image は `third_parties/` の
-  **git サブモジュール**として取り込みます:
+### 必要なもの
 
-  ```bash
-  git clone --recursive <このリポジトリ>       # 最初から一緒に取得
-  git submodule update --init                  # 既存クローンに後から取得
-  ```
+| 依存 | 入手 |
+|---|---|
+| C++17 コンパイラ、CMake 3.21 以上 | Windows は Visual Studio 2022、Linux は GCC / Clang + Ninja |
+| Project Chrono 9.0 | ソースからビルドしてインストール（下記）。ソースは `third_parties/chrono` |
+| Eigen 3.4 | `third_parties/eigen`（ヘッダのみ。Linux は `libeigen3-dev` でも可） |
+| Google Filament 1.74 | CMake が公式プレビルドを自動ダウンロード（`-DFILAMENT_ROOT=` でローカル品） |
+| GStreamer 1.x | Windows: 公式 MSVC 64-bit の runtime と development 両方の MSI。Linux: `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev` と plugins-base / good / bad / ugly |
+| LuaJIT、nlohmann/json、cpp-httplib、cgltf、stb | `third_parties/` のサブモジュール（無ければ configure 時に単一ヘッダを自動取得） |
 
-  サブモジュール未取得でもビルドは可能です（configure 時に従来どおり
-  単一ヘッダを自動ダウンロードするフォールバックが働きます）
+サブモジュールは最初に取得しておきます:
 
-### Chrono のビルド例（Windows）
+```bash
+git clone --recursive <このリポジトリ>
+# 既存のクローンなら
+git submodule update --init --recursive
+```
 
-Chrono 本体（9.0.0）と Eigen（3.4.0）はサブモジュールで取得済みなので、
-リポジトリのルートから次のとおり（`git submodule update --init` 済みが前提）:
+### Chrono のビルド（Windows の例）
+
+リポジトリのルートで実行します。
 
 ```
 cmake -S third_parties/chrono -B chrono_build -G "Visual Studio 17 2022" -A x64 ^
@@ -151,10 +109,8 @@ cmake --build chrono_build --config Release -j
 cmake --install chrono_build --config Release
 ```
 
-Multicore モジュール付きでビルドする場合は Blaze / Thrust もサブモジュール
-（`third_parties/blaze` = v3.8.2、`third_parties/thrust` = 1.17.2。Thrust は
-入れ子サブモジュール cub を含むため `git submodule update --init --recursive`
-で取得）を指定する:
+Multicore モジュール（大量の剛体・ソフトボディの並列化）も使うなら、
+Blaze と Thrust を足します:
 
 ```
 cmake -S third_parties/chrono -B chrono_build -G "Visual Studio 17 2022" -A x64 ^
@@ -165,396 +121,309 @@ cmake -S third_parties/chrono -B chrono_build -G "Visual Studio 17 2022" -A x64 
   -DCMAKE_INSTALL_PREFIX=%CD%/third_parties/chrono-install
 ```
 
-`third_parties/` はサードパーティ依存の置き場です。ライブラリのソース
-（cpp-httplib / json / cgltf / stb / chrono / eigen / thrust / blaze）は
-git サブモジュールとして管理し、ビルド成果物の置き場（`chrono-install` /
-`filament-*`）は git 管理外です。
-`CMakePresets.json` の windows プリセットは
-`third_parties/chrono-install`（と、あれば
-`third_parties/filament-v1.74.0-windows`）を自動で参照するので、この場所に
-インストールすればプリセットの編集は不要です。Filament のローカルコピーが
-無ければ自動ダウンロードにフォールバックします。
+Chrono 側の `USE_MSVC_STATIC_RUNTIME` は OFF のまま（/MD）にしてください。
+Filament と GStreamer が /MD 前提なので、ここが食い違うとリンクエラーになります。
 
-Multicore バックエンドを使う場合は Chrono を MULTICORE モジュール付きでビルドし、
-本プロジェクトを `-DWIZ_USE_MULTICORE=ON` で構成してください（無ければ自動で
-Core にフォールバックします）。
-
-## ビルド
+### Charon のビルド
 
 ```bash
 cmake -S . -B build -DChrono_DIR=/path/to/chrono-install/lib/cmake/Chrono
 cmake --build build -j
 ```
 
-Visual Studio は「フォルダーを開く」で `CMakePresets.json` を読み込めます。
-Chrono を `third_parties/chrono-install` に入れていればプリセットはそのまま動きます
-（別の場所なら `CHRONO_ROOT` を、GStreamer が既定以外なら `PKG_CONFIG_PATH` を編集）。
+Visual Studio では「フォルダーを開く」で `CMakePresets.json` が読まれます。
+Chrono を `third_parties/chrono-install` に入れていればプリセットはそのまま
+使えます（別の場所なら `CHRONO_ROOT`、GStreamer が既定以外なら
+`PKG_CONFIG_PATH` を編集）。
 
-> **重要**: Chrono を Release でインストールした場合、本体も **Release** で
-> ビルドしてください。Debug/Release 混在は C ランタイム不整合により
-> 「リンクは通るが物理だけ動かない」症状になります。
+CMake オプション:
+
+| オプション | 既定 | 内容 |
+|---|---|---|
+| `WIZ_USE_MULTICORE` | OFF | Chrono::Multicore をリンクする（Chrono 側も MULTICORE 付きが必要） |
+| `WIZ_WITH_LUAJIT` | ON | ノード式を LuaJIT で実行（OFF なら C++ のインタプリタ） |
+| `WIZ_WITH_CHRONO_PARSERS` | OFF | URDF / OpenSim / ADAMS の取込 |
+| `WIZ_WITH_CHRONO_MODAL` | OFF | モーダル解析 |
+| `WIZ_WITH_PARDISO` / `WIZ_WITH_MUMPS` | OFF | 直接法ソルバ |
+
+> **重要**: Chrono を Release でインストールしたら、Charon も **Release** で
+> ビルド・実行してください。Debug / Release が混ざると「リンクは通るが物理
+> だけ動かない」状態になります。実行ファイルは `build/Release/wizengine.exe`
+> です。
 
 ## 実行
 
 ```bash
 cd build
-./wizengine                 # web モード（既定）: http://127.0.0.1:8080/cam0/
-./wizengine web 9000        # ポート指定（全カメラが1ポート、パスで分岐）
-./wizengine window          # ローカルウィンドウ表示
+./wizengine                      # web モード（既定）: http://127.0.0.1:8080/cam0/
+./wizengine web 9000             # HTTP ポートを指定
+./wizengine window               # ローカルウィンドウに表示
 ./wizengine stream 192.168.1.10 5000   # RTP/UDP 配信
-./wizengine rtsp rtsp://...            # RTSP 配信
-./wizengine --codec av1                   # コーデック指定(h264/h265/av1/vp9)
-./wizengine --encoder amfh264device1enc   # エンコーダ要素(=GPU)を指定
-./wizengine --max-cameras 8               # カメラスロット数(1-16、既定5)
-./wizengine --help          # CPU 固定などのオプション一覧
+./wizengine rtsp rtsp://...      # RTSP 配信
+./wizengine --help               # オプション一覧
 ```
 
-web モードでは単一ポート上の `/cam0/` `/cam1/` `/cam2/` に各カメラのページが
-あり（`/` は `/cam0/` へリダイレクト）、各ページは同時に 1 人が操作できます
-（サイドバーの Cameras から空きカメラへ移動）。
+主なオプション:
 
-### ブラウザ操作
+| オプション | 内容 |
+|---|---|
+| `--codec h264\|h265\|av1\|vp9` | 配信コーデック（既定 h264。使えなければ h264 に戻る） |
+| `--encoder <要素名>` | GStreamer のエンコーダ要素を指定（複数 GPU の選択に） |
+| `--max-cameras N` | カメラのスロット数（1〜16、既定 5） |
+| `--physics-cores "0-11"` / `--render-cores "12-15"` | 物理と描画のスレッドを CPU コアに固定 |
+| `--physics-threads N` | ソルバのスレッド数 |
+
+環境変数 `WIZENGINE_LOG=debug|info|warn|error` でログのレベルを変えられます。
+
+web モードでは `/cam0/`、`/cam1/`、… がカメラごとのページです（`/` は
+`/cam0/` へ）。1 ページを同時に見られるのは 1 ブラウザで、誰も見ていない間は
+物理も描画も止まります。
+
+## ブラウザでの使い方
+
+### 基本操作
 
 | 操作 | マウス | タッチ |
 |---|---|---|
-| オブジェクトを掴む | 左ドラッグ（物体上） | 1 本指（物体上） |
-| オービット | Ctrl + 左ドラッグ / 何もない所を左ドラッグ | 1 本指（空間） |
-| パン | Ctrl + 右 or 中ドラッグ | 2 本指ドラッグ |
+| オブジェクトを掴む | 物体の上で左ドラッグ | 物体の上で 1 本指 |
+| オービット | Ctrl + 左ドラッグ、または空間を左ドラッグ | 空間を 1 本指 |
+| パン | Ctrl + 右 / 中ドラッグ | 2 本指ドラッグ |
 | ズーム | Ctrl + ホイール | ピンチ |
-| サイドバー / 全画面 | Tab / Alt+F | — |
+| サイドバー / 全画面 | Tab / Alt+F | ☰ ボタン |
 
-エディタモードでは「掴む」の意味が変わります。力で押すのではなく、掴んだ物が
-カーソルにぴったり付いてきて、離した場所が新しい配置になります。離しても選択は
-外れないので、そのまま Inspector タブで数値を詰められます。
+### 2 つのモード
 
-### エディタモード
+映像上部のヘッダーにある **✎ エディタ / ▶ シミュレート** で切り替えます。
 
-映像上部ヘッダーの **✎ エディタ / ▶ シミュレート** で切り替えます。エディタ側では
-物理が止まり、シミュレート側に入るとその配置から実行が始まります。戻ると全部が
-「置いた場所」へ巻き戻るので、何度でも試せます（`⟲ Reset` も同じ意味です）。
-**モードの切り替えはどのカメラのページからでも**行えます。
+- **エディタ**: 物理が止まります。掴んだ物はカーソルに付いてきて、離した
+  場所が新しい配置になります。離しても選択は残るので、そのまま Inspector で
+  数値を詰められます。
+- **シミュレート**: いまの配置から Chrono が走ります。エディタに戻すと全部が
+  置いた場所へ戻るので、何度でも試せます（⟲ Reset も同じ意味）。
 
-**シーンを書き換えるエディタ操作は「エディタカメラ」のページ専用です**（既定は
-camera 0 = `/cam0/`、`SceneConfig.h` の `kEditorCamera` で変更）。サイドバーの
-Cameras 一覧やヘッダでは、このカメラは番号ではなく **Editor Camera** と表示され
-ます。配置・ギズモ・ジョイント・保存はそのページからだけ行え、ギズモもその
-カメラの選択にだけ出ます。他のカメラはモード切替と見る・選ぶはできますが、
-シーンは書き換えられません（Inspector タブ自体が表示されません）。Editor Camera
-はあくまで「編集ができる」カメラであって、モードを独占するわけではありません -
-複数人で同じシーンを見ながら、編集は 1 人、という分担がそのまま画面になります。
+モードの切り替えはどのカメラのページからでもできます。ただし**シーンを書き
+換える操作（配置・ギズモ・ジョイント・保存）は Editor Camera（既定 `/cam0/`）の
+ページ専用**です。他のカメラは見る・選ぶだけで、Inspector タブも出ません。
+複数人で同じシーンを見ながら、編集は 1 人、という分担です。
 
-サイドバーのタブは 3 つです:
+### サイドバーのタブ
 
 | タブ | 内容 |
 |---|---|
-| Scene | 再生/リセット、カメラ・オブジェクト一覧、イベント、選択の要約 |
-| Inspector | World（地面・環境光）と選択中の内容。エディタカメラのページにだけ表示 |
-| Physics | シミュレート設定（シーンに保存）、ソルバー、レート、接触、配信 |
+| Scene | 再生 / リセット、カメラ・ライト・オブジェクトの一覧、選択の要約 |
+| Inspector | World 節（地面・環境光・描画設定）と、選択している物の内容。Editor Camera のページだけ |
+| Physics | 重力・摩擦・ソルバ・レート・接触モデル・バックエンド表示・配信設定 |
 
-**Inspector タブ**は Unity と同じく「**選択しているオブジェクトの内容**」だけを
-表示します:
+Inspector は Unity と同じく「選択している物の内容」だけを出します:
 
-| 節 | 内容 |
+| 選択 | 節 |
 |---|---|
-| 選択オブジェクト | 名前・**Transform（位置 / 回転 / スケール、Unity 風の X/Y/Z 欄）**・質量・固定（土台）・色、複製、削除 |
-| イベント | 選択中の対象（オブジェクト / ライト / カメラ）が関わる**イベントノード**の一覧と追加。配線は**ノードエディタ**（下記）で |
-| 物性 | 選択オブジェクトの摩擦・反発・転がり・粘着（空欄 = シーン設定）、SMC のヤング率・ポアソン比（接触モデルが SMC のとき）、衝突レイヤと当てないレイヤ、重力を受けるか、初速・初角速度、**定常荷重**（常に掛かる力・トルク。Core 専用） |
-| ジョイント | 選択中だけ表示。種類と軸、可動範囲・モータ・ばね・破断・歯車比・**ブッシュの回転剛性**を選び、A（現在の選択）と B（既定は地面）を繋ぐ。一覧は**選択が関わるジョイントのみ**で、シミュレート中は反力を表示。行をクリックで値をフォームへ、✎ で書き戻し |
-| ケーブル | 選択中だけ表示。FEA のケーブル（ANCF 梁）を選択中と B（または自由端）の間に張る。分割・直径・ヤング率・密度・減衰・接触。一覧はシミュレート中に張力を表示 |
-| ライト | ライト選択中だけ表示。名前・Transform（位置 / 向き）・色・強さ・届く距離・円錐（Spot）、削除 |
-| カメラ | カメラ選択中だけ表示。Transform（位置 / 向き）・そのカメラのページへ移動・削除 |
-| ギズモ設定 | スナップと刻み、グリッド表示と間隔。普段は隠れていて、**映像左上ツールバーの ⚙ で開閉** |
+| オブジェクト | Transform（位置 / 回転 / スケール）・質量・固定・色・材質、物性（摩擦・反発・粘着・衝突レイヤ・重力・初速・定常荷重）、ジョイント、ケーブル、ソフトボディ、車両、プレハブ、付いているイベント |
+| ライト | 位置 / 向き・色・強さ・届く距離・円錐角 |
+| カメラ | 位置 / 向き、そのページへ移動、削除 |
 
-オブジェクトの新規配置（サイズ・色の初期値）とシーンの**保存 / 全消し**は、
-ビュー下の **Assets パネル**上部の操作列にあります（読込はタイルの
-ダブルクリック）。
+### Assets パネル（ビューの下）
 
-重力・摩擦・反発・減衰・スリープ・物理レートは **Physics タブ**にあります。
-どのカメラのページからでも変えられ、変えた値はシーンの保存に含まれます
-（Solver / Rate / Contacts で変えた値も同様に保存へ反映されます）。
+Unity の Project ビューに相当します。エディタモード中の Editor Camera ページに
+出ます。
 
-ジョイントは 14 種類です。**ちょうつがい**（軸まわりの回転だけ）、**ボール**
-（位置だけ固定）、**固定**（溶接）、**直動**（軸方向のスライドだけ）、
-**距離**（2 点間の距離を保つ）、**自在継手**、**円筒**（回転 + スライド）、
-**平面**、**点‐線**、**点‐面**、**歯車**（2 軸の角速度比）、**ねじ**（回転が
-前進になる）、**ばね**（2 点間のばね・ダンパ）、**ブッシュ**（並進・回転の
-剛性と減衰を持つゴムマウント。拘束ではなく荷重）。ちょうつがい / 直動には
-**可動範囲**（range）と**モータ**（速度・位置・力）を、どの拘束にも**破断**
-（反力がこの値を超えたら外れる。外れると `onJointBreak` トリガーが発火）を
-付けられます。ビューには種類ごとの色で線が引かれ、エディタ中は A →軸→ B、
-シミュレート中は A → B を結び、破断した拘束の線は消えます。
+| タイル | 操作 |
+|---|---|
+| Box / Sphere / Soft Box / Soft Ball / Stairs / Point / Spot / Sun | クリックでカメラ正面に配置 |
+| メッシュ（文書の `<asset><mesh>`） | クリックで配置 |
+| ⚡ イベント / 🧮 計算式 / 🧩 プレハブ | クリックで開く、右クリックで作成・付ける・削除 |
+| 保存済みシーン | ダブルクリックで読込（確認あり） |
+| 📄 XML | いまのシーンの XML をその場で編集して適用 |
+| 📥 取込 | URDF / OpenSim / ADAMS を今のシーンに足す（Parsers 付きビルド） |
 
-同梱の `sample_joints.xml` を読み込むと、ちょうつがい・距離・ボールの 3 種類が
-入った小さな仕掛けが出ます（Assets パネルの `sample_joints` タイルを
-ダブルクリック）。`mechanisms.xml` はモータ・可動範囲・ばね・歯車・破断・
-材質違い・衝突レイヤ・初速・無重力の見本です。
+見出し下の操作列に、新規オブジェクトの初期値（大きさ・色）、シーン名、
+**💾 保存**、**🗑 全消し** があります。
 
-Physics タブでは重力を 3 成分で（斜面や横向きの重力）、積分器（Euler 線形化 /
-射影 / 陰解法 / 台形則 / HHT / Newmark）、接触ソルバ（BB / APGD / PSOR /
-Jacobi / ADMM / PMINRES / MINRES と直接法の SparseLU / SparseQR / Pardiso / MUMPS）、2 材質の
-合成方式（小さい方 / 平均 / 大きい方）、**接触モデル**（NSC 相補性 / SMC
-ペナルティ法。SMC はヤング率・ポアソン比の既定つき）、**モーダル解析**の
-本数（Chrono::Modal 付きビルド）も選べます。
+### ギズモ
 
-**バックエンドは自動で切り替わります。** 既定は Chrono Core（シングル
-スレッドの相補性ソルバ + Bullet）で、シーンの中身で決まります:
-Multicore が扱えない機能 - FEA のケーブル、ブッシュと定常荷重（ChLoad）、
-MINRES と直接法、HHT / Newmark、モーダル解析 - を使っていれば Core、
-それが無くてソフトボディがある（粒子 = 大量の剛体）かボディが 200 個以上
-なら Chrono::Multicore（OpenMP 並列。Multicore 付きのビルドのとき）、どちらでも
-なければ Core です。判定はシミュレート開始（や設定変更・読込）の時点で、
-いまの系と理由は Physics タブの「バックエンド」と画面下の `engine` に
-出ます。接触モデル（NSC / SMC）の切替も同じ仕組み（系ごと作り直し）です。
-しきい値は `SceneConfig.h` の `kMulticoreForSoftBodies` / `kMulticoreMinBodies`。
+選択したオブジェクトに Unity 風のハンドルが出ます。3D の線としてシーンに
+描くので、映像と同じフレームに乗り、手前の物にも隠れます。モード切替は
+映像左上のツールバー（✥ 移動 / ⟳ 回転 / ⤢ 拡縮、World ⇄ Local、⚙ 設定）。
 
-**ケーブル**（`assets/scenes/flexible.xml` の見本）は Chrono の FEA モジュール
-（ANCF ケーブル要素）で、天井や物から吊るしたり、自由端を垂らしたりできます。
-節点の球で床や物と接触します。Inspector の「ケーブル」節か 📄 XML の
-`<cable>` で作ります（ケーブルのある系では接触ソルバが自動で ADMM に
-なります - BB は剛性行列があると例外を投げ、APGD / PSOR / Jacobi は剛性を
-無視するため。MINRES と直接法は線形ソルバなので接触モデルが SMC のときだけ
-使えます）。
+| キー / 操作 | 内容 |
+|---|---|
+| W / E / R | 移動 / 回転 / 拡縮 |
+| X | スナップの ON / OFF（刻みは ⚙ で） |
+| 矢印 / 四角 / リング / 軸先の箱 / 中央の箱 | 軸移動 / 平面移動 / 回転 / 軸拡縮 / 一様拡縮 |
 
-Assets パネルの **📥 取込** は URDF / OpenSim / ADAMS のモデル
-（Chrono::Parsers 付きビルド、`-DWIZ_WITH_CHRONO_PARSERS=ON`）を今のシーンに
-足します。ボディ・当たり形状（箱 / 球 / 円柱。凸包とメッシュは外接箱）・
-ジョイント（可動範囲・モータ付き）が入り、見た目のメッシュ（dae / stl）は
-読みません。
+エディタ中は Y=0 に 100×100 m のグリッドも出ます（⚙ で表示と間隔）。物理の
+床（`<ground size>`、既定 ±10 m）より広いので、床の外に置いた物はシミュレートで
+落ちます。
 
-### シーンの保存形式（MuJoCo 風の XML）
+### ライトとカメラ
 
-シーンの中身は **XML が正**です。💾 保存は `assets/scenes/<名前>.xml` を書き、
-タイルのダブルクリックはそれを読みます。書式は MuJoCo(MJCF) に寄せてあるので、
-テキストエディタで開いてそのまま読めますし、手で書いた XML も読み込めます:
+エディタモード中の Editor Camera のビューには、ライト（黄）とカメラ（水色）の
+線画アイコンが出ます。クリックで選択し、ギズモで移動 / 回転できます。
+
+- ライトは Assets パネルの Point / Spot / Sun タイルで追加。種類と影は作成時に
+  決まり、色・強さ・位置・向きは後から変えられます。強さの単位は Sun が
+  ルクス、Point / Spot がルーメン。
+- カメラは Scene タブの Cameras 一覧の ＋ で追加、行の 🗑 で削除、
+  ダブルクリックでそのページへ移動、目のアイコンで小窓に表示
+  （Chrome / Edge は Picture-in-Picture）。Editor Camera 自身は選べません。
+
+### イベント（ノードエディタ）
+
+ツールバーの ⚡ でノードエディタが開きます（画面の 9 割のウィンドウ、
+Esc で閉じる）。
+
+- **トリガー**: 衝突したら（新しく触れた瞬間だけ）、開始したら、タイマー、
+  掴んだら、ジョイントが破断したら。
+- **アクション**: 色を変える、力を加える、速度を与える、固定 / 解除、
+  引き寄せる、ライトの色 / 強さ、カメラの注視、モータの目標。
+- 中身は**名前付きのイベントアセット**で、オブジェクトかシーン全体に付けて
+  初めて動きます。同じアセットを複数のオブジェクトに付け回せます。
+- 対象を書かないノードは、実行時に「付けたオブジェクト」や「触れた相手」を
+  指します。
+- マウスで掴んだ物を引き寄せる動きも既定アセット `pickup` の仕事です。外せば
+  掴んでも動きません。
+- 実行はシミュレート中だけ。発火したノードには ⚡n のバッジが付きます。
+  アクションが変えた色・固定は、止めると元に戻ります。
+
+## シーン文書（XML）
+
+シーンの中身（配置・モデル・ジョイント・イベント・ライト・カメラ・描画設定）は
+`assets/scenes/<名前>.xml` の 1 ファイルです。💾 保存で書き、タイルの
+ダブルクリックで読み、起動時は `SceneConfig.h` の `kStartupScene`（既定
+`default`）を読みます。書式は MuJoCo（MJCF）に寄せてあります。
 
 ```xml
-<wizengine model="sample_joints" version="4">
-  <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60" .../>
+<wizengine model="sample" version="4">
+  <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60"/>
+  <asset>
+    <mesh name="apple" file="apple.glb" scale="1"/>
+  </asset>
   <worldbody>
-    <light name="key" type="spot" pos="1.5 4 -2" euler="35 -20 0" .../>
+    <environment hdr="studio.hdr" intensity="30000" skybox="true"/>
+    <ground size="10" visual="8" texture="textures/ground.png" tile="2"/>
+    <light name="key" type="spot" pos="1.5 4 -2" euler="35 -20 0"/>
     <camera name="cam0" target="0 1 0" azimuth="37.8" elevation="19.5" radius="12"/>
-    <body name="post" pos="0 1 0" euler="0 0 0" fixed="true">
+    <body name="post" pos="0 1 0" fixed="true">
       <geom type="box" size="0.1 1 0.1" mass="20" rgba="0.42 0.45 0.5 1"/>
+    </body>
+    <body name="arm" pos="1 2 0">
+      <geom type="mesh" mesh="apple" size="0.1" mass="0.2"/>
     </body>
   </worldbody>
   <equality>
     <joint name="hinge" type="hinge" body1="arm" body2="post"
            anchor="0 1.9 0" axis="0 0 1"/>
   </equality>
-  <events>
-    <node id="1" type="onCollision" pos="40 60" target="1" other="-2"/>
-    <wire from="1" to="2"/>
-  </events>
 </wizengine>
 ```
 
 - `<geom size>` は MuJoCo と同じ**半分の寸法**（box は各辺の半分、sphere と
-  mesh は半径）、角度は全部**度**、色は `rgba="r g b a"`（リニア値）です。
-- `body1` / `body2` は**名前でも番号でも**書けます。`world`（または -1）が地面。
-- `<events>` は Charon の拡張（イベントグラフ）。MuJoCo には対応物が
-  ありません。
-- **XML はブラウザで直接編集できます**: Assets パネルの **📄 XML** ボタンで
-  モーダルエディタが開き、いま組んでいるシーンの XML を編集して
-  「✓ 適用」でそのまま反映できます（ファイルには書きません。保存は 💾）。
-  壊れた XML は適用されず、行番号付きの理由がステータスに出ます。読むだけ
-  なら `/cam0/scene.xml` でも見られます。
-- 起動時に読み込ませたいときは `SceneConfig.h` の `kStartupScene` にシーン名を
-  書きます（既定は空 = `SceneConfig.h` の `kStartupScene`）。
-- 旧形式の `assets/scenes/*.json`（version 1〜3）は**読み込みのみ**対応します。
-  同じ名前の `.xml` があればそちらが優先され、保存は常に `.xml` です。
-- 打ち間違いは**読み飛ばして警告**になります（未知の `type`、見つからない
-  `body1`、入れ子の `<body>`、零ベクトルの `axis` など）。読込時にステータスへ
-  件数、コンソールへ内容が出るので、手書きの XML はそこで答え合わせできます。
-  `<node>` の `id` は省略でき、読み込みが空き番号を振ります。
+  mesh は半径）。角度は**度**、色は `rgba`（リニア値）。
+- `body1` / `body2` は名前でも番号でも書け、`world`（-1）が地面。
+- 打ち間違いは読み飛ばして警告になります（コンソールに内容、ステータスに
+  件数）。手書きの XML はそこで答え合わせできます。
+- 読むだけなら `/cam0/scene.xml` でいまの中身が取れます。
+- 旧形式の `.json` は読み込みのみ。保存は常に `.xml`。
 
-### 描画（フォトリアル）
+同梱のシーン:
 
-Inspector の「描画」節がシーンの `<visual>` を編集します。**Draft / Standard /
-Photo** の 3 ボタンで一括切替、下の欄で個別調整（影の種類と解像度・MSAA・
-AO・ブルーム・反射・ビネット・被写界深度・露出・トーンマップ）。オブジェクトの
-材質（粗さ / 金属 / 反射率 / クリアコート / 自己発光）は選択オブジェクトの
-「材質」欄、地面の粗さと「背景にも出す」（スカイボックス）は World 節です。
-
-```xml
-<visual>
-  <quality shadowMap="2048" cascades="3" shadow="pcss" msaa="4" fxaa="true"/>
-  <postprocess ssao="true" bloom="0.08" ssr="true" vignette="0.25"/>
-  <exposure aperture="16" shutter="125" sensitivity="100"/>
-  <grading tonemap="aces" contrast="1.05" saturation="1.02"/>
-</visual>
-...
-<geom type="sphere" size="0.22" mass="3" rgba="0.95 0.96 0.97 1"
-      roughness="0.05" metallic="1"/>
-```
-
-いちばん効くのは**環境マップ**です。`assets/` に .hdr を置いて
-`<environment hdr="studio.hdr" intensity="25000" skybox="true"/>` と書くと、
-映り込みと背景が一致して一気に写真らしくなります。何がどこまでできるか
-（と Filament の限界）は `docs/photorealism.md` にまとめてあります。
-
-### ギズモ
-
-選択したオブジェクトに Unity 風のハンドルが出ます。**ブラウザのオーバーレイでは
-なく 3D の線としてシーンに描かれる**ので、映像と必ず同じフレームに乗り、手前の
-物にも隠れます。モード切替のボタンは Unity のシーンビューと同じく**映像の
-左上に重ねて**表示されます（✥ 移動 / ⟳ 回転 / ⤢ 拡縮、World ⇄ Local の
-トグル、⚙ ギズモ設定。エディタモード中のエディタカメラのページのみ）。
-
-| 操作 | 内容 |
+| ファイル | 内容 |
 |---|---|
-| **W / E / R** | 移動 / 回転 / 拡縮 の切り替え（映像左上のボタンでも可） |
-| **X** | スナップの ON / OFF（刻みは移動 m・回転 度・寸法 m で指定） |
-| 矢印をドラッグ | その軸に沿って移動 |
-| 四角をドラッグ | その平面上を移動（2 軸同時） |
-| リングをドラッグ | その軸まわりに回転 |
-| 軸先の箱 | その軸だけ拡縮（球とモデルは一様） |
-| 中央の箱 | 一様に拡縮 |
-| World / Local | 軸をワールドに合わせるか、オブジェクトの向きに合わせるか（左上のボタンで切り替え） |
+| `default.xml` | 起動時のシーン（箱の山と球） |
+| `sample_joints.xml` | ちょうつがい・距離・ボールの小さな仕掛け |
+| `mechanisms.xml` | モータ・可動範囲・ばね・歯車・破断・材質・衝突レイヤ・初速・無重力 |
+| `flexible.xml` | FEA ケーブル・ブッシュ・定常荷重（Core 専用機能） |
+| `softbody.xml` | ソフトボディ |
+| `vehicle.xml` | 車両（ソフトタイヤ、ノード式のタイヤモデル） |
+| `photoreal.xml` | 材質と描画設定の見本 |
 
-カーソルを乗せるとハンドルが黄色く光ります。ハンドル以外を掴んだときは従来
-どおりの自由移動（カメラ平面に沿って動く）なので、ざっくり置いてから
-ギズモで詰める、という流れで使えます。ギズモが出るのはエディタカメラ
-（既定 camera 0）のビューだけで、他のカメラには映りません（Filament の
-レイヤマスクでビュー単位に隠しています）。
+## 物理
 
-エディタ中は **Y=0 に 100×100 m の格子グリッド**も出ます（同じくエディタ
-カメラのみ）。作業の目安なので描画は 1 ピクセルの線（軽量）で、原点を通る
-2 本は軸の色（X=赤 / Z=青）＝向きの目印になります。表示の ON/OFF と間隔
-（0.25〜10 m、既定 1 m）は映像左上の **⚙（ギズモ設定）**から変えられます。グリッドは
-物理の床（シーン XML の `<ground size>`、既定 ±10 m）より広いことに注意して
-ください - 床の外に置いた物はシミュレートで落下します。
+### バックエンドの自動選択
 
-### ライトとカメラの編集
+Chrono の系はシーンの中身で自動的に決まります。いま何で動いていて、なぜかは
+Physics タブの「バックエンド」と画面下の `engine` に出ます。
 
-**エディタモード中のエディタカメラのビューには、ライト（黄）とカメラ（水色）の
-線画アイコン**が出ます。クリックで選択でき、オブジェクトと同じギズモで
-**移動 / 回転**できます（拡縮はありません）。数値は Inspector のライト / カメラ
-パネルで詰められます。**編集できるのはエディタモードだけ**で、シミュレート中は
-アイコンも出ません。
+1. Multicore が扱えない機能（FEA ケーブル、ブッシュ / 定常荷重、線形・直接法
+   ソルバ、HHT / Newmark、モーダル解析）を使っていれば **Core**。
+2. それが無く、ソフトボディがあるか剛体が 200 個以上なら **Multicore**
+   （`WIZ_USE_MULTICORE` 付きのビルドのとき）。
+3. どちらでもなければ既定の **Core**。
 
-- **ライト**: Assets パネルの **💡 Point / 🔦 Spot / ☀ Sun** タイルで追加します
-  （Point / Spot はカメラ正面の少し上、真下向きで置かれる）。色・強さ・位置・
-  向きはいつでも変えられ、**種類と影は作成時に固定**です（変えたいときは削除
-  して置き直し）。向きは「回転ゼロ = 真下」。強さの単位は Sun がルクス
-  （太陽 ~10 万）、Point / Spot がルーメン（屋外シーンでは数十万が目安）。
-  Objects 一覧のライト行のクリックでも選択できます。
-- **カメラ**: Cameras 一覧の行の **✎ で選択**（Inspector のカメラパネルが
-  開く）、見出し横の **＋ で追加**、**各行の 🗑**（または Inspector の
-  削除ボタン）**で削除**できます。✎ / 🗑 はエディタモード中いつでも各行に
-  出ています（上限は既定 5。exe 引数 `--max-cameras N` で 1〜16 に変更でき、
-  既定値そのものは `SceneConfig.h` の `kMaxCameras`）。
-  ページの URL は起動時に上限ぶん用意されますが、**動画ビュー（描画と
-  ストリームの実体）は追加した時点で生成**されます。削除すると一覧から
-  消えますが、ページの URL 自体は生きています（次の追加で同じ番号とビューを
-  再利用）。
-  位置と向き（ピッチ / ヨー。ロールは無し）を編集でき、選択中のカメラの
-  Inspector からそのカメラのページへ移動できます。**Editor Camera 自身は選択・
-  削除できません**（自分の目はオービット操作で動かすため）。
-- ライトとカメラは**シーンの保存 / 読込に含まれます**（保存形式は現在
-  version 3。旧形式のシーンもそのまま読め、v1 のライト・カメラは初期構成に、
-  v2 以前のイベントグラフは空になります）。
+Core は Chrono の全機能が使えてスリープも効き、数十個の剛体なら Multicore より
+速いか同等です。Multicore は接触が大量に立つ場面で効きます。切り替えは
+シミュレート開始・設定変更・読込の時点で行われます。しきい値は
+`SceneConfig.h` の `kMulticoreForSoftBodies` / `kMulticoreMinBodies` です。
 
-### イベント設計（ノードエディタ）
+### ジョイント
 
-**「衝突したら色を黒にする」のような振る舞いを、Node-RED 風のノードで
-設計できます**。映像左上ツールバーの **⚡**、または Inspector の各パネルの
-「⚡ ノードエディタを開く」で、**画面の約 9 割を占めるウィンドウ**として
-ノードエディタが開きます（Editor Camera のページ専用。外側の映像とパネルは
-ぼかされて透けて見えます。閉じるのは右上の ✕、**Esc**、または外側の
-クリック）。
+固定・ちょうつがい・ボール・直動・距離・自在継手・円筒・平面・点‐線・点‐面・
+歯車・ねじ・ばね・ブッシュの 14 種。ちょうつがい / 直動には可動範囲と
+モータ（速度・位置・力）、どの拘束にも破断（反力がしきい値を超えたら外れ、
+`onJointBreak` が発火）を付けられます。シミュレート中は反力が一覧に出ます。
 
-- **トリガー**（橙・右にポート）: **衝突したら**（対象が何かに**新しく**
-  触れた瞬間。載っているだけでは発火しません。相手は「何でも / 地面 /
-  特定のオブジェクト」で絞れます）、**開始したら**（シミュレート開始で
-  1 回）、**タイマー**（一定間隔で繰り返し）。
-- **アクション**（青・左にポート）: **色を変える**・**力を加える**（速度
-  変化 m/s）・**固定する / 解除**・**ライトの色 / 強さ**・**注視する**
-  （カメラの注視点を対象オブジェクトへ向ける）。
-- トリガー右の **● からアクションへドラッグで接続**、線のクリックで切断。
-  1 つのトリガーから複数のアクションへも、複数のトリガーから同じアクション
-  へも繋げます。ノードは見出しのドラッグで移動、✕ で削除します。
-- Inspector の「**イベント**」節には**選択中の対象が関わるノード**だけが
-  並び、＋ を押すとその対象を向いたノードが作られます。
-- 実行は**シミュレート中だけ**。発火したノードには **⚡n** のバッジが付く
-  ので、回しながら動きを確かめられます（シミュレート中の編集も即反映）。
-- **アクションが変えた色・強さ・固定は、シミュレートを止めると元に戻り
-  ます**。姿勢が「置いた場所」へ巻き戻るのと同じ原則で、設計値は壊れません。
-- グラフはシーンの**保存 / 読込に含まれます**（version 3）。対象の
-  オブジェクトやライトを削除すると、それを使うノードも一緒に消えます
-  （ジョイントと同じ扱い）。
+### Physics タブで選べるもの
 
-制約: 色を変えられるのは組み込みメッシュ（Box / 球）で描かれた物だけです
-（glTF インスタンス描画は個別のベース色を持てません）。衝突トリガーは、
-Multicore バックエンドの接触コンテナが接触の列挙（`ReportAllContacts`）を
-実装していない版では発火しません（Core バックエンドでは常に使えます）。
+重力 3 成分、積分器（Euler / 射影 / 陰解法 / 台形則 / HHT / Newmark）、
+接触ソルバ（BB / APGD / PSOR / Jacobi / ADMM / PMINRES / MINRES と直接法の
+SparseLU / SparseQR / Pardiso / MUMPS）、材質の合成方式、接触モデル（NSC /
+SMC）、モーダル解析の本数。線形・直接法のソルバは接触モデルが SMC のときだけ
+使えます。ケーブルのある系ではソルバが自動で ADMM になります。
 
-ビューの下には **Assets パネル**（Unity の Project ビュー相当）が出ます。
-Box / Sphere / ライト（Point・Spot・Sun）のタイルをクリックするとカメラ正面に
-配置、保存済みシーンのタイルはクリックで名前を選び、**ダブルクリックで読込**
-します（現在の配置が置き換わるため確認ダイアログ付き）。見出し下の操作列で、新しく置く
-オブジェクトの**初期値（大きさ・色）**と、シーンの **💾 保存 / 🗑 全消し**が
-行えます（保存名は英数字と `_ -` のみ）。見出しのクリックで折りたたみ、
-textarea と同じ要領で**右下のつまみ**をドラッグすると高さが変わります
-（どちらも記憶され、入りきらないタイルは縦スクロールします）。こちらもエディタモード中の Editor Camera ページ
-専用です。
+### その他
 
-形や大きさの変更は、シミュレートを始める瞬間に剛体へ反映されます（エディタ中は
-物理を回していないので、スライダーやギズモを動かすたびに剛体を作り直さずに
-済みます）。
+- **ケーブル**: Chrono の FEA（ANCF）。Inspector の「ケーブル」節か `<cable>` で
+  張り、節点の球で床や物と接触します。
+- **ソフトボディ**: 質点ばね方式。箱 / 球の格子（1 軸 2〜8 個）を陰解法の
+  ばねで結びます。Inspector の「ソフトボディ」節か `<soft>`。
+- **車両**: レイキャスト式の車輪とグラフ型のパワートレイン。W / S / A / D /
+  Space で運転。タイヤの式はノードエディタ（🧮）で差し替えられます。
+- **プレハブ**: 見た目の部品の集合。階段（Stairs）や車体の飾りがこれです。
+  右クリック「プレハブを編集」で部品を動かせます。
+- **取込**: URDF / OpenSim / ADAMS のボディ・当たり形状・ジョイントを足します
+  （見た目のメッシュは読みません）。
 
-起動時のモードは `src/scene/SceneConfig.h` の `kStartMode` で変えられます（既定は
-`Simulate` ＝従来どおりの挙動）。
+## 描画
 
-## シーンをいじる
+Inspector の World 節「描画」がシーンの `<visual>` を編集します。Draft /
+Standard / Photo の 3 ボタンで一括切替、下の欄で個別調整（影の種類と解像度・
+MSAA・AO・ブルーム・反射・ビネット・被写界深度・露出・トーンマップ）。
+オブジェクトの材質（粗さ / 金属 / 反射率 / クリアコート / 自己発光）は
+選択オブジェクトの「材質」欄です。
 
-**シーンの中身（配置・モデル・ジョイント・イベント）は `assets/scenes/*.xml`**
-です（上の「シーンの保存形式」を参照）。エディタで組んで 💾 保存するか、
-テキストエディタで直接書きます。起動時に読むシーンは `SceneConfig.h` の
-`kStartupScene`（既定 "default"）。
+いちばん効くのは環境マップです。`assets/` に .hdr を置いて
+`<environment hdr="studio.hdr" intensity="25000" skybox="true"/>` と書くと、
+映り込みと背景が一致します。HDR はリポジトリに含まれていないので、
+<https://polyhaven.com/hdris> などから 2k の Radiance 形式（.hdr）を 1 つ
+置いてください。無ければ一様な環境光で起動します。
 
-- glTF モデル: シーン XML の `<asset><mesh name file scale/></asset>` に
-  宣言し、`<geom type="mesh" mesh="名前" size="..."/>` で剛体に割り当てます。
-  `file` は assets/ からの相対パス、`scale` は見た目の倍率。当たり判定は
-  既定でモデルの凸包（読めなければ球）、`collision="box"` / `"sphere"` で
-  明示もできます。宣言したメッシュは Assets パネルにタイルとして出て、
-  クリックで配置できます
+配信の解像度・FPS・ビットレートは Physics タブの Stream 節でカメラごとに
+変えられます。
 
-`src/scene/SceneConfig.h` は**エンジン側の既定値**の入口です。例:
+## 設定の場所
 
-- ライト初期構成: `lightConfigs()`（シーン XML が `<light>` を持たないときの
-  2 灯。以後はエディタで編集し、シーンに保存されます）。地面・環境光の
-  既定値は `EditorTypes.h` の `GroundDesc` / `EnvironmentDesc`
-- 環境光と地面もシーン XML: `<environment hdr="studio.hdr" intensity="30000"/>`
-  と `<ground size="10" visual="8" texture="textures/ground.png" tile="2"/>`
-  （worldbody 直下。書かなければ既定値）。.hdr は `assets/` に置くだけ
-  （<https://polyhaven.com/hdris> の 2k で十分。リポジトリ非同梱・各自取得。
-  無い場合は警告が出て一様な環境光になります）
-- 配信コーデック等（H264 / H265 / AV1 / VP9、ビットレート、GPU色変換）は
-  シーンではなくエンジン設定として `main.cpp` 冒頭で定義。起動時は
-  `--codec` / `--encoder`、実行中はブラウザの Physics > Stream から変更可
-- ソルバー: `kSolverIterations`, `kPhysicsHz`, `kSubsteps` ほか
-  （実行中はブラウザの Physics タブからも変更可）
-- 配信フォーマットはブラウザからカメラごとに変更可: サイドバー Physics タブの
-  **Stream** セクションで解像度 / FPS / ビットレートを選び「Apply & reconnect」
-  （再接続で反映。起動時の既定は `kWidth/kHeight/kFps/kVideoBitrate`）
-
-`web/index.html` は実行フォルダの `assets/web/` に直接コピー + リロードで
-再ビルドなしに試せます。
+| 変えたいもの | 場所 |
+|---|---|
+| シーンの中身 | `assets/scenes/*.xml`（エディタで保存、または手で編集） |
+| 起動時のシーン・モード、カメラ数、ソルバの既定値、Multicore のしきい値 | `src/scene/SceneConfig.h` |
+| 製品名・版・コードネーム | `src/core/Versions.h` |
+| 配信コーデックの既定 | `src/main.cpp` 冒頭（起動時は `--codec` / `--encoder`） |
+| CPU コアの割り当て | 起動引数（`--physics-cores` など） |
+| ブラウザ UI | `web/`（ビルドが `assets/web/` へコピー。リロードで反映、再ビルド不要） |
 
 ## トラブルシューティング
 
-- **起動直後に落ちる / ERROR: asset '...'**: 実行フォルダに `assets/` 一式が
-  あるか（ビルドが実行ファイルの隣にコピーします）。`.hdr` は Radiance 形式
-  のみ対応 — `.exr` をリネームしたファイルはエラーメッセージ内の診断で分かります
-- **Linux ヘッドレスで GL 初期化に失敗**: `FILAMENT_BACKEND=vulkan` を試す
-- **`HandleAllocator arena is full` 警告**: `Renderer.cpp` の
-  `driverHandleArenaSizeMB`（既定 128）を増やす。シーンの剛体数を大きく
-  増やしたときに再発することがあります
-- **黒画面のまま**: 起動ログの `webrtc:` 行でエンコーダとペイロード番号を確認
+| 症状 | 見るところ |
+|---|---|
+| 起動直後に落ちる / `ERROR: asset '...'` | 実行フォルダに `assets/` 一式があるか。`.hdr` は Radiance 形式のみ（`.exr` のリネームはエラー内の診断で分かる） |
+| 物理だけ動かない | Debug / Release の混在。Chrono と同じ構成でビルドする |
+| シミュレート開始で落ちる・エディタへ戻る | コンソールの `LOGE` 行に Chrono の例外理由が出る。3 回続くと物理を止めて描画だけ続ける |
+| 黒画面のまま | 起動ログの `webrtc:` 行でエンコーダとペイロード番号を確認。GStreamer の webrtc / nice プラグインが要る |
+| Linux ヘッドレスで GL 初期化に失敗 | `FILAMENT_BACKEND=vulkan` を試す |
+| `HandleAllocator arena is full` 警告 | `Renderer.cpp` の `driverHandleArenaSizeMB`（既定 128）を増やす |
+| 拘束の付いた物が消える・NaN | 起動時の `diag step` 行とジョイントごとの反力ログを見る |
 
 ## ライセンス
 
-[MIT License](LICENSE)
-
-依存ライブラリのライセンスは [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-を参照してください。
+Charon は [MIT License](LICENSE) です。依存ライブラリのライセンスは
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) を参照してください。

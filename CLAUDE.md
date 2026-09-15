@@ -16,11 +16,12 @@ Claude Code 向けのプロジェクト前提メモ。作業開始時にまず�
 
 ## これは何か
 
-**Charon**（旧称 WizEngine。名前空間 `wizengine`・実行ファイル `wizengine`・
-シーン文書のルート要素 `<wizengine>` は識別子なので旧名のまま。ユーザーに
-見える名前 - README・起動ログ・ブラウザの見出しと About・`/stats` の
-キー - が Charon。ロゴは `web/logo.png` で README の先頭とサイドバーの
-見出しが同じファイルを使う）は、サーバー側で **Chrono**（物理）＋ **Filament**（描画）を回し、オフスクリーンで
+**Charon**（製品名。1.x のコードネームが **WizEngine** で、名前空間
+`wizengine`・実行ファイル `wizengine`・シーン文書のルート要素 `<wizengine>`
+もそれ。ユーザーに見える名前 - README・起動ログ・ブラウザの見出しと
+About・`/stats` のキー - が Charon。ロゴは `web/logo.png` で README の
+先頭とサイドバーの見出しが同じファイルを使う。依存ライブラリのライセンス
+一覧は `THIRD_PARTY_NOTICES.md` - 依存を足したら 1 行足す）は、サーバー側で **Chrono**（物理）＋ **Filament**（描画）を回し、オフスクリーンで
 描いたフレームを **GStreamer** で H.264 にして RTP/UDP で配信するプロトタイプ。
 クライアントは `gst-launch-1.0` のワンライナーで受ける（専用クライアントは未作成）。
 
@@ -137,7 +138,7 @@ PhysicsWorld.step(dt)
   このヘッダーに置き換えた）。**サイドバーを畳む口もここの ☰ だけ**
   （サイドバー内にあった ‹ ＝ #sbClose は廃止。畳んだ瞬間に一緒に消える
   ボタンなので、開く側は結局 ☰ が受け持っていた）。サイドバーのヘッダは
-  「ロゴ / Charon / Version 1.0.0」の表記のみで、カメラ名は映像ヘッダーが
+  「ロゴ / Charon / Version 1.0.0 (WizEngine)」の表記のみで、カメラ名は映像ヘッダーが
   受け持つ。
 - ブラウザ側のタブは **Scene / Inspector / Physics**（`web/index.html` +
   `app.js` の `renderEditor()`。Inspector の内部 id は `tabEditor` /
@@ -1192,10 +1193,10 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
 
 - **製品名・版番号・コードネームは `src/core/Versions.h` が唯一の定義**
   （`kProductName` = "Charon"、`kVersionMajor/Minor/Patch` = 1.0.0、
-  `kCodename` = "" - 1.x は製品名そのものなので空）。CMake の
+  `kCodename` = "WizEngine"。空にすれば表示されない）。CMake の
   `project(VERSION)` には持たせない（2 か所に書くと必ずずれる）。起動ログの
-  1 行目（`Charon 1.0.0`）、`/stats` の `versions.Charon`（素の semver。
-  コードネームがある版だけ `versions.Codename` が付く）、ブラウザのサイド
+  1 行目（`Charon 1.0.0 "WizEngine"`）、`/stats` の `versions.Charon`（素の
+  semver）と `versions.Codename`、ブラウザのサイド
   バー見出しと About 節（Physics タブ）がここから出る。ブラウザ側は
   `app.js` の `PRODUCT` が同じ名前を持つ（/stats のキー名を引くため）。
 - **CPU コアの固定**（`src/core/CpuAffinity.{h,cpp}`、Windows / Linux 両対応）。設定は **exe 引数**（`--physics-cores "0-11"` / `--render-cores "12-15"` /

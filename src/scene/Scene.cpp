@@ -815,7 +815,10 @@ void Scene::snapshot() {
     std::vector<std::vector<float>> soft(boxes_.size());
     for (std::size_t i = 0; i < boxes_.size(); ++i) {
         const GameObject& obj = boxes_[i];
-        if (obj.physId == GameObject::kInvalidId) {
+        // 消えたオブジェクトの physId は読まない: 系を作り直したあと
+        // （バックエンドの切替）は番号が古い系のもので、新しい bodies_ の
+        // 範囲を超えることがある（シーンを何度か読み込むと落ちた原因）。
+        if (!obj.alive || obj.physId == GameObject::kInvalidId) {
             poses.push_back(BodyTransform{0, 0, 0, 1, 0, 0, 0});
             continue;
         }
@@ -972,14 +975,15 @@ void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
     rebuildGroundBody();
     for (std::size_t i = 0; i < boxes_.size(); ++i) {
         GameObject& obj = boxes_[i];
-        if (!obj.alive) continue;
+        // 消えたオブジェクトも番号は捨てる（古い系の番号を持ったままだと、
+        // どこかで bodies_ を引いたときに範囲外になる）。
         {
             std::lock_guard<std::mutex> lk(objectsMutex_);
             obj.physId = GameObject::kInvalidId;
             obj.childPhysIds.clear();
-            obj.physDirty = true;
+            obj.physDirty = obj.alive;
         }
-        rebuildBody(i);
+        if (obj.alive) rebuildBody(i);
     }
     if (simulating) {
         restoreAuthoredPoses();
