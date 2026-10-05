@@ -485,7 +485,18 @@ WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクト�
 - **入力は `drive` コマンド**（`{throttle, brake, steer, handbrake}`、どのカメラ
   からでも可 - 運転はシーンの書き換えではない）。ブラウザは W / S / A / D /
   Space を 50ms ごとに送る（シミュレート中のみ。エディタ中は W / E / R が
-  ギズモ）。複数の車両があれば全部が同じ入力で走る。計測値は `/stats` の
+  ギズモ）。**ゲームパッドも同じティックで読む**（W3C Gamepad API =
+  `navigator.getGamepads()` のポーリング。Xbox / PlayStation の標準
+  マッピングは RT / LT = アクセル / ブレーキ、左スティック X と十字キー =
+  ハンドル、A = ハンドブレーキ。番号は app.js の `GAMEPAD_MAP`）。値は
+  0〜1 の実数のまま送る - サーバーの `drive` は最初からアナログ
+  （`VehicleModel` が clamp と pedalRate / steerRate のなまし）なので
+  **サーバー側の変更は無し**。キーボードと同時に使えて各値は大きい方。
+  送信は値が変わったとき（2 桁丸め）+ 保険の 250ms ごと。Chrome はボタンを
+  1 回押すまでパッドを一覧に出さない。mapping が空の HID パッドは機種ごと
+  に配置が違うので、同じ番号で読んだうえで第 2 軸の前後もペダルとして受ける
+  （WebHID で生のレポートを読む口は未）。接続中はオーバーレイの「car」欄
+  にパッド名が出る。複数の車両があれば全部が同じ入力で走る。計測値は `/stats` の
   `vehicle`（速度・rpm・ギア・クラッチ）でオーバーレイの「car」欄に出る。
 - **文書の `<vehicle>`**（`vehicle/VehicleXml.{h,cpp}`）: `<engine>` `<clutch>`
   `<gearbox>` `<center>` と `<axle>`（左右 2 輪。`<tire>` / `<suspension>` は

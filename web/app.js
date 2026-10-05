@@ -356,14 +356,30 @@
     }
   });
 
-  // ---- 運転（車両があるシーンの WASD）-----------------------------------
+  // ---- 運転（車両があるシーンの WASD / ゲームパッド）---------------------
   // シミュレート中だけ。W / S = 前後のペダル、A / D = ハンドル、Space =
   // ハンドブレーキ。押している間の状態を "drive" として 50ms ごとに送る
   // （変化が無くても 250ms に 1 回は送って、取りこぼしを直す）。エディタ
   // モードでは W / E / R がギズモの切替なので触らない。
+  //
+  // ゲームパッド（Xbox / PlayStation / 汎用 HID）は W3C Gamepad API
+  // （navigator.getGamepads）。イベントではなくポーリングの API なので、
+  // 同じ 50ms のティックで読む。サーバーの "drive" は最初から 0〜1 の実数
+  // （VehicleModel が clamp）なので、トリガーとスティックのアナログ値を
+  // そのまま送れる = サーバー側の変更は要らない。キーボードと同時に使えて、
+  // 各値は「大きい方」を採る。
+  //   標準マッピング（mapping === "standard"、Xbox 系はほぼこれ）:
+  //     RT (buttons[7]) = アクセル、LT (buttons[6]) = ブレーキ、
+  //     左スティック X (axes[0]) または十字キー左右 (buttons[14/15]) = ハンドル、
+  //     A (buttons[0]) = ハンドブレーキ。
+  //   mapping が空の HID パッドは配置が機種ごとに違うので、同じ番号で読んだ
+  //   うえで「右スティック Y / 第 2 軸をペダルにする」機種向けに axes[1] の
+  //   前後も受ける（上 = アクセル、下 = ブレーキ）。細かい割り当てが要る
+  //   機種は下の GAMEPAD_MAP を書き換える。
   const driveKeys = { w: false, s: false, a: false, d: false, space: false };
   let driveDirty = false;
   let driveIdleTicks = 0;
+  let driveLast = null;            // 最後に送った値（アナログの差分判定用）
   function driveKey(e, down) {
     if (e.ctrlKey || e.altKey || e.metaKey) return;
     const el = document.activeElement;
@@ -386,18 +402,114 @@
       if (driveKeys[k]) { driveKeys[k] = false; driveDirty = true; }
     }
   });
+
+  // ゲームパッドのボタン / 軸の番号（標準マッピング）。
+  const GAMEPAD_MAP = {
+    throttle: 7,      // RT（アナログ。value が 0〜1）
+    brake: 6,         // LT
+    handbrake: 0,     // A（PlayStation は ×）
+    steerAxis: 0,     // 左スティック X（左 = -1）
+    dpadLeft: 14,
+    dpadRight: 15,
+    pedalAxis: 1,     // 非標準パッド向け: 第 2 軸の上下をペダルに
+    deadzone: 0.12,   // スティックの遊び。中立で車がふらつかないため
+  };
+  let gamepadName = '';            // 接続中のパッド名（オーバーレイに出す）
+  const gamepadsSeen = new Set();  // 一度でも読めた index（Chrome は押すまで現れない）
+  function padButton(gp, i) {
+    const b = gp.buttons[i];
+    if (!b) return 0;
+    // value はアナログ（トリガー）なら 0〜1、デジタルなら pressed で 0/1。
+    return typeof b.value === 'number' ? b.value : (b.pressed ? 1 : 0);
+  }
+  function padAxis(gp, i) {
+    const v = gp.axes[i];
+    if (typeof v !== 'number' || !isFinite(v)) return 0;
+    const dz = GAMEPAD_MAP.deadzone;
+    if (Math.abs(v) < dz) return 0;
+    // 遊びの外を 0〜1 に伸ばし直す（遊びの縁で値が飛ばないように）。
+    return Math.sign(v) * (Math.abs(v) - dz) / (1 - dz);
+  }
+  // 接続中のパッドを全部読んで、キーボードと同じ {throttle, brake, steer,
+  // handbrake} に畳む。パッドが無ければ null。
+  function readGamepads() {
+    if (!navigator.getGamepads) return null;
+    let pads;
+    try { pads = navigator.getGamepads(); } catch (_) { return null; }
+    let out = null;
+    let name = '';
+    for (const gp of pads || []) {
+      if (!gp || !gp.connected) continue;
+      gamepadsSeen.add(gp.index);
+      if (!name) name = gp.id;
+      const standard = gp.mapping === 'standard';
+      let throttle = padButton(gp, GAMEPAD_MAP.throttle);
+      let brake = padButton(gp, GAMEPAD_MAP.brake);
+      if (!standard) {
+        // 第 2 軸でペダルを切る機種（上 = 前進）。標準パッドではこの軸は
+        // 左スティック Y なので使わない（走りながら視点を動かすような
+        // 誤入力になる）。
+        const pedal = -padAxis(gp, GAMEPAD_MAP.pedalAxis);
+        if (pedal > 0) throttle = Math.max(throttle, pedal);
+        else brake = Math.max(brake, -pedal);
+      }
+      // 画面と同じ向きに: スティック左 (-1) = ハンドル左 = steer +1（A キーと同じ）。
+      let steer = -padAxis(gp, GAMEPAD_MAP.steerAxis);
+      steer += padButton(gp, GAMEPAD_MAP.dpadLeft) - padButton(gp, GAMEPAD_MAP.dpadRight);
+      steer = Math.max(-1, Math.min(1, steer));
+      const handbrake = padButton(gp, GAMEPAD_MAP.handbrake);
+      if (!out) out = { throttle: 0, brake: 0, steer: 0, handbrake: 0 };
+      out.throttle = Math.max(out.throttle, throttle);
+      out.brake = Math.max(out.brake, brake);
+      if (Math.abs(steer) > Math.abs(out.steer)) out.steer = steer;
+      out.handbrake = Math.max(out.handbrake, handbrake);
+    }
+    if (name !== gamepadName) {
+      gamepadName = name;
+      console.log(name ? 'gamepad: ' + name : 'gamepad: disconnected');
+    }
+    return out;
+  }
+  // 接続 / 切断のイベントは名前の更新だけ（値は毎ティック読む）。
+  window.addEventListener('gamepadconnected', (e) => {
+    gamepadName = e.gamepad.id;
+    console.log('gamepad connected: ' + e.gamepad.id +
+                ' (mapping: ' + (e.gamepad.mapping || 'none') + ')');
+  });
+  window.addEventListener('gamepaddisconnected', () => { readGamepads(); });
+
   setInterval(() => {
-    const any = driveKeys.w || driveKeys.s || driveKeys.a || driveKeys.d ||
-                driveKeys.space;
-    driveIdleTicks = any ? 0 : driveIdleTicks + 1;
-    if (!driveDirty && (!any || driveIdleTicks % 5 !== 0)) return;
-    driveDirty = false;
-    send('drive', {
+    // 運転できる状態でないときはパッドを読まない（エディタ中・他人のページ・
+    // モーダルが開いている間）。最後に送った値が 0 でなければ 0 を 1 回送って
+    // 車を止める - パッドを握ったままエディタに切り替えても走り続けない。
+    const canDrive = owner && sceneData && sceneData.mode !== 'editor' &&
+                     !nodeEdOpen && !xmlEdOpen;
+    const pad = canDrive ? readGamepads() : null;
+    const cur = {
       throttle: driveKeys.w ? 1 : 0,
       brake: driveKeys.s ? 1 : 0,
       steer: (driveKeys.a ? 1 : 0) - (driveKeys.d ? 1 : 0),
       handbrake: driveKeys.space ? 1 : 0,
-    });
+    };
+    if (pad) {
+      cur.throttle = Math.max(cur.throttle, pad.throttle);
+      cur.brake = Math.max(cur.brake, pad.brake);
+      if (Math.abs(pad.steer) > Math.abs(cur.steer)) cur.steer = pad.steer;
+      cur.handbrake = Math.max(cur.handbrake, pad.handbrake);
+    }
+    // 送る値は小数 2 桁に丸める（毎ティックの微小なノイズで JSON を送り
+    // 続けないため。VehicleModel 側は pedalRate / steerRate でなめらかに追う）。
+    for (const k in cur) cur[k] = Math.round(cur[k] * 100) / 100;
+    const any = cur.throttle || cur.brake || cur.steer || cur.handbrake;
+    const changed = driveDirty || !driveLast ||
+        cur.throttle !== driveLast.throttle || cur.brake !== driveLast.brake ||
+        cur.steer !== driveLast.steer || cur.handbrake !== driveLast.handbrake;
+    driveIdleTicks = any ? 0 : driveIdleTicks + 1;
+    if (!changed && (!any || driveIdleTicks % 5 !== 0)) return;
+    driveDirty = false;
+    driveLast = cur;
+    if (!owner) return;
+    send('drive', cur);
   }, 50);
   // Software cursor over the stage (windowed and fullscreen alike): follows
   // the mouse via transform (cheap, no layout). pointer-events:none keeps it
@@ -770,7 +882,11 @@
           ? '<span>car <b>' + fmt(s.vehicle.speed * 3.6) + ' km/h</b> ' +
             fmt(s.vehicle.rpm) + ' rpm gear <b>' +
             (s.vehicle.gear < 0 ? 'R' : (s.vehicle.gear === 0 ? 'N' : s.vehicle.gear)) +
-            '</b> clutch ' + fmt(s.vehicle.clutch, 2) + ' (WASD / Space)</span>'
+            '</b> clutch ' + fmt(s.vehicle.clutch, 2) +
+            (gamepadName
+              ? ' 🎮 ' + gamepadName.replace(/\s*\(.*$/, '')   // "(Vendor: … Product: …)" を落とす
+                           .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+              : ' (WASD / Space)') + '</span>'
           : '');
     }).catch(() => {});
   }, 500);
