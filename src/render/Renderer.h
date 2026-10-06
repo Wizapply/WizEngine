@@ -355,7 +355,8 @@ private:
     // 描画設定の適用。ビュー 1 つぶん（addView と setRenderSettings が呼ぶ）、
     // 色作り（トーンマップ + グレーディング）の作り直し、ライトの影設定。
     // ShadowOptions は Filament の入れ子型なので、ここ（前方宣言しか無い
-    // ヘッダ）には出さない - 組み立ては Renderer.cpp の中の関数が持つ。
+    // ヘッダ）には出さない - 組み立ては RendererInternal.h の
+    // shadowOptionsFrom が持つ。
     struct ViewSlot;   // 下で定義（宣言だけ先に要る）
     struct ShapeSlot;  // 同上
     void applyViewSettings(ViewSlot& slot);

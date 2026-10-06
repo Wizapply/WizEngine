@@ -1,3 +1,8 @@
+// Renderer の中核: 構築（共有の立方体メッシュを含む）・破棄・ビュー・カメラ・
+// フレームの描画と読み戻し・glTF への委譲。
+// 他の担当は Renderer*.cpp に分かれている（描画設定・環境光とライト・
+// 形状スロット・球と円柱のメッシュ生成・線・地面）。ファイルの一覧と共通の
+// 下準備は RendererInternal.h。
 #include "render/RendererInternal.h"
 
 #include "render/GltfLoader.h"
