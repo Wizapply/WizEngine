@@ -320,7 +320,13 @@ set(WIZ_RENDER_SOURCES
     src/render/EnvironmentLoader.cpp
     src/render/GltfLoader.cpp
     src/render/ImageLoader.cpp
-    src/render/Renderer.cpp)
+    src/render/Renderer.cpp
+    src/render/RendererSettings.cpp
+    src/render/RendererLighting.cpp
+    src/render/RendererShapes.cpp
+    src/render/RendererMeshes.cpp
+    src/render/RendererLines.cpp
+    src/render/RendererGround.cpp)
 set(WIZ_STREAMING_SOURCES
     src/streaming/HttpServer.cpp
     src/streaming/VideoStreamer.cpp
