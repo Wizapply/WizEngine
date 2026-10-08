@@ -1,8 +1,8 @@
-// Renderer の中核: 構築（共有の立方体メッシュを含む）・破棄・ビュー・カメラ・
-// フレームの描画と読み戻し・glTF への委譲。
+// Renderer の中核: 構築・破棄・ビュー・カメラ・フレームの描画と読み戻し・
+// glTF への委譲。
 // 他の担当は Renderer*.cpp に分かれている（描画設定・環境光とライト・
-// 形状スロット・球と円柱のメッシュ生成・線・地面）。ファイルの一覧と共通の
-// 下準備は RendererInternal.h。
+// 形状スロット・立方体と球と円柱のメッシュ生成・線・地面）。
+// ファイルの一覧と共通の下準備は RendererInternal.h。
 #include "render/RendererInternal.h"
 
 #include "render/GltfLoader.h"
@@ -12,45 +12,6 @@ using namespace filament::math;
 using utils::Entity;
 using utils::EntityManager;
 using namespace render_detail;
-
-namespace {
-
-// 24 vertices: 4 per face, so each face can carry its own normal (needed for
-// lit shading). Faces are wound CCW when viewed from outside.
-const float3 kCubePos[24] = {
-    // front (+Z)
-    {-0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, 0.5f}, {0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f},
-    // back (-Z)
-    {0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f}, {0.5f, 0.5f, -0.5f},
-    // left (-X)
-    {-0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, -0.5f},
-    // right (+X)
-    {0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, -0.5f}, {0.5f, 0.5f, 0.5f},
-    // top (+Y)
-    {-0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f},
-    // bottom (-Y)
-    {-0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, 0.5f}, {-0.5f, -0.5f, 0.5f},
-};
-
-// Per-face normals, in the same order as kCubePos (front, back, left, right,
-// top, bottom). Used to build the tangent frames a lit material needs.
-const float3 kCubeNrm[24] = {
-    {0, 0, 1},  {0, 0, 1},  {0, 0, 1},  {0, 0, 1},   // front (+Z)
-    {0, 0, -1}, {0, 0, -1}, {0, 0, -1}, {0, 0, -1},  // back (-Z)
-    {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0},  // left (-X)
-    {1, 0, 0},  {1, 0, 0},  {1, 0, 0},  {1, 0, 0},   // right (+X)
-    {0, 1, 0},  {0, 1, 0},  {0, 1, 0},  {0, 1, 0},   // top (+Y)
-    {0, -1, 0}, {0, -1, 0}, {0, -1, 0}, {0, -1, 0},  // bottom (-Y)
-};
-
-// Two triangles per face: (0,1,2) (2,3,0), offset by 4*face.
-const uint16_t kCubeIdx[36] = {
-    0, 1, 2, 2, 3, 0,        4, 5, 6, 6, 7, 4,
-    8, 9, 10, 10, 11, 8,     12, 13, 14, 14, 15, 12,
-    16, 17, 18, 18, 19, 16,  20, 21, 22, 22, 23, 20,
-};
-
-}  // namespace
 
 namespace wizengine {
 
@@ -98,34 +59,7 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
     // ところで必ず入れる（入れ忘れると 0 = 鏡のような金属になる）。
     applyMaterialParams(matInstance_, ShapeMaterial{});
 
-    // Shared cube mesh for boxes: positions + tangent frames (for lit shading).
-    auto* cubeOrient = filament::geometry::SurfaceOrientation::Builder()
-                           .vertexCount(24)
-                           .normals(kCubeNrm)
-                           .build();
-    cubeOrient->getQuats(cubeTangents_, 24);
-    delete cubeOrient;
-
-    vb_ = VertexBuffer::Builder()
-              .vertexCount(24)
-              .bufferCount(2)
-              .attribute(VertexAttribute::POSITION, 0,
-                         VertexBuffer::AttributeType::FLOAT3)
-              .attribute(VertexAttribute::TANGENTS, 1,
-                         VertexBuffer::AttributeType::FLOAT4)
-              .build(*engine_);
-    vb_->setBufferAt(*engine_, 0,
-                     VertexBuffer::BufferDescriptor(kCubePos, sizeof(kCubePos)));
-    vb_->setBufferAt(
-        *engine_, 1,
-        VertexBuffer::BufferDescriptor(cubeTangents_, sizeof(cubeTangents_)));
-
-    ib_ = IndexBuffer::Builder()
-              .indexCount(36)
-              .bufferType(IndexBuffer::IndexType::USHORT)
-              .build(*engine_);
-    ib_->setBuffer(*engine_,
-                   IndexBuffer::BufferDescriptor(kCubeIdx, sizeof(kCubeIdx)));
+    buildCubeMesh();
 
     // Lit material for the ground (loaded now; the ground geometry is created
     // later in addGround). Boxes and ground are added by the Scene.

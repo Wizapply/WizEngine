@@ -422,6 +422,9 @@ private:
     void ensureCylinderMesh();
     uint32_t sphereIndexCount_ = 0;
     void ensureSphereMesh();
+    // 箱の共有立方体メッシュ（vb_ / ib_）。起動時に 1 回。全部の箱が使うので
+    // 遅延しない。
+    void buildCubeMesh();
 
     filament::Material* material_ = nullptr;
     filament::MaterialInstance* matInstance_ = nullptr;
