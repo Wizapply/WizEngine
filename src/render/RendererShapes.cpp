@@ -43,7 +43,7 @@ std::size_t Renderer::addShape(ShapeMesh mesh) {
     slot.highlight = -1;
     slot.used = true;
     // 前にこの席を使っていた物の色と材質を引き継がない。
-    slot.color = float3{0.80f, 0.36f, 0.18f};
+    slot.color = kDefaultShapeColor;
     slot.material = ShapeMaterial{};
 
     VertexBuffer* meshVb = vb_;
@@ -115,7 +115,7 @@ std::size_t Renderer::addSoftShape(std::size_t vertexCount,
     // 三角形や、まだ閉じていない面が背面カリングで抜けないように）。専用の
     // マテリアルインスタンスをここで作っておけば setShapeColor はそれを使う。
     slot.mi = material_->createInstance();
-    slot.mi->setParameter("baseColor", RgbType::LINEAR, float3{0.80f, 0.36f, 0.18f});
+    slot.mi->setParameter("baseColor", RgbType::LINEAR, kDefaultShapeColor);
     slot.mi->setCullingMode(MaterialInstance::CullingMode::NONE);
     slot.highlight = -1;
     slot.used = true;

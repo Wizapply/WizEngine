@@ -54,7 +54,7 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
     }
     matInstance_ = material_->createInstance();
     matInstance_->setParameter("baseColor", RgbType::LINEAR,
-                               float3{0.80f, 0.36f, 0.18f});
+                               kDefaultShapeColor);
     // 材質のパラメータは .mat に既定値が書けないので、インスタンスを作った
     // ところで必ず入れる（入れ忘れると 0 = 鏡のような金属になる）。
     applyMaterialParams(matInstance_, ShapeMaterial{});
@@ -125,7 +125,14 @@ void Renderer::setModelInstanceTint(std::size_t index,
 }
 
 float Renderer::verticalFovDegrees() const {
-    return 45.0f;  // must match the setProjection call in the constructor
+    // 投影に使う定数そのもの（applyProjection と同じ値になる）。
+    return float(kFovDegrees);
+}
+
+void Renderer::applyProjection(ViewSlot& slot) {
+    const double aspect = double(slot.width) / double(slot.height);
+    slot.camera->setProjection(kFovDegrees, aspect, kNearPlane, kFarPlane,
+                               Camera::Fov::VERTICAL);
 }
 
 std::size_t Renderer::addView() {
@@ -140,8 +147,7 @@ std::size_t Renderer::addView() {
 
     slot.cameraEntity = EntityManager::get().create();
     slot.camera = engine_->createCamera(slot.cameraEntity);
-    const double aspect = double(slot.width) / double(slot.height);
-    slot.camera->setProjection(45.0, aspect, 0.1, 200.0, Camera::Fov::VERTICAL);
+    applyProjection(slot);
     slot.camera->lookAt({7.0, 5.0, 9.0}, {0.0, 1.0, 0.0}, {0.0, 1.0, 0.0});
 
     slot.view = engine_->createView();
@@ -315,9 +321,7 @@ void Renderer::renderFrame(
         slot.view->setViewport(
             {0, 0, uint32_t(slot.width), uint32_t(slot.height)});
         // Same fov/near/far as addView - only the aspect follows the size.
-        slot.camera->setProjection(45.0,
-                                   double(slot.width) / double(slot.height),
-                                   0.1, 200.0, Camera::Fov::VERTICAL);
+        applyProjection(slot);
         for (auto& cap : slot.captures) {
             cap.pixels.assign(
                 std::size_t(slot.width) * std::size_t(slot.height) * 4, 0);

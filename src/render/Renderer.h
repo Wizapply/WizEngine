@@ -198,7 +198,7 @@ public:
     const RenderSettings& renderSettings() const { return settings_; }
 
     // Vertical field of view in degrees - the picking code needs it to build
-    // a ray through a screen position.
+    // a ray through a screen position. Same value as kFovDegrees.
     float verticalFovDegrees() const;
     double aspect() const { return double(width_) / double(height_); }
     // tileMeters: how many metres one full repeat of the texture covers.
@@ -350,6 +350,15 @@ public:
     void finishPendingReadbacks();
 
 private:
+    // 全ビューのカメラの投影（垂直画角・near・far）。型は Camera::setProjection
+    // の引数（double）に合わせる。アスペクト比だけがビューの大きさで決まる。
+    static constexpr double kFovDegrees = 45.0;
+    static constexpr double kNearPlane = 0.1;
+    static constexpr double kFarPlane = 200.0;
+    // 形状の既定色（リニア）。document/EditorTypes.h の Color3 の既定と同じ値
+    // （層が違うので別定義。片方を変えたらもう片方も合わせる）。
+    static constexpr filament::math::float3 kDefaultShapeColor{0.80f, 0.36f, 0.18f};
+
     // 起動時の一様アンビエントを（作り直して）張る。clearEnvironment の実体。
     void installFlatAmbient();
     // 描画設定の適用。ビュー 1 つぶん（addView と setRenderSettings が呼ぶ）、
@@ -360,6 +369,9 @@ private:
     struct ViewSlot;   // 下で定義（宣言だけ先に要る）
     struct ShapeSlot;  // 同上
     void applyViewSettings(ViewSlot& slot);
+    // そのビューのカメラへ投影を入れる（kFovDegrees / kNearPlane / kFarPlane、
+    // アスペクト比は slot.width / slot.height）。addView とリサイズが呼ぶ。
+    void applyProjection(ViewSlot& slot);
     void rebuildColorGrading();
     void applyShadowSettings();
     // マテリアルインスタンスへ材質を入れる（共有インスタンス・ハイライト
@@ -440,7 +452,7 @@ private:
         // スロットが自分のインスタンスを持つとき、その中身。色と材質は
         // 別々のタイミングで来る（色はイベントでも変わる）ので、
         // インスタンスを作り直すときに両方を入れ直せるよう覚えておく。
-        filament::math::float3 color{0.80f, 0.36f, 0.18f};
+        filament::math::float3 color = kDefaultShapeColor;
         ShapeMaterial material;
         // ソフトボディだけが持つ自前のバッファ（組み込み形状は共有メッシュ
         // なので null）。removeShape が一緒に壊す。
