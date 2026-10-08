@@ -1,5 +1,6 @@
-// The one translation unit that compiles stb_image. Keeping it alone here
-// avoids pulling the (large) implementation into Renderer.cpp.
+// stb_image の実装をコンパイルする唯一の翻訳単位。画像を読むのは
+// RendererGround.cpp（地面のテクスチャ）と EnvironmentLoader.cpp（HDR）で、
+// 大きな実装をそちらへ持ち込まないためにここだけに置く。
 #define STB_IMAGE_IMPLEMENTATION
 // STBI_ONLY_* is a whitelist: every decoder NOT listed is compiled out. HDR has
 // to be here for the environment map, otherwise stbi_loadf rejects a perfectly

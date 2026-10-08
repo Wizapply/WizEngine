@@ -32,17 +32,19 @@ class Skybox;
 class ColorGrading;
 }  // namespace filament
 
-// Headless Filament render engine. It sets up the device, camera, lights and
-// shared cube mesh; the actual scene contents are added by the caller (Scene)
-// via addShape() and addGround(). renderFrame() draws one frame offscreen and
-// hands back the RGBA pixels.
+// ヘッドレスの Filament 描画エンジン。コンストラクタが作るのは下地だけ
+// （デバイス・ビュー 0 とカメラ・材質・共有の立方体メッシュ・一様な環境光）。
+// ライトは作らない - シーンの中身と同じく呼び出し側（Scene）が addLight() /
+// addShape() / addGround() で足す。renderFrame() がオフスクリーンで 1 フレーム
+// 描いて RGBA のピクセルを返す。
 namespace wizengine {
 
 class GltfLoader;
 
-// Everything the renderer needs to create or update a light, in renderer
-// vocabulary (no Filament types leak out of Renderer.cpp). Scene converts its
-// editor-side LightDesc (euler angles) into one of these (direction vector).
+// ライトを作る・更新するのに要る値を、レンダラの語彙でまとめたもの。
+// Filament のエンジンの型（LightManager など）は Renderer*.cpp の外に出さない
+// （ここで使うのは math の値型だけ）。Scene はエディタ側の LightDesc
+// （オイラー角）をこれ（方向ベクトル）に直して渡す。
 struct LightDesc {
     enum class Type { Directional, Point, Spot };
     Type type = Type::Directional;
