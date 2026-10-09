@@ -358,8 +358,10 @@ private:
     static constexpr double kNearPlane = 0.1;
     static constexpr double kFarPlane = 200.0;
     // 形状の既定色（リニア）。document/EditorTypes.h の Color3 の既定と同じ値
-    // （層が違うので別定義。片方を変えたらもう片方も合わせる）。
-    static constexpr filament::math::float3 kDefaultShapeColor{0.80f, 0.36f, 0.18f};
+    // （層が違うので別定義。片方を変えたらもう片方も合わせる）。値は
+    // Renderer.cpp に置く - constexpr で書くと MSVC は通るが IntelliSense が
+    // float3 のコンストラクタを定数と見なせず E0028 を出すため。
+    static const filament::math::float3 kDefaultShapeColor;
 
     // 起動時の一様アンビエントを（作り直して）張る。clearEnvironment の実体。
     void installFlatAmbient();

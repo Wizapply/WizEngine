@@ -15,6 +15,8 @@ using namespace render_detail;
 
 namespace wizengine {
 
+const float3 Renderer::kDefaultShapeColor{0.80f, 0.36f, 0.18f};
+
 Renderer::Renderer(int width, int height, const std::string& materialPath)
     : width_(width), height_(height) {
     // The builder picks a default backend. For headless servers where the
