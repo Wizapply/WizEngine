@@ -1,4 +1,4 @@
-// Renderer の球・円柱のメッシュ生成。
+// Renderer の立方体・球・円柱のメッシュ生成。
 #include "render/RendererInternal.h"
 
 using namespace filament;
@@ -9,6 +9,41 @@ using namespace render_detail;
 
 namespace {
 
+// 24 vertices: 4 per face, so each face can carry its own normal (needed for
+// lit shading). Faces are wound CCW when viewed from outside.
+const float3 kCubePos[24] = {
+    // front (+Z)
+    {-0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, 0.5f}, {0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f},
+    // back (-Z)
+    {0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f}, {0.5f, 0.5f, -0.5f},
+    // left (-X)
+    {-0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, -0.5f},
+    // right (+X)
+    {0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, -0.5f}, {0.5f, 0.5f, 0.5f},
+    // top (+Y)
+    {-0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f},
+    // bottom (-Y)
+    {-0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, 0.5f}, {-0.5f, -0.5f, 0.5f},
+};
+
+// Per-face normals, in the same order as kCubePos (front, back, left, right,
+// top, bottom). Used to build the tangent frames a lit material needs.
+const float3 kCubeNrm[24] = {
+    {0, 0, 1},  {0, 0, 1},  {0, 0, 1},  {0, 0, 1},   // front (+Z)
+    {0, 0, -1}, {0, 0, -1}, {0, 0, -1}, {0, 0, -1},  // back (-Z)
+    {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0},  // left (-X)
+    {1, 0, 0},  {1, 0, 0},  {1, 0, 0},  {1, 0, 0},   // right (+X)
+    {0, 1, 0},  {0, 1, 0},  {0, 1, 0},  {0, 1, 0},   // top (+Y)
+    {0, -1, 0}, {0, -1, 0}, {0, -1, 0}, {0, -1, 0},  // bottom (-Y)
+};
+
+// Two triangles per face: (0,1,2) (2,3,0), offset by 4*face.
+const uint16_t kCubeIdx[36] = {
+    0, 1, 2, 2, 3, 0,        4, 5, 6, 6, 7, 4,
+    8, 9, 10, 10, 11, 8,     12, 13, 14, 14, 15, 12,
+    16, 17, 18, 18, 19, 16,  20, 21, 22, 22, 23, 20,
+};
+
 // UV 球の分割数。エディタで置く球はたいてい小さいので、これで十分に丸い。
 constexpr int kSphereRings = 16;    // 緯度方向
 constexpr int kSphereSectors = 24;  // 経度方向
@@ -18,6 +53,37 @@ constexpr float kPi = 3.14159265358979323846f;
 }  // namespace
 
 namespace wizengine {
+
+void Renderer::buildCubeMesh() {
+    // Shared cube mesh for boxes: positions + tangent frames (for lit shading).
+    auto* cubeOrient = filament::geometry::SurfaceOrientation::Builder()
+                           .vertexCount(24)
+                           .normals(kCubeNrm)
+                           .build();
+    cubeOrient->getQuats(cubeTangents_, 24);
+    delete cubeOrient;
+
+    vb_ = VertexBuffer::Builder()
+              .vertexCount(24)
+              .bufferCount(2)
+              .attribute(VertexAttribute::POSITION, 0,
+                         VertexBuffer::AttributeType::FLOAT3)
+              .attribute(VertexAttribute::TANGENTS, 1,
+                         VertexBuffer::AttributeType::FLOAT4)
+              .build(*engine_);
+    vb_->setBufferAt(*engine_, 0,
+                     VertexBuffer::BufferDescriptor(kCubePos, sizeof(kCubePos)));
+    vb_->setBufferAt(
+        *engine_, 1,
+        VertexBuffer::BufferDescriptor(cubeTangents_, sizeof(cubeTangents_)));
+
+    ib_ = IndexBuffer::Builder()
+              .indexCount(36)
+              .bufferType(IndexBuffer::IndexType::USHORT)
+              .build(*engine_);
+    ib_->setBuffer(*engine_,
+                   IndexBuffer::BufferDescriptor(kCubeIdx, sizeof(kCubeIdx)));
+}
 
 void Renderer::ensureSphereMesh() {
     if (sphereVb_) return;

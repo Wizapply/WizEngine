@@ -8,7 +8,7 @@
 //   RendererSettings.cpp  : 描画設定（影・後処理・露出・色作り）
 //   RendererLighting.cpp  : 環境光・スカイボックス・ライト
 //   RendererShapes.cpp    : 形状スロット・ソフト形状・色と材質・ハイライト
-//   RendererMeshes.cpp    : 球・円柱のメッシュ生成
+//   RendererMeshes.cpp    : 立方体・球・円柱のメッシュ生成
 //   RendererLines.cpp     : 線（グラブ線・ジョイント線・太線バッチ・細線セット）
 //   RendererGround.cpp    : 地面
 

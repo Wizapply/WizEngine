@@ -32,17 +32,19 @@ class Skybox;
 class ColorGrading;
 }  // namespace filament
 
-// Headless Filament render engine. It sets up the device, camera, lights and
-// shared cube mesh; the actual scene contents are added by the caller (Scene)
-// via addShape() and addGround(). renderFrame() draws one frame offscreen and
-// hands back the RGBA pixels.
+// ヘッドレスの Filament 描画エンジン。コンストラクタが作るのは下地だけ
+// （デバイス・ビュー 0 とカメラ・材質・共有の立方体メッシュ・一様な環境光）。
+// ライトは作らない - シーンの中身と同じく呼び出し側（Scene）が addLight() /
+// addShape() / addGround() で足す。renderFrame() がオフスクリーンで 1 フレーム
+// 描いて RGBA のピクセルを返す。
 namespace wizengine {
 
 class GltfLoader;
 
-// Everything the renderer needs to create or update a light, in renderer
-// vocabulary (no Filament types leak out of Renderer.cpp). Scene converts its
-// editor-side LightDesc (euler angles) into one of these (direction vector).
+// ライトを作る・更新するのに要る値を、レンダラの語彙でまとめたもの。
+// Filament のエンジンの型（LightManager など）は Renderer*.cpp の外に出さない
+// （ここで使うのは math の値型だけ）。Scene はエディタ側の LightDesc
+// （オイラー角）をこれ（方向ベクトル）に直して渡す。
 struct LightDesc {
     enum class Type { Directional, Point, Spot };
     Type type = Type::Directional;
@@ -198,7 +200,7 @@ public:
     const RenderSettings& renderSettings() const { return settings_; }
 
     // Vertical field of view in degrees - the picking code needs it to build
-    // a ray through a screen position.
+    // a ray through a screen position. Same value as kFovDegrees.
     float verticalFovDegrees() const;
     double aspect() const { return double(width_) / double(height_); }
     // tileMeters: how many metres one full repeat of the texture covers.
@@ -350,6 +352,17 @@ public:
     void finishPendingReadbacks();
 
 private:
+    // 全ビューのカメラの投影（垂直画角・near・far）。型は Camera::setProjection
+    // の引数（double）に合わせる。アスペクト比だけがビューの大きさで決まる。
+    static constexpr double kFovDegrees = 45.0;
+    static constexpr double kNearPlane = 0.1;
+    static constexpr double kFarPlane = 200.0;
+    // 形状の既定色（リニア）。document/EditorTypes.h の Color3 の既定と同じ値
+    // （層が違うので別定義。片方を変えたらもう片方も合わせる）。値は
+    // Renderer.cpp に置く - constexpr で書くと MSVC は通るが IntelliSense が
+    // float3 のコンストラクタを定数と見なせず E0028 を出すため。
+    static const filament::math::float3 kDefaultShapeColor;
+
     // 起動時の一様アンビエントを（作り直して）張る。clearEnvironment の実体。
     void installFlatAmbient();
     // 描画設定の適用。ビュー 1 つぶん（addView と setRenderSettings が呼ぶ）、
@@ -360,6 +373,9 @@ private:
     struct ViewSlot;   // 下で定義（宣言だけ先に要る）
     struct ShapeSlot;  // 同上
     void applyViewSettings(ViewSlot& slot);
+    // そのビューのカメラへ投影を入れる（kFovDegrees / kNearPlane / kFarPlane、
+    // アスペクト比は slot.width / slot.height）。addView とリサイズが呼ぶ。
+    void applyProjection(ViewSlot& slot);
     void rebuildColorGrading();
     void applyShadowSettings();
     // マテリアルインスタンスへ材質を入れる（共有インスタンス・ハイライト
@@ -422,6 +438,9 @@ private:
     void ensureCylinderMesh();
     uint32_t sphereIndexCount_ = 0;
     void ensureSphereMesh();
+    // 箱の共有立方体メッシュ（vb_ / ib_）。起動時に 1 回。全部の箱が使うので
+    // 遅延しない。
+    void buildCubeMesh();
 
     filament::Material* material_ = nullptr;
     filament::MaterialInstance* matInstance_ = nullptr;
@@ -437,7 +456,7 @@ private:
         // スロットが自分のインスタンスを持つとき、その中身。色と材質は
         // 別々のタイミングで来る（色はイベントでも変わる）ので、
         // インスタンスを作り直すときに両方を入れ直せるよう覚えておく。
-        filament::math::float3 color{0.80f, 0.36f, 0.18f};
+        filament::math::float3 color = kDefaultShapeColor;
         ShapeMaterial material;
         // ソフトボディだけが持つ自前のバッファ（組み込み形状は共有メッシュ
         // なので null）。removeShape が一緒に壊す。
