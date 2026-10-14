@@ -66,16 +66,16 @@ void buildTube(filament::math::float3* out, const filament::math::float3& a,
 
 namespace wizengine {
 
-bool Renderer::ensureLineMaterial() {
-    if (lineMaterial_) return true;
+void Renderer::ensureLineMaterial() {
+    if (lineMaterial_) return;
+    wizengine::requireFile("line.filamat", "line material");
     const auto pkg = readFile(assetPath("line.filamat"));
-    if (pkg.empty()) {
-        LOGW("render", "line.filamat not found - lines disabled");
-        return false;
-    }
+    if (pkg.empty()) throw AssetError(assetPath("line.filamat"), "is empty");
     lineMaterial_ =
         Material::Builder().package(pkg.data(), pkg.size()).build(*engine_);
-    return lineMaterial_ != nullptr;
+    if (!lineMaterial_) {
+        throw AssetError(assetPath("line.filamat"), "is not a valid .filamat");
+    }
 }
 
 Renderer::LineEntity Renderer::createLine(const filament::math::float3& color) {
@@ -154,7 +154,7 @@ void Renderer::destroyLine(LineEntity& line) {
 
 void Renderer::configureGrabLines(
     const std::vector<filament::math::float3>& colors) {
-    if (!ensureLineMaterial()) return;
+    ensureLineMaterial();
     for (const auto& c : colors) grabLines_.push_back(createLine(c));
 }
 
@@ -168,7 +168,7 @@ void Renderer::setGrabLine(std::size_t index,
 void Renderer::setJointLineCount(std::size_t count) {
     if (count == jointLines_.size()) return;
     if (count > jointLines_.size()) {
-        if (!ensureLineMaterial()) return;
+        ensureLineMaterial();
         while (jointLines_.size() < count) {
             // 色は setJointLine で毎回入れ直すので、ここでは白で作る。
             jointLines_.push_back(createLine({1.0f, 1.0f, 1.0f}));
@@ -197,7 +197,8 @@ void Renderer::setJointLine(std::size_t index,
 void Renderer::configureLineBatches(
     const std::vector<filament::math::float3>& colors,
     std::size_t maxSegments) {
-    if (!ensureLineMaterial() || maxSegments == 0) return;
+    ensureLineMaterial();
+    if (maxSegments == 0) return;
     lineBatchCapacity_ = maxSegments;
 
     // 三角形の並びは固定（線分あたり 8 頂点 / 12 インデックス）。毎フレーム
@@ -330,11 +331,10 @@ void Renderer::setLineBatch(std::size_t index,
 
 std::size_t Renderer::addLineSet(const filament::math::float3& color) {
     LineSet set;
-    if (ensureLineMaterial()) {
-        set.mi = lineMaterial_->createInstance();
-        set.mi->setParameter("baseColor", RgbaType::PREMULTIPLIED_LINEAR,
-                             float4{color.x, color.y, color.z, 1.0f});
-    }
+    ensureLineMaterial();
+    set.mi = lineMaterial_->createInstance();
+    set.mi->setParameter("baseColor", RgbaType::PREMULTIPLIED_LINEAR,
+                         float4{color.x, color.y, color.z, 1.0f});
     // エンティティとバッファは最初の setLineSet で本数が決まってから作る。
     lineSets_.push_back(set);
     return lineSets_.size() - 1;
@@ -344,7 +344,6 @@ void Renderer::setLineSet(std::size_t id,
                           const std::vector<filament::math::float3>& points) {
     if (id >= lineSets_.size()) return;
     LineSet& set = lineSets_[id];
-    if (!set.mi) return;  // line.filamat が無い環境では線は無効
 
     const std::size_t lines = points.size() / 2;
     if (lines == 0) {

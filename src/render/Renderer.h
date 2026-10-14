@@ -504,8 +504,9 @@ private:
     std::vector<LineSet> lineSets_;
 
     filament::Material* lineMaterial_ = nullptr;
-    // line.filamat の読み込み（初回のみ）。読めなければ false = 線は無効。
-    bool ensureLineMaterial();
+    // line.filamat の読み込み（初回のみ）。無い・空・壊れている場合は
+    // AssetError を投げる（線が黙って消えるのではなく、原因を示して止める）。
+    void ensureLineMaterial();
     LineEntity createLine(const filament::math::float3& color);
     void updateLine(LineEntity& line, const filament::math::float3& from,
                     const filament::math::float3& to, bool visible);
