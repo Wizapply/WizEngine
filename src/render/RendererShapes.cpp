@@ -114,8 +114,13 @@ std::size_t Renderer::addSoftShape(std::size_t vertexCount,
     // 変形メッシュは両面を描く（法線は頂点から作るので、たまたま裏を向いた
     // 三角形や、まだ閉じていない面が背面カリングで抜けないように）。専用の
     // マテリアルインスタンスをここで作っておけば setShapeColor はそれを使う。
+    // 前にこの席を使っていた物の色と材質を引き継がない（addShape と同じ）。
+    // .mat にパラメータの既定値は書けないので、材質も必ず入れる。
+    slot.color = kDefaultShapeColor;
+    slot.material = ShapeMaterial{};
     slot.mi = material_->createInstance();
-    slot.mi->setParameter("baseColor", RgbType::LINEAR, kDefaultShapeColor);
+    slot.mi->setParameter("baseColor", RgbType::LINEAR, slot.color);
+    applyMaterialParams(slot.mi, slot.material);
     slot.mi->setCullingMode(MaterialInstance::CullingMode::NONE);
     slot.highlight = -1;
     slot.used = true;
