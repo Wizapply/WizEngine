@@ -207,18 +207,27 @@ Renderer::~Renderer() {
     finishPendingReadbacks();  // no buffer may be freed while the GPU has it
     for (auto& slot : shapes_) {
         if (!slot.used) continue;
+        // removeShape と同じ後始末（エンティティ番号も返す）。
         scene_->remove(slot.entity);
         engine_->destroy(slot.entity);
+        EntityManager::get().destroy(slot.entity);
         if (slot.mi) engine_->destroy(slot.mi);
         if (slot.vb) engine_->destroy(slot.vb);  // ソフトボディの自前バッファ
         if (slot.ib) engine_->destroy(slot.ib);
     }
     shapes_.clear();
-    scene_->remove(groundEntity_);
-    engine_->destroy(groundEntity_);
+    // addGround の作り直しと同じ後始末。
+    if (!groundEntity_.isNull()) {
+        scene_->remove(groundEntity_);
+        engine_->destroy(groundEntity_);
+        EntityManager::get().destroy(groundEntity_);
+    }
+    // removeLight と同じ後始末。空席（null）は飛ばす。
     for (auto e : lightEntities_) {
+        if (e.isNull()) continue;
         scene_->remove(e);
         engine_->destroy(e);
+        EntityManager::get().destroy(e);
     }
     gltf_.reset();  // models must go before the engine
     if (skybox_) {
@@ -231,6 +240,8 @@ Renderer::~Renderer() {
         for (auto& slot : views_) slot.view->setColorGrading(nullptr);
         engine_->destroy(colorGrading_);
     }
+    // スカイボックス・色作りと同じく、シーンの参照を外してから壊す。
+    scene_->setIndirectLight(nullptr);
     engine_->destroy(ibl_);
     if (iblTexture_) engine_->destroy(iblTexture_);
     engine_->destroy(groundTexture_);
@@ -275,6 +286,7 @@ Renderer::~Renderer() {
     for (auto& slot : views_) {
         engine_->destroyCameraComponent(slot.cameraEntity);
         engine_->destroy(slot.cameraEntity);
+        EntityManager::get().destroy(slot.cameraEntity);
         engine_->destroy(slot.view);
     }
     engine_->destroy(scene_);
