@@ -177,8 +177,8 @@ inline const std::vector<filament::math::float3>& cameraColors() {
 
 // 物理バックエンドの既定。シーンが何も要求しないときに使う系で、Scene が
 // 文書の中身を見て上書きする（Scene::requiredBackend）:
-//   - Core を要する機能（FEA ケーブル・ChLoad・直接法・HHT・モーダル）が
-//     あれば Core。
+//   - Core を要する機能（FEA ケーブル・ChLoad・直接法・HHT・モーダル、
+//     kTerrainForcesCore ならテレイン）があれば Core。
 //   - なければ、ソフトボディがある（kMulticoreForSoftBodies）か、ボディの
 //     数が kMulticoreMinBodies 以上なら Multicore（ビルドにあれば）。
 //   - どちらでもなければこの既定。
@@ -196,6 +196,23 @@ constexpr PhysicsBackend kBackend = PhysicsBackend::Core;
 // collide 部品も 1 個と数える）がこの数以上で Multicore。0 で無効。
 constexpr bool kMulticoreForSoftBodies = true;
 constexpr int kMulticoreMinBodies = 200;
+
+// ---- テレイン（文書の <terrain>）-----------------------------------------
+// テレインのあるシーンは Core にする（Scene::requiredBackend の Core を要する
+// 理由に "terrain (triangle mesh)" が加わる）。当たり判定は 10 万〜200 万
+// 三角形の固定メッシュで、Bullet（Core）は静的な BVH として持てるが、
+// Multicore の衝突系は三角形ごとに払う。false にすると規模の判定へ回る
+// （テレインは 1 ボディとして数えない）。
+// **false は非推奨**: Multicore の衝突系は Remove を持たないので
+// disableBody が退避（固定 + 地面の下へ）だけになり、テレインを作り直す
+// たびに古い全三角形が衝突系に溜まっていく。Multicore で三角メッシュの
+// テレインが正しく当たるかも実機で未確認。
+constexpr bool kTerrainForcesCore = true;
+// 描画のチャンク 1 辺のクアッド数（Renderer::addTerrain の quadsPerChunk）。
+// 1 チャンク 65^2 頂点。解像度の上限（editor::kTerrainMaxResolution = 1024）
+// でも 1 辺 16 チャンク = Renderer::kMaxTerrainChunks（64）以内に収まる
+// （Scene.cpp が static_assert で照合する）。
+constexpr int kTerrainChunkQuads = 64;
 
 // In web mode, do nothing at all while no browser holds the viewer session:
 // no physics steps, no rendering, no encoding. Set false to keep simulating in

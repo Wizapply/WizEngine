@@ -481,6 +481,151 @@ void Scene::setGroundAndEnvironment(const ed::GroundDesc& ground,
     if (groundBodyChanged) rebuildGroundBody();
 }
 
+// ---- テレイン（シーン文書の <terrain>）--------------------------------------
+
+namespace {
+
+// 文書の値 → 高さ格子の生成パラメータ（src/terrain は文書の型を知らない）。
+wizengine::terrain::TerrainParams toTerrainParams(const ed::TerrainDesc& d) {
+    wizengine::terrain::TerrainParams p;
+    p.size = float(d.size);
+    p.resolution = d.resolution;
+    p.height = float(d.height);
+    p.posX = float(d.position.x);
+    p.posY = float(d.position.y);
+    p.posZ = float(d.position.z);
+    p.seed = d.seed;
+    p.octaves = d.octaves;
+    p.gain = float(d.gain);
+    p.lacunarity = float(d.lacunarity);
+    p.scale = float(d.scale);
+    return p;
+}
+
+// 形（高さ格子と当たり判定）を決める値が同じか。
+bool sameTerrainShape(const ed::TerrainDesc& a, const ed::TerrainDesc& b) {
+    return a.size == b.size && a.resolution == b.resolution && a.height == b.height &&
+           a.position.x == b.position.x && a.position.y == b.position.y &&
+           a.position.z == b.position.z && a.seed == b.seed && a.octaves == b.octaves &&
+           a.gain == b.gain && a.lacunarity == b.lacunarity && a.scale == b.scale;
+}
+
+// 表面（描画の材質だけ）が同じか。
+bool sameTerrainSurface(const ed::TerrainDesc& a, const ed::TerrainDesc& b) {
+    return a.texture == b.texture && a.tile == b.tile && a.color.r == b.color.r &&
+           a.color.g == b.color.g && a.color.b == b.color.b &&
+           a.roughness == b.roughness && a.metallic == b.metallic;
+}
+
+}  // namespace
+
+void Scene::setTerrain(bool hasTerrain, const ed::TerrainDesc& descIn) {
+    const ed::TerrainDesc desc = ed::clampTerrain(descIn);
+    // terrain_ / hasTerrain_ / terrainField_ を書くのはこのスレッドだけなので、
+    // 読むだけならロックは要らない（地面と同じ約束）。
+    const bool had = hasTerrain_;
+    const bool shapeChanged =
+        hasTerrain && (!had || !terrainField_ || !sameTerrainShape(desc, terrain_));
+    const bool surfaceChanged =
+        hasTerrain && (!had || !sameTerrainSurface(desc, terrain_));
+
+    // 高さ格子の生成はロックの外で（解像度 1024 で数十 ms〜。描画スレッドを
+    // 待たせない）。
+    std::shared_ptr<const wizengine::terrain::HeightField> field;
+    if (shapeChanged) {
+        const auto t0 = std::chrono::steady_clock::now();
+        field = std::make_shared<const wizengine::terrain::HeightField>(
+            wizengine::terrain::generateHeightField(toTerrainParams(desc)));
+        LOGI("scene", "terrain height field: %dx%d cells, %.0f m, generated in %.1f ms",
+             desc.resolution, desc.resolution, desc.size, elapsedMs(t0));
+    }
+    {
+        // 格子の差し替えと dirty は同じロックの中で: 描画スレッドは dirty を
+        // 見たのと同じロックの中で格子を取り出すので、「新しい dirty と古い
+        // 格子」の組を見ることが無い。ロック順は objects → terrainField（末端）。
+        std::lock_guard<std::mutex> lk(objectsMutex_);
+        terrain_ = desc;  // 無しでも値は覚えておく（/scene の欄に出す）
+        hasTerrain_ = hasTerrain;
+        if (shapeChanged || (had && !hasTerrain)) {
+            std::lock_guard<std::mutex> fl(terrainFieldMutex_);
+            terrainField_ = hasTerrain ? field : nullptr;
+            terrainMeshDirty_ = true;  // 無しになったときは描画側が外す
+        }
+        if (surfaceChanged) terrainSurfaceDirty_ = true;
+    }
+
+    // テレインの有無は系の種類を変えうる（kTerrainForcesCore）。作り直したら
+    // テレインの当たり判定もそこで組み直し済みなので、二重に作らない
+    // （200 万三角形の構築を 2 回払わない）。
+    const bool rebuilt = syncBackend();
+    if (!rebuilt && (shapeChanged || had != hasTerrain)) rebuildTerrainBody();
+}
+
+void Scene::rebuildTerrainBody() {
+    // 古いテレインは退場（地面・オブジェクトの作り直しと同じ disableBody。
+    // Core では系から本当に外れる）。
+    if (terrainPhysId_ != GameObject::kInvalidId) {
+        physics_.disableBody(terrainPhysId_);
+        terrainPhysId_ = GameObject::kInvalidId;
+    }
+    if (!hasTerrain_) return;
+    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField_;
+    if (!field || !field->valid()) return;
+
+    const auto t0 = std::chrono::steady_clock::now();
+    wizengine::terrain::CollisionMesh mesh = field->buildCollisionMesh();
+    std::vector<ChVector3d> vertices;
+    vertices.reserve(mesh.vertices.size());
+    for (const auto& v : mesh.vertices) vertices.emplace_back(v[0], v[1], v[2]);
+    // 詰め替えたら元の頂点はすぐ手放す（解像度 1024 で約 25 MB）。
+    std::vector<std::array<double, 3>>().swap(mesh.vertices);
+    const double meshMs = elapsedMs(t0);
+
+    // 頂点はワールド座標なので、ボディは原点・回転なしの固定。材質は既定
+    // （BodyOptions{} = シーン設定の共有材質 = 地面と同じ）。登録は
+    // addTriangleMesh → finishBody → registerBody（bindCollision）なので、
+    // 走行中に作っても衝突系に入る。
+    const auto t1 = std::chrono::steady_clock::now();
+    const std::size_t id =
+        physics_.addTriangleMesh(vertices, mesh.triangles, 1000.0, ChVector3d(0, 0, 0),
+                                 QUNIT, /*fixed*/ true);
+    const double physMs = elapsedMs(t1);
+    if (id == PhysicsWorld::kInvalidId) {
+        LOGW("scene", "terrain: triangle-mesh collision is not available in this "
+                      "Chrono build - the terrain is visible but nothing collides with it");
+        return;
+    }
+    terrainPhysId_ = id;
+    LOGI("scene", "terrain collision: %zu triangles, %zu vertices (mesh %.1f ms, "
+                  "physics %.1f ms) on the %s backend",
+         mesh.triangles.size(), vertices.size(), meshMs, physMs, physics_.backendName());
+}
+
+std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainField() const {
+    std::lock_guard<std::mutex> fl(terrainFieldMutex_);
+    return terrainField_;
+}
+
+bool Scene::terrainRaycast(const double origin[3], const double dir[3], double maxDist,
+                           double& t, double normal[3]) const {
+    // 格子は共有ポインタで受け取ってからロックの外で辿る（差し替えられても
+    // 手元の格子は生きている）。
+    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
+    if (!field) return false;
+    const wizengine::terrain::Vec3 o{origin[0], origin[1], origin[2]};
+    const wizengine::terrain::Vec3 d{dir[0], dir[1], dir[2]};
+    double hitT = 0.0;
+    wizengine::terrain::Vec3 n;
+    // 判定の戻り値は一度変数に受けてから使う（出力引数と同じ式に並べない規約）。
+    const bool hit = field->raycast(o, d, maxDist, hitT, n);
+    if (!hit) return false;
+    t = hitT;
+    normal[0] = n.x;
+    normal[1] = n.y;
+    normal[2] = n.z;
+    return true;
+}
+
 // 描画設定（文書の <visual>）。実体（Filament の View / Camera /
 // ColorGrading）を触るのは RENDER スレッドなので、ここは設計値を置いて
 // dirty を立てるだけ - 地面・環境光とまったく同じ扱い。
@@ -1400,7 +1545,12 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         editor_.clearSel();
         editor_.setSceneFile("");
         editor_.setStatus("シーンを空にしました");
-        syncBackend();  // Core 専用の物もソフトボディも無くなれば既定へ戻す
+        // テレインも初期値（= 無し）へ。地面が既定へ戻るのと同じ扱い。
+        // setTerrain は最後に syncBackend を呼ぶ（Core 専用の物もソフト
+        // ボディもテレインも無くなれば既定へ戻す）ので、ステータスの後に
+        // 置く - 系を切り替えたときは「物理を切り替えました」が残る（以前の
+        // 末尾の syncBackend と同じ順序）。
+        setTerrain(false, ed::TerrainDesc{});
         snapshot();
         return;
     }

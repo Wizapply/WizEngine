@@ -25,6 +25,9 @@
 
 namespace wizengine {
 class Renderer;
+namespace terrain {
+class HeightField;
+}
 }
 
 // One scene tying physics bodies to their renderables, split for threading:
@@ -174,6 +177,21 @@ public:
     // ケーブル（FEA）の節点位置のスナップショット（RENDER スレッド用。
     // シミュレートしていないときは空 = 設計値の直線で描く）。
     bool latestCable(std::size_t index, std::vector<float>& out);
+
+    // ---- テレイン（文書の <terrain>）--------------------------------------
+    // 高さ格子の実体（読み取り専用）。無ければ nullptr。格子は差し替えるたびに
+    // 新しく作る（中身は書き換えない）ので、受け取った shared_ptr はそのまま
+    // 別スレッドで読み続けてよい。どのスレッドから呼んでもよい（専用の
+    // 末端ロック terrainFieldMutex_ だけを取る = 他のロックの中から呼べる）。
+    std::shared_ptr<const wizengine::terrain::HeightField> terrainField() const;
+    // レイと地表の交差（HeightField::raycast。車輪のレイ用）。テレインが無い・
+    // 当たらなければ false で、t / normal（normal は x, y, z の 3 要素）は
+    // 触らない。スレッドの扱いは terrainField() と同じ。
+    bool terrainRaycast(const double origin[3], const double dir[3], double maxDist,
+                        double& t, double normal[3]) const;
+    // テレインの物理ボディ番号（無ければ kInvalidId）。接触の相手を「地面」と
+    // 見なしたい側（イベントの衝突・車両の診断）用。PHYSICS スレッド専用。
+    std::size_t terrainPhysId() const { return terrainPhysId_; }
 
     // Pick the object under a screen position, given in normalised device
     // coords (x, y in [-1, 1], y up), through the given camera. Selects it (or
@@ -350,8 +368,9 @@ private:
     // 文書が要求するバックエンドと接触の解き方。reason には Core を要する
     // 理由、または規模で Multicore を選んだ理由（英語、ログ用）。
     PhysicsBackend requiredBackend(ContactMethod& contact, std::string& reason);
-    // 要求と今の系が違えば作り直す（rebuildPhysicsWorld）。
-    void syncBackend();
+    // 要求と今の系が違えば作り直す（rebuildPhysicsWorld）。作り直したら true
+    // （そのときはテレインの当たり判定も組み直し済み）。
+    bool syncBackend();
     // 系をまるごと作り直し、地面・全オブジェクト（設計値から）・シミュレート
     // 中ならジョイントとケーブルも組み直す。
     void rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact);
@@ -442,6 +461,26 @@ private:
     // RENDER thread: 見える地面の作り直し（applyToRenderer のロック中）。
     void syncGround();
 
+    // テレインの差し替え（PHYSICS thread）。desc は clampTerrain してから
+    // 使う。形（大きさ・解像度・高さ・位置・ノイズ）が変わったら高さ格子を
+    // 作り直し、当たり判定もその場で作り直す（段階 1）。表面（テクスチャ・
+    // 色・材質）だけの変更は描画の dirty だけ。hasTerrain = false で両方を
+    // 消す。最後に必ず syncBackend を呼ぶ（テレインは Core を要する）ので、
+    // 読込では他の中身を作り終えてから呼ぶこと。
+    void setTerrain(bool hasTerrain, const wizengine::editor::TerrainDesc& desc);
+    // テレインの当たり判定（固定の三角メッシュ）を今の高さ格子から作り直す。
+    // 古いボディは disableBody（地面の作り直しと同じ流儀）。テレインが
+    // 無ければ古いボディを外すだけ。PHYSICS thread。
+    void rebuildTerrainBody();
+    // RENDER thread: テレインの見た目を反映する。applyToRenderer が
+    // objectsMutex_ の中で dirty と値を取り出し、**ロックを外してから**呼ぶ
+    // （全チャンクのメッシュ化とアップロード・テクスチャの読込は重い）。
+    // rebuildMesh: チャンクを作り直す（enabled = false なら外す）。
+    // updateSurface: 材質だけ入れ直す。
+    void syncTerrain(bool rebuildMesh, bool updateSurface, bool enabled,
+                     const wizengine::editor::TerrainDesc& desc,
+                     const std::shared_ptr<const wizengine::terrain::HeightField>& field);
+
     PhysicsWorld& physics_;
     wizengine::Renderer& renderer_;
     std::vector<std::unique_ptr<CameraObject>> cameras_;
@@ -489,6 +528,24 @@ private:
     bool groundDirty_ = true;  // 初回の applyToRenderer が見た目を作る
     bool envDirty_ = true;
     bool renderDirty_ = true;
+    // テレイン（文書の <terrain>）。地面と同じ扱い: 書くのは物理スレッド
+    // （setTerrain）、desc・有無・dirty は objectsMutex_ の下。描画は RENDER
+    // スレッドが applyToRenderer で dirty を拾い、重い作業（全チャンクの
+    // メッシュ化とアップロード・テクスチャの読込）は**ロックを外してから**
+    // 行う（環境光と同じ）。
+    wizengine::editor::TerrainDesc terrain_;
+    bool hasTerrain_ = false;
+    bool terrainMeshDirty_ = false;     // 形が変わった = チャンクを作り直す
+    bool terrainSurfaceDirty_ = false;  // 表面（テクスチャ・色・材質）だけ
+    // 高さ格子の実体。作り直すたびに新しい物へ差し替える（中身は書き換え
+    // ない）ので、取り出した shared_ptr は他スレッドで読み続けてよい。
+    // ポインタの差し替えと取り出しだけを terrainFieldMutex_（末端のロック:
+    // これを持ったまま他のロックを取らない）が守る - 車輪のレイが物理
+    // スレッドから毎ステップ引くので、objectsMutex_ とは分けてある。
+    std::shared_ptr<const wizengine::terrain::HeightField> terrainField_;
+    mutable std::mutex terrainFieldMutex_;
+    // テレインの物理ボディ（固定の三角メッシュ）。物理スレッド専用。
+    std::size_t terrainPhysId_ = GameObject::kInvalidId;
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る
     std::mutex poseMutex_;
     std::vector<BodyTransform> latestPoses_;  // one per box, in box order

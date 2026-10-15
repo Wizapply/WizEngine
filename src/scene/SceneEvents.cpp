@@ -258,12 +258,19 @@ void Scene::runEventGraph(double dt) {
             int a = 0, b = 0;
             const auto ia = byPhys.find(c.a);
             const auto ib = byPhys.find(c.b);
+            // テレインは地面（-1）と同じ扱い: 「地面に落ちた」を書いたイベントが
+            // 起伏のある地面でも同じように鳴る。
+            auto isGround = [this](std::size_t id) {
+                return id == groundPhysId_ ||
+                       (terrainPhysId_ != GameObject::kInvalidId && id == terrainPhysId_);
+            };
             if (ia != byPhys.end()) a = ia->second;
-            else if (c.a == groundPhysId_) a = -1;
+            else if (isGround(c.a)) a = -1;
             else continue;  // 退場済みボディや静的メッシュは対象外
             if (ib != byPhys.end()) b = ib->second;
-            else if (c.b == groundPhysId_) b = -1;
+            else if (isGround(c.b)) b = -1;
             else continue;
+            if (a == -1 && b == -1) continue;  // 床とテレイン（どちらも固定）
             NewPair np;
             np.a = a;
             np.b = b;

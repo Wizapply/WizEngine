@@ -123,6 +123,10 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     // 地面と環境光（Inspector の World 節が編集する）。
     j["ground"] = ed::toJson(ground_);
     j["environment"] = ed::toJson(environment_);
+    // テレイン（World 節の Terrain 欄）。値は無しのときも直前の設定を出す
+    // （チェックを入れ直したときに欄が既定値へ飛ばないように）。
+    j["hasTerrain"] = hasTerrain_;
+    j["terrain"] = ed::toJson(terrain_);
     // 描画設定（Inspector の「描画」節）。文書の <visual> と同じ値。
     j["render"] = ed::toJson(render_);
     j["objects"] = nlohmann::json::array();
@@ -309,6 +313,9 @@ ed::SceneDocument Scene::document() {
     doc.hasEnvironment = true;
     doc.render = render_;
     doc.hasVisual = true;
+    // テレイン。無ければ節を書かない（hasTerrain = false = 読み戻しても無し）。
+    doc.hasTerrain = hasTerrain_;
+    if (hasTerrain_) doc.terrain = terrain_;
 
     // ライト（削除済みは詰める。イベントノードがライト番号を参照するので、
     // オブジェクトと同じく詰めた先への対応表を持つ）。
@@ -597,8 +604,16 @@ void Scene::loadDocument(const ed::SceneDocument& doc) {
         resetEventsToDefaults();
     }
 
+    // テレイン。節の無い文書はテレイン無し（前のシーンのテレインは消す）。
+    // setTerrain は最後に syncBackend を呼ぶので、他の中身（オブジェクト・
+    // ジョイント・ケーブル・設定）を全部入れたここで呼ぶ - 途中の状態で
+    // 系の種類を判定して二度作り直さないため。同じテレインのままの読み直し
+    // （形が同じ）なら格子も当たり判定も作り直さない。
+    setTerrain(doc.hasTerrain, doc.hasTerrain ? doc.terrain : ed::TerrainDesc{});
+
     // 文書が Core 専用の機能を使っていれば系を切り替える（使わなくなって
-    // いれば既定へ戻す）。シミュレート中ならジョイントとケーブルも張り直す。
+    // いれば既定へ戻す）。setTerrain の中で済んでいるので、ここは確認だけ。
+    // シミュレート中ならジョイントとケーブルも張り直す。
     syncBackend();
     if (editor_.mode() == ed::AppMode::Simulate) {
         buildJoints();
@@ -610,8 +625,8 @@ void Scene::loadDocument(const ed::SceneDocument& doc) {
 // 文書の中身を今のシーンへ足す（取込用）。読込（loadDocument）と違って
 // 何も消さない: メッシュ・プレハブは名前が重ならないものだけ足し、ボディは
 // 後ろに追加、ジョイント・ケーブルの参照は追加ぶんの先頭番号だけずらす。
-// 設定（option / visual / ground / ライト / カメラ / イベント）は文書に
-// あっても無視する（取り込む物の「構造」だけが欲しいので）。
+// 設定（option / visual / ground / terrain / ライト / カメラ / イベント）は
+// 文書にあっても無視する（取り込む物の「構造」だけが欲しいので）。
 void Scene::appendDocument(const ed::SceneDocument& doc) {
     {
         std::lock_guard<std::mutex> lk(objectsMutex_);
