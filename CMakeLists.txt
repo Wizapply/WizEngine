@@ -326,7 +326,9 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererShapes.cpp
     src/render/RendererMeshes.cpp
     src/render/RendererLines.cpp
-    src/render/RendererGround.cpp)
+    src/render/RendererGround.cpp
+    src/render/RendererTerrain.cpp
+    src/render/RendererTextures.cpp)
 set(WIZ_STREAMING_SOURCES
     src/streaming/HttpServer.cpp
     src/streaming/VideoStreamer.cpp

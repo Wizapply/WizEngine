@@ -11,6 +11,8 @@
 //   RendererMeshes.cpp    : 立方体・球・円柱のメッシュ生成
 //   RendererLines.cpp     : 線（グラブ線・ジョイント線・太線バッチ・細線セット）
 //   RendererGround.cpp    : 地面
+//   RendererTerrain.cpp   : テレイン（チャンク分割の高さメッシュ）
+//   RendererTextures.cpp  : テクスチャ読込（地面とテレインで共用）
 
 #include "render/Renderer.h"
 #include "core/Log.h"
@@ -86,5 +88,22 @@ inline filament::LightManager::ShadowOptions shadowOptionsFrom(
     }
     return o;
 }
+
+// 画像が読めない・指定が空のときの代わりの絵。
+//   Checker … 2 x 2 の市松模様（地面の従来の見た目）
+//   White   … 白 1 画素 = baseColor の単色
+enum class TextureFallback { Checker, White };
+
+// assets/ 相対の画像（PNG/JPEG/TGA/BMP）を sRGB の 2D テクスチャとして作り、
+// ミップ列を自前のボックスフィルタで生成してアップロードする（generateMipmaps
+// は版によって usage フラグが要るため使わない）。読めない・空なら fallback の
+// 絵（リニア RGBA8）で作り、指定があったのに読めなければ警告する。失敗で
+// 止めない（テクスチャはシーン文書 = 手で書ける値なので降格する）。
+// label はログの主語（"ground" なら "ground texture: ..."）。戻り値は呼び出し側が
+// engine.destroy する。RendererTextures.cpp。
+filament::Texture* loadTextureRGBA(filament::Engine& engine,
+                                   const std::string& texturePath,
+                                   const char* label,
+                                   TextureFallback fallback);
 
 }  // namespace render_detail
