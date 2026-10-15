@@ -191,6 +191,11 @@ public:
                         double& t, double normal[3]) const;
     // テレインの物理ボディ番号（無ければ kInvalidId）。接触の相手を「地面」と
     // 見なしたい側（イベントの衝突・車両の診断）用。PHYSICS スレッド専用。
+    // **エディタ中は古いボディを指すことがある**: edit.terrain の当たり判定の
+    // 作り直しは落ち着くまで遅らせる（/scene の terrainPending が true の間）
+    // ので、その間のボディは変更前の形のまま（シミュレート開始で必ず揃う）。
+    // エディタ中の配置などで今の地表が要るなら、こちらではなく
+    // terrainRaycast（高さ格子 = 常に最新）を使うこと。
     std::size_t terrainPhysId() const { return terrainPhysId_; }
 
     // Pick the object under a screen position, given in normalised device
@@ -462,16 +467,34 @@ private:
     void syncGround();
 
     // テレインの差し替え（PHYSICS thread）。desc は clampTerrain してから
-    // 使う。形（大きさ・解像度・高さ・位置・ノイズ）が変わったら高さ格子を
-    // 作り直し、当たり判定もその場で作り直す（段階 1）。表面（テクスチャ・
-    // 色・材質）だけの変更は描画の dirty だけ。hasTerrain = false で両方を
-    // 消す。最後に必ず syncBackend を呼ぶ（テレインは Core を要する）ので、
-    // 読込では他の中身を作り終えてから呼ぶこと。
-    void setTerrain(bool hasTerrain, const wizengine::editor::TerrainDesc& desc);
+    // 使う。形（大きさ・解像度・高さ・位置・ノイズ）が変わったら高さ格子と
+    // 描画の dirty はすぐ更新する。表面（テクスチャ・色・材質）だけの変更は
+    // 描画の dirty だけ。hasTerrain = false で両方を消す（当たり判定も即外す）。
+    // 当たり判定（最大 200 万三角形）の作り直しは deferCollision で変わる:
+    //   false … その場で作る。未反映のぶん（terrainPhysDirty_）もここで済ます
+    //           ＝戻ったときは必ず当たり判定が今の格子と一致している。
+    //   true  … terrainPhysDirty_ を立ててタイマー（kTerrainRebuildDelay）を
+    //           積み直すだけ。stepEditor が落ち着いてから作る（edit.terrain の
+    //           スライダー連打用 = エディタモード中だけ使う。ソフトボディの
+    //           softRebuildTimer と同じ流儀）。シミュレート開始（enterMode）は
+    //           未反映なら必ず作ってから走らせる。
+    // 最後に必ず syncBackend を呼ぶ（テレインは Core を要する）ので、読込では
+    // 他の中身を作り終えてから呼ぶこと。系を作り直した場合は、その中
+    // （rebuildPhysicsWorld → rebuildTerrainBody）で当たり判定も組まれる。
+    void setTerrain(bool hasTerrain, const wizengine::editor::TerrainDesc& desc,
+                    bool deferCollision = false);
     // テレインの当たり判定（固定の三角メッシュ）を今の高さ格子から作り直す。
     // 古いボディは disableBody（地面の作り直しと同じ流儀）。テレインが
-    // 無ければ古いボディを外すだけ。PHYSICS thread。
+    // 無ければ古いボディを外すだけ。どちらでも未反映の印（terrainPhysDirty_）
+    // とタイマーは消える。PHYSICS thread（objectsMutex_ を持たずに呼ぶこと）。
+    // 例外は投げない: 構築の失敗（bad_alloc・Chrono の例外）は中で捕まえて
+    // LOGE とステータスに出し、当たり判定の無いテレイン（terrainPhysId_ =
+    // kInvalidId、高さ格子と見た目はそのまま）で続ける。
     void rebuildTerrainBody();
+    // 上の本体（例外をそのまま投げる）。rebuildTerrainBody からだけ呼ぶ。
+    void rebuildTerrainBodyUnguarded();
+    // 当たり判定の未反映の印を書く（/scene に出すので objectsMutex_ の下）。
+    void setTerrainPhysDirty(bool dirty);
     // RENDER thread: テレインの見た目を反映する。applyToRenderer が
     // objectsMutex_ の中で dirty と値を取り出し、**ロックを外してから**呼ぶ
     // （全チャンクのメッシュ化とアップロード・テクスチャの読込は重い）。
@@ -546,6 +569,12 @@ private:
     mutable std::mutex terrainFieldMutex_;
     // テレインの物理ボディ（固定の三角メッシュ）。物理スレッド専用。
     std::size_t terrainPhysId_ = GameObject::kInvalidId;
+    // 当たり判定が今の高さ格子より古い（エディタ中の edit.terrain で作り直しを
+    // 遅らせている）。書くのは物理スレッドだけで objectsMutex_ の下（/scene の
+    // terrainPending に出す）。物理スレッドは読むときにロック不要。
+    bool terrainPhysDirty_ = false;
+    // 作り直しまでの残り秒数（stepEditor が減らす）。物理スレッド専用。
+    double terrainRebuildTimer_ = 0.0;
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る
     std::mutex poseMutex_;
     std::vector<BodyTransform> latestPoses_;  // one per box, in box order

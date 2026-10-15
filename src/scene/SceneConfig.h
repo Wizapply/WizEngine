@@ -213,6 +213,11 @@ constexpr bool kTerrainForcesCore = true;
 // でも 1 辺 16 チャンク = Renderer::kMaxTerrainChunks（64）以内に収まる
 // （Scene.cpp が static_assert で照合する）。
 constexpr int kTerrainChunkQuads = 64;
+// エディタ中の edit.terrain で形が変わってから、当たり判定を作り直すまでの
+// 待ち時間（秒）。この間に次の変更が来たら待ち直す = スライダーを動かして
+// いる間は作らない（ソフトボディの拡縮の 0.35 s と同じ考え方）。高さ格子と
+// 見た目は待たずに更新する。シミュレート開始時は待たずに必ず作る。
+constexpr double kTerrainRebuildDelay = 0.35;
 
 // In web mode, do nothing at all while no browser holds the viewer session:
 // no physics steps, no rendering, no encoding. Set false to keep simulating in

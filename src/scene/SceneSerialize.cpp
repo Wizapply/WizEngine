@@ -127,6 +127,9 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     // （チェックを入れ直したときに欄が既定値へ飛ばないように）。
     j["hasTerrain"] = hasTerrain_;
     j["terrain"] = ed::toJson(terrain_);
+    // 当たり判定が見た目より古い（エディタ中の edit.terrain が落ち着くのを
+    // 待っている）間 true。シミュレート開始で必ず揃う。
+    j["terrainPending"] = terrainPhysDirty_;
     // 描画設定（Inspector の「描画」節）。文書の <visual> と同じ値。
     j["render"] = ed::toJson(render_);
     j["objects"] = nlohmann::json::array();

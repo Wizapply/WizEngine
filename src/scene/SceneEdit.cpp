@@ -519,7 +519,8 @@ bool sameTerrainSurface(const ed::TerrainDesc& a, const ed::TerrainDesc& b) {
 
 }  // namespace
 
-void Scene::setTerrain(bool hasTerrain, const ed::TerrainDesc& descIn) {
+void Scene::setTerrain(bool hasTerrain, const ed::TerrainDesc& descIn,
+                       bool deferCollision) {
     const ed::TerrainDesc desc = ed::clampTerrain(descIn);
     // terrain_ / hasTerrain_ / terrainField_ を書くのはこのスレッドだけなので、
     // 読むだけならロックは要らない（地面と同じ約束）。
@@ -555,18 +556,67 @@ void Scene::setTerrain(bool hasTerrain, const ed::TerrainDesc& descIn) {
     }
 
     // テレインの有無は系の種類を変えうる（kTerrainForcesCore）。作り直したら
-    // テレインの当たり判定もそこで組み直し済みなので、二重に作らない
-    // （200 万三角形の構築を 2 回払わない）。
+    // テレインの当たり判定もそこで組み直し済み（未反映の印も消えている）
+    // なので、二重に作らない（200 万三角形の構築を 2 回払わない）。
     const bool rebuilt = syncBackend();
-    if (!rebuilt && (shapeChanged || had != hasTerrain)) rebuildTerrainBody();
+    if (rebuilt) return;
+    if (!hasTerrain) {
+        // 外すのは安い（disableBody だけ）ので待たない。未反映の印も消える。
+        if (had) rebuildTerrainBody();
+        return;
+    }
+    if (deferCollision) {
+        // 当たり判定は落ち着いてから（stepEditor）。古いボディはそれまで
+        // 残す - エディタ中は積分しないので、形が古くても何も起きない。
+        if (shapeChanged) {
+            setTerrainPhysDirty(true);
+            terrainRebuildTimer_ = kTerrainRebuildDelay;  // 来るたびに待ち直す
+        }
+        return;
+    }
+    // その場で作る。前に遅らせたぶんが残っていればそれもここで済ます。
+    if (shapeChanged || terrainPhysDirty_) rebuildTerrainBody();
+}
+
+void Scene::setTerrainPhysDirty(bool dirty) {
+    std::lock_guard<std::mutex> lk(objectsMutex_);
+    terrainPhysDirty_ = dirty;
 }
 
 void Scene::rebuildTerrainBody() {
-    // 古いテレインは退場（地面・オブジェクトの作り直しと同じ disableBody。
-    // Core では系から本当に外れる）。
-    if (terrainPhysId_ != GameObject::kInvalidId) {
-        physics_.disableBody(terrainPhysId_);
+    // どの経路で作っても（setTerrain・stepEditor・enterMode・系の作り直し）
+    // ここを通ったら当たり判定は今の格子に揃う = 未反映の印を消す。
+    terrainRebuildTimer_ = 0.0;
+    if (terrainPhysDirty_) setTerrainPhysDirty(false);
+    // 例外はここで止める: stepEditor（main の guarded の外）からも呼ばれ、
+    // 200 万三角形の構築は bad_alloc や Chrono の例外を投げうる。失敗したら
+    // 当たり判定は無いまま続ける（高さ格子と見た目はそのまま）。番号は
+    // 先に無効にしてから作るので、途中で投げても古い番号は残らない。
+    try {
+        rebuildTerrainBodyUnguarded();
+    } catch (const std::exception& e) {
         terrainPhysId_ = GameObject::kInvalidId;
+        LOGE("scene", "terrain: building the collision failed (%s) - the terrain is "
+                      "visible but nothing collides with it", e.what());
+        editor_.setStatus(std::string("テレインの当たり判定を作れませんでした（") +
+                          e.what() + "）- 見た目だけ残します");
+    } catch (...) {
+        terrainPhysId_ = GameObject::kInvalidId;
+        LOGE("scene", "terrain: building the collision failed (unknown exception) - the "
+                      "terrain is visible but nothing collides with it");
+        editor_.setStatus("テレインの当たり判定を作れませんでした（不明な例外）- "
+                          "見た目だけ残します");
+    }
+}
+
+void Scene::rebuildTerrainBodyUnguarded() {
+    // 古いテレインは退場（地面・オブジェクトの作り直しと同じ disableBody。
+    // Core では系から本当に外れる）。番号は外す前に手放す（disableBody が
+    // 投げても古い番号を持ち続けない）。
+    if (terrainPhysId_ != GameObject::kInvalidId) {
+        const std::size_t old = terrainPhysId_;
+        terrainPhysId_ = GameObject::kInvalidId;
+        physics_.disableBody(old);
     }
     if (!hasTerrain_) return;
     const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField_;
@@ -1470,6 +1520,29 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             ed::clampGround(ed::groundFromJson(a, ground_));
         setGroundAndEnvironment(g, environment_);
         editor_.setStatus("地面を更新");
+        return;
+    }
+
+    if (op.kind == "terrain") {
+        // 送られてきたキーだけ上書き（edit.ground と同じ部分更新）。テレインが
+        // 無い間も値は覚えている（terrain_）ので、enabled = true だけを送れば
+        // 直前の設定（一度も無ければ既定値）で作られる。enabled を送らなければ
+        // 有無はそのまま（無い間に送った値は次に有効にしたときに効く）。
+        const ed::TerrainDesc t = ed::clampTerrain(ed::terrainFromJson(a, terrain_));
+        bool on = hasTerrain_;
+        if (a.contains("enabled") && a["enabled"].is_boolean()) on = a["enabled"].get<bool>();
+        // エディタ中は当たり判定の作り直しを落ち着くまで遅らせる（スライダーの
+        // 連打で 200 万三角形を毎回作らない。stepEditor / enterMode が作る）。
+        // シミュレート中は即作る - 走っている物が古い形に当たり続けないため。
+        const bool defer = editor_.mode() == ed::AppMode::Editor;
+        // ステータスは setTerrain の前に置く: 有無の切替で系が変わったときは
+        // syncBackend の「物理を切り替えました」が上書きして残る（clear と同じ順序）。
+        if (on == hasTerrain_) {
+            editor_.setStatus(on ? "テレインを更新" : "テレインの設定を更新（無効のまま）");
+        } else {
+            editor_.setStatus(on ? "テレインを有効にしました" : "テレインを無効にしました");
+        }
+        setTerrain(on, t, defer);
         return;
     }
 

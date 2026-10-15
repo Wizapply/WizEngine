@@ -513,6 +513,12 @@ void Scene::stepEditor(double dt) {
         obj.softRebuildTimer -= dt;
         if (obj.softRebuildTimer <= 0.0 && obj.physDirty) rebuildBody(i);
     }
+    // テレインの当たり判定も同じ: edit.terrain が積んだタイマーが切れたら
+    // （＝スライダーが落ち着いたら）作り直す。
+    if (terrainPhysDirty_) {
+        terrainRebuildTimer_ -= dt;
+        if (terrainRebuildTimer_ <= 0.0) rebuildTerrainBody();
+    }
     snapshot();
 }
 
@@ -643,6 +649,10 @@ void Scene::enterMode(ed::AppMode target) {
         for (std::size_t i = 0; i < boxes_.size(); ++i) {
             if (boxes_[i].alive && boxes_[i].physDirty) rebuildBody(i);
         }
+        // テレインの当たり判定がエディタ中の変更を待っている（タイマーが
+        // 切れる前に開始した）なら、走らせる前に必ず作る。系を作り直した
+        // 場合はその中で作られて印は消えている。
+        if (terrainPhysDirty_) rebuildTerrainBody();
         // 設計どおりの姿勢から始める。ジョイントはここで作り直す:
         // エディタで物を動かしたあとも、拘束が今の位置に合った状態で張られる。
         restoreAuthoredPoses();
