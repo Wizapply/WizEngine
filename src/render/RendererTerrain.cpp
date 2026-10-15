@@ -16,17 +16,6 @@ using namespace render_detail;
 
 namespace wizengine {
 
-namespace {
-
-// 1 チャンクの 1 辺のクアッド数の上限。頂点バッファ 1 本が大きくなりすぎない
-// 程度（256 で 66049 頂点）。想定は 64。
-constexpr int kMaxTerrainQuads = 256;
-// チャンク数の上限（1 辺）。想定より十分大きく、誤った引数で数万個の
-// レンダラブルを作らないための安全弁。
-constexpr int kMaxTerrainChunks = 64;
-
-}  // namespace
-
 bool Renderer::addTerrain(int chunksX, int chunksZ, int quadsPerChunk) {
     if (chunksX < 1 || chunksZ < 1 || chunksX > kMaxTerrainChunks ||
         chunksZ > kMaxTerrainChunks || quadsPerChunk < 1 ||

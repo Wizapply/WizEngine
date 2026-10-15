@@ -244,6 +244,14 @@ public:
     // 通常レイヤ。材質は setTerrainSurface（呼ぶまでは白・艶消し）。
     // 失敗（引数が不正）は false。すべて RENDER スレッド。
     bool addTerrain(int chunksX, int chunksZ, int quadsPerChunk);
+    // addTerrain の引数の上限。quadsPerChunk は頂点バッファ 1 本が大きく
+    // なりすぎない程度（256 で 66049 頂点、想定は 64）、チャンク数（1 辺）は
+    // 誤った引数で数万個のレンダラブルを作らないための安全弁。
+    // terrain::kMaxChunkQuads（src/terrain/HeightField.h）と同じ値に保つこと
+    // （Renderer は src/terrain を知らないので、両方を見る Scene が static_assert
+    // で照合する）。
+    static constexpr int kMaxTerrainQuads = 256;
+    static constexpr int kMaxTerrainChunks = 64;
     // チャンク (cx, cz) の頂点（と、空でなければインデックス）を送り直し、
     // バウンディングボックスも頂点から作り直す。配列の長さが合わなければ
     // 警告して何もしない（false）。

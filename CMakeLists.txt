@@ -284,6 +284,7 @@ else()
 endif()
 
 # stb_image: decodes PNG/JPEG/TGA/BMP for the ground texture.
+# stb_perlin: テレインの高さのノイズ（src/terrain/TerrainNoise.cpp）。
 if(EXISTS "${THIRD_PARTIES_DIR}/stb/stb_image.h")
     list(APPEND WIZ_DEP_INCLUDE_DIRS "${THIRD_PARTIES_DIR}/stb")
     message(STATUS "WizEngine: stb_image -> submodule")
@@ -291,6 +292,9 @@ else()
     wiz_download_header(
         "https://raw.githubusercontent.com/nothings/stb/master/stb_image.h"
         "${DEPS_INC}/stb_image.h")
+    wiz_download_header(
+        "https://raw.githubusercontent.com/nothings/stb/master/stb_perlin.h"
+        "${DEPS_INC}/stb_perlin.h")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -306,6 +310,7 @@ endif()
 #   scene/      Scene の実体管理・エディタ状態・カメラ・数学の橋渡し
 #   components/ ブラウザのコマンドを受ける SceneComponent 群
 #   vehicle/    車両モデルとノード式（純粋な数値ライブラリ。tests/vehicle が使う）
+#   terrain/    テレインの高さ格子（純粋な計算。tests/terrain が使う）
 set(WIZ_CORE_SOURCES
     src/core/AssetError.cpp
     src/core/CpuAffinity.cpp
@@ -361,6 +366,9 @@ set(WIZ_VEHICLE_SOURCES
     src/vehicle/VehicleTypes.cpp
     src/vehicle/VehicleXml.cpp
     src/vehicle/WheelController.cpp)
+set(WIZ_TERRAIN_SOURCES
+    src/terrain/HeightField.cpp
+    src/terrain/TerrainNoise.cpp)
 
 add_executable(wizengine
     src/main.cpp
@@ -371,7 +379,8 @@ add_executable(wizengine
     ${WIZ_DOCUMENT_SOURCES}
     ${WIZ_SCENE_SOURCES}
     ${WIZ_COMPONENT_SOURCES}
-    ${WIZ_VEHICLE_SOURCES})
+    ${WIZ_VEHICLE_SOURCES}
+    ${WIZ_TERRAIN_SOURCES})
 # ノード式の実行エンジン（LuaJIT）。無ければ C++ の参照インタプリタに落ちる。
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/LuaJIT.cmake)
 wiz_link_luajit(wizengine)
@@ -608,13 +617,13 @@ endif()
 # configure できる（tests/vehicle/CMakeLists.txt 参照）。本体と一緒に回すなら
 #   cmake -B build -DWIZ_BUILD_TESTS=ON && cmake --build build && ctest --test-dir build
 # ---------------------------------------------------------------------------
-option(WIZ_BUILD_TESTS "Build the unit tests (vehicle, soft body, document) alongside the engine" OFF)
+option(WIZ_BUILD_TESTS "Build the unit tests (vehicle, soft body, document, terrain) alongside the engine" OFF)
 if(WIZ_BUILD_TESTS)
     enable_testing()
     # テストは単独でも configure できる（tests/<名前>/CMakeLists.txt）。
     # ここでは「あるものだけ」取り込む - 片方だけ持っているクローンでも
     # -DWIZ_BUILD_TESTS=ON が configure エラーにならないように。
-    foreach(_test vehicle softbody document)
+    foreach(_test vehicle softbody document terrain)
         if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/${_test}/CMakeLists.txt)
             add_subdirectory(tests/${_test})
         endif()
