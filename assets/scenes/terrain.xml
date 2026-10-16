@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- テレイン（<terrain>）の見本シーン: なだらかな丘 + 車 + 斜面の箱・球。
+
+     アセットパネルのタイル「terrain」をダブルクリックで読み込み、
+     シミュレートを開始して W / S / A / D（前・後ろ / 左右）、Space
+     （ハンドブレーキ）で運転する。車は丘の麓（西側の谷）に北（-Z）を
+     向いて置いてある。置いた場所は前（-Z）へ 2° ほど下っていて、6 m
+     ほど先の谷底から登り坂になる（車の位置から -Z へ約 30 m 進むと約 3 m
+     上がる）。ハンドブレーキは掛けていないので、シミュレートを開始すると
+     車はゆっくり前へ転がり出し、谷底あたりで行き来する。止めておくなら
+     Space（ハンドブレーキ）、登るなら W。
+     東には頂上が高さ約 8 m の丘があり、その西斜面（傾き約 8.5〜11.5°）に
+     箱と球を置いてある - シミュレートで球は転がり落ち、摩擦の小さい箱は
+     滑って谷で止まる（摩擦がシーン既定の箱は斜面に留まる）。
+
+     テレインの外周（中心から ±80 m）は側面の無い切り落としの崖: 縁の
+     地表は y = 0 の地面より 0.2〜7 m ほど高く、車で縁から出ると下の
+     地面へ落ちる。
+
+     テレインは worldbody 直下の <terrain>（書式は src/document/SceneDocument.h
+     の冒頭）。size は**全幅**（<ground size> の半寸法とは違う）、pos の y は
+     最低点。地形は seed などから毎回同じ形に生成されるので、物の置き高さは
+     src/terrain/HeightField の heightAt でその地点の地表を計算し、少し上に
+     している（パラメータを変えたら置き高さも見直すこと）。
+     <ground> はテレインの外側の受け（y = 0 の平面）として残してある。
+     テレインのあるシーンは物理が Core バックエンドになる。 -->
+<wizengine model="terrain" version="4">
+  <!-- シミュレート設定。書いておかないと直前に開いていたシーンの設定
+       （摩擦・レート・ソルバ・スリープなど）を引き継ぎ、「箱が滑る /
+       留まる」の見え方が変わるので、全項目を既定値で明示する。
+       摩擦 0.6 と合成 min の組で、friction="0.1" の箱だけが斜面を滑る。 -->
+  <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60" envelope="0.002"
+          recovery="0.2" friction="0.6" restitution="0" lineardamping="0.15"
+          angulardamping="0.6" sleeping="true" integrator="euler" solver="bb"
+          combine="min" contact="nsc"/>
+  <!-- 「どう撮るか」。影の届く距離はカメラの描画距離（2000 m）で決まる
+       （shadowFar の既定）。その範囲に影を出しつつ近くの影の解像度を
+       保つため、平行光の影をカスケード 3 分割にしてある。 -->
+  <visual>
+    <quality shadowMap="2048" cascades="3" shadow="pcf" contactShadows="false"
+             msaa="4" taa="false" fxaa="true"/>
+    <postprocess enabled="true" ssao="true" ssaoIntensity="1" bloom="0.04"
+                 ssr="false" dof="0" dofBlur="1" vignette="0.2"/>
+    <exposure aperture="16" shutter="125" sensitivity="100"/>
+    <grading tonemap="aces" contrast="1.05" saturation="1.05" temperature="0"
+             tint="0"/>
+  </visual>
+  <asset>
+    <event name="pickup">
+      <node id="1" type="onGrab" pos="40 40" target="-1"/>
+      <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+      <wire from="1" to="2"/>
+    </event>
+    <!-- 計算式アセット（🧮）: タイヤの「スリップ → 力」。組み込みの Magic
+         Formula + 摩擦楕円 + 上限 + 緩和長をそのままノードで組んだもの
+         （vehicle_test - -dump-formula の出力）。<tire formula="tire_mf"/> で
+         車両の軸から参照する。ノードエディタで開いて差し替えられる。
+         入出力の約束は src/vehicle/TireFormula.h。 -->
+    <formula name="tire_mf">
+      <node id="1" type="in" name="kappa" pos="40 40"/>
+      <node id="2" type="in" name="alpha" pos="40 100"/>
+      <node id="3" type="in" name="fz" pos="40 160"/>
+      <node id="4" type="in" name="mu" pos="40 220"/>
+      <node id="5" type="in" name="v" pos="40 280"/>
+      <node id="6" type="in" name="bx" pos="40 340"/>
+      <node id="7" type="in" name="cx" pos="40 400"/>
+      <node id="8" type="in" name="ex" pos="40 460"/>
+      <node id="9" type="in" name="by" pos="40 520"/>
+      <node id="10" type="in" name="cy" pos="40 580"/>
+      <node id="11" type="in" name="ey" pos="40 640"/>
+      <node id="12" type="in" name="relax" pos="40 700"/>
+      <node id="13" type="in" name="fxLo" pos="40 760"/>
+      <node id="14" type="in" name="fxHi" pos="40 820"/>
+      <node id="15" type="in" name="fyLo" pos="40 880"/>
+      <node id="16" type="in" name="fyHi" pos="40 940"/>
+      <node id="17" type="mul" pos="260 190"/>
+      <node id="18" type="magic" pos="260 40"/>
+      <node id="19" type="mul" pos="460 40"/>
+      <node id="20" type="magic" pos="260 520"/>
+      <node id="21" type="mul" pos="460 520"/>
+      <node id="22" type="neg" pos="620 520"/>
+      <node id="23" type="ellipse" pos="780 280"/>
+      <node id="24" type="clamp" pos="960 200"/>
+      <node id="25" type="clamp" pos="960 360"/>
+      <node id="26" type="div" pos="620 700"/>
+      <node id="27" type="lag" pos="1140 200"/>
+      <node id="28" type="lag" pos="1140 360"/>
+      <node id="29" type="out" name="fx" pos="1320 200"/>
+      <node id="30" type="out" name="fy" pos="1320 360"/>
+      <wire from="4" to="17"/>
+      <wire from="3" to="17" port="1"/>
+      <wire from="1" to="18"/>
+      <wire from="6" to="18" port="1"/>
+      <wire from="7" to="18" port="2"/>
+      <wire from="8" to="18" port="3"/>
+      <wire from="17" to="19"/>
+      <wire from="18" to="19" port="1"/>
+      <wire from="2" to="20"/>
+      <wire from="9" to="20" port="1"/>
+      <wire from="10" to="20" port="2"/>
+      <wire from="11" to="20" port="3"/>
+      <wire from="17" to="21"/>
+      <wire from="20" to="21" port="1"/>
+      <wire from="21" to="22"/>
+      <wire from="19" to="23"/>
+      <wire from="22" to="23" port="1"/>
+      <wire from="17" to="23" port="2"/>
+      <wire from="23" to="24"/>
+      <wire from="13" to="24" port="1"/>
+      <wire from="14" to="24" port="2"/>
+      <wire from="23" fromPort="1" to="25"/>
+      <wire from="15" to="25" port="1"/>
+      <wire from="16" to="25" port="2"/>
+      <wire from="12" to="26"/>
+      <wire from="5" to="26" port="1"/>
+      <wire from="24" to="27"/>
+      <wire from="26" to="27" port="1"/>
+      <wire from="25" to="28"/>
+      <wire from="26" to="28" port="1"/>
+      <wire from="27" to="29"/>
+      <wire from="28" to="30"/>
+    </formula>
+    <!-- 空気圧の式（🧮）: ソフトタイヤの「体積比 → 圧力」。閉じたメッシュが
+         囲む体積 V と静止体積 V0 から、等温変化 p = max(p0 (V0/V - 1), -p0)
+         で圧力の増分を出す（vehicle_test - -dump-pressure-formula の出力）。
+         <tire pressure="..." pressureFormula="tire_air"/> で参照する。
+         入力は ratio (V/V0), rate, p0, load, deflection, radius、出力は pressure。 -->
+    <formula name="tire_air">
+      <node id="1" type="in" name="ratio" pos="40 40"/>
+      <node id="2" type="in" name="p0" pos="40 160"/>
+      <node id="3" type="const" params="1" pos="40 280"/>
+      <node id="4" type="div" pos="260 40"/>
+      <node id="5" type="sub" pos="420 40"/>
+      <node id="6" type="mul" pos="580 40"/>
+      <node id="7" type="neg" pos="420 160"/>
+      <node id="8" type="max" pos="740 40"/>
+      <node id="9" type="out" name="pressure" pos="900 40"/>
+      <wire from="3" to="4"/>
+      <wire from="1" to="4" port="1"/>
+      <wire from="4" to="5"/>
+      <wire from="3" to="5" port="1"/>
+      <wire from="5" to="6"/>
+      <wire from="2" to="6" port="1"/>
+      <wire from="2" to="7"/>
+      <wire from="6" to="8"/>
+      <wire from="7" to="8" port="1"/>
+      <wire from="8" to="9"/>
+    </formula>
+  </asset>
+  <worldbody>
+    <environment hdr="studio.hdr" intensity="30000"/>
+    <!-- テレインの外側の受け（物理の床は半寸法 150 m、見える地面は半寸法
+         600 m = 遠景の地平まで続く平地）。テレインの最低点（y = 0.05）より
+         わずかに下なので、谷底でちらつかない。 -->
+    <ground size="150" visual="600" texture="textures/ground.png" tile="2"
+            rgba="0.7 0.7 0.68 1"/>
+    <!-- 丘: 160 m 四方（中心は原点）・256 × 256 セル（1 セル 0.625 m）・
+         起伏 8 m。うねりの波長 70 m に細かいオクターブを弱く 3 枚重ねた
+         なだらかな地形で、傾きは最大でも約 15°（最高点は約 8 m）。
+         外周は側面の無い切り落とし（先頭のコメント参照）。 -->
+    <terrain size="160" resolution="256" height="8" pos="0 0.05 0" seed="1"
+             octaves="3" gain="0.35" lacunarity="2" scale="70"
+             texture="textures/ground.png" tile="4" rgba="0.55 0.68 0.42 1"
+             roughness="0.9" metallic="0"/>
+    <!-- 太陽（影あり、カスケード 3）と空からの補助光（影なし）。 -->
+    <light name="sun" type="sun" pos="0 30 0" euler="50 -35 0"
+           diffuse="1 0.97 0.92 1" intensity="100000" castshadow="true"/>
+    <light name="sky" type="sun" pos="0 25 0" euler="30 150 0"
+           diffuse="0.80 0.87 1 1" intensity="20000" castshadow="false"/>
+    <!-- cam0: 南西の高みから、手前の車と奥の丘・斜面の物を見下ろす全景。
+         cam1: 走り出す前の車を後ろ（やや左）から見る位置（固定カメラで、
+         車は追わない）。 -->
+    <camera name="cam0" target="-8 4 -22" azimuth="-50" elevation="12" radius="55"/>
+    <camera name="cam1" target="-25 3.5 -30" azimuth="-20" elevation="15" radius="11"/>
+    <!-- 車（vehicle.xml と同じ車）。地表は (-25, -28) で 2.66 m、4 輪の
+         接地点の最高は 2.87 m（傾き 2〜3°、前の車輪の方が低い）。サスが
+         伸び切ったときのタイヤの下端は車体中心の 0.92 m 下なので、0.3 m
+         ほど浮かせて置き、シミュレート開始で落として座らせる。 -->
+    <body name="car" pos="-25 4.1 -28" euler="0 0 0">
+      <geom type="box" size="0.7 0.25 2.1" mass="1400" rgba="0.85 0.2 0.15 1"/>
+      <vehicle ticks="10" brake="2500" drag="0.7">
+        <engine torque="300" idle="900" max="6500" inertia="0.25"/>
+        <clutch torque="500" engage="1300" full="2200"/>
+        <gearbox ratios="3.6 2.1 1.4 1 0.8" reverse="3.4" final="3.9" up="5800" down="2300"/>
+        <axle z="1.3" y="-0.15" track="1.7" steer="32" driven="false" brake="1">
+          <tire radius="0.42" width="0.3" inertia="1.8" formula="tire_mf" soft="true"
+                stiffness="60000" damping="0.2" segments="28" rows="4"
+                pressure="320000" pressureFormula="tire_air"/>
+        </axle>
+        <axle z="-1.3" y="-0.15" track="1.7" driven="true" brake="0.65" handbrake="1" diff="lsd" lock="250">
+          <tire radius="0.42" width="0.3" inertia="1.8" formula="tire_mf" soft="true"
+                stiffness="60000" damping="0.2" segments="28" rows="4"
+                pressure="320000" pressureFormula="tire_air"/>
+        </axle>
+      </vehicle>
+    </body>
+    <!-- 丘の西斜面（置いた点の傾きは約 8.5〜11.5°、下りはおおむね -X =
+         車のいる谷の向き）。
+         箱は 0.6 m 角・20 kg。friction="0.1"（滑り始める傾きは約 6°）の
+         3 個は滑り落ち、シーン既定の摩擦（0.6）の 1 個は留まる。
+         置き高さ = 中心から ±1.5 m 四方の地表の最高 + 半寸法（球は半径）
+         + 0.2 m（物の外形の真下の地表からは 0.4〜0.55 m 浮く）。 -->
+    <body name="slider0" pos="8 5.8 -28">
+      <geom type="box" size="0.3 0.3 0.3" mass="20" rgba="0.80 0.36 0.18 1" friction="0.1"/>
+    </body>
+    <body name="slider1" pos="12 5.85 -30">
+      <geom type="box" size="0.3 0.3 0.3" mass="20" rgba="0.82 0.46 0.16 1" friction="0.1"/>
+    </body>
+    <body name="slider2" pos="0 5.6 -20">
+      <geom type="box" size="0.3 0.3 0.3" mass="20" rgba="0.76 0.42 0.20 1" friction="0.1"/>
+    </body>
+    <body name="sticker" pos="5 6.65 -15">
+      <geom type="box" size="0.3 0.3 0.3" mass="20" rgba="0.45 0.45 0.50 1"/>
+    </body>
+    <!-- 球は半径 0.35 m・5 kg。斜面を西の谷へ転がる。 -->
+    <body name="ball0" pos="2 6.6 -10">
+      <geom type="sphere" size="0.35" mass="5" rgba="0.29 0.56 0.85 1"/>
+    </body>
+    <body name="ball1" pos="0 6.45 -5">
+      <geom type="sphere" size="0.35" mass="5" rgba="0.29 0.56 0.85 1"/>
+    </body>
+    <body name="ball2" pos="-3 5.35 -18">
+      <geom type="sphere" size="0.35" mass="5" rgba="0.95 0.85 0.20 1"/>
+    </body>
+    <body name="ball3" pos="10 7.05 -20">
+      <geom type="sphere" size="0.35" mass="5" rgba="0.95 0.85 0.20 1"/>
+    </body>
+  </worldbody>
+  <events>
+    <event name="pickup"/>
+  </events>
+</wizengine>
