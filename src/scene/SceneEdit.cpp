@@ -590,18 +590,20 @@ void Scene::rebuildTerrainBody() {
     if (terrainPhysDirty_) setTerrainPhysDirty(false);
     // 例外はここで止める: stepEditor（main の guarded の外）からも呼ばれ、
     // 200 万三角形の構築は bad_alloc や Chrono の例外を投げうる。失敗したら
-    // 当たり判定は無いまま続ける（高さ格子と見た目はそのまま）。番号は
-    // 先に無効にしてから作るので、途中で投げても古い番号は残らない。
+    // 当たり判定は無いまま続ける（高さ格子と見た目はそのまま）。古い番号は
+    // 作る前に手放し、途中で投げたら作れたチャンクも全部外す（一部の
+    // チャンクだけが当たる地面にしない: 車輪のレイは高さ格子全体に当たる
+    // ので、抜けたチャンクの上で車輪だけが乗って車体が抜ける）。
     try {
         rebuildTerrainBodyUnguarded();
     } catch (const std::exception& e) {
-        terrainPhysId_ = GameObject::kInvalidId;
+        releaseTerrainBodies();
         LOGE("scene", "terrain: building the collision failed (%s) - the terrain is "
                       "visible but nothing collides with it", e.what());
         editor_.setStatus(std::string("テレインの当たり判定を作れませんでした（") +
                           e.what() + "）- 見た目だけ残します");
     } catch (...) {
-        terrainPhysId_ = GameObject::kInvalidId;
+        releaseTerrainBodies();
         LOGE("scene", "terrain: building the collision failed (unknown exception) - the "
                       "terrain is visible but nothing collides with it");
         editor_.setStatus("テレインの当たり判定を作れませんでした（不明な例外）- "
@@ -609,46 +611,105 @@ void Scene::rebuildTerrainBody() {
     }
 }
 
+void Scene::releaseTerrainBodies() {
+    // 番号は外す前に手放す（disableBody が投げても古い番号を持ち続けない）。
+    std::vector<std::size_t> old;
+    old.swap(terrainPhysIds_);
+    std::size_t failed = 0;
+    std::string firstReason;  // 切り分け用に最初の失敗の理由だけ覚える
+    for (const std::size_t id : old) {
+        try {
+            physics_.disableBody(id);
+        } catch (const std::exception& e) {
+            if (failed++ == 0) firstReason = e.what();
+        } catch (...) {
+            if (failed++ == 0) firstReason = "unknown exception";
+        }
+    }
+    if (failed > 0) {
+        LOGW("scene", "terrain: removing %zu of %zu collision chunk bodies failed (first: %s)",
+             failed, old.size(), firstReason.c_str());
+    }
+}
+
+bool Scene::isTerrainBody(std::size_t id) const {
+    if (terrainPhysIds_.empty() || id < terrainPhysIds_.front() ||
+        id > terrainPhysIds_.back()) {
+        return false;
+    }
+    return std::binary_search(terrainPhysIds_.begin(), terrainPhysIds_.end(), id);
+}
+
 void Scene::rebuildTerrainBodyUnguarded() {
     // 古いテレインは退場（地面・オブジェクトの作り直しと同じ disableBody。
-    // Core では系から本当に外れる）。番号は外す前に手放す（disableBody が
-    // 投げても古い番号を持ち続けない）。
-    if (terrainPhysId_ != GameObject::kInvalidId) {
-        const std::size_t old = terrainPhysId_;
-        terrainPhysId_ = GameObject::kInvalidId;
-        physics_.disableBody(old);
-    }
+    // Core では系から本当に外れる）。
+    releaseTerrainBodies();
     if (!hasTerrain_) return;
     const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField_;
     if (!field || !field->valid()) return;
 
-    const auto t0 = std::chrono::steady_clock::now();
-    wizengine::terrain::CollisionMesh mesh = field->buildCollisionMesh();
+    // 当たり判定は描画と同じ kTerrainChunkQuads 四方ごとの別ボディにする。
+    // ChTriangleMeshConnected は Chrono 9 の Bullet では BVH にならず、
+    // 三角形ごとの形（cbtCEtriangleShape、FEA 向け）として 1 つのボディに
+    // 全部載るので、1 枚のメッシュだと物が触れるたびに全三角形ぶんの手間が
+    // 掛かる（解像度 256 = 13 万三角形で speed 0.38 だった）。チャンクごとの
+    // ボディなら、ボディ単位の広域判定（AABB）で触れていないチャンクは
+    // 見ずに済む。Connected のままにするのは、メッシュ内部の辺での
+    // 引っかかり対策（隣接三角形のつながり情報）を保つため。
+    // **チャンクの境目ではそのつながりが切れる**（別のメッシュなので、
+    // 境目の辺は「縁」として扱われる）。地面とテレインの境目と同じく、
+    // 境目の辺で滑ってきた箱やタイヤ以外の物が引っかかることがありうる。
+    const int chunks = field->chunksPerSide(kTerrainChunkQuads);
+    // 番号の入れ物は先に確保しておく: ボディを作った後の push_back が
+    // メモリ不足で投げると、その番号を失って当たるボディが残ってしまう。
+    terrainPhysIds_.reserve(std::size_t(chunks) * std::size_t(chunks));
+    std::size_t totalTriangles = 0, totalVertices = 0;
+    double meshMs = 0.0, physMs = 0.0;
     std::vector<ChVector3d> vertices;
-    vertices.reserve(mesh.vertices.size());
-    for (const auto& v : mesh.vertices) vertices.emplace_back(v[0], v[1], v[2]);
-    // 詰め替えたら元の頂点はすぐ手放す（解像度 1024 で約 25 MB）。
-    std::vector<std::array<double, 3>>().swap(mesh.vertices);
-    const double meshMs = elapsedMs(t0);
+    for (int cz = 0; cz < chunks; ++cz) {
+        for (int cx = 0; cx < chunks; ++cx) {
+            const auto t0 = std::chrono::steady_clock::now();
+            wizengine::terrain::CollisionMesh mesh =
+                field->buildChunkCollisionMesh(cx, cz, kTerrainChunkQuads);
+            if (mesh.triangles.empty()) {
+                meshMs += elapsedMs(t0);
+                continue;  // 全部が穴のチャンク（後の段階）はボディを作らない
+            }
+            vertices.clear();
+            vertices.reserve(mesh.vertices.size());
+            for (const auto& v : mesh.vertices) vertices.emplace_back(v[0], v[1], v[2]);
+            meshMs += elapsedMs(t0);
 
-    // 頂点はワールド座標なので、ボディは原点・回転なしの固定。材質は既定
-    // （BodyOptions{} = シーン設定の共有材質 = 地面と同じ）。登録は
-    // addTriangleMesh → finishBody → registerBody（bindCollision）なので、
-    // 走行中に作っても衝突系に入る。
-    const auto t1 = std::chrono::steady_clock::now();
-    const std::size_t id =
-        physics_.addTriangleMesh(vertices, mesh.triangles, 1000.0, ChVector3d(0, 0, 0),
-                                 QUNIT, /*fixed*/ true);
-    const double physMs = elapsedMs(t1);
-    if (id == PhysicsWorld::kInvalidId) {
-        LOGW("scene", "terrain: triangle-mesh collision is not available in this "
-                      "Chrono build - the terrain is visible but nothing collides with it");
-        return;
+            // 頂点はワールド座標なので、ボディは原点・回転なしの固定。材質は
+            // 既定（BodyOptions{} = シーン設定の共有材質 = 地面と同じ）。登録は
+            // addTriangleMesh → finishBody → registerBody（bindCollision）なので、
+            // 走行中に作っても衝突系に入る。
+            const auto t1 = std::chrono::steady_clock::now();
+            const std::size_t id =
+                physics_.addTriangleMesh(vertices, mesh.triangles, 1000.0,
+                                         ChVector3d(0, 0, 0), QUNIT, /*fixed*/ true);
+            physMs += elapsedMs(t1);
+            if (id == PhysicsWorld::kInvalidId) {
+                // 三角メッシュの無い版ならどのチャンクでも同じ。作れた分が
+                // あっても外す（一部だけ当たる地面にしない）。
+                releaseTerrainBodies();
+                LOGW("scene", "terrain: triangle-mesh collision is not available in this "
+                              "Chrono build - the terrain is visible but nothing collides "
+                              "with it");
+                return;
+            }
+            terrainPhysIds_.push_back(id);
+            totalTriangles += mesh.triangles.size();
+            totalVertices += vertices.size();
+        }
     }
-    terrainPhysId_ = id;
-    LOGI("scene", "terrain collision: %zu triangles, %zu vertices (mesh %.1f ms, "
-                  "physics %.1f ms) on the %s backend",
-         mesh.triangles.size(), vertices.size(), meshMs, physMs, physics_.backendName());
+    // 詰め替え用の頂点（1 チャンクぶん）はすぐ手放す。
+    std::vector<ChVector3d>().swap(vertices);
+    std::sort(terrainPhysIds_.begin(), terrainPhysIds_.end());
+    LOGI("scene", "terrain collision: %zu triangles, %zu vertices in %zu chunk bodies "
+                  "(%d quads per side; mesh %.1f ms, physics %.1f ms) on the %s backend",
+         totalTriangles, totalVertices, terrainPhysIds_.size(), kTerrainChunkQuads,
+         meshMs, physMs, physics_.backendName());
 }
 
 std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainField() const {

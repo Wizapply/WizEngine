@@ -200,15 +200,18 @@ constexpr int kMulticoreMinBodies = 200;
 // ---- テレイン（文書の <terrain>）-----------------------------------------
 // テレインのあるシーンは Core にする（Scene::requiredBackend の Core を要する
 // 理由に "terrain (triangle mesh)" が加わる）。当たり判定は 10 万〜200 万
-// 三角形の固定メッシュで、Bullet（Core）は静的な BVH として持てるが、
-// Multicore の衝突系は三角形ごとに払う。false にすると規模の判定へ回る
-// （テレインは 1 ボディとして数えない）。
+// 三角形の固定メッシュを kTerrainChunkQuads 四方ごとのボディに分けたもの
+// （ChTriangleMeshConnected は Core の Bullet でも BVH にならず三角形ごとの
+// 形になる。Scene::rebuildTerrainBodyUnguarded の説明を参照）。false にすると
+// 規模の判定へ回る（テレインのチャンクのボディは数に入れない）。
 // **false は非推奨**: Multicore の衝突系は Remove を持たないので
 // disableBody が退避（固定 + 地面の下へ）だけになり、テレインを作り直す
 // たびに古い全三角形が衝突系に溜まっていく。Multicore で三角メッシュの
 // テレインが正しく当たるかも実機で未確認。
 constexpr bool kTerrainForcesCore = true;
 // 描画のチャンク 1 辺のクアッド数（Renderer::addTerrain の quadsPerChunk）。
+// 当たり判定も同じ四方ごとの固定ボディに分ける（Scene::rebuildTerrainBody。
+// 1 ボディ最大 64^2 x 2 = 8192 三角形、解像度 1024 で 256 ボディ）。
 // 1 チャンク 65^2 頂点。解像度の上限（editor::kTerrainMaxResolution = 1024）
 // でも 1 辺 16 チャンク = Renderer::kMaxTerrainChunks（64）以内に収まる
 // （Scene.cpp が static_assert で照合する）。

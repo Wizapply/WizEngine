@@ -267,6 +267,44 @@ CollisionMesh HeightField::buildCollisionMesh() const {
     return mesh;
 }
 
+CollisionMesh HeightField::buildChunkCollisionMesh(int cx, int cz,
+                                                   int quadsPerChunk) const {
+    CollisionMesh mesh;
+    if (quadsPerChunk < 1 || quadsPerChunk > kMaxChunkQuads) return mesh;
+    const int chunks = chunksPerSide(quadsPerChunk);
+    if (chunks < 1 || cx < 0 || cz < 0 || cx >= chunks || cz >= chunks) return mesh;
+
+    // チャンクが持つセルの範囲 [i0, i1) x [j0, j1)。格子の外は切り捨てる。
+    const int i0 = cx * quadsPerChunk;
+    const int j0 = cz * quadsPerChunk;
+    const int i1 = std::min(i0 + quadsPerChunk, resolution_);
+    const int j1 = std::min(j0 + quadsPerChunk, resolution_);
+    const int side = i1 - i0 + 1;  // チャンク内の 1 辺の頂点数（X 方向）
+    mesh.vertices.reserve(std::size_t(side) * std::size_t(j1 - j0 + 1));
+    for (int j = j0; j <= j1; ++j) {
+        for (int i = i0; i <= i1; ++i) {
+            const Vec3 p = vertexWorld(i, j);
+            mesh.vertices.push_back({p.x, p.y, p.z});
+        }
+    }
+    mesh.triangles.reserve(std::size_t(i1 - i0) * std::size_t(j1 - j0) * 2);
+    for (int j = j0; j < j1; ++j) {
+        for (int i = i0; i < i1; ++i) {
+            if (!isSolidCell(i, j)) continue;
+            const int v00 = (j - j0) * side + (i - i0);
+            const int v10 = v00 + 1;
+            const int v01 = v00 + side;
+            const int v11 = v01 + 1;
+            mesh.triangles.push_back({v00, v01, v11});  // 三角形 A
+            mesh.triangles.push_back({v00, v11, v10});  // 三角形 B
+        }
+    }
+    // 三角形の無いチャンク（全部が穴）は頂点も持たない = 呼び出し側は
+    // 「空ならボディを作らない」だけ見ればよい。
+    if (mesh.triangles.empty()) mesh.vertices.clear();
+    return mesh;
+}
+
 bool HeightField::hitCell(int i, int j, const Vec3& o, const Vec3& d, double tMin,
                           double tMax, double& tOut, Vec3& normalOut) const {
     if (!isSolidCell(i, j)) return false;

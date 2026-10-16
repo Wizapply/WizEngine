@@ -1056,7 +1056,7 @@ void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
     rebuildGroundBody();
     // テレインも地面と同じく組み直す（古い系の番号は捨てる。高さ格子は
     // 系とは無関係なのでそのまま使う）。
-    terrainPhysId_ = GameObject::kInvalidId;
+    terrainPhysIds_.clear();
     rebuildTerrainBody();
     for (std::size_t i = 0; i < boxes_.size(); ++i) {
         GameObject& obj = boxes_[i];

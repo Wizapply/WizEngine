@@ -189,14 +189,20 @@ public:
     // 触らない。スレッドの扱いは terrainField() と同じ。
     bool terrainRaycast(const double origin[3], const double dir[3], double maxDist,
                         double& t, double normal[3]) const;
-    // テレインの物理ボディ番号（無ければ kInvalidId）。接触の相手を「地面」と
-    // 見なしたい側（イベントの衝突・車両の診断）用。PHYSICS スレッド専用。
+    // テレインの当たり判定は kTerrainChunkQuads 四方ごとの固定ボディに
+    // 分かれている（rebuildTerrainBody）。以下 2 つは PHYSICS スレッド専用。
     // **エディタ中は古いボディを指すことがある**: edit.terrain の当たり判定の
     // 作り直しは落ち着くまで遅らせる（/scene の terrainPending が true の間）
     // ので、その間のボディは変更前の形のまま（シミュレート開始で必ず揃う）。
     // エディタ中の配置などで今の地表が要るなら、こちらではなく
     // terrainRaycast（高さ格子 = 常に最新）を使うこと。
-    std::size_t terrainPhysId() const { return terrainPhysId_; }
+    // id がテレインのチャンクのボディか。接触の相手を「地面」と見なしたい側
+    // （イベントの衝突・車両の診断）用。毎ステップの接触ごとに呼ばれるので
+    // 整列済みの番号を二分探索する（チャンクは最大 256 個）。
+    bool isTerrainBody(std::size_t id) const;
+    // テレインの当たり判定ボディが 1 個でもあるか（作れなかった・Chrono に
+    // 三角メッシュが無い・テレインが無いなら false）。
+    bool hasTerrainCollision() const { return !terrainPhysIds_.empty(); }
 
     // Pick the object under a screen position, given in normalised device
     // coords (x, y in [-1, 1], y up), through the given camera. Selects it (or
@@ -488,11 +494,15 @@ private:
     // 無ければ古いボディを外すだけ。どちらでも未反映の印（terrainPhysDirty_）
     // とタイマーは消える。PHYSICS thread（objectsMutex_ を持たずに呼ぶこと）。
     // 例外は投げない: 構築の失敗（bad_alloc・Chrono の例外）は中で捕まえて
-    // LOGE とステータスに出し、当たり判定の無いテレイン（terrainPhysId_ =
-    // kInvalidId、高さ格子と見た目はそのまま）で続ける。
+    // LOGE とステータスに出し、当たり判定の無いテレイン（terrainPhysIds_ が
+    // 空、高さ格子と見た目はそのまま）で続ける。途中まで作れたチャンクも
+    // 全部外す（一部だけ当たる地面は、車輪のレイ = 高さ格子全体と食い違う）。
     void rebuildTerrainBody();
     // 上の本体（例外をそのまま投げる）。rebuildTerrainBody からだけ呼ぶ。
     void rebuildTerrainBodyUnguarded();
+    // テレインの全チャンクのボディを外す（disableBody）。番号は先に手放す。
+    // 1 個の disableBody が投げても残りは外し、例外は外へ出さない（LOGW）。
+    void releaseTerrainBodies();
     // 当たり判定の未反映の印を書く（/scene に出すので objectsMutex_ の下）。
     void setTerrainPhysDirty(bool dirty);
     // RENDER thread: テレインの見た目を反映する。applyToRenderer が
@@ -567,8 +577,11 @@ private:
     // スレッドから毎ステップ引くので、objectsMutex_ とは分けてある。
     std::shared_ptr<const wizengine::terrain::HeightField> terrainField_;
     mutable std::mutex terrainFieldMutex_;
-    // テレインの物理ボディ（固定の三角メッシュ）。物理スレッド専用。
-    std::size_t terrainPhysId_ = GameObject::kInvalidId;
+    // テレインの物理ボディ（チャンクごとの固定の三角メッシュ）の番号。
+    // 昇順に整列して持つ（isTerrainBody の二分探索）。PhysicsWorld は今は
+    // 連番で割り当てるが、それは約束ではないので範囲では判定しない。
+    // 物理スレッド専用。
+    std::vector<std::size_t> terrainPhysIds_;
     // 当たり判定が今の高さ格子より古い（エディタ中の edit.terrain で作り直しを
     // 遅らせている）。書くのは物理スレッドだけで objectsMutex_ の下（/scene の
     // terrainPending に出す）。物理スレッドは読むときにロック不要。

@@ -260,9 +260,9 @@ void Scene::runEventGraph(double dt) {
             const auto ib = byPhys.find(c.b);
             // テレインは地面（-1）と同じ扱い: 「地面に落ちた」を書いたイベントが
             // 起伏のある地面でも同じように鳴る。
+            // テレインはチャンクごとの複数のボディ（isTerrainBody が二分探索）。
             auto isGround = [this](std::size_t id) {
-                return id == groundPhysId_ ||
-                       (terrainPhysId_ != GameObject::kInvalidId && id == terrainPhysId_);
+                return id == groundPhysId_ || isTerrainBody(id);
             };
             if (ia != byPhys.end()) a = ia->second;
             else if (isGround(c.a)) a = -1;

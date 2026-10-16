@@ -104,7 +104,7 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
     // 無い）は使わない: 車輪だけが乗って車体と他の物は抜ける、という
     // 「レイと接触の食い違い」を作らないため（プレハブの collide 部品と同じ考え）。
     std::shared_ptr<const wizengine::terrain::HeightField> terrain;
-    if (scene.terrainPhysId() != GameObject::kInvalidId) {
+    if (scene.hasTerrainCollision()) {
         terrain = scene.terrainField();
         if (terrain && !terrain->valid()) terrain.reset();
     }
@@ -315,7 +315,7 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
                 std::string name = "body " + std::to_string(other);
                 // テレインも出す（丘は車輪のレイが受けるので、車体が触れるのは
                 // 段や壁と同じく「車輪で支えきれていない」印）。
-                if (other == scene.terrainPhysId()) name = "terrain";
+                if (scene.isTerrainBody(other)) name = "terrain";
                 for (std::size_t j = 0; j < scene.objectCount(); ++j) {
                     const GameObject& o = scene.object(j);
                     if (!o.alive || o.physId != other) continue;

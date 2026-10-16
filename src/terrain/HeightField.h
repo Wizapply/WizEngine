@@ -152,6 +152,16 @@ public:
     // 衝突用の三角メッシュ（全体 1 枚、セルあたり 2 三角形）。穴のセルは
     // 三角形を出さない（後の段階）。空の格子なら空。
     CollisionMesh buildCollisionMesh() const;
+    // チャンク (cx, cz)（1 辺 quadsPerChunk クアッド。chunksPerSide と同じ
+    // 割り方）だけの衝突メッシュ。三角形・巻き方・穴（isSolidCell）の扱いは
+    // buildCollisionMesh と同じで、範囲だけがチャンク。頂点はワールド座標で、
+    // 番号はチャンク内の行優先（番号 = r * (チャンク内の 1 辺の頂点数) + c）。
+    // 格子の外にはみ出す部分（割り切れない解像度の最後の列 / 行）は、頂点も
+    // 三角形も出さない（描画の buildChunkMesh と違い、数は固定でない）。
+    // 三角形が 1 個も無いチャンク・引数が不正（範囲外の番号・quadsPerChunk が
+    // 1〜kMaxChunkQuads の外）・空の格子は、頂点も三角形も空を返す。
+    // 隣のチャンクとは境目の頂点を両方が持つ（同じ座標）。
+    CollisionMesh buildChunkCollisionMesh(int cx, int cz, int quadsPerChunk) const;
 
     // レイと地表の交差。origin から dir（正規化しなくてよい。内部で正規化
     // する）の向きへ maxDist (m) まで、格子を DDA で辿ってセルの 2 三角形と
