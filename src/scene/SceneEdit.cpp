@@ -666,6 +666,16 @@ void Scene::rebuildTerrainBodyUnguarded() {
     std::size_t totalTriangles = 0, totalVertices = 0;
     double meshMs = 0.0, physMs = 0.0;
     std::vector<ChVector3d> vertices;
+    // 材質: 摩擦・反発はシーン設定のまま（負 = シーン任せ。地面と同じ）で、
+    // 転がり摩擦だけ 0 にする（applySurface がスピン摩擦にも同じ値を入れる）。
+    // 坂の上で転がり・スピン摩擦が効くと、三角形の上で箱や球が少しずつ
+    // 沈み込み、接触の法線が裏返ってすり抜けた（Chrono 単体のベンチで 1/9 →
+    // 0 にして 0/9）。2 材質の合成は既定の min なので、相手の値によらず 0 に
+    // なる。**`<option combine>` が average / max のときは効かない**（相手の
+    // 転がり摩擦との平均 / 大きい方になる）。SMC には転がり摩擦が無いので
+    // 何も変わらない。
+    BodyOptions terrainOpt;
+    terrainOpt.rolling = 0.0f;
     for (int cz = 0; cz < chunks; ++cz) {
         for (int cx = 0; cx < chunks; ++cx) {
             const auto t0 = std::chrono::steady_clock::now();
@@ -681,13 +691,14 @@ void Scene::rebuildTerrainBodyUnguarded() {
             meshMs += elapsedMs(t0);
 
             // 頂点はワールド座標なので、ボディは原点・回転なしの固定。材質は
-            // 既定（BodyOptions{} = シーン設定の共有材質 = 地面と同じ）。登録は
+            // 上の terrainOpt（チャンクごとに専用の材質になる）。登録は
             // addTriangleMesh → finishBody → registerBody（bindCollision）なので、
             // 走行中に作っても衝突系に入る。
             const auto t1 = std::chrono::steady_clock::now();
             const std::size_t id =
                 physics_.addTriangleMesh(vertices, mesh.triangles, 1000.0,
-                                         ChVector3d(0, 0, 0), QUNIT, /*fixed*/ true);
+                                         ChVector3d(0, 0, 0), QUNIT, /*fixed*/ true,
+                                         {}, terrainOpt);
             physMs += elapsedMs(t1);
             if (id == PhysicsWorld::kInvalidId) {
                 // 三角メッシュの無い版ならどのチャンクでも同じ。作れた分が

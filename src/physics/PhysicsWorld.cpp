@@ -21,6 +21,16 @@
 #define WIZ_HAVE_TRIMESH_SHAPE 1
 #endif
 #include <chrono/collision/bullet/ChCollisionUtilsBullet.h>  // 凸包の体積重心
+// 固定物どうしのペアを作らせる前に止める Bullet の重なりフィルタ
+// （StaticPairFilter）。無い版ではフィルタ無し = 従来どおり。
+#if __has_include(<chrono/collision/bullet/ChCollisionSystemBullet.h>) && \
+    __has_include(<chrono/collision/bullet/ChCollisionModelBullet.h>) && \
+    __has_include(<chrono/collision/bullet/BulletCollision/CollisionDispatch/cbtCollisionWorld.h>)
+#include <chrono/collision/bullet/ChCollisionSystemBullet.h>
+#include <chrono/collision/bullet/ChCollisionModelBullet.h>
+#include <chrono/collision/bullet/BulletCollision/CollisionDispatch/cbtCollisionWorld.h>
+#define WIZ_HAVE_BULLET_PAIR_FILTER 1
+#endif
 #include <chrono/core/ChMatrix33.h>
 #include <chrono/geometry/ChTriangleMeshConnected.h>
 #include <chrono/physics/ChBody.h>
@@ -135,6 +145,7 @@ using WizRampFunction = chrono::ChFunction_Ramp;
 #include <cstdio>
 #include <thread>
 #include <type_traits>
+#include <unordered_set>
 
 using namespace chrono;
 
@@ -899,6 +910,9 @@ void PhysicsWorld::registerBody(const std::shared_ptr<chrono::ChBody>& body) {
     options_.push_back(BodyOptions{});
     loadsOf_.emplace_back();
     bindCollision(body);
+    // 走行中に足した固定ボディ（テレインの作り直し・プレハブの固定部品など）:
+    // 登録の時点でできた固定どうしのペアを消す。
+    if (body->IsFixed()) updateStaticPairs(*body);
     resetSleepTimer(*body);  // 新規ボディの計時は 0 = 最初のステップで眠る
 }
 
@@ -1297,6 +1311,142 @@ void PhysicsWorld::bindCollision(const std::shared_ptr<chrono::ChBody>& body) {
     coll->BindItem(body);
 }
 
+// ---- 固定物どうしの衝突ペアを作らせない（Core = Bullet のみ）----------------
+// Chrono は固定ボディ（SetFixed）を Bullet に「静的」と伝えない: Bullet 側の
+// オブジェクトには CF_STATIC_OBJECT も非アクティブ状態も付かず、衝突ファミリが
+// 同じなら固定物どうしも普通のペアになる（Chrono 9.0.0 の
+// cbtOverlappingPairCache.h の needsBroadphaseCollision と
+// cbtCollisionDispatcher.cpp の needsCollision）。動かない物どうしの接触は
+// ソルバでは何の役にも立たないのに、狭域判定は毎ステップ走る。テレインを
+// チャンクごとの固定ボディに分けると、隣どうしのチャンク（と床）の AABB が
+// 重なって三角メッシュどうしの判定が 44 組でき、物が 1 つも無くても
+// 22 ms/step 掛かった（Chrono 単体のベンチ。除外すると 0.4〜0.6 ms）。
+//
+// そこで Bullet の広域判定の重なりフィルタ（cbtOverlapFilterCallback。ヘッダ
+// だけの仮想インターフェース = DLL の書き出しに依存しない）を付け、既定の
+// 判定（ファミリの group / mask）に「両方が固定なら作らない」を足す。固定物の
+// 見分けは Bullet オブジェクトの userPointer（= Chrono が入れる
+// ChCollisionModelBullet*）の集合で行う。集合は物理スレッドだけが触る
+// （フィルタが呼ばれるのも衝突系への登録と DoStepDynamics の中 = 同じスレッド）。
+//
+// フィルタはペアが「できるとき」にしか効かないので、
+//  - 既にできた固定どうしのペアは自分で消す（初期化直後・固定にしたとき）。
+//  - 固定を外したときは、消したペアを Bullet が自分から作り直さない（DBVT は
+//    AABB が太らせた箱をはみ出して動くまで相手を探し直さない）ので、衝突モデルを
+//    入れ直して（EnableCollision の切り替え = 衝突系の Remove / Add）探させる。
+// Multicore は自前の衝突系なので何もしない。
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+struct PhysicsWorld::StaticPairFilter : public cbtOverlapFilterCallback {
+    std::unordered_set<const void*> statics;  // 固定ボディの ChCollisionModelBullet*
+    cbtCollisionWorld* world = nullptr;       // 付けている衝突ワールド（null = 無効）
+    bool ready = false;  // 衝突系の初期化後に集合を作った（それまでは実体が無い）
+
+    bool isStatic(const cbtBroadphaseProxy* p) const {
+        const auto* o = static_cast<const cbtCollisionObject*>(p->m_clientObject);
+        return o && statics.count(o->getUserPointer()) != 0;
+    }
+    bool needBroadphaseCollision(cbtBroadphaseProxy* p0, cbtBroadphaseProxy* p1) const override {
+        // 既定の判定（衝突ファミリの group / mask）はそのまま残す。
+        bool collides = (p0->m_collisionFilterGroup & p1->m_collisionFilterMask) != 0;
+        collides = collides && (p1->m_collisionFilterGroup & p0->m_collisionFilterMask);
+        if (!collides) return false;
+        return !(isStatic(p0) && isStatic(p1));
+    }
+    // 既にある固定どうしのペアを消す。消した数を返す。
+    std::size_t purge() {
+        if (!world) return 0;
+        cbtOverlappingPairCache* cache = world->getPairCache();
+        cbtBroadphasePairArray& pairs = cache->getOverlappingPairArray();
+        std::vector<std::pair<cbtBroadphaseProxy*, cbtBroadphaseProxy*>> doomed;
+        for (int i = 0; i < pairs.size(); ++i) {
+            if (isStatic(pairs[i].m_pProxy0) && isStatic(pairs[i].m_pProxy1)) {
+                doomed.emplace_back(pairs[i].m_pProxy0, pairs[i].m_pProxy1);
+            }
+        }
+        // 走査中に消すと配列が詰まるので、集めてから消す。
+        for (const auto& d : doomed) cache->removeOverlappingPair(d.first, d.second, world->getDispatcher());
+        return doomed.size();
+    }
+};
+
+namespace {
+// ボディの Bullet 側の実体（= その Bullet オブジェクトの userPointer）。
+// 衝突系に登録されていなければ null。
+const void* bulletKeyOf(const ChBody& body) {
+    const auto model = body.GetCollisionModel();
+    if (!model || !model->HasImplementation()) return nullptr;
+    return static_cast<const void*>(
+        static_cast<ChCollisionModelBullet*>(model->GetImplementation()));
+}
+}  // namespace
+#else
+struct PhysicsWorld::StaticPairFilter {};
+#endif
+
+void PhysicsWorld::attachStaticPairFilter() {
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+    if (!staticPairs_) staticPairs_ = std::make_shared<StaticPairFilter>();
+    // 古い系のワールドは sys_ と一緒に壊れている（recreate が先に reset する）。
+    staticPairs_->statics.clear();
+    staticPairs_->world = nullptr;
+    staticPairs_->ready = false;
+    if (backend_ == PhysicsBackend::Multicore) return;
+    auto bt = std::dynamic_pointer_cast<ChCollisionSystemBullet>(sys_->GetCollisionSystem());
+    if (!bt || !bt->GetBulletCollisionWorld()) return;
+    staticPairs_->world = bt->GetBulletCollisionWorld();
+    staticPairs_->world->getPairCache()->setOverlapFilterCallback(staticPairs_.get());
+#endif
+}
+
+void PhysicsWorld::syncStaticPairs() {
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+    if (!staticPairs_ || !staticPairs_->world) return;
+    StaticPairFilter& f = *staticPairs_;
+    f.statics.clear();
+    for (std::size_t i = 0; i < bodies_.size(); ++i) {
+        if (!active_[i] || !bodies_[i]->IsFixed()) continue;
+        if (const void* key = bulletKeyOf(*bodies_[i])) f.statics.insert(key);
+    }
+    f.ready = true;
+    const std::size_t removed = f.purge();
+    LOGI("physics", "static pair filter: %zu fixed bodies, removed %zu fixed-fixed pairs",
+         f.statics.size(), removed);
+#endif
+}
+
+void PhysicsWorld::updateStaticPairs(ChBody& body) {
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+    // 初期化前は何もしない（実体がまだ無い。初期化直後の syncStaticPairs が拾う）。
+    if (!staticPairs_ || !staticPairs_->world || !staticPairs_->ready) return;
+    StaticPairFilter& f = *staticPairs_;
+    const void* key = bulletKeyOf(body);
+    if (!key) return;
+    if (body.IsFixed()) {
+        if (f.statics.insert(key).second) f.purge();
+        return;
+    }
+    if (f.statics.erase(key) == 0) return;  // もともと固定物として扱っていない
+    // 固定だった間に消した / 作らせなかったペアを作り直させる。Remove で
+    // このボディのペアと接触多様体が全部消え、Add（createProxy）で今の
+    // 重なりが改めてフィルタに掛かる（もう固定ではないので通る）。
+    if (body.IsCollisionEnabled()) {
+        body.EnableCollision(false);
+        body.EnableCollision(true);
+    }
+#else
+    (void)body;
+#endif
+}
+
+void PhysicsWorld::forgetStaticPairs(ChBody& body) {
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+    if (!staticPairs_ || !staticPairs_->world) return;
+    if (const void* key = bulletKeyOf(body)) staticPairs_->statics.erase(key);
+#else
+    (void)body;
+#endif
+}
+
 std::vector<ContactInfo> PhysicsWorld::activeContacts() const {
     std::vector<ContactInfo> contacts;
     const auto container = sys_->GetContactContainer();
@@ -1460,6 +1610,9 @@ void PhysicsWorld::createSystem() {
     core->SetMaxPenetrationRecoverySpeed(0.1);
     sys_ = core;
     }
+
+    // 固定物どうしのペアを作らせないフィルタ（Core のみ。Multicore では外す）。
+    attachStaticPairFilter();
 
     // 覚えている設定を当て直す（初回は既定値 = 従来どおり）。
     sys_->SetGravitationalAcceleration(gravity_);
@@ -1889,7 +2042,25 @@ void PhysicsWorld::step(double dt) {
         }
     }
 
+    // 固定物どうしのペアの掃除: 衝突系の初期化（BindAll）は最初の
+    // DoStepDynamics の中で起きるので、その前後で「初期化済みなのに集合が
+    // まだ」を見て 1 回だけ作る（初期化を別の呼び出しが先に済ませていても
+    // 拾えるよう、前でも見る）。最初の 1 ステップだけは固定どうしの判定が
+    // 走る。
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+    auto staticPairsPending = [this]() {
+        if (!staticPairs_ || !staticPairs_->world || staticPairs_->ready) return false;
+        const auto coll = sys_->GetCollisionSystem();
+        return coll && coll->IsInitialized();
+    };
+    if (staticPairsPending()) syncStaticPairs();
+#endif
+
     sys_->DoStepDynamics(dt);
+
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+    if (staticPairsPending()) syncStaticPairs();
+#endif
 
     // 診断: 拘束が解かれているかを最初の数ステップと 1 秒後に 1 回ずつ出す
     // （「全部が地面を抜けて落ちる」の切り分け用: 接触とリンクの数、
@@ -2370,6 +2541,7 @@ void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
             bodies_[p]->SetFixed(fixed);
             if (fixed) bodies_[p]->ForceToRest();
             else wakeUp(bodies_[p].get(), 0);
+            if (active_[p]) updateStaticPairs(*bodies_[p]);  // 固定物どうしのペア
         }
         return;
     }
@@ -2380,6 +2552,8 @@ void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
         wakeUp(bodies_[id].get(), 0);
         resetSleepTimer(*bodies_[id]);  // 固定を外した直後に眠らせない
     }
+    // 固定物どうしのペア: 固定にしたら掃除、外したら作り直させる。
+    if (active_[id]) updateStaticPairs(*bodies_[id]);
 }
 
 bool PhysicsWorld::bodyFixed(std::size_t id) const {
@@ -2398,6 +2572,7 @@ void PhysicsWorld::disableBody(std::size_t id) {
             if (p == id) continue;  // 代表は下の通常経路で
             auto& pb = bodies_[p];
             pb->SetFixed(true);
+            forgetStaticPairs(*pb);  // 衝突モデルを手放す前に
             if (backend_ != PhysicsBackend::Multicore) pb->EnableCollision(false);
             pb->ForceToRest();
             pb->SetPos(ChVector3d(0, -1000.0, 0));
@@ -2406,6 +2581,9 @@ void PhysicsWorld::disableBody(std::size_t id) {
     }
     auto& b = bodies_[id];
     b->SetFixed(true);
+    // 固定物の集合から先に外す（下の EnableCollision(false) で Bullet 側の
+    // 実体が解放され、そのアドレスが別のボディに使い回されうるため）。
+    forgetStaticPairs(*b);
     // Multicore の衝突系は Remove() が未実装で、Chrono 9 は
     // "ChCollisionSystemMulticore::Remove() not yet implemented." を出して
     // 例外を投げる（物理スレッドで捕まらず、アプリごと落ちる）。そちらでは
@@ -2453,6 +2631,7 @@ void PhysicsWorld::detachBody(std::size_t id) {
         loadsOf_[id].clear();
     }
 #endif
+    forgetStaticPairs(*b);  // RemoveBody が衝突モデルを手放す前に
     sys_->RemoveBody(b);
 }
 

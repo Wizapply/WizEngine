@@ -598,6 +598,27 @@ private:
     // 粒子ならその属するソフトボディの代表番号、剛体ならそのまま。
     std::size_t representative(std::size_t id) const;
 
+    // ---- 固定物どうしの衝突ペアを作らせない（Core = Bullet のみ）----------
+    // 理由と仕組みは .cpp の StaticPairFilter の注記。Bullet の型を見せない
+    // ためにここでは前方宣言だけ。
+    struct StaticPairFilter;
+    // 新しい系の Bullet ワールドにフィルタを付ける（createSystem から。
+    // Multicore では外したまま）。
+    void attachStaticPairFilter();
+    // 固定ボディの集合を全部作り直し、既にできた固定どうしのペアを消す
+    // （衝突系の初期化 = 最初のステップの直後に 1 回）。
+    void syncStaticPairs();
+    // 1 個のボディの固定状態が変わった / 登録されたあとに呼ぶ。固定になったら
+    // 集合に足してペアを掃除、固定でなくなったら集合から外して衝突モデルを
+    // 入れ直す（消したペアを Bullet に作り直させる）。
+    void updateStaticPairs(chrono::ChBody& body);
+    // 衝突モデルを手放す前（EnableCollision(false) / RemoveBody）に呼ぶ:
+    // 解放された Bullet 側の実体のアドレスを集合に残さない。
+    void forgetStaticPairs(chrono::ChBody& body);
+
+    // sys_ より先に宣言する = sys_（Bullet のペアキャッシュがこれを指す）より
+    // 後に壊れる。
+    std::shared_ptr<StaticPairFilter> staticPairs_;
     std::shared_ptr<chrono::ChSystem> sys_;
     std::shared_ptr<chrono::ChContactMaterial> mat_;  // NSC か SMC（contact_）
     ContactMethod contact_ = ContactMethod::NSC;
