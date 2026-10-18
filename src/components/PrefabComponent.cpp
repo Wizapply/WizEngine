@@ -182,7 +182,10 @@ void PrefabComponent::onRender(Scene& scene) {
         // 車輪のソケット姿勢（車両なら VehicleComponent のスナップショット）。
         std::vector<veh::WheelLocalPose> wheels;
         bool haveWheels = false;
-        if (desc.hasVehicle && vehicle_) haveWheels = vehicle_->wheelLocalPoses(i, wheels);
+        // 車体（latestPose = 補間した姿勢）と同じ割合で補間した車輪。
+        if (desc.hasVehicle && vehicle_) {
+            haveWheels = vehicle_->wheelLocalPoses(i, wheels, scene.renderAlpha());
+        }
         if (desc.hasVehicle && !haveWheels) {
             wheels = veh::VehicleModel::designWheelPoses(desc.vehicle, desc.mass);
         }

@@ -1,7 +1,9 @@
 #include "components/VehicleComponent.h"
 
 #include <cmath>
+#include <memory>
 #include <string>
+#include <utility>
 
 #include "document/EditorTypes.h"
 #include "core/Log.h"
@@ -271,12 +273,53 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
     visuals_.swap(vis);
 }
 
-bool VehicleComponent::wheelLocalPoses(std::size_t objectIndex,
-                                       std::vector<veh::WheelLocalPose>& out) {
+void VehicleComponent::onPhysicsPassEnd(Scene& scene) {
+    (void)scene;
     std::lock_guard<std::mutex> lk(visMutex_);
-    const auto it = visuals_.find(objectIndex);
-    if (it == visuals_.end()) return false;
-    out = it->second;
+    std::swap(visPrev_, visCur_);
+    visCur_ = visuals_;
+}
+
+bool VehicleComponent::wheelLocalPoses(std::size_t objectIndex,
+                                       std::vector<veh::WheelLocalPose>& out,
+                                       double alpha) {
+    std::lock_guard<std::mutex> lk(visMutex_);
+    if (alpha < 0.0) {
+        const auto it = visuals_.find(objectIndex);
+        if (it == visuals_.end()) return false;
+        out = it->second;
+        return true;
+    }
+    // 補間: 今回のパスの値を土台に、前回にも同じ車輪があればその間を取る
+    // （車輪の数が変わった直後などは今回のまま）。
+    const auto cur = visCur_.find(objectIndex);
+    if (cur == visCur_.end()) return false;
+    out = cur->second;
+    const auto prev = visPrev_.find(objectIndex);
+    if (prev == visPrev_.end() || prev->second.size() != out.size()) return true;
+    auto mix = [alpha](double a, double b) { return a + (b - a) * alpha; };
+    for (std::size_t w = 0; w < out.size(); ++w) {
+        const veh::WheelLocalPose& a = prev->second[w];
+        veh::WheelLocalPose& o = out[w];
+        o.attach = veh::Vec3{mix(a.attach.x, o.attach.x), mix(a.attach.y, o.attach.y),
+                             mix(a.attach.z, o.attach.z)};
+        o.drop = mix(a.drop, o.drop);
+        o.steerRad = mix(a.steerRad, o.steerRad);
+        o.spinAngle = mix(a.spinAngle, o.spinAngle);  // 累積の角度なので折り返し無し
+        o.radius = mix(a.radius, o.radius);
+        o.width = mix(a.width, o.width);
+        o.deflection = mix(a.deflection, o.deflection);
+        // ソフトタイヤの粒子はワールド座標。点ごとに補間する（数が違えば今回）。
+        if (a.softMesh && o.softMesh && a.softMesh->size() == o.softMesh->size()) {
+            auto mesh = std::make_shared<std::vector<float>>(*o.softMesh);
+            const float ft = float(alpha);
+            const std::vector<float>& pa = *a.softMesh;
+            for (std::size_t k = 0; k < mesh->size(); ++k) {
+                (*mesh)[k] = pa[k] + ((*mesh)[k] - pa[k]) * ft;
+            }
+            o.softMesh = std::move(mesh);
+        }
+    }
     return true;
 }
 

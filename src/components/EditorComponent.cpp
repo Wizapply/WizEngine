@@ -469,6 +469,20 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         if (kind == ed::NodeKind::OnCollision && !msg.contains("vec")) {
             args["vec"] = {{"x", 0.0}, {"y", 0.0}, {"z", 0.0}};
         }
+        // カメラのアクションは数字の欄を別の意味で使うので、その種類の既定値
+        // から始める（XML の読み込みと同じ EditorTypes.h の定数）。
+        if (kind == ed::NodeKind::CameraBehind) {
+            if (!msg.contains("seconds")) args["seconds"] = ed::kBehindSmooth;
+            if (!msg.contains("value")) args["value"] = 0.0;
+        }
+        if (kind == ed::NodeKind::CameraOrbit && !msg.contains("vec")) {
+            args["vec"] = {{"x", ed::kOrbitDistance},
+                           {"y", ed::kOrbitElevation},
+                           {"z", 0.0}};
+        }
+        if (kind == ed::NodeKind::CameraLookAt && !msg.contains("value")) {
+            args["value"] = 0.0;
+        }
         // オブジェクトを対象にするノードは、対象を省いたら -1 のまま
         // （= 付いている相手 / トリガーが渡した物）。アセットは付け回す
         // 部品なので、作った瞬間に特定の番号へ縛らない。ライトとカメラは
@@ -483,6 +497,21 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
                 case ed::NodeTargetKind::Camera:
                     if (state.selKind() == EditorState::SelKind::Camera) {
                         args["target"] = state.selIndex();
+                    } else {
+                        // 選んでいなければ、エディタカメラ以外で最初に居る
+                        // カメラ（Camera 1 など）- 編集の視点をイベントに
+                        // 取られないように。他に無ければエディタカメラ
+                        // （-1 のままだと動かないノードになる）。
+                        const std::size_t editorCam = scene.editorCamera();
+                        int cam = int(editorCam);
+                        auto lk = scene.lockObjects();  // camerasActive_ は構造ロック下
+                        for (std::size_t i = 0; i < scene.cameraCount(); ++i) {
+                            if (i != editorCam && scene.cameraActive(i)) {
+                                cam = int(i);
+                                break;
+                            }
+                        }
+                        args["target"] = cam;
                     }
                     break;
                 case ed::NodeTargetKind::Object:

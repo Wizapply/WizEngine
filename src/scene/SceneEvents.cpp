@@ -2,6 +2,8 @@
 // すべて PHYSICS スレッド。グラフ本体は EditorState、ここは実行するだけ。
 #include "scene/SceneInternal.h"
 
+#include <chrono>
+
 using namespace chrono;
 using namespace scene_detail;
 
@@ -219,6 +221,7 @@ void Scene::runEventGraph(double dt) {
     if (graphRt_.instances.empty()) {
         graphRt_.startFired = true;  // 後から足した OnSimStart を発火させない
         graphRt_.brokenJoints.clear();
+        publishCameraRigs();
         return;
     }
 
@@ -352,6 +355,9 @@ void Scene::runEventGraph(double dt) {
                 case ed::NodeKind::OnSimStart:
                     if (!graphRt_.startFired) fires.push_back(base);
                     break;
+                case ed::NodeKind::OnUpdate:
+                    fires.push_back(base);  // 毎ステップ（文脈は付け先だけ）
+                    break;
                 case ed::NodeKind::OnTimer: {
                     double& t = st.timers[n.id];
                     t += dt;
@@ -421,6 +427,12 @@ void Scene::runEventGraph(double dt) {
     }
     graphRt_.startFired = true;
     graphRt_.brokenJoints.clear();  // 破断は 1 ステップだけのイベント
+    publishCameraRigs();
+}
+
+void Scene::publishCameraRigs() {
+    std::lock_guard<std::mutex> lk(poseMutex_);
+    cameraRigs_ = graphRt_.rigs;
 }
 
 void Scene::runGraphAction(const ed::NodeDesc& n, const GraphContext& ctx,
@@ -554,23 +566,44 @@ void Scene::runGraphAction(const ed::NodeDesc& n, const GraphContext& ctx,
                 phys, motorTargetToPhysics(joints[std::size_t(n.target)], n.value));
             return;
         }
-        case ed::NodeKind::CameraLookAt: {
+        case ed::NodeKind::CameraLookAt:
+        case ed::NodeKind::CameraBehind:
+        case ed::NodeKind::CameraOrbit: {
+            // カメラは番号で明示する（付け先になれない）。ここではそのステップ
+            // の「注文」を書くだけで、カメラを動かすのは RENDER スレッド
+            // （updateCameraRigs、描画と同じ補間した姿勢から）。
             if (n.target < 0 || std::size_t(n.target) >= cameras_.size() ||
                 !cameraActive(std::size_t(n.target))) {
                 return;
             }
-            // 注視先は other。書いていなければ文脈の物（触れた物・掴んだ物、
-            // または付いている相手）を見る。
-            const int look = n.other >= 0 ? n.other
-                                          : (ctx.object >= 0 ? ctx.object
-                                                             : ctx.self);
-            if (!objectAlive(look)) return;
-            const GameObject& o = boxes_[std::size_t(look)];
-            if (o.physId == GameObject::kInvalidId) return;
-            // 注視点だけ動かす（視点は保つ）。CameraObject は atomic なので
-            // 物理スレッドから書いてよい。ユーザーのカメラ操作と同じ口。
-            const BodyTransform tr = physics_.bodyTransform(o.physId);
-            cameras_[std::size_t(n.target)]->setTarget(tr.px, tr.py, tr.pz);
+            if (graphRt_.rigs.size() < cameras_.size()) {
+                graphRt_.rigs.resize(cameras_.size());
+            }
+            CameraRig& rig = graphRt_.rigs[std::size_t(n.target)];
+            const double now =
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count();
+            // 相手は other。書いていなければ文脈の物（触れた物・掴んだ物、
+            // または付いている相手 = 車に付けたアセットならその車）。
+            const int who = n.other >= 0 ? n.other
+                                         : (ctx.object >= 0 ? ctx.object : ctx.self);
+            if (n.kind == ed::NodeKind::CameraLookAt) {
+                if (!objectAlive(who)) return;
+                rig.lookObject = who;
+                rig.lookHeight = n.value;
+                rig.lookStamp = now;
+            } else if (n.kind == ed::NodeKind::CameraBehind) {
+                if (!objectAlive(who)) return;
+                rig.behindObject = who;
+                rig.behindSmooth = n.seconds;
+                rig.behindAngleDeg = n.value;
+                rig.behindStamp = now;
+            } else {
+                rig.distance = n.vec.x;
+                rig.elevationDeg = n.vec.y;
+                rig.orbitStamp = now;
+            }
             return;
         }
         default:
@@ -588,6 +621,13 @@ void Scene::resetGraphRuntime() {
     graphRt_.contactsPrimed = false;
     editor_.clearNodeFireCounts();
     clearGrabLines();
+    // カメラの注文も捨て、RENDER スレッドに掛かる前の視点へ戻させる。
+    graphRt_.rigs.clear();
+    {
+        std::lock_guard<std::mutex> lk(poseMutex_);
+        cameraRigs_.clear();
+        ++rigGeneration_;
+    }
 
     // SetFixed が触ったオブジェクトだけ設計値の固定状態へ戻す。
     for (const std::size_t i : graphRt_.fixedTouched) {

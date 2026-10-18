@@ -1087,9 +1087,10 @@ collide 部品の外接箱、当たり判定は collide 部品だけ）が実体
 
 - **型は EditorTypes.h**（`NodeKind` / `NodeDesc` / `WireDesc` /
   `EventAssetDesc`）。トリガーは衝突（OnCollision）・開始（OnSimStart）・
+  毎フレーム（OnUpdate = シミュレート中の毎ステップ）・
   タイマー（OnTimer）・掴み（OnGrab）、アクションは色（SetColor）・力
   （ApplyImpulse）・固定（SetFixed）・引き寄せ（GrabPull）・ライトの色/強さ
-  （SetLight*）・カメラ注視（CameraLookAt）。ワイヤーはトリガー →
+  （SetLight*）・カメラ（CameraLookAt / CameraBehind / CameraOrbit）。ワイヤーはトリガー →
   アクションの 1 段だけ（連鎖なし）。target の指す種別は
   `nodeTargetKind(kind)` が唯一の定義（object / light は保存で番号が詰まるので、
   詰め替え・掃除が全部ここで分岐する）。
@@ -1133,6 +1134,27 @@ collide 部品の外接箱、当たり判定は collide 部品だけ）が実体
   （SceneConfig.h）で、ノードの value はその倍率。**エディタモードの
   置き直しは今までどおり C++**（BoxControlComponent::onEditorStep）: 配置作業は
   シミュレートではないので、スクリプトの有無に左右させない。
+- **カメラのアクションは 3 つの部品で、追従は組み合わせで作る**（一式の
+  「追従」ノードは置かない）: 注視（`cameraLookAt`、注視点を物 + 高さ
+  `height` へ）・後ろへ回る（`cameraBehind`、方位を物の後ろ = ボディ +Z へ
+  `smooth` 秒の時定数で。`angle` でずらす）・距離と仰角（`cameraOrbit`、
+  `distance` / `elevation`、0 = マウス操作のまま）。target はカメラ番号
+  （追加時は選択中のカメラ、無ければエディタカメラ以外で最初に居るカメラ）、
+  other は相手（-1 = 文脈の物 / 付けた相手）。**どれも「そのステップの
+  カメラへの注文」**: 物理スレッドは `graphRt_.rigs` に書いて毎ステップ
+  `cameraRigs_` へ写すだけで、**カメラを動かすのは RENDER スレッド**
+  （`Scene::updateCameraRigs`、applyToRenderer が描画と同じ補間した姿勢で）。
+  物理スレッドで動かすと別のステップの物の姿勢と組み合わさって、追わせた
+  物が画面で震えるため。そのため main は **applyToRenderer の後に**各カメラを
+  ビューへ当てる。注文は項目ごとに時刻を持ち、`kCameraHoldSeconds`（0.25 s）
+  来なければその項目だけ手放す = **毎フレーム（OnUpdate）から繋げば追い続け、
+  1 回だけの発火ならそこで止まる**。シミュレートを止める・Reset する
+  （`rigGeneration_` が進む）と掛かる前の視点へ戻す。見本は
+  `assets/scenes/vehicle.xml` の `follow_car`（onUpdate → 3 つ、Camera 1。
+  編集の視点 = Camera 0 は取られない）。
+- **ノードの見出し行の ✕ はドラッグの始まりにしない**（nodesEl の
+  pointerdown で `.ndDel` を先に弾く）。ポインタをキャプチャすると続く click が
+  キャプチャ先へ送られ、✕ の onclick が呼ばれなかった。
 - **対象が消えたノードは掃除**（`pruneGraphForRemoved`、ジョイントの掃除と
   同じ判断）。OnCollision の相手フィルタだけが消えたときはノードを残して
   「何でも」(-2) に戻す。**番号を書いていないノード（target = -1）は触らない**:
@@ -1394,6 +1416,28 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
   ぶんだけ dt 単位で進め、遅れは次のパスで取り戻す。取り戻せる上限は `kMaxCatchUp`（4）で、
   超えたぶんは捨てる＝その間はスローモーションになる。実時間との比は `/stats` の
   `realtime` に出し、ブラウザに `speed 1.00x` として表示（0.95 未満で警告色）。
+- **描画は物理の 2 フレームの間を補間する**（`Scene::buildRenderFrame`）。物理
+  （既定 30 Hz）と描画（60 fps）は別の時計なので、最新の姿勢をそのまま描くと
+  1 フレームに 0 / 1 / 2 ステップ進むフレームが不規則に混ざり、動く物と
+  それを追うカメラがガタつく。物理スレッドは 1 パス（サブステップと取り
+  戻しの全部）を回し終えるたびに `endPhysicsPass()`（main が呼ぶ）で
+  最新の姿勢を「今回」のフレームとして公開し（前の今回は「前回」へ）、
+  描画は **1 パスぶん遅れて** その間を補間する（α = 公開からの経過 / パスの
+  シミュレーション時間、0〜1 に抑えて外挿しない。位置は線形、回転は最短
+  経路の nlerp、ソフトボディの粒子・ケーブルの節点は点ごと）。**補間しない
+  のは「つながっていない」更新の後**: `snapshot(cut = true)`（ステップ以外
+  からの呼び出し = 置き直し・読込・モード切替・Reset・エディタ）が
+  `poseCut_` を進め、2 つのフレームか最後のフレーム以降で番号が違えば最新の
+  姿勢をそのまま描く（置いた物が前の場所からすっと動いて見えない）。
+  エディタ中も補間しない。applyToRenderer は**先頭で**この組（`renderPoses_` /
+  `renderSoft_` / `renderCables_`、RENDER 専用）を 1 回だけ作り、onRender
+  （プレハブの飾り = `latestPose`）・ケーブル・カメラ追従の全部がそれを読む
+  = 部品ごとに別の物理ステップを描いてずれない。車輪の姿勢は
+  VehicleComponent が `onPhysicsPassEnd`（SceneComponent の新しいフック）で
+  同じ区切りの前回 / 今回を持ち、`Scene::renderAlpha()` の同じ α で補間する
+  （`wheelLocalPoses(i, out, alpha)`）。**当たり判定・選択・`/scene` は
+  補間しない最新の姿勢**（`latestPoses_`）のまま。代償は見た目の遅れ
+  1 パス（30 Hz で約 33 ms）。
 - **実行時に読むファイルはすべて `assets/`**（exe と同じ場所）。ビルドが
   `build/<config>/../assets/` ではなく `build/assets/` に出力（CMake の `ASSET_DIR`）し、
   中身は `shaded/ground_lit/line.filamat`・`ground.png`・`web/`（index.html, favicon.ico）。

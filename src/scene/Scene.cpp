@@ -5,6 +5,8 @@
 #include "scene/SceneInternal.h"
 #include "scene/PrefabDefaults.h"
 
+#include <chrono>
+
 using namespace chrono;
 using namespace scene_detail;
 
@@ -479,7 +481,28 @@ void Scene::stepPhysics(double dt) {
     // イベントグラフは step の後: 衝突トリガーはこのステップが作った接触を
     // 見る（前に置くと 1 ステップ古い接触に反応する）。
     runEventGraph(dt);
-    snapshot();
+    simClock_ += dt;
+    snapshot(false);  // 物理の連続した動き（描画が補間でつないでよい）
+}
+
+void Scene::endPhysicsPass() {
+    const double wall =
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    {
+        std::lock_guard<std::mutex> lk(poseMutex_);
+        // 前回のフレームの入れ物を使い回す（毎パスの確保を避ける）。
+        std::swap(framePrev_, frameCur_);
+        frameCur_.poses = latestPoses_;
+        frameCur_.soft = latestSoft_;
+        frameCur_.cables = latestCables_;
+        frameCur_.simTime = simClock_;
+        frameCur_.wallTime = wall;
+        frameCur_.cut = poseCut_;
+        frameCur_.valid = true;
+    }
+    for (auto& c : components_) c->onPhysicsPassEnd(*this);
 }
 
 void Scene::updateJointStats() {
@@ -799,14 +822,97 @@ double Scene::meshScale(int meshIndex) const {
     return meshes_[std::size_t(meshIndex)].desc.scale;
 }
 
-bool Scene::latestPose(std::size_t index, BodyTransform& out) {
-    std::lock_guard<std::mutex> lk(poseMutex_);
-    if (index >= latestPoses_.size()) return false;
-    out = latestPoses_[index];
+bool Scene::latestPose(std::size_t index, BodyTransform& out) const {
+    if (index >= renderPoses_.size()) return false;
+    out = renderPoses_[index];
     return true;
 }
 
-void Scene::snapshot() {
+namespace {
+
+// 姿勢の補間: 位置は線形、回転は四元数の正規化線形補間（最短経路。1 物理
+// ステップぶんの回転は小さいので slerp との差は見えない）。
+BodyTransform lerpPose(const BodyTransform& a, const BodyTransform& b, double t) {
+    BodyTransform r;
+    r.px = a.px + (b.px - a.px) * t;
+    r.py = a.py + (b.py - a.py) * t;
+    r.pz = a.pz + (b.pz - a.pz) * t;
+    // q と -q は同じ回転。内積が負なら片方を反転して近い側を回る。
+    const double dot = a.qw * b.qw + a.qx * b.qx + a.qy * b.qy + a.qz * b.qz;
+    const double s = dot < 0.0 ? -1.0 : 1.0;
+    r.qw = a.qw + (s * b.qw - a.qw) * t;
+    r.qx = a.qx + (s * b.qx - a.qx) * t;
+    r.qy = a.qy + (s * b.qy - a.qy) * t;
+    r.qz = a.qz + (s * b.qz - a.qz) * t;
+    const double n = std::sqrt(r.qw * r.qw + r.qx * r.qx + r.qy * r.qy + r.qz * r.qz);
+    if (n > 1e-12) {
+        r.qw /= n;
+        r.qx /= n;
+        r.qy /= n;
+        r.qz /= n;
+    } else {
+        r = b;
+    }
+    return r;
+}
+
+// 点列（3 個で 1 点）の補間。数が違う（作り直した直後など）なら今回のまま。
+void lerpPoints(const std::vector<std::vector<float>>& a,
+                const std::vector<std::vector<float>>& b, double t,
+                std::vector<std::vector<float>>& out) {
+    out.resize(b.size());
+    const float ft = float(t);
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        std::vector<float>& o = out[i];
+        o = b[i];
+        if (i >= a.size() || a[i].size() != b[i].size()) continue;
+        for (std::size_t k = 0; k < o.size(); ++k) o[k] = a[i][k] + (b[i][k] - a[i][k]) * ft;
+    }
+}
+
+}  // namespace
+
+void Scene::buildRenderFrame() {
+    const double now =
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    const bool simulating = editor_.mode() == ed::AppMode::Simulate;
+    std::lock_guard<std::mutex> lk(poseMutex_);
+    // 補間するのは「シミュレート中で、2 つのフレームの間にも、最後のフレーム
+    // の後にも置き直しが無い」ときだけ。それ以外（エディタ・開始直後・
+    // Reset・読込）は最新の姿勢をそのまま描く = 置き直した物が前の場所から
+    // すっと動いて見えない。
+    const double span = frameCur_.simTime - framePrev_.simTime;
+    const bool interp = simulating && framePrev_.valid && frameCur_.valid &&
+                        framePrev_.cut == frameCur_.cut &&
+                        frameCur_.cut == poseCut_ && span > 1e-9;
+    if (!interp) {
+        renderPoses_ = latestPoses_;
+        renderSoft_ = latestSoft_;
+        renderCables_ = latestCables_;
+        renderAlpha_ = -1.0;
+        return;
+    }
+    // 1 パスぶん遅れて描く: 今回のフレームを公開した瞬間は前回の姿勢
+    // （α = 0）、そこから 1 パスぶんの時間をかけて今回の姿勢（α = 1）へ。
+    // 先読み（外挿）はしない - 次のパスが遅れたら今回の姿勢で待つ。
+    double alpha = (now - frameCur_.wallTime) / span;
+    if (alpha < 0.0) alpha = 0.0;
+    if (alpha > 1.0) alpha = 1.0;
+    renderAlpha_ = alpha;
+
+    const std::vector<BodyTransform>& a = framePrev_.poses;
+    const std::vector<BodyTransform>& b = frameCur_.poses;
+    renderPoses_.resize(b.size());
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        renderPoses_[i] = i < a.size() ? lerpPose(a[i], b[i], alpha) : b[i];
+    }
+    lerpPoints(framePrev_.soft, frameCur_.soft, alpha, renderSoft_);
+    lerpPoints(framePrev_.cables, frameCur_.cables, alpha, renderCables_);
+}
+
+void Scene::snapshot(bool cut) {
     std::vector<BodyTransform> poses;
     poses.reserve(boxes_.size());
     // ソフトボディの粒子位置も一緒に。オブジェクト番号で引けるように
@@ -842,6 +948,7 @@ void Scene::snapshot() {
     latestSoft_.swap(soft);
     latestCables_.swap(cables);
     cableTension_.swap(tension);
+    if (cut) ++poseCut_;
 }
 
 bool Scene::latestCable(std::size_t index, std::vector<float>& out) {
@@ -1077,11 +1184,8 @@ void Scene::syncCables() {
     using filament::math::float3;
     using filament::math::mat4f;
     const auto cables = editor_.cables();
-    std::vector<std::vector<float>> pts;
-    {
-        std::lock_guard<std::mutex> pl(poseMutex_);
-        pts = latestCables_;
-    }
+    // このフレームに描く節点（buildRenderFrame が補間したもの）。
+    const std::vector<std::vector<float>>& pts = renderCables_;
     auto release = [&](CableRender& r) {
         for (const std::size_t id : r.renderIds) renderer_.removeShape(id);
         r.renderIds.clear();
@@ -1230,10 +1334,111 @@ void Scene::syncRenderables() {
     }
 }
 
+// イベントのカメラのアクション（CameraLookAt / Behind / Orbit）の注文を、
+// このフレームに描く姿勢でカメラへ当てる。RENDER スレッド、objectsMutex_ を
+// 持った applyToRenderer の中から呼ぶ（boxes_ を読むため）。注文の途切れた
+// 項目はその場で手放し（マウスで動かせる）、シミュレートを止めた・Reset
+// した（generation が変わった）ら掛かる前の視点へ戻す。
+void Scene::updateCameraRigs(const std::vector<BodyTransform>& poses,
+                             const std::vector<CameraRig>& rigs,
+                             std::uint64_t generation) {
+    if (rigState_.size() < cameras_.size()) rigState_.resize(cameras_.size());
+    const double now =
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    const bool simulating = editor_.mode() == ed::AppMode::Simulate;
+    auto objectPose = [&](int index, const BodyTransform*& out) {
+        if (index < 0 || std::size_t(index) >= boxes_.size() ||
+            std::size_t(index) >= poses.size() || !boxes_[std::size_t(index)].alive) {
+            return false;
+        }
+        out = &poses[std::size_t(index)];
+        return true;
+    };
+    auto fresh = [now](double stamp) {
+        return stamp >= 0.0 && now - stamp <= ed::kCameraHoldSeconds;
+    };
+
+    for (std::size_t i = 0; i < cameras_.size(); ++i) {
+        CameraObject& cam = *cameras_[i];
+        CameraRigState& st = rigState_[i];
+        double dt = now - st.lastTime;
+        st.lastTime = now;
+        if (dt < 0.0 || dt > 0.25) dt = 0.0;  // 久しぶりのフレームで飛ばない
+
+        // 止めた・Reset した: 掛かる前の視点へ戻す。
+        if (st.engaged && (!simulating || st.generation != generation)) {
+            cam.setPose(st.azimuth, st.elevation, st.radius);
+            cam.setTarget(st.tx, st.ty, st.tz);
+            st.engaged = false;
+            st.behindObject = -1;
+        }
+        if (!simulating || i >= rigs.size()) continue;
+        const CameraRig& rig = rigs[i];
+        const BodyTransform* look = nullptr;
+        const BodyTransform* behind = nullptr;
+        const bool doLook = fresh(rig.lookStamp) && objectPose(rig.lookObject, look);
+        const bool doBehind =
+            fresh(rig.behindStamp) && objectPose(rig.behindObject, behind);
+        const bool doOrbit = fresh(rig.orbitStamp);
+        if (!doBehind) st.behindObject = -1;
+        if (!doLook && !doBehind && !doOrbit) continue;  // 何も注文が無い
+
+        if (!st.engaged) {
+            // 掛かる前の視点を覚えておく（止めたらここへ戻す）。
+            st.azimuth = cam.azimuth();
+            st.elevation = cam.elevation();
+            st.radius = cam.radius();
+            const filament::math::double3 t = cam.target();
+            st.tx = t.x;
+            st.ty = t.y;
+            st.tz = t.z;
+            st.engaged = true;
+            st.generation = generation;
+        }
+
+        double azim = cam.azimuth();
+        if (doBehind) {
+            // 後ろ = ボディの +Z をワールドへ回したもの = 回転行列の 3 列目
+            // （車両の前は -Z）。CameraObject の視点は 注視点 + r (cos e sin a,
+            // sin e, cos e cos a) なので、その水平成分が後ろを向く a を選ぶ。
+            const BodyTransform& p = *behind;
+            const double bx = 2.0 * (p.qx * p.qz + p.qw * p.qy);
+            const double bz = 1.0 - 2.0 * (p.qx * p.qx + p.qy * p.qy);
+            if (bx * bx + bz * bz > 0.01) {  // 立った・裏返ったときは保つ
+                const double goal = std::atan2(bx, bz) + rig.behindAngleDeg * kDegToRad;
+                double d = std::remainder(goal - azim, 2.0 * scenemath::kPi);
+                // 別の物の後ろへ回り始めたときは、なまさずに一度で回り込む。
+                const bool snap = st.behindObject != rig.behindObject;
+                if (!snap && rig.behindSmooth > 0.0) {
+                    d *= 1.0 - std::exp(-dt / rig.behindSmooth);
+                }
+                azim += d;
+            }
+            st.behindObject = rig.behindObject;
+        }
+        double elev = cam.elevation();
+        double radius = cam.radius();
+        if (doOrbit) {
+            if (rig.elevationDeg > 0.0) elev = rig.elevationDeg * kDegToRad;
+            if (rig.distance > 0.0) radius = rig.distance;
+        }
+        cam.setPose(azim, elev, radius);
+        if (doLook) {
+            cam.setTarget(look->px, look->py + rig.lookHeight, look->pz);
+        }
+    }
+}
+
 void Scene::applyToRenderer() {
     // オブジェクト一覧を触るあいだはロックしたまま。この中から呼ばれる
     // onRender も同じ一覧を読むので、個々のアクセサはロックを取らない。
     std::unique_lock<std::mutex> lk(objectsMutex_);
+    // このフレームに描く姿勢を最初に決める。onRender（プレハブの飾り・車輪）
+    // もケーブルもカメラ追従も、全部この 1 組を見る = 部品ごとに別の物理
+    // ステップの姿勢を描いてずれることが無い。
+    buildRenderFrame();
     syncRenderables();
     syncLights();
     syncGround();
@@ -1241,15 +1446,20 @@ void Scene::applyToRenderer() {
     for (auto& c : components_) c->onRender(*this);
     syncCables();  // FEA のケーブル（円柱の連なり）
 
-    std::vector<BodyTransform> poses;
-    std::vector<std::vector<float>> softPts;
+    const std::vector<BodyTransform>& poses = renderPoses_;
+    const std::vector<std::vector<float>>& softPts = renderSoft_;
     std::vector<JointStat> jstats;
+    std::vector<CameraRig> rigs;
+    std::uint64_t rigGeneration = 0;
     {
         std::lock_guard<std::mutex> pl(poseMutex_);
-        poses = latestPoses_;
-        softPts = latestSoft_;
         jstats = jointStats_;
+        rigs = cameraRigs_;
+        rigGeneration = rigGeneration_;
     }
+    // イベントのカメラのアクションはこのフレームで描く姿勢から当てる（main は
+    // この後で各カメラをビューへ当てる）。
+    updateCameraRigs(poses, rigs, rigGeneration);
 
     // The cube/sphere meshes are unit-sized; scale them to the object's size
     // when placing. A model gets its own tuning factor instead (the mesh is

@@ -1018,6 +1018,19 @@ xml::Element nodeElement(const NodeDesc& n) {
             setVec3(e, "normal", n.vec);
         }
     }
+    // カメラのアクション: 数字の欄を流用せず、名前の付いた属性で書く（手で
+    // 読むため）。注視の高さは 0（物の中心）なら書かない = 従来の文書のまま。
+    if (n.kind == NodeKind::CameraLookAt && n.value != 0.0) {
+        e.setNumber("height", n.value);
+    }
+    if (n.kind == NodeKind::CameraBehind) {
+        e.setNumber("smooth", n.seconds);
+        if (n.value != 0.0) e.setNumber("angle", n.value);
+    }
+    if (n.kind == NodeKind::CameraOrbit) {
+        e.setNumber("distance", n.vec.x);
+        e.setNumber("elevation", n.vec.y);
+    }
     // value の意味は種類ごと（EditorTypes.h の clampNode）。GrabPull では
     // 引き寄せる強さの倍率、SetVelocity では 1 = 加算、SetMotor では目標値。
     if (n.kind == NodeKind::SetFixed || n.kind == NodeKind::SetLightIntensity ||
@@ -1050,6 +1063,14 @@ NodeDesc nodeFromXml(const xml::Element& e, Warn& warn) {
         // 既定の vec は impulse 用の (0,5,0) なので、ここでは零から読む。
         n.vec = getVec3(e, "normal", Vec3d{0.0, 0.0, 0.0});
         n.value = e.number("minforce", 0.0);
+    } else if (n.kind == NodeKind::CameraLookAt) {
+        n.value = e.number("height", 0.0);
+    } else if (n.kind == NodeKind::CameraBehind) {
+        n.seconds = e.number("smooth", kBehindSmooth);
+        n.value = e.number("angle", 0.0);
+    } else if (n.kind == NodeKind::CameraOrbit) {
+        n.vec = Vec3d{e.number("distance", kOrbitDistance),
+                      e.number("elevation", kOrbitElevation), 0.0};
     } else {
         n.vec = getVec3(e, "velocity", n.vec);
         n.value = e.number("value", n.value);

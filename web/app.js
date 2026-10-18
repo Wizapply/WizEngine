@@ -2855,6 +2855,7 @@
     onCollision:    { icon: '⚡', label: '衝突したら', trigger: true,  target: 'object' },
     onStart:        { icon: '▶',  label: '開始したら', trigger: true,  target: 'none' },
     onTimer:        { icon: '⏱',  label: 'タイマー',   trigger: true,  target: 'none' },
+    onUpdate:       { icon: '🔁', label: '毎フレーム', trigger: true,  target: 'none' },
     onGrab:         { icon: '🖱', label: '掴んでいる間', trigger: true, target: 'object' },
     setColor:       { icon: '🎨', label: '色を変える', trigger: false, target: 'object' },
     impulse:        { icon: '🚀', label: '力を加える', trigger: false, target: 'object' },
@@ -2863,6 +2864,8 @@
     lightColor:     { icon: '💡', label: 'ライトの色', trigger: false, target: 'light' },
     lightIntensity: { icon: '🔆', label: 'ライトの強さ', trigger: false, target: 'light' },
     cameraLookAt:   { icon: '🎥', label: '注視する',   trigger: false, target: 'camera' },
+    cameraBehind:   { icon: '🔄', label: '後ろへ回る', trigger: false, target: 'camera' },
+    cameraOrbit:    { icon: '📐', label: '距離と仰角', trigger: false, target: 'camera' },
     onJointBreak:   { icon: '💥', label: 'ジョイントが切れたら', trigger: true, target: 'joint' },
     setVelocity:    { icon: '💨', label: '速度を与える', trigger: false, target: 'object' },
     setMotor:       { icon: '⚙️', label: 'モータの目標', trigger: false, target: 'joint' },
@@ -3279,9 +3282,11 @@
   window.addEventListener('blur', hideContextMenu);
 
   // ノード追加メニューの並び（NODE_DEF から見出しとラベルを作る）。
-  const NODE_MENU_TRIGGERS = ['onCollision', 'onStart', 'onTimer', 'onGrab', 'onJointBreak'];
+  const NODE_MENU_TRIGGERS = ['onCollision', 'onStart', 'onUpdate', 'onTimer', 'onGrab',
+                              'onJointBreak'];
   const NODE_MENU_ACTIONS = ['setColor', 'impulse', 'setVelocity', 'setFixed', 'grabPull',
-                             'setMotor', 'lightColor', 'lightIntensity', 'cameraLookAt'];
+                             'setMotor', 'lightColor', 'lightIntensity', 'cameraLookAt',
+                             'cameraBehind', 'cameraOrbit'];
   function nodeMenuItems(x, y) {
     const item = (kind) => {
       const def = NODE_DEF[kind];
@@ -3524,6 +3529,15 @@
       '</div>';
     fDrawWires();
   }
+  // vec の 1 成分だけを変える（カメラの距離と仰角は別々の行）。
+  // 残りの成分はいまのノードの値のまま送る。
+  function ndVecPart(id, ax, value) {
+    const n = nodeById(id);
+    if (!n) return;
+    const v = { x: n.vec.x, y: n.vec.y, z: n.vec.z };
+    v[ax] = value;
+    ndPatch(id, { vec: v });
+  }
   function ndVecChange(id, el) {
     const row = el.closest('.ndVec');
     const v = {};
@@ -3639,9 +3653,32 @@
                  (n.value || 0) + '" title="単位はジョイントのモータと同じ（deg/s・deg・N·m / m/s・m・N）" ' +
                  'onchange="ndPatch(' + n.id + ',{value:parseFloat(this.value)||0})">');
     }
+    // カメラのアクションはどれも「そのステップのカメラへの注文」。毎フレーム
+    // から繋げば追い続け、1 回だけならそこで止まる。
     if (n.kind === 'cameraLookAt') {
       h += ndRow('注視', ndSelHtml(n.id, 'other', ndObjItems(), n.other,
                                    [[-1, '(付けた相手)']]));
+      h += ndRow('高さ m', '<input class="num" type="number" step="0.1" value="' +
+                 (n.value || 0) + '" title="注視点を物の中心からどれだけ上にするか" ' +
+                 'onchange="ndPatch(' + n.id + ',{value:parseFloat(this.value)||0})">');
+    }
+    if (n.kind === 'cameraBehind') {
+      h += ndRow('相手', ndSelHtml(n.id, 'other', ndObjItems(), n.other,
+                                   [[-1, '(付けた相手)']]));
+      h += ndRow('遅れ s', '<input class="num" type="number" step="0.05" min="0" max="5" value="' +
+                 n.seconds + '" title="回り込みの時定数（0 = 遅れなし）" ' +
+                 'onchange="ndPatch(' + n.id + ',{seconds:Math.max(0,parseFloat(this.value)||0)})">');
+      h += ndRow('角度 °', '<input class="num" type="number" step="15" min="-180" max="180" value="' +
+                 (n.value || 0) + '" title="真後ろからずらす角度（90 = 右横、180 = 前から）" ' +
+                 'onchange="ndPatch(' + n.id + ',{value:parseFloat(this.value)||0})">');
+    }
+    if (n.kind === 'cameraOrbit') {
+      const part = (label, ax, step, title) =>
+        ndRow(label, '<input class="num" type="number" step="' + step + '" min="0" value="' +
+              n.vec[ax] + '" title="' + title + '" onchange="ndVecPart(' + n.id +
+              ',\'' + ax + '\',parseFloat(this.value)||0)">');
+      h += part('距離 m', 'x', 0.5, '注視点からの距離（0 = ホイールのズームのまま）');
+      h += part('仰角 °', 'y', 1, '見下ろす角度（0 = マウス操作のまま）');
     }
     if (n.kind === 'onTimer') {
       h += ndRow('間隔 s', '<input class="num" type="number" step="0.1" min="0.05" value="' +
@@ -3816,6 +3853,10 @@
         ndRedrawLocal();
         return;
       }
+      // 見出し行の ✕ はドラッグの始まりにしない: ここでポインタを
+      // キャプチャすると、続く click がキャプチャ先（nodesEl）へ送られて
+      // ✕ の onclick が呼ばれなかった（✕ が効かない、の正体）。
+      if (e.target.closest('.ndDel')) return;
       const head = e.target.closest('[data-drag]');
       if (head) {
         const el = head.closest('.ndNode');

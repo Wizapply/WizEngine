@@ -776,6 +776,9 @@ enum class NodeKind {
     OnTimer,      // seconds ごとに繰り返し
     OnGrab,       // マウスで掴んでいる間、毎ステップ（掴んだ物が文脈に乗る）
     OnJointBreak, // ジョイント（target、-1 = どれでも）が破断した（breakForce）
+    // シミュレート中の毎ステップ（= 物理のフレーム）。カメラを追わせる・
+    // 毎フレーム力を掛ける、など「ずっと効かせたい」アクションの起点。
+    OnUpdate,
     // アクション（左の入力ポートで受ける）
     SetColor,        // オブジェクトの色を color へ（実行時のみ）
     ApplyImpulse,    // オブジェクトに速度変化 vec (m/s) を与える
@@ -783,10 +786,33 @@ enum class NodeKind {
     GrabPull,        // 掴んでいる物をカーソルへ引き寄せる（value = 強さ倍率）
     SetLightColor,   // ライトの色を color へ（実行時のみ）
     SetLightIntensity,  // ライトの強さを value へ（実行時のみ）
-    CameraLookAt,    // カメラ target の注視点をオブジェクト other へ向ける
+    // ---- カメラ（target = カメラ番号）。どれも「そのステップのカメラへの
+    // 注文」で、実際にカメラを動かすのは RENDER スレッド（描画と同じ補間
+    // した姿勢から = 追わせても映像の中で物が震えない）。注文が途切れて
+    // CameraHold 秒たつと、カメラはその場で手放される（マウスで動かせる）。
+    // 毎フレーム（OnUpdate）から繋げば追い続け、1 回だけの発火ならそこを
+    // 向いて止まる。シミュレートを止めると掛かる前の視点へ戻る。
+    CameraLookAt,    // 注視点をオブジェクト other に（value = 高さのずれ m）
     SetVelocity,     // オブジェクトの速度を vec (m/s) に（value != 0 なら加算）
     SetMotor,        // ジョイント target のモータ目標値を value に（実行時のみ）
+    // 方位をオブジェクト other の後ろへ回す（後ろ = ボディの +Z、車両の
+    // 前 = -Z の約束）。seconds = 回り込みの遅れ（時定数 s、0 = 遅れなし）、
+    // value = 後ろからずらす角度（度。90 = 右横、180 = 前から）。
+    CameraBehind,
+    // 注視点からの距離と仰角（vec.x = 距離 m、vec.y = 仰角 度。どちらも
+    // 0 = マウス操作のまま）。
+    CameraOrbit,
 };
+
+// カメラのアクションの注文が途切れてから手放すまでの秒数。物理が遅れて
+// 数ステップ来ないあいだに手放して、カメラが一瞬だけマウスの位置へ戻る
+// ことがないよう少し余裕を持たせる。
+constexpr double kCameraHoldSeconds = 0.25;
+// 新しく作るカメラのアクションの既定値（NodeDesc の既定は他の種類向け）。
+// ブラウザの追加と XML の読み込みが同じ値から始まるよう 1 か所に置く。
+constexpr double kBehindSmooth = 0.3;   // s
+constexpr double kOrbitDistance = 8.0;  // m
+constexpr double kOrbitElevation = 15.0;  // 度
 
 inline const char* nodeKindName(NodeKind k) {
     switch (k) {
@@ -803,6 +829,9 @@ inline const char* nodeKindName(NodeKind k) {
         case NodeKind::OnJointBreak: return "onJointBreak";
         case NodeKind::SetVelocity: return "setVelocity";
         case NodeKind::SetMotor: return "setMotor";
+        case NodeKind::OnUpdate: return "onUpdate";
+        case NodeKind::CameraBehind: return "cameraBehind";
+        case NodeKind::CameraOrbit: return "cameraOrbit";
         case NodeKind::OnCollision: break;
     }
     return "onCollision";
@@ -822,6 +851,9 @@ inline NodeKind nodeKindFromName(const std::string& s, NodeKind fallback) {
     if (s == "onJointBreak" || s == "jointBreak") return NodeKind::OnJointBreak;
     if (s == "setVelocity" || s == "velocity") return NodeKind::SetVelocity;
     if (s == "setMotor" || s == "motor") return NodeKind::SetMotor;
+    if (s == "onUpdate" || s == "update" || s == "everyFrame") return NodeKind::OnUpdate;
+    if (s == "cameraBehind" || s == "behind") return NodeKind::CameraBehind;
+    if (s == "cameraOrbit" || s == "orbit") return NodeKind::CameraOrbit;
     return fallback;
 }
 
@@ -829,7 +861,7 @@ inline NodeKind nodeKindFromName(const std::string& s, NodeKind fallback) {
 inline bool nodeIsTrigger(NodeKind k) {
     return k == NodeKind::OnCollision || k == NodeKind::OnSimStart ||
            k == NodeKind::OnTimer || k == NodeKind::OnGrab ||
-           k == NodeKind::OnJointBreak;
+           k == NodeKind::OnJointBreak || k == NodeKind::OnUpdate;
 }
 
 // ノードの target 欄が指す種別。番号の検証・削除時の掃除・保存時の詰め替えは
@@ -847,20 +879,24 @@ inline NodeTargetKind nodeTargetKind(NodeKind k) {
         case NodeKind::GrabPull: return NodeTargetKind::Object;
         case NodeKind::SetLightColor:
         case NodeKind::SetLightIntensity: return NodeTargetKind::Light;
-        case NodeKind::CameraLookAt: return NodeTargetKind::Camera;
+        case NodeKind::CameraLookAt:
+        case NodeKind::CameraBehind:
+        case NodeKind::CameraOrbit: return NodeTargetKind::Camera;
         case NodeKind::SetVelocity: return NodeTargetKind::Object;
         case NodeKind::OnJointBreak:
         case NodeKind::SetMotor: return NodeTargetKind::Joint;
         case NodeKind::OnSimStart:
-        case NodeKind::OnTimer: break;
+        case NodeKind::OnTimer:
+        case NodeKind::OnUpdate: break;
     }
     return NodeTargetKind::None;
 }
 
 // other 欄がオブジェクト番号を指すか（OnCollision の相手フィルタと
-// CameraLookAt の注視先）。削除時の掃除と保存時の詰め替えに使う。
+// CameraLookAt / CameraBehind の相手）。削除時の掃除と保存時の詰め替えに使う。
 inline bool nodeOtherIsObject(NodeKind k) {
-    return k == NodeKind::OnCollision || k == NodeKind::CameraLookAt;
+    return k == NodeKind::OnCollision || k == NodeKind::CameraLookAt ||
+           k == NodeKind::CameraBehind;
 }
 
 // 1 個のノード。id はグラフ内で一意（削除しても再利用しない - ワイヤーが
@@ -878,9 +914,9 @@ struct NodeDesc {
     // 「未設定（何もしない）」。
     int target = -1;
     // OnCollision: 相手のフィルタ（-2 = 何でも, -1 = 地面, n = オブジェクト）。
-    // CameraLookAt: 注視するオブジェクト番号。
+    // CameraLookAt / CameraBehind: 相手のオブジェクト番号（-1 = 文脈の物）。
     int other = -2;
-    double seconds = 1.0;                // OnTimer の間隔
+    double seconds = 1.0;  // OnTimer の間隔 / CameraBehind の回り込みの遅れ (s)
     Color3 color{0.0f, 0.0f, 0.0f};      // SetColor / SetLightColor（既定 = 黒）
     // ApplyImpulse の速度変化 / SetVelocity の速度 (m/s)。OnCollision では
     // 「求める接触の向き」（対象から見て相手の側へ向く法線。零 = 問わない。
@@ -2058,10 +2094,21 @@ inline NodeDesc clampNode(NodeDesc n) {
     n.y = cl(n.y, 0.0, 4000.0);
     if (n.target < -1) n.target = -1;
     if (n.other < -2) n.other = -2;
-    // -2（何でも）は OnCollision の相手フィルタだけの語彙。CameraLookAt の
-    // other は注視先のオブジェクト番号なので、-1（未設定）が下限。
-    if (n.kind == NodeKind::CameraLookAt && n.other < -1) n.other = -1;
-    n.seconds = cl(n.seconds, 0.05, 3600.0);
+    // -2（何でも）は OnCollision の相手フィルタだけの語彙。CameraLookAt /
+    // CameraBehind の other は相手のオブジェクト番号なので、-1（文脈の物）が下限。
+    if ((n.kind == NodeKind::CameraLookAt || n.kind == NodeKind::CameraBehind) &&
+        n.other < -1) {
+        n.other = -1;
+    }
+    // 回り込みの遅れは 0（遅れなし）を許す。タイマーの下限は発火の暴走止め
+    // なので、ここには当てはまらない。
+    n.seconds = n.kind == NodeKind::CameraBehind ? cl(n.seconds, 0.0, 5.0)
+                                                 : cl(n.seconds, 0.05, 3600.0);
+    if (n.kind == NodeKind::CameraOrbit) {
+        n.vec.x = cl(n.vec.x, 0.0, 60.0);  // 距離（0 = マウス操作のまま）
+        n.vec.y = cl(n.vec.y, 0.0, 75.0);  // 仰角（0 = マウス操作のまま）
+        n.vec.z = 0.0;
+    }
     // OnCollision の vec は「求める接触の向き」（零 = 問わない）。NodeDesc の
     // 既定 (0, 5, 0) は ApplyImpulse のためのものなので、そのまま残すと作った
     // ばかりの衝突トリガーが「上から乗ったとき」だけになる。既定値のままなら
@@ -2081,6 +2128,10 @@ inline NodeDesc clampNode(NodeDesc n) {
         n.value = cl(n.value, -1000000.0, 1000000.0);  // モータの目標値は負もある
     } else if (n.kind == NodeKind::GrabPull) {
         n.value = n.value <= 0.0 ? 1.0 : cl(n.value, 0.1, 10.0);
+    } else if (n.kind == NodeKind::CameraLookAt) {
+        n.value = cl(n.value, -10.0, 10.0);  // 注視点の高さのずれ (m)
+    } else if (n.kind == NodeKind::CameraBehind) {
+        n.value = cl(n.value, -180.0, 180.0);  // 後ろからずらす角度（度）
     } else {
         n.value = cl(n.value, 0.0, 10000000.0);
     }
