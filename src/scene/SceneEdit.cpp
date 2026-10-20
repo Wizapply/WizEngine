@@ -737,14 +737,14 @@ bool Scene::terrainRaycast(const double origin[3], const double dir[3], double m
     const wizengine::terrain::Vec3 o{origin[0], origin[1], origin[2]};
     const wizengine::terrain::Vec3 d{dir[0], dir[1], dir[2]};
     double hitT = 0.0;
-    wizengine::terrain::Vec3 n;
+    wizengine::terrain::Vec3 n = wizengine::terrain::Vec3::Zero();
     // 判定の戻り値は一度変数に受けてから使う（出力引数と同じ式に並べない規約）。
     const bool hit = field->raycast(o, d, maxDist, hitT, n);
     if (!hit) return false;
     t = hitT;
-    normal[0] = n.x;
-    normal[1] = n.y;
-    normal[2] = n.z;
+    normal[0] = n.x();
+    normal[1] = n.y();
+    normal[2] = n.z();
     return true;
 }
 

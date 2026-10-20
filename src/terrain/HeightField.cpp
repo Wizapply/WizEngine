@@ -4,24 +4,23 @@
 #include <cmath>
 #include <limits>
 
+#include <Eigen/Geometry>  // cross
+
 namespace wizengine {
 namespace terrain {
 namespace {
 
-Vec3 sub(const Vec3& a, const Vec3& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
-double dot(const Vec3& a, const Vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-Vec3 cross(const Vec3& a, const Vec3& b) {
-    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
-}
-Vec3 normalized(const Vec3& v, const Vec3& fallback) {
-    const double l = std::sqrt(dot(v, v));
+// 長さがほぼ 0 なら fallback を返す正規化（Eigen の normalized() は 0 を
+// そのまま返すので、しきい値と代わりの値はここで持つ）。
+Vec3 normalizedOr(const Vec3& v, const Vec3& fallback) {
+    const double l = v.norm();
     if (!(l > 1e-12)) return fallback;
-    return {v.x / l, v.y / l, v.z / l};
+    return v / l;
 }
 
 // 勾配 (dh/dx, dh/dz) の面の法線。
 Vec3 slopeNormal(double dhdx, double dhdz) {
-    return normalized({-dhdx, 1.0, -dhdz}, {0.0, 1.0, 0.0});
+    return normalizedOr(Vec3(-dhdx, 1.0, -dhdz), Vec3::UnitY());
 }
 
 // 三角形の重心座標の許容差。セルの境界・対角線ちょうどを通るレイが両側の
@@ -35,24 +34,24 @@ constexpr double kCellSlack = 1e-6;
 bool hitTriangle(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& o,
                  const Vec3& d, double tMin, double tMax, double& tOut,
                  Vec3& normalOut) {
-    const Vec3 e1 = sub(b, a);
-    const Vec3 e2 = sub(c, a);
-    const Vec3 n = cross(e1, e2);
-    if (!(dot(n, d) < 0.0)) return false;  // 裏から・面と平行
-    const Vec3 p = cross(d, e2);
-    const double det = dot(e1, p);
+    const Vec3 e1 = b - a;
+    const Vec3 e2 = c - a;
+    const Vec3 n = e1.cross(e2);
+    if (!(n.dot(d) < 0.0)) return false;  // 裏から・面と平行
+    const Vec3 p = d.cross(e2);
+    const double det = e1.dot(p);
     if (std::fabs(det) < 1e-18) return false;
     const double inv = 1.0 / det;
-    const Vec3 s = sub(o, a);
-    const double u = dot(s, p) * inv;
+    const Vec3 s = o - a;
+    const double u = s.dot(p) * inv;
     if (u < -kBaryTolerance || u > 1.0 + kBaryTolerance) return false;
-    const Vec3 q = cross(s, e1);
-    const double v = dot(d, q) * inv;
+    const Vec3 q = s.cross(e1);
+    const double v = d.dot(q) * inv;
     if (v < -kBaryTolerance || u + v > 1.0 + kBaryTolerance) return false;
-    const double t = dot(e2, q) * inv;
+    const double t = e2.dot(q) * inv;
     if (t < tMin || t > tMax) return false;
     tOut = t;
-    normalOut = normalized(n, {0.0, 1.0, 0.0});
+    normalOut = normalizedOr(n, Vec3::UnitY());
     return true;
 }
 
@@ -204,15 +203,15 @@ bool HeightField::buildChunkMesh(int cx, int cz, int quadsPerChunk,
             const std::size_t v = std::size_t(r) * side + std::size_t(c);
             const Vec3 p = vertexWorld(gi, gj);
             const Vec3 nn = vertexNormal(gi, gj);
-            out.positions[v * 3 + 0] = float(p.x);
-            out.positions[v * 3 + 1] = float(p.y);
-            out.positions[v * 3 + 2] = float(p.z);
-            out.normals[v * 3 + 0] = float(nn.x);
-            out.normals[v * 3 + 1] = float(nn.y);
-            out.normals[v * 3 + 2] = float(nn.z);
+            out.positions[v * 3 + 0] = float(p.x());
+            out.positions[v * 3 + 1] = float(p.y());
+            out.positions[v * 3 + 2] = float(p.z());
+            out.normals[v * 3 + 0] = float(nn.x());
+            out.normals[v * 3 + 1] = float(nn.y());
+            out.normals[v * 3 + 2] = float(nn.z());
             // UV はメートル単位（ワールドの x, z）。タイルは材質が決める。
-            out.uvs[v * 2 + 0] = float(p.x);
-            out.uvs[v * 2 + 1] = float(p.z);
+            out.uvs[v * 2 + 0] = float(p.x());
+            out.uvs[v * 2 + 1] = float(p.z());
         }
     }
 
@@ -249,7 +248,7 @@ CollisionMesh HeightField::buildCollisionMesh() const {
     for (int j = 0; j <= resolution_; ++j) {
         for (int i = 0; i <= resolution_; ++i) {
             const Vec3 p = vertexWorld(i, j);
-            mesh.vertices.push_back({p.x, p.y, p.z});
+            mesh.vertices.push_back({p.x(), p.y(), p.z()});
         }
     }
     mesh.triangles.reserve(std::size_t(resolution_) * std::size_t(resolution_) * 2);
@@ -284,7 +283,7 @@ CollisionMesh HeightField::buildChunkCollisionMesh(int cx, int cz,
     for (int j = j0; j <= j1; ++j) {
         for (int i = i0; i <= i1; ++i) {
             const Vec3 p = vertexWorld(i, j);
-            mesh.vertices.push_back({p.x, p.y, p.z});
+            mesh.vertices.push_back({p.x(), p.y(), p.z()});
         }
     }
     mesh.triangles.reserve(std::size_t(i1 - i0) * std::size_t(j1 - j0) * 2);
@@ -314,7 +313,7 @@ bool HeightField::hitCell(int i, int j, const Vec3& o, const Vec3& d, double tMi
     const Vec3 v11 = vertexWorld(i + 1, j + 1);
     // 戻り値を変数に受けてから出力を使う（引数の評価順に頼らない）。
     double tA = 0.0, tB = 0.0;
-    Vec3 nA, nB;
+    Vec3 nA = Vec3::Zero(), nB = Vec3::Zero();
     const bool hitA = hitTriangle(v00, v01, v11, o, d, tMin, tMax, tA, nA);
     const bool hitB = hitTriangle(v00, v11, v10, o, d, tMin, tMax, tB, nB);
     if (!hitA && !hitB) return false;
@@ -329,7 +328,7 @@ bool HeightField::hitCell(int i, int j, const Vec3& o, const Vec3& d, double tMi
             // 丸め誤差で決まってしまうので、normalAt と同じ規則・同じ式
             // （cellLocal の (u, w) で、w >= u なら A）で選ぶ。
             double u = 0.0, w = 0.0;
-            cellLocal(o.x + d.x * t, o.z + d.z * t, i, j, u, w);
+            cellLocal(o.x() + d.x() * t, o.z() + d.z() * t, i, j, u, w);
             useA = (w >= u);
         }
     }
@@ -341,14 +340,14 @@ bool HeightField::hitCell(int i, int j, const Vec3& o, const Vec3& d, double tMi
 bool HeightField::raycast(const Vec3& origin, const Vec3& dir, double maxDist,
                           double& tOut, Vec3& normalOut) const {
     if (!valid() || !(maxDist > 0.0)) return false;  // NaN もここで弾く
-    if (!std::isfinite(origin.x) || !std::isfinite(origin.y) ||
-        !std::isfinite(origin.z) || !std::isfinite(dir.x) || !std::isfinite(dir.y) ||
-        !std::isfinite(dir.z)) {
+    if (!std::isfinite(origin.x()) || !std::isfinite(origin.y()) ||
+        !std::isfinite(origin.z()) || !std::isfinite(dir.x()) || !std::isfinite(dir.y()) ||
+        !std::isfinite(dir.z())) {
         return false;  // NaN / Inf は min / max を素通りして t = NaN の当たりになる
     }
-    const double len = std::sqrt(dot(dir, dir));
+    const double len = dir.norm();
     if (!(len > 1e-12) || !std::isfinite(len)) return false;
-    const Vec3 d{dir.x / len, dir.y / len, dir.z / len};
+    const Vec3 d = dir / len;
     const Vec3& o = origin;
     constexpr double kInf = std::numeric_limits<double>::infinity();
 
@@ -356,8 +355,8 @@ bool HeightField::raycast(const Vec3& origin, const Vec3& dir, double maxDist,
     double tEnter = 0.0, tExit = maxDist;
     const double lo[2] = {double(minX_), double(minZ_)};
     const double hi[2] = {double(maxX()), double(maxZ())};
-    const double oa[2] = {o.x, o.z};
-    const double da[2] = {d.x, d.z};
+    const double oa[2] = {o.x(), o.z()};
+    const double da[2] = {d.x(), d.z()};
     for (int a = 0; a < 2; ++a) {
         if (std::fabs(da[a]) < 1e-15) {
             if (oa[a] < lo[a] || oa[a] > hi[a]) return false;
@@ -373,23 +372,23 @@ bool HeightField::raycast(const Vec3& origin, const Vec3& dir, double maxDist,
 
     // 入った点のセルから DDA（Amanatides & Woo）で辿る。
     const double cell = cell_;
-    const double px = o.x + d.x * tEnter;
-    const double pz = o.z + d.z * tEnter;
+    const double px = o.x() + d.x() * tEnter;
+    const double pz = o.z() + d.z() * tEnter;
     int i = std::clamp(int(std::floor((px - minX_) / cell)), 0, resolution_ - 1);
     int j = std::clamp(int(std::floor((pz - minZ_) / cell)), 0, resolution_ - 1);
 
-    const int stepI = d.x > 1e-15 ? 1 : (d.x < -1e-15 ? -1 : 0);
-    const int stepJ = d.z > 1e-15 ? 1 : (d.z < -1e-15 ? -1 : 0);
+    const int stepI = d.x() > 1e-15 ? 1 : (d.x() < -1e-15 ? -1 : 0);
+    const int stepJ = d.z() > 1e-15 ? 1 : (d.z() < -1e-15 ? -1 : 0);
     double tMaxX = kInf, tMaxZ = kInf, tDeltaX = kInf, tDeltaZ = kInf;
     if (stepI != 0) {
         const double bx = minX_ + (stepI > 0 ? (i + 1) : i) * cell;
-        tMaxX = (bx - o.x) / d.x;
-        tDeltaX = cell / std::fabs(d.x);
+        tMaxX = (bx - o.x()) / d.x();
+        tDeltaX = cell / std::fabs(d.x());
     }
     if (stepJ != 0) {
         const double bz = minZ_ + (stepJ > 0 ? (j + 1) : j) * cell;
-        tMaxZ = (bz - o.z) / d.z;
-        tDeltaZ = cell / std::fabs(d.z);
+        tMaxZ = (bz - o.z()) / d.z();
+        tDeltaZ = cell / std::fabs(d.z());
     }
 
     double tCellEnter = tEnter;
@@ -400,7 +399,7 @@ bool HeightField::raycast(const Vec3& origin, const Vec3& dir, double maxDist,
         const double tMin = std::max(0.0, tCellEnter - kCellSlack);
         const double tMax = std::min(maxDist, tCellExit + kCellSlack);
         double t = 0.0;
-        Vec3 nrm;
+        Vec3 nrm = Vec3::Zero();
         const bool hit = hitCell(i, j, o, d, tMin, tMax, t, nrm);
         if (hit) {
             tOut = t;

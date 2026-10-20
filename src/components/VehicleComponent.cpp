@@ -203,7 +203,7 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
                     const wizengine::terrain::Vec3 top{origin.x, origin.y + reach, origin.z};
                     const wizengine::terrain::Vec3 down{0.0, -1.0, 0.0};
                     double above = 0.0;
-                    wizengine::terrain::Vec3 an;
+                    wizengine::terrain::Vec3 an = wizengine::terrain::Vec3::Zero();
                     // 戻り値は一度変数に受けてから使う（出力引数と同じ式に並べない規約）。
                     const bool covered = field->raycast(top, down, reach, above, an);
                     if (covered && above < reach) {
@@ -211,7 +211,7 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
                         buried.hit = true;
                         buried.distance = 0.0;
                         buried.point = origin;
-                        buried.normal = veh::Vec3{an.x, an.y, an.z};
+                        buried.normal = veh::Vec3{an.x(), an.y(), an.z()};
                         return buried;  // 距離 0 より近い当たりは無い
                     }
                 }
@@ -245,11 +245,11 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
                 // 正規化済みで両者は一致するが、単位は dir の長さで揃えておく。
                 const double len = dir.length();
                 double tt = 0.0;
-                wizengine::terrain::Vec3 tn;
+                wizengine::terrain::Vec3 tn = wizengine::terrain::Vec3::Zero();
                 const bool hit = len > 1e-12 && field->raycast(to, td, maxDist * len, tt, tn);
                 if (hit) {
                     dist = tt / len;
-                    normal = veh::Vec3{tn.x, tn.y, tn.z};
+                    normal = veh::Vec3{tn.x(), tn.y(), tn.z()};
                 }
                 consider(hit);
             }

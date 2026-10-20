@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <vector>
 
+#include <Eigen/Core>
+
 // テレインの「高さ格子」: 生成・問い合わせ・メッシュ化の純粋な計算。
 //
 // src/vehicle/ と同じ位置付けで、Chrono も Filament もシーン文書
@@ -29,10 +31,10 @@
 namespace wizengine {
 namespace terrain {
 
-// 依存の無い最小の 3 次元ベクトル（double）。境界で各エンジンの型に詰め替える。
-struct Vec3 {
-    double x = 0.0, y = 0.0, z = 0.0;
-};
+// 3 次元ベクトル（double）は Eigen（ヘッダのみ、third_parties/eigen）。境界で
+// 各エンジンの型に詰め替える。Eigen は既定コンストラクタで値を初期化しない
+// ので、零が要る所は Vec3::Zero() で作る。
+using Vec3 = Eigen::Vector3d;
 
 // 1 辺のセル数の上限。HeightField のコンストラクタと generateHeightField が
 // 共通で使う（(4096 + 1)^2 頂点 = float で約 67 MB。実用の上限は文書側の
