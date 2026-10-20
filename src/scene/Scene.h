@@ -526,8 +526,9 @@ private:
     // 当たり判定の未反映の印を書く（/scene に出すので objectsMutex_ の下）。
     void setTerrainPhysDirty(bool dirty);
     // HeightField の方式で、テレインがあるのに形の記録（proxy）を持たない動く
-    // ボディ（凸包・フレーム・ソフトボディ・三角メッシュ = H4 まで素通り）を
-    // LOGW 1 行で名前付きで知らせる。顔ぶれが前回と同じなら黙る。PHYSICS thread。
+    // ボディ（PhysicsWorld::terrainContactShape が BoundingBox = 安全網の AABB で
+    // 粗く当たる物）を LOGW 1 行で名前付きで知らせる。顔ぶれが前回と同じなら
+    // 黙る。PHYSICS thread。
     void warnTerrainPassThrough();
     // HeightField の方式でテレインがあり、NSC で `<option combine>` が min 以外
     // なら、LOGW を 1 回出して日本語の注意書き（ステータスの後ろに足す文）を

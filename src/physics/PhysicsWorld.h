@@ -546,10 +546,17 @@ public:
     // DoStepDynamics ごとに 1 回）。力・摩擦・スリープ・積分は Chrono のまま。
     // 接触の相手は「ゴースト」の固定ボディ（空の衝突モデル、Bullet には
     // 登録しない）で、その physId が接触の報告（activeContacts）に出る。
-    // 対象は形の記録（proxy）を持つボディ = いまは addBox / addSphere で
-    // 作ったもの（本体の形 + 追加の当たり形状の箱・球・円柱）。凸包・フレーム・
-    // ソフトボディの粒子・三角メッシュは proxy を持たない = テレインに当たらない
-    // （H4 で足す）。Core 専用（Multicore では何もしない）。
+    // 対象は動く（非固定の）ボディで、形の記録（proxy）を add* が書く:
+    //   addBox / addSphere … 本体の箱 / 球 + 追加の当たり形状（箱・球・円柱）
+    //   addConvexHull      … Chrono が当たり形状にした凸包の頂点（体積重心へ
+    //                        寄せた後 = ボディローカル。512 点まで間引く）+ 追加形状
+    //                        （凸包が作れなかったときは追加形状だけ）
+    //   addFrame           … 追加の当たり形状だけ（空なら当たり判定が無い = 対象外）
+    //   addSoftBody        … 粒子ごとに半径 radius の球
+    //   addTriangleMesh    … 動く物だけ、頂点（512 点まで間引く）+ 追加形状
+    // 記録の無い動く物（上のどれでもない経路・走行中に固定を外した三角
+    // メッシュなど）は**安全網**として衝突モデルの AABB の 8 角で当てる（粗い。
+    // 初めての 1 体だけ LOGW）。Core 専用（Multicore では何もしない）。
     //
     // field を張る / 差し替える。ゴーストが無ければ作り、あれば使い回す。
     // terrainOptions はテレイン側の物性（負 = シーン設定）。テレインの材質は
@@ -567,6 +574,16 @@ public:
     bool hasTerrain() const;
     // ゴーストの physId（テレインが無ければ kInvalidId）。
     std::size_t terrainBodyId() const;
+    // id が形の記録（安全網でない proxy）を持つか。固定かどうかは見ない。
+    bool hasTerrainProxy(std::size_t id) const;
+    // id がテレインにどう当たるか（テレインの有無は見ない = 張る前に聞ける）:
+    //   None        … 当たらない（退場・固定・当たり判定なし・Chrono 側に形が
+    //                   1 つも無い・ゴースト）
+    //   Exact       … 形の記録で当たる
+    //   BoundingBox … 記録が無いので安全網（衝突モデルの AABB の 8 角）で当たる
+    // 固定は**今の**状態（IsFixed）を見る。素通り / 粗い当たりの判定はこれ 1 か所。
+    enum class TerrainContactShape { None, Exact, BoundingBox };
+    TerrainContactShape terrainContactShape(std::size_t id) const;
 
 private:
     // Either a ChSystemNSC (serial core) or a ChSystemMulticoreNSC, chosen at
@@ -658,6 +675,14 @@ private:
     struct TerrainCallback;   // ChSystem::CustomCollisionCallback
     // id のボディの形を記録する（add* の最後から）。
     void setTerrainProxy(std::size_t id, const wizengine::terrain::BodyProxy& proxy);
+    // id の「前のステップに接触した」印と反力キャッシュを 0 に戻す（置き直し・
+    // wakeAll。前回の走行の反力で次の最初のステップを始めないため）。
+    void forgetTerrainContacts(std::size_t id);
+    // テレインと接触しうるか（terrainContactShape と collectTerrainContacts の
+    // 共通の条件。眠りは見ない）。
+    bool terrainEligible(std::size_t id) const;
+    // 安全網の記録（無ければ作る。LOGW は初めての 1 体だけ）。
+    TerrainProxyRec* terrainFallbackRec(std::size_t id);
     // テレインの 2 つの材質へシーン設定と terrainOptions を書き直す。
     void refreshTerrainMaterials();
     // コールバックの本体（DoStepDynamics の衝突判定の末尾）。

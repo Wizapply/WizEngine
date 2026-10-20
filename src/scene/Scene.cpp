@@ -677,7 +677,7 @@ void Scene::enterMode(ed::AppMode target) {
         // 切れる前に開始した）なら、走らせる前に必ず作る。系を作り直した
         // 場合はその中で作られて印は消えている。
         if (terrainPhysDirty_) rebuildTerrainBody();
-        // HeightField の方式でテレインを素通りする物（凸包・フレーム・ソフト）を
+        // HeightField の方式でテレインに安全網（外接箱）で粗く当たる物を
         // 知らせる（同じ顔ぶれなら繰り返さない）。
         warnTerrainPassThrough();
         // 設計どおりの姿勢から始める。ジョイントはここで作り直す:
@@ -1175,10 +1175,10 @@ void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
     // 系とは無関係なのでそのまま使う）。recreate がゴーストも自前の接触も
     // 捨てているので、HeightField の方式でも必ず張り直す。
     // 順序: TriangleMesh は従来どおり地面の直後（チャンクのボディ）。
-    // HeightField は全ボディの後 - 形の記録（proxy）は addBox / addSphere が
+    // HeightField は全ボディの後 - 形の記録（proxy）は PhysicsWorld の add* が
     // 書き、接触の収集は毎ステップ全ボディを見るのでどちらの順でも当たるが、
     // 後に置くと setTerrain の LOGI（proxy を持つボディの数）が実数になり、
-    // 素通りする物の警告も実体を見て出せる。
+    // 安全網で粗く当たる物の警告も実体を見て出せる。
     terrainPhysIds_.clear();
     if (kTerrainCollision == TerrainCollision::TriangleMesh) rebuildTerrainBody();
     for (std::size_t i = 0; i < boxes_.size(); ++i) {

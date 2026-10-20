@@ -230,9 +230,9 @@ constexpr double kTerrainRebuildDelay = 0.35;
 //                  当たり判定の作り直しは O(1) なので、上の kTerrainRebuildDelay
 //                  の間引きは使わず即時に反映する。Core を要する理由は
 //                  "terrain (custom contact; Multicore untested)"。
-//                  **H4 までは箱・球（addBox / addSphere）だけが当たる** -
-//                  凸包（glTF モデル）・フレーム（geom の無いボディ）・ソフト
-//                  ボディの粒子・動く三角メッシュはテレインを素通りする
+//                  箱・球・凸包（glTF モデル）・フレーム（geom の無いボディ）・
+//                  ソフトボディの粒子・動く三角メッシュは形の記録で当たる。
+//                  記録の無い動く物は安全網（衝突モデルの外接箱）で粗く当たる
 //                  （シミュレート開始時に該当する物を LOGW で 1 回知らせる）。
 //                  衝突レイヤ（<geom layer nocollide>）は見ない（未対応）。
 // 分岐は Scene::rebuildTerrainBodyUnguarded と rebuildPhysicsWorld。

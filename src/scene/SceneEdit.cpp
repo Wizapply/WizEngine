@@ -789,37 +789,28 @@ void Scene::warnTerrainPassThrough() {
         terrainPassThroughWarned_.clear();
         return;
     }
-    // PhysicsWorld が形の記録（proxy）を書くのは addBox / addSphere だけ（H4 まで）。
-    // createBody の分岐と同じ判定で「それ以外の経路で作った動く物」を拾う。
-    // 固定の物はテレインと接触を作らない（固定どうし）ので数えない。
+    // 判定は PhysicsWorld::terrainContactShape の 1 か所（形の記録の有無と、今の
+    // 固定・当たり判定の状態）。記録の無い動く物も安全網（衝突モデルの AABB の
+    // 8 角）で当たるので素通りはしないが、当たり方が粗い（傾いた物は外接箱で
+    // 浮いて見える）ので名前を知らせる。ソフトボディは代表番号（粒子 1 個）で
+    // 聞く（粒子は全部同じ作り）。
     std::string list;
     std::size_t count = 0;
     for (std::size_t i = 0; i < boxes_.size(); ++i) {
         const GameObject& obj = boxes_[i];
-        if (!obj.alive || obj.physId == GameObject::kInvalidId || obj.desc.fixed) continue;
-        const char* kind = nullptr;
-        if (obj.lattice) {
-            kind = "soft body";
-        } else if (obj.desc.collision == ed::ShapeKind::None) {
-            kind = "frame";
-        } else if (obj.desc.collision == ed::ShapeKind::Trimesh &&
-                   (meshTrimesh(obj.meshIndex) || meshHull(obj.meshIndex))) {
-            kind = "mesh";
-        } else if (obj.desc.collision == ed::ShapeKind::Model && meshHull(obj.meshIndex)) {
-            kind = "convex hull";
-        }
-        if (!kind) continue;
-        if (count < 8) {
-            list += (count ? ", " : "") + std::string("'") + obj.desc.name + "' (" + kind + ")";
-        }
+        if (!obj.alive || obj.physId == GameObject::kInvalidId) continue;
+        if (physics_.terrainContactShape(obj.physId) !=
+            PhysicsWorld::TerrainContactShape::BoundingBox)
+            continue;
+        if (count < 8) list += (count ? ", " : "") + std::string("'") + obj.desc.name + "'";
         ++count;
     }
     if (count > 8) list += ", ... (" + std::to_string(count) + " in total)";
     if (list == terrainPassThroughWarned_) return;
     terrainPassThroughWarned_ = list;
     if (count == 0) return;
-    LOGW("scene", "terrain: %zu moving bodies have no terrain contact yet and will fall "
-                  "through it: %s", count, list.c_str());
+    LOGW("scene", "terrain: %zu moving bodies have no terrain shape record and touch the "
+                  "terrain with their bounding box (coarse): %s", count, list.c_str());
 }
 
 std::string Scene::terrainCombineCaveat(bool force) {
