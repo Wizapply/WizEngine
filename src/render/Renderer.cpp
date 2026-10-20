@@ -78,6 +78,22 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
     }
     groundMatInstance_ = groundMaterial_->createInstance();
 
+    // テレインの材質（形は addTerrain まで作らない）。地面と同じく起動時に
+    // 読む = 欠けていればビルドの問題として起動時に止まる。パラメータは .mat
+    // に既定値が書けないので、ここで白・艶消し・単色テクスチャを入れておく。
+    wizengine::requireFile("terrain.filamat", "terrain material");
+    const auto tpkg = readFile(assetPath("terrain.filamat"));
+    if (tpkg.empty()) {
+        throw AssetError(assetPath("terrain.filamat"), "is empty");
+    }
+    terrainMaterial_ =
+        Material::Builder().package(tpkg.data(), tpkg.size()).build(*engine_);
+    if (!terrainMaterial_) {
+        throw AssetError(assetPath("terrain.filamat"), "is not a valid .filamat");
+    }
+    terrainMatInstance_ = terrainMaterial_->createInstance();
+    setTerrainSurface("", 1.0f, float4{1.0f, 1.0f, 1.0f, 1.0f}, 0.9f, 0.0f);
+
     // Direct lights are no longer created here: the scene owns them as
     // editable light descriptors (Scene::LightItem, saved in the scene
     // document) and adds them through addLight() via syncLights. Only the
@@ -222,6 +238,11 @@ Renderer::~Renderer() {
         engine_->destroy(groundEntity_);
         EntityManager::get().destroy(groundEntity_);
     }
+    // テレイン: レンダラブルを外してから材質・テクスチャを壊す。
+    removeTerrain();
+    if (terrainMatInstance_) engine_->destroy(terrainMatInstance_);
+    if (terrainMaterial_) engine_->destroy(terrainMaterial_);
+    if (terrainTexture_) engine_->destroy(terrainTexture_);
     // removeLight と同じ後始末。空席（null）は飛ばす。
     for (auto e : lightEntities_) {
         if (e.isNull()) continue;

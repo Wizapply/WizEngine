@@ -24,6 +24,8 @@
 #include <math/vec3.h>
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstddef>
@@ -37,6 +39,7 @@
 #include "scene/PrefabDefaults.h"
 #include "scene/RenderBridge.h"
 #include "scene/PrefabFrame.h"
+#include "terrain/HeightField.h"
 #include "vehicle/TireFormula.h"
 
 namespace ed = wizengine::editor;
@@ -254,6 +257,14 @@ inline scenemath::Vec3 orbitVector(double azimuthRad, double elevationRad) {
     return scenemath::Vec3(std::cos(elevationRad) * std::sin(azimuthRad),
                            std::sin(elevationRad),
                            std::cos(elevationRad) * std::cos(azimuthRad));
+}
+
+// ---- 計時（重い作業のログ用）-----------------------------------------------
+// from から今までのミリ秒。テレインの生成・メッシュ化の所要時間を出すのに使う。
+inline double elapsedMs(std::chrono::steady_clock::time_point from) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                     from)
+        .count();
 }
 
 // ---- シーンファイルの読み込み -----------------------------------------------

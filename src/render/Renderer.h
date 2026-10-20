@@ -13,6 +13,7 @@
 #include <math/quat.h>
 #include <math/vec2.h>
 #include <math/vec3.h>
+#include <math/vec4.h>
 #include <utils/Entity.h>
 
 namespace filament {
@@ -131,6 +132,28 @@ struct BatchShape {
     float width = 0.0f;
 };
 
+// テレインのチャンク 1 枚ぶんの頂点（setTerrainChunk に渡す）。Renderer は
+// 素の配列を受けるだけで、高さの作り方（ノイズ・スカルプト）もシーン文書も
+// 知らない。
+//
+//   positions … 3 個で 1 頂点（ワールド座標 m）
+//   normals   … 3 個で 1 頂点（単位ベクトル）
+//   uvs       … 2 個で 1 頂点。**メートル単位**（ワールドの x, z を推奨）。
+//               タイルは材質が 1 / tileMeters を掛けて決める
+//   indices   … 3 個で 1 三角形（上から見て反時計回り）。空なら前回のまま
+//               （addTerrain 直後は全部 0 なので、**最初の 1 回は必ず渡す**。
+//               渡さないとそのチャンクは何も描かれない）
+//
+// 頂点数は (quads + 1)^2、インデックス数は quads^2 * 6 で**固定**
+// （addTerrain の quadsPerChunk）。穴は面積 0 の三角形（同じ頂点を 3 回）で
+// 表す - 実行中にプリミティブ数を変えない（ギズモの太線バッチと同じ方針）。
+struct TerrainChunkMesh {
+    std::vector<float> positions;
+    std::vector<float> normals;
+    std::vector<float> uvs;
+    std::vector<uint32_t> indices;
+};
+
 inline bool operator==(const BatchShape& x, const BatchShape& y) {
     auto same = [](const filament::math::float3& p,
                    const filament::math::float3& q) {
@@ -210,6 +233,38 @@ public:
     void addGround(float halfSize, const filament::math::float3& color,
                    float tileMeters, const std::string& texturePath,
                    const ShapeMaterial& material = ShapeMaterial{0.9f});
+
+    // ---- テレイン（チャンク分割の高さメッシュ）---------------------------
+    // シーンに 1 つ。chunksX × chunksZ 枚のチャンクを作り、各チャンクは
+    // quadsPerChunk 四方のクアッド（頂点・インデックス数は固定、
+    // TerrainChunkMesh を参照）。2 回目以降の呼び出しは前のテレインを壊して
+    // 作り直す。作った直後のチャンクは何も描かない（全インデックス 0）ので、
+    // 続けて setTerrainChunk で中身を入れる（最初の 1 回は indices も渡す
+    // こと - 空だと「前回のまま」= 全部 0 で描かれない）。影を落とし受け、全ビューに映る
+    // 通常レイヤ。材質は setTerrainSurface（呼ぶまでは白・艶消し）。
+    // 失敗（引数が不正）は false。すべて RENDER スレッド。
+    bool addTerrain(int chunksX, int chunksZ, int quadsPerChunk);
+    // addTerrain の引数の上限。quadsPerChunk は頂点バッファ 1 本が大きく
+    // なりすぎない程度（256 で 66049 頂点、想定は 64）、チャンク数（1 辺）は
+    // 誤った引数で数万個のレンダラブルを作らないための安全弁。
+    // terrain::kMaxChunkQuads（src/terrain/HeightField.h）と同じ値に保つこと
+    // （Renderer は src/terrain を知らないので、両方を見る Scene が static_assert
+    // で照合する）。
+    static constexpr int kMaxTerrainQuads = 256;
+    static constexpr int kMaxTerrainChunks = 64;
+    // チャンク (cx, cz) の頂点（と、空でなければインデックス）を送り直し、
+    // バウンディングボックスも頂点から作り直す。配列の長さが合わなければ
+    // 警告して何もしない（false）。
+    bool setTerrainChunk(int cx, int cz, const TerrainChunkMesh& mesh);
+    // 表面の材質。texturePath は assets/ 相対（空 = 単色。読めなければ警告して
+    // 単色）。テクスチャは前回とパスが違うときだけ読み直す。tileMeters は
+    // テクスチャ 1 回ぶんのメートル数、color はリニア rgba（a は使わない =
+    // 不透明）。
+    void setTerrainSurface(const std::string& texturePath, float tileMeters,
+                           const filament::math::float4& color, float roughness,
+                           float metallic);
+    // テレインを外す（無ければ何もしない）。材質の設定は覚えたまま。
+    void removeTerrain();
 
     // ---- glTF モデル（シーン文書の <asset><mesh/> に対応）----------------
     // loadModel が原型（同じパスは 1 回だけ読む）、addModelInstance が実体。
@@ -356,7 +411,7 @@ private:
     // の引数（double）に合わせる。アスペクト比だけがビューの大きさで決まる。
     static constexpr double kFovDegrees = 45.0;
     static constexpr double kNearPlane = 0.1;
-    static constexpr double kFarPlane = 200.0;
+    static constexpr double kFarPlane = 2000.0;
     // 形状の既定色（リニア）。document/EditorTypes.h の Color3 の既定と同じ値
     // （層が違うので別定義。片方を変えたらもう片方も合わせる）。値は
     // Renderer.cpp に置く - constexpr で書くと MSVC は通るが IntelliSense が
@@ -529,6 +584,25 @@ private:
 
     utils::Entity groundEntity_;
     std::vector<utils::Entity> lightEntities_;  // one per addLight(), in order
+
+    // テレイン（RendererTerrain.cpp）。チャンクごとに自前の頂点 /
+    // インデックスバッファとエンティティを持ち、マテリアルインスタンスは
+    // 全チャンクで 1 個を共有する（材質はテレイン全体で 1 つ）。
+    struct TerrainChunk {
+        utils::Entity entity;
+        filament::VertexBuffer* vb = nullptr;
+        filament::IndexBuffer* ib = nullptr;
+    };
+    std::vector<TerrainChunk> terrainChunks_;
+    int terrainChunksX_ = 0;
+    int terrainChunksZ_ = 0;
+    int terrainQuads_ = 0;  // 1 チャンクの 1 辺のクアッド数
+    filament::Material* terrainMaterial_ = nullptr;
+    filament::MaterialInstance* terrainMatInstance_ = nullptr;
+    filament::Texture* terrainTexture_ = nullptr;
+    // 今のテクスチャを読んだパス（同じなら読み直さない）。初回は必ず読む。
+    std::string terrainTexturePath_;
+    bool terrainTextureLoaded_ = false;
 
     // Kept alive for the vertex buffers (Filament references, not copies).
     filament::math::quatf cubeTangents_[24];

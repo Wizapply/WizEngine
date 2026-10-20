@@ -1,0 +1,36 @@
+// テレイン（チャンク分割の高さメッシュ）用の lit マテリアル。地面
+// （ground_lit.mat）と同じく光と影を受け、箱と同じく影も落とす（落とすかは
+// レンダラブル側の設定）。
+//
+// 色 = baseColor テクスチャ（sRGB、無ければ白 1 画素）× baseColor（リニア）。
+// UV は頂点が持つ「メートル単位」の値で、ここで uvScale（= 1 / タイルの
+// メートル数）を掛けてタイルさせる。だからタイルを変えても頂点を送り直さなくて
+// よい（Renderer::setTerrainSurface がパラメータを変えるだけ）。
+//
+// 材質（roughness / metallic）はシーン文書の値。.mat には既定値が書けないので、
+// インスタンスを作ったら必ず入れること（Renderer::Renderer / setTerrainSurface）。
+// 穴（後の段階）は縮退三角形で表すので、ここでは何もしない。
+material {
+    name : terrain,
+    shadingModel : lit,
+    doubleSided : true,
+    requires : [ uv0 ],
+    parameters : [
+        { type : float3,    name : baseColor },
+        { type : sampler2d, name : albedo },
+        { type : float,     name : uvScale },
+        { type : float,     name : roughness },
+        { type : float,     name : metallic }
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        vec3 albedo = texture(materialParams_albedo,
+                              getUV0() * materialParams.uvScale).rgb;
+        material.baseColor.rgb = materialParams.baseColor * albedo;
+        material.roughness = materialParams.roughness;
+        material.metallic = materialParams.metallic;
+    }
+}

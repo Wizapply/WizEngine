@@ -22,6 +22,13 @@ class ChNodeFEAxyzD;
 }
 }
 
+namespace wizengine {
+namespace terrain {
+class HeightField;
+struct BodyProxy;
+}
+}
+
 // Where the time went inside the last physics step (seconds), straight from
 // Chrono's own timers. Useful for deciding what to optimise: a solver-dominated
 // step wants fewer iterations, a collision-dominated one wants a smaller
@@ -532,6 +539,52 @@ public:
     // シミュレート開始時に 1 回だけ呼ぶ。
     bool modalFrequencies(int count, std::vector<double>& hz, std::string& why);
 
+    // ---- テレイン（高さ格子との自前の接触。段階 1.5）------------------------
+    // 三角メッシュではなく高さ格子（terrain::HeightField）を正として、物との
+    // 接触を自前で見つけ（terrain::collectContacts）、Chrono の接触コンテナへ
+    // 足す（ChSystem::CustomCollisionCallback。Bullet の接触の後、
+    // DoStepDynamics ごとに 1 回）。力・摩擦・スリープ・積分は Chrono のまま。
+    // 接触の相手は「ゴースト」の固定ボディ（空の衝突モデル、Bullet には
+    // 登録しない）で、その physId が接触の報告（activeContacts）に出る。
+    // 対象は動く（非固定の）ボディで、形の記録（proxy）を add* が書く:
+    //   addBox / addSphere … 本体の箱 / 球 + 追加の当たり形状（箱・球・円柱）
+    //   addConvexHull      … Chrono が当たり形状にした凸包の頂点（体積重心へ
+    //                        寄せた後 = ボディローカル。512 点まで間引く）+ 追加形状
+    //                        （凸包が作れなかったときは追加形状だけ）
+    //   addFrame           … 追加の当たり形状だけ（空なら当たり判定が無い = 対象外）
+    //   addSoftBody        … 粒子ごとに半径 radius の球
+    //   addTriangleMesh    … 動く物だけ、頂点（512 点まで間引く）+ 追加形状
+    // 記録の無い動く物（上のどれでもない経路・走行中に固定を外した三角
+    // メッシュなど）は**安全網**として衝突モデルの AABB の 8 角で当てる（粗い。
+    // 初めての 1 体だけ LOGW）。Core 専用（Multicore では何もしない）。
+    //
+    // field を張る / 差し替える。ゴーストが無ければ作り、あれば使い回す。
+    // terrainOptions はテレイン側の物性（負 = シーン設定）。テレインの材質は
+    // 2 つ: 丸い形（球）との接触 = terrainOptions のまま、それ以外（箱など
+    // 多点で触れる形）= 転がり・スピン摩擦 0（BB ソルバで斜面の箱が沈むため。
+    // ベンチ B1 / B2）。**格子の高さを書き換えたら呼び直す**（早期棄却の値を
+    // 作り直すため）。戻り値 = ゴーストの physId（Multicore・null の field では
+    // kInvalidId）。眠っている物は起こす（地面が変わったので）。
+    // recreate で系ごと消えるので、作り直したら呼び直すこと（Scene の役目）。
+    std::size_t setTerrain(std::shared_ptr<const wizengine::terrain::HeightField> field,
+                           const BodyOptions& terrainOptions);
+    // テレインの接触をやめる（ゴーストは次の setTerrain のために残す。
+    // 番号は terrainBodyId から消える）。眠っている物は起こす。
+    void clearTerrain();
+    bool hasTerrain() const;
+    // ゴーストの physId（テレインが無ければ kInvalidId）。
+    std::size_t terrainBodyId() const;
+    // id が形の記録（安全網でない proxy）を持つか。固定かどうかは見ない。
+    bool hasTerrainProxy(std::size_t id) const;
+    // id がテレインにどう当たるか（テレインの有無は見ない = 張る前に聞ける）:
+    //   None        … 当たらない（退場・固定・当たり判定なし・Chrono 側に形が
+    //                   1 つも無い・ゴースト）
+    //   Exact       … 形の記録で当たる
+    //   BoundingBox … 記録が無いので安全網（衝突モデルの AABB の 8 角）で当たる
+    // 固定は**今の**状態（IsFixed）を見る。素通り / 粗い当たりの判定はこれ 1 か所。
+    enum class TerrainContactShape { None, Exact, BoundingBox };
+    TerrainContactShape terrainContactShape(std::size_t id) const;
+
 private:
     // Either a ChSystemNSC (serial core) or a ChSystemMulticoreNSC, chosen at
     // build time by WIZ_USE_MULTICORE. Everything above this class is unaware
@@ -598,6 +651,46 @@ private:
     // 粒子ならその属するソフトボディの代表番号、剛体ならそのまま。
     std::size_t representative(std::size_t id) const;
 
+    // ---- 固定物どうしの衝突ペアを作らせない（Core = Bullet のみ）----------
+    // 理由と仕組みは .cpp の StaticPairFilter の注記。Bullet の型を見せない
+    // ためにここでは前方宣言だけ。
+    struct StaticPairFilter;
+    // 新しい系の Bullet ワールドにフィルタを付ける（createSystem から。
+    // Multicore では外したまま）。
+    void attachStaticPairFilter();
+    // 固定ボディの集合を全部作り直し、既にできた固定どうしのペアを消す
+    // （衝突系の初期化 = 最初のステップの直後に 1 回）。
+    void syncStaticPairs();
+    // 1 個のボディの固定状態が変わった / 登録されたあとに呼ぶ。固定になったら
+    // 集合に足してペアを掃除、固定でなくなったら集合から外して衝突モデルを
+    // 入れ直す（消したペアを Bullet に作り直させる）。
+    void updateStaticPairs(chrono::ChBody& body);
+    // 衝突モデルを手放す前（EnableCollision(false) / RemoveBody）に呼ぶ:
+    // 解放された Bullet 側の実体のアドレスを集合に残さない。
+    void forgetStaticPairs(chrono::ChBody& body);
+
+    // ---- テレインの内部（中身は .cpp。Eigen と terrain の型を見せない）------
+    struct TerrainProxyRec;   // ボディ 1 個の形の記録 + 点ごとの反力キャッシュ
+    struct TerrainState;      // 格子・ゴースト・材質・判定の設定
+    struct TerrainCallback;   // ChSystem::CustomCollisionCallback
+    // id のボディの形を記録する（add* の最後から）。
+    void setTerrainProxy(std::size_t id, const wizengine::terrain::BodyProxy& proxy);
+    // id の「前のステップに接触した」印と反力キャッシュを 0 に戻す（置き直し・
+    // wakeAll。前回の走行の反力で次の最初のステップを始めないため）。
+    void forgetTerrainContacts(std::size_t id);
+    // テレインと接触しうるか（terrainContactShape と collectTerrainContacts の
+    // 共通の条件。眠りは見ない）。
+    bool terrainEligible(std::size_t id) const;
+    // 安全網の記録（無ければ作る。LOGW は初めての 1 体だけ）。
+    TerrainProxyRec* terrainFallbackRec(std::size_t id);
+    // テレインの 2 つの材質へシーン設定と terrainOptions を書き直す。
+    void refreshTerrainMaterials();
+    // コールバックの本体（DoStepDynamics の衝突判定の末尾）。
+    void collectTerrainContacts(chrono::ChSystem& sys);
+
+    // sys_ より先に宣言する = sys_（Bullet のペアキャッシュがこれを指す）より
+    // 後に壊れる。
+    std::shared_ptr<StaticPairFilter> staticPairs_;
     std::shared_ptr<chrono::ChSystem> sys_;
     std::shared_ptr<chrono::ChContactMaterial> mat_;  // NSC か SMC（contact_）
     ContactMethod contact_ = ContactMethod::NSC;
@@ -640,6 +733,15 @@ private:
     // 子ボディ → 持ち主（setAlias）。kNoSoft = 無し。接触ペアの報告にだけ効く。
     std::vector<std::size_t> alias_;
     std::vector<SoftBody> softBodies_;
+    // bodies_ と並ぶ: テレインに当たる形の記録（無ければ null = テレインの
+    // 接触の対象外）。shared_ptr なのは型を .cpp に閉じるため。反力キャッシュは
+    // 記録のときに 1 回だけ確保し、以後は再確保しない（アドレスを Chrono の
+    // 接触へ渡すため）。
+    std::vector<std::shared_ptr<TerrainProxyRec>> terrainProxies_;
+    // テレイン（setTerrain が作る。recreate で捨てる）とコールバック
+    // （createSystem が Core のときだけ作って系に登録する）。
+    std::shared_ptr<TerrainState> terrain_;
+    std::shared_ptr<TerrainCallback> terrainCallback_;
     // シミュレート中だけ存在する拘束。エディタへ戻るときに全部外す。
     struct JointRec {
         std::shared_ptr<chrono::ChLinkBase> link;   // 主拘束（ばね種類ならばね。手計算なら null）

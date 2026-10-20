@@ -1,6 +1,9 @@
 #include "physics/PhysicsWorld.h"
 #include "core/Log.h"
+#include "terrain/HeightField.h"
+#include "terrain/TerrainContact.h"
 
+#include <chrono/collision/ChCollisionInfo.h>
 #include <chrono/collision/ChCollisionModel.h>
 #include <chrono/collision/ChCollisionSystem.h>
 // 複合形状（プレハブの collide 部品）。Chrono 9 の形状クラス。ヘッダが無い
@@ -21,6 +24,16 @@
 #define WIZ_HAVE_TRIMESH_SHAPE 1
 #endif
 #include <chrono/collision/bullet/ChCollisionUtilsBullet.h>  // 凸包の体積重心
+// 固定物どうしのペアを作らせる前に止める Bullet の重なりフィルタ
+// （StaticPairFilter）。無い版ではフィルタ無し = 従来どおり。
+#if __has_include(<chrono/collision/bullet/ChCollisionSystemBullet.h>) && \
+    __has_include(<chrono/collision/bullet/ChCollisionModelBullet.h>) && \
+    __has_include(<chrono/collision/bullet/BulletCollision/CollisionDispatch/cbtCollisionWorld.h>)
+#include <chrono/collision/bullet/ChCollisionSystemBullet.h>
+#include <chrono/collision/bullet/ChCollisionModelBullet.h>
+#include <chrono/collision/bullet/BulletCollision/CollisionDispatch/cbtCollisionWorld.h>
+#define WIZ_HAVE_BULLET_PAIR_FILTER 1
+#endif
 #include <chrono/core/ChMatrix33.h>
 #include <chrono/geometry/ChTriangleMeshConnected.h>
 #include <chrono/physics/ChBody.h>
@@ -131,10 +144,12 @@ using WizRampFunction = chrono::ChFunction_Ramp;
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <cstdint>
 #include <memory>
 #include <cstdio>
 #include <thread>
 #include <type_traits>
+#include <unordered_set>
 
 using namespace chrono;
 
@@ -881,6 +896,166 @@ bool axisUsable(const chrono::ChVector3d& a) {
 
 }  // namespace
 
+// ---- テレインの自前の接触（型と小道具）---------------------------------------
+namespace wterrain = wizengine::terrain;
+
+namespace {
+
+// テレインの接触の判定の設定。値はベンチ（B1 / B2、chrono_bench の mode=hf
+// hfimpl=lib）の推薦値: envelope 6 mm + 近づく速度の項 1.5·max(0, −v_n)·dt、
+// 1 ボディ 16 点まで、箱の面サンプル無し。dt は毎ステップ書く。
+// pointId（反力キャッシュの添字）は faceSamples で変わるので、proxy の点数を
+// 数えるのも判定するのもこの同じ値を使う（途中で変えない）。
+wterrain::ContactParams terrainContactParams() {
+    wterrain::ContactParams p;
+    p.envelope = 0.006;
+    p.approachSpeedFactor = 1.5;
+    p.dt = 0.0;
+    p.maxPerBody = 16;
+    p.faceSamples = 0;
+    return p;
+}
+
+wterrain::Vec3 toTerrainVec(const ChVector3d& v) {
+    return wterrain::Vec3(v.x(), v.y(), v.z());
+}
+
+ChVector3d fromTerrainVec(const wterrain::Vec3& v) {
+    return ChVector3d(v.x(), v.y(), v.z());
+}
+
+wterrain::Mat3 toTerrainMat(const ChMatrix33<>& r) {
+    wterrain::Mat3 m;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) m(i, j) = r(i, j);
+    }
+    return m;
+}
+
+// 追加の当たり形状（attachExtraShapes が実際に足す形と同じもの）を proxy へ。
+// 箱は各辺の長さ、球は x = 直径、円柱は x = 長さ（軸 X）・y = 直径。
+void appendExtraProxies(const std::vector<PhysicsWorld::ExtraShape>& extras,
+                        wterrain::BodyProxy& proxy) {
+#ifdef WIZ_HAVE_COLLISION_SHAPES
+    for (const PhysicsWorld::ExtraShape& s : extras) {
+        wterrain::ShapeProxy sp;
+        sp.position = toTerrainVec(s.pos);
+        sp.rotation = toTerrainMat(ChMatrix33<>(s.rot));
+        if (s.cylinder) {
+#ifdef WIZ_HAVE_CYLINDER_SHAPE
+            // ShapeProxy の円柱も形のローカル X が軸（部品の円柱と同じ）なので、
+            // Chrono の形に重ねる「Z を X へ」の回転は要らない。
+            sp.kind = wterrain::ShapeProxy::Kind::Cylinder;
+            sp.radius = s.size.y() * 0.5;
+            sp.halfLength = s.size.x() * 0.5;
+#else
+            continue;  // 当たり形状にならない（attachExtraShapes と同じ）
+#endif
+        } else if (s.sphere) {
+            sp.kind = wterrain::ShapeProxy::Kind::Sphere;
+            sp.radius = s.size.x() * 0.5;
+        } else {
+            sp.kind = wterrain::ShapeProxy::Kind::Box;
+            sp.halfExtents = wterrain::Vec3(s.size.x() * 0.5, s.size.y() * 0.5, s.size.z() * 0.5);
+        }
+        proxy.shapes.push_back(sp);
+    }
+#else
+    (void)extras;
+    (void)proxy;
+#endif
+}
+
+// テレインの接触に使う点の上限（凸包・三角メッシュの頂点）。凸包の入力
+// （MeshCollision::loadCollisionPoints の既定 512）と同じ桁。1 ボディの判定は
+// 点数 × 約 100 ns なので、512 点でも 0.05 ms。接触として残るのは深い順 16 点。
+constexpr std::size_t kTerrainMaxProxyPoints = 512;
+
+// 点を格子に寄せて 1 セル 1 点に間引く（MeshCollision::loadCollisionPoints と
+// 同じ方式。格子を粗くしながら maxPoints 以下になるまで）。外形は 1 セル以内に
+// 保たれる。点の順は元の順のまま（pointId を安定させるため）。
+std::vector<ChVector3d> decimatePoints(std::vector<ChVector3d> pts, std::size_t maxPoints) {
+    if (pts.size() <= maxPoints || pts.empty()) return pts;
+    ChVector3d lo = pts[0], hi = pts[0];
+    for (const auto& p : pts) {
+        lo = ChVector3d(std::min(lo.x(), p.x()), std::min(lo.y(), p.y()), std::min(lo.z(), p.z()));
+        hi = ChVector3d(std::max(hi.x(), p.x()), std::max(hi.y(), p.y()), std::max(hi.z(), p.z()));
+    }
+    const ChVector3d span = hi - lo;
+    const double maxSpan = std::max({span.x(), span.y(), span.z(), 1e-9});
+    for (int res = 64; res >= 2 && pts.size() > maxPoints; res /= 2) {
+        std::unordered_set<std::uint64_t> cells;
+        std::vector<ChVector3d> kept;
+        kept.reserve(maxPoints);
+        const double cell = maxSpan / res;
+        for (const auto& p : pts) {
+            const std::uint64_t cx = std::uint64_t((p.x() - lo.x()) / cell);
+            const std::uint64_t cy = std::uint64_t((p.y() - lo.y()) / cell);
+            const std::uint64_t cz = std::uint64_t((p.z() - lo.z()) / cell);
+            if (cells.insert((cx << 42) | (cy << 21) | cz).second) kept.push_back(p);
+        }
+        pts = std::move(kept);
+    }
+    // 格子 2 でも多い（同じ点が大量など）ときは等間隔に抜く。
+    if (pts.size() > maxPoints) {
+        std::vector<ChVector3d> kept;
+        kept.reserve(maxPoints);
+        const double stride = double(pts.size()) / double(maxPoints);
+        for (std::size_t k = 0; k < maxPoints; ++k) kept.push_back(pts[std::size_t(k * stride)]);
+        pts = std::move(kept);
+    }
+    return pts;
+}
+
+// 点の集合（ボディローカル）1 個の形。
+wterrain::ShapeProxy pointsShapeProxy(const std::vector<ChVector3d>& pts) {
+    wterrain::ShapeProxy sp;
+    sp.kind = wterrain::ShapeProxy::Kind::Points;
+    sp.points.reserve(pts.size());
+    for (const auto& p : pts) sp.points.push_back(toTerrainVec(p));
+    return sp;
+}
+
+}  // namespace
+
+// ボディ 1 個の形の記録と、点ごとの反力キャッシュ（Chrono の
+// ChCollisionInfo::reaction_cache へアドレスを渡す。接触は毎ステップ作り直される
+// ので、ウォームスタートはこれ頼み）。was = 前のステップにその点が接触したか
+// （していなければ、今回渡す前にキャッシュを 0 に戻す = 古い反力で始めない）。
+// fallback = 形の記録を作れなかった動くボディの安全網（collectTerrainContacts が
+// 初めて見たときに作る）。proxy は 8 点の Points で、毎ステップ衝突モデルの
+// AABB（ワールド軸、絶対座標）の 8 角をボディ原点からの相対で入れ直す。
+struct PhysicsWorld::TerrainProxyRec {
+    wterrain::BodyProxy proxy;
+    std::vector<std::array<float, 6>> cache;  // 点ごとの永続 float[6]（再確保しない）
+    std::vector<char> was;
+    std::vector<char> now;  // 作業用（was と入れ替える）
+    bool fallback = false;
+};
+
+struct PhysicsWorld::TerrainState {
+    std::shared_ptr<const wterrain::HeightField> field;  // null = 接触しない
+    wterrain::ContactTerrain contactTerrain;             // field から作った早期棄却の値
+    std::size_t ghost = PhysicsWorld::kInvalidId;        // 接触の相手のボディ（physId）
+    BodyOptions options;                                 // テレイン側の物性
+    // 丸い形（Contact::round = 球）との接触 = options のまま。それ以外 = 転がり・
+    // スピン摩擦 0（多点で触れる箱が BB ソルバで斜面に沈むため。ベンチ B1 / B2）。
+    std::shared_ptr<ChContactMaterial> matRound;
+    std::shared_ptr<ChContactMaterial> matFlat;
+    wterrain::ContactParams params = terrainContactParams();
+    std::vector<wterrain::Contact> contacts;  // 作業用（ボディ 1 個ぶん）
+};
+
+// ChSystem::ComputeCollisions の末尾（Bullet の接触を足した後）から呼ばれる。
+// PhysicsWorld が sys_ を持つので、系より先に world が消えることはない。
+struct PhysicsWorld::TerrainCallback : public ChSystem::CustomCollisionCallback {
+    explicit TerrainCallback(PhysicsWorld* w) : world(w) {}
+    void OnCustomCollision(ChSystem* sys) override {
+        if (world && sys) world->collectTerrainContacts(*sys);
+    }
+    PhysicsWorld* world = nullptr;
+};
+
 const char* PhysicsWorld::backendName() const {
     return backend_ == PhysicsBackend::Multicore ? "multicore" : "core";
 }
@@ -898,7 +1073,11 @@ void PhysicsWorld::registerBody(const std::shared_ptr<chrono::ChBody>& body) {
     mats_.push_back(nullptr);  // finishBody が専用材質なら書く
     options_.push_back(BodyOptions{});
     loadsOf_.emplace_back();
+    terrainProxies_.emplace_back();  // 形の記録は add* が後から書く（無ければ対象外）
     bindCollision(body);
+    // 走行中に足した固定ボディ（テレインの作り直し・プレハブの固定部品など）:
+    // 登録の時点でできた固定どうしのペアを消す。
+    if (body->IsFixed()) updateStaticPairs(*body);
     resetSleepTimer(*body);  // 新規ボディの計時は 0 = 最初のステップで眠る
 }
 
@@ -945,6 +1124,7 @@ void PhysicsWorld::setSmcDefaults(double young, double poisson) {
     for (std::size_t i = 0; i < mats_.size(); ++i) {
         if (mats_[i]) applySurface(*mats_[i], options_[i]);
     }
+    refreshTerrainMaterials();
 }
 
 void PhysicsWorld::prepareBody(ChBody& body, const BodyOptions& options) {
@@ -1172,6 +1352,14 @@ std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec,
         const std::size_t id = bodies_.size() - 1;
         softOf_[id] = softIndex;
         soft.particles.push_back(id);
+        // テレインの接触: 粒子ごとに半径 radius の球（1 点接触 = round。材質は
+        // 球と同じ「転がりあり」= 平らな床と粒子の接触と同じ扱い）。
+        wterrain::BodyProxy proxy;
+        wterrain::ShapeProxy sp;
+        sp.kind = wterrain::ShapeProxy::Kind::Sphere;
+        sp.radius = radius;
+        proxy.shapes.push_back(sp);
+        setTerrainProxy(id, proxy);
     }
     soft.root = soft.particles.front();
     softBodies_.push_back(std::move(soft));
@@ -1194,6 +1382,7 @@ void PhysicsWorld::placeSoftBody(SoftBody& soft, const ChVector3d& pos,
         b->SetRot(rot);
         b->ForceToRest();
         wakeUp(b.get(), 0);
+        forgetTerrainContacts(soft.particles[i]);
     }
 }
 
@@ -1297,6 +1486,143 @@ void PhysicsWorld::bindCollision(const std::shared_ptr<chrono::ChBody>& body) {
     coll->BindItem(body);
 }
 
+// ---- 固定物どうしの衝突ペアを作らせない（Core = Bullet のみ）----------------
+// Chrono は固定ボディ（SetFixed）を Bullet に「静的」と伝えない: Bullet 側の
+// オブジェクトには CF_STATIC_OBJECT も非アクティブ状態も付かず、衝突ファミリが
+// 同じなら固定物どうしも普通のペアになる（Chrono 9.0.0 の
+// cbtOverlappingPairCache.h の needsBroadphaseCollision と
+// cbtCollisionDispatcher.cpp の needsCollision）。動かない物どうしの接触は
+// ソルバでは何の役にも立たないのに、狭域判定は毎ステップ走る。固定物どうし
+// 一般（階段の部品と床、固定の三角メッシュと床など）の対策で、重なった固定物の
+// 組ごとに毎ステップ判定が走るのを止める（以前のテレインの三角メッシュの
+// チャンクでは、隣どうしのチャンクと床の判定が 44 組でき、物が 1 つも無くても
+// 22 ms/step 掛かった。Chrono 単体のベンチ。除外すると 0.4〜0.6 ms）。
+//
+// そこで Bullet の広域判定の重なりフィルタ（cbtOverlapFilterCallback。ヘッダ
+// だけの仮想インターフェース = DLL の書き出しに依存しない）を付け、既定の
+// 判定（ファミリの group / mask）に「両方が固定なら作らない」を足す。固定物の
+// 見分けは Bullet オブジェクトの userPointer（= Chrono が入れる
+// ChCollisionModelBullet*）の集合で行う。集合は物理スレッドだけが触る
+// （フィルタが呼ばれるのも衝突系への登録と DoStepDynamics の中 = 同じスレッド）。
+//
+// フィルタはペアが「できるとき」にしか効かないので、
+//  - 既にできた固定どうしのペアは自分で消す（初期化直後・固定にしたとき）。
+//  - 固定を外したときは、消したペアを Bullet が自分から作り直さない（DBVT は
+//    AABB が太らせた箱をはみ出して動くまで相手を探し直さない）ので、衝突モデルを
+//    入れ直して（EnableCollision の切り替え = 衝突系の Remove / Add）探させる。
+// Multicore は自前の衝突系なので何もしない。
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+struct PhysicsWorld::StaticPairFilter : public cbtOverlapFilterCallback {
+    std::unordered_set<const void*> statics;  // 固定ボディの ChCollisionModelBullet*
+    cbtCollisionWorld* world = nullptr;       // 付けている衝突ワールド（null = 無効）
+    bool ready = false;  // 衝突系の初期化後に集合を作った（それまでは実体が無い）
+
+    bool isStatic(const cbtBroadphaseProxy* p) const {
+        const auto* o = static_cast<const cbtCollisionObject*>(p->m_clientObject);
+        return o && statics.count(o->getUserPointer()) != 0;
+    }
+    bool needBroadphaseCollision(cbtBroadphaseProxy* p0, cbtBroadphaseProxy* p1) const override {
+        // 既定の判定（衝突ファミリの group / mask）はそのまま残す。
+        bool collides = (p0->m_collisionFilterGroup & p1->m_collisionFilterMask) != 0;
+        collides = collides && (p1->m_collisionFilterGroup & p0->m_collisionFilterMask);
+        if (!collides) return false;
+        return !(isStatic(p0) && isStatic(p1));
+    }
+    // 既にある固定どうしのペアを消す。消した数を返す。
+    std::size_t purge() {
+        if (!world) return 0;
+        cbtOverlappingPairCache* cache = world->getPairCache();
+        cbtBroadphasePairArray& pairs = cache->getOverlappingPairArray();
+        std::vector<std::pair<cbtBroadphaseProxy*, cbtBroadphaseProxy*>> doomed;
+        for (int i = 0; i < pairs.size(); ++i) {
+            if (isStatic(pairs[i].m_pProxy0) && isStatic(pairs[i].m_pProxy1)) {
+                doomed.emplace_back(pairs[i].m_pProxy0, pairs[i].m_pProxy1);
+            }
+        }
+        // 走査中に消すと配列が詰まるので、集めてから消す。
+        for (const auto& d : doomed) cache->removeOverlappingPair(d.first, d.second, world->getDispatcher());
+        return doomed.size();
+    }
+};
+
+namespace {
+// ボディの Bullet 側の実体（= その Bullet オブジェクトの userPointer）。
+// 衝突系に登録されていなければ null。
+const void* bulletKeyOf(const ChBody& body) {
+    const auto model = body.GetCollisionModel();
+    if (!model || !model->HasImplementation()) return nullptr;
+    return static_cast<const void*>(
+        static_cast<ChCollisionModelBullet*>(model->GetImplementation()));
+}
+}  // namespace
+#else
+struct PhysicsWorld::StaticPairFilter {};
+#endif
+
+void PhysicsWorld::attachStaticPairFilter() {
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+    if (!staticPairs_) staticPairs_ = std::make_shared<StaticPairFilter>();
+    // 古い系のワールドは sys_ と一緒に壊れている（recreate が先に reset する）。
+    staticPairs_->statics.clear();
+    staticPairs_->world = nullptr;
+    staticPairs_->ready = false;
+    if (backend_ == PhysicsBackend::Multicore) return;
+    auto bt = std::dynamic_pointer_cast<ChCollisionSystemBullet>(sys_->GetCollisionSystem());
+    if (!bt || !bt->GetBulletCollisionWorld()) return;
+    staticPairs_->world = bt->GetBulletCollisionWorld();
+    staticPairs_->world->getPairCache()->setOverlapFilterCallback(staticPairs_.get());
+#endif
+}
+
+void PhysicsWorld::syncStaticPairs() {
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+    if (!staticPairs_ || !staticPairs_->world) return;
+    StaticPairFilter& f = *staticPairs_;
+    f.statics.clear();
+    for (std::size_t i = 0; i < bodies_.size(); ++i) {
+        if (!active_[i] || !bodies_[i]->IsFixed()) continue;
+        if (const void* key = bulletKeyOf(*bodies_[i])) f.statics.insert(key);
+    }
+    f.ready = true;
+    const std::size_t removed = f.purge();
+    LOGI("physics", "static pair filter: %zu fixed bodies, removed %zu fixed-fixed pairs",
+         f.statics.size(), removed);
+#endif
+}
+
+void PhysicsWorld::updateStaticPairs(ChBody& body) {
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+    // 初期化前は何もしない（実体がまだ無い。初期化直後の syncStaticPairs が拾う）。
+    if (!staticPairs_ || !staticPairs_->world || !staticPairs_->ready) return;
+    StaticPairFilter& f = *staticPairs_;
+    const void* key = bulletKeyOf(body);
+    if (!key) return;
+    if (body.IsFixed()) {
+        if (f.statics.insert(key).second) f.purge();
+        return;
+    }
+    if (f.statics.erase(key) == 0) return;  // もともと固定物として扱っていない
+    // 固定だった間に消した / 作らせなかったペアを作り直させる。Remove で
+    // このボディのペアと接触多様体が全部消え、Add（createProxy）で今の
+    // 重なりが改めてフィルタに掛かる（もう固定ではないので通る）。
+    if (body.IsCollisionEnabled()) {
+        body.EnableCollision(false);
+        body.EnableCollision(true);
+    }
+#else
+    (void)body;
+#endif
+}
+
+void PhysicsWorld::forgetStaticPairs(ChBody& body) {
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+    if (!staticPairs_ || !staticPairs_->world) return;
+    if (const void* key = bulletKeyOf(body)) staticPairs_->statics.erase(key);
+#else
+    (void)body;
+#endif
+}
+
 std::vector<ContactInfo> PhysicsWorld::activeContacts() const {
     std::vector<ContactInfo> contacts;
     const auto container = sys_->GetContactContainer();
@@ -1359,6 +1685,11 @@ void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     softOf_.clear();
     alias_.clear();
     softBodies_.clear();
+    // テレインのゴーストとコールバックは系と一緒に消える。Scene が作り直した
+    // あとに setTerrain を呼び直す。
+    terrainProxies_.clear();
+    terrain_.reset();
+    terrainCallback_.reset();
     jointLoads_.reset();
     bodyLoads_.reset();
     diagSteps_ = 0;
@@ -1459,6 +1790,17 @@ void PhysicsWorld::createSystem() {
     // enough to visibly pop resting boxes; a small value settles them quietly.
     core->SetMaxPenetrationRecoverySpeed(0.1);
     sys_ = core;
+    }
+
+    // 固定物どうしのペアを作らせないフィルタ（Core のみ。Multicore では外す）。
+    attachStaticPairFilter();
+
+    // テレインの自前の接触（Core のみ）。setTerrain が呼ばれるまでは何もしない
+    // （collectTerrainContacts の先頭で戻る）= 呼ばないシーンの挙動は変わらない。
+    terrainCallback_.reset();
+    if (backend_ != PhysicsBackend::Multicore) {
+        terrainCallback_ = std::make_shared<TerrainCallback>(this);
+        sys_->RegisterCustomCollisionCallback(terrainCallback_);
     }
 
     // 覚えている設定を当て直す（初回は既定値 = 従来どおり）。
@@ -1683,6 +2025,9 @@ void PhysicsWorld::wakeAll() {
         wakeUp(b.get(), 0);
         resetSleepTimer(*b);
     }
+    // テレインの反力キャッシュも捨てる（シミュレートの開始・Reset で呼ばれる。
+    // 前回の走行の最後の反力で次の走行の最初のステップを始めない）。
+    for (std::size_t i = 0; i < terrainProxies_.size(); ++i) forgetTerrainContacts(i);
     // Waking from outside ManageSleepingBodies() changes how many bodies the
     // solver has to handle, and Chrono only rebuilds that layout in Setup().
     // Without this the "woken" bodies can stay out of the solve - i.e. they
@@ -1889,7 +2234,25 @@ void PhysicsWorld::step(double dt) {
         }
     }
 
+    // 固定物どうしのペアの掃除: 衝突系の初期化（BindAll）は最初の
+    // DoStepDynamics の中で起きるので、その前後で「初期化済みなのに集合が
+    // まだ」を見て 1 回だけ作る（初期化を別の呼び出しが先に済ませていても
+    // 拾えるよう、前でも見る）。最初の 1 ステップだけは固定どうしの判定が
+    // 走る。
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+    auto staticPairsPending = [this]() {
+        if (!staticPairs_ || !staticPairs_->world || staticPairs_->ready) return false;
+        const auto coll = sys_->GetCollisionSystem();
+        return coll && coll->IsInitialized();
+    };
+    if (staticPairsPending()) syncStaticPairs();
+#endif
+
     sys_->DoStepDynamics(dt);
+
+#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
+    if (staticPairsPending()) syncStaticPairs();
+#endif
 
     // 診断: 拘束が解かれているかを最初の数ステップと 1 秒後に 1 回ずつ出す
     // （「全部が地面を抜けて落ちる」の切り分け用: 接触とリンクの数、
@@ -2051,7 +2414,18 @@ std::size_t PhysicsWorld::addSphere(double radius, double density,
     prepareBody(*b, options);
     sys_->AddBody(b);
     finishBody(b, mat, options);
-    return bodies_.size() - 1;
+    const std::size_t id = bodies_.size() - 1;
+    {
+        // テレインの接触用の形の記録（本体の球 + 追加の当たり形状）。
+        wterrain::BodyProxy proxy;
+        wterrain::ShapeProxy sp;
+        sp.kind = wterrain::ShapeProxy::Kind::Sphere;
+        sp.radius = radius;
+        proxy.shapes.push_back(sp);
+        appendExtraProxies(extras, proxy);
+        setTerrainProxy(id, proxy);
+    }
+    return id;
 }
 
 void PhysicsWorld::setDamping(double linearPerSecond, double angularPerSecond) {
@@ -2067,6 +2441,7 @@ void PhysicsWorld::setSurfaceMaterial(float friction, float restitution) {
     for (std::size_t i = 0; i < mats_.size(); ++i) {
         if (mats_[i]) applySurface(*mats_[i], options_[i]);
     }
+    refreshTerrainMaterials();
 }
 
 void PhysicsWorld::setRollingFriction(float rolling, float spinning) {
@@ -2079,6 +2454,7 @@ void PhysicsWorld::setRollingFriction(float rolling, float spinning) {
     for (std::size_t i = 0; i < mats_.size(); ++i) {
         if (mats_[i]) applySurface(*mats_[i], options_[i]);
     }
+    refreshTerrainMaterials();
 }
 
 std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density,
@@ -2102,7 +2478,18 @@ std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density
     prepareBody(*b, options);
     sys_->AddBody(b);
     finishBody(b, mat, options);
-    return bodies_.size() - 1;
+    const std::size_t id = bodies_.size() - 1;
+    {
+        // テレインの接触用の形の記録（本体の箱 + 追加の当たり形状）。
+        wterrain::BodyProxy proxy;
+        wterrain::ShapeProxy sp;
+        sp.kind = wterrain::ShapeProxy::Kind::Box;
+        sp.halfExtents = wterrain::Vec3(sx * 0.5, sy * 0.5, sz * 0.5);
+        proxy.shapes.push_back(sp);
+        appendExtraProxies(extras, proxy);
+        setTerrainProxy(id, proxy);
+    }
+    return id;
 }
 
 std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertices,
@@ -2162,11 +2549,20 @@ std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertice
     prepareBody(*b, options);
     sys_->AddBody(b);
     finishBody(b, mat, options);
+    const std::size_t id = bodies_.size() - 1;
     if (!fixed) {
         LOGW("physics", "triangle-mesh body is not fixed - concave mesh vs mesh "
                         "collision is slow (GImpact); prefer fixed=\"true\"");
+        // テレインの接触: 頂点（ボディローカル。ChBody の原点 = 頂点の原点）を
+        // 間引いて点の集合に + 追加の当たり形状。固定の物はテレインと接触を
+        // 作らないので記録しない（大きな固定の器・トンネルの頂点列を持たない）。
+        // 走行中に固定を外された物は安全網（AABB）になる。
+        wterrain::BodyProxy proxy;
+        proxy.shapes.push_back(pointsShapeProxy(decimatePoints(vertices, kTerrainMaxProxyPoints)));
+        appendExtraProxies(extras, proxy);
+        setTerrainProxy(id, proxy);
     }
-    return bodies_.size() - 1;
+    return id;
 #else
     (void)vertices; (void)triangles; (void)mass; (void)pos; (void)rot; (void)fixed;
     (void)extras; (void)options;
@@ -2223,7 +2619,15 @@ std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
     prepareBody(*b, options);
     sys_->AddBody(b);
     finishBody(b, mat, options);
-    return bodies_.size() - 1;
+    const std::size_t id = bodies_.size() - 1;
+    if (!extras.empty()) {
+        // テレインの接触: 追加の当たり形状（箱・球・円柱）だけ。extras が空の
+        // フレームは当たり判定が無いので、テレインにも当たらない。
+        wterrain::BodyProxy proxy;
+        appendExtraProxies(extras, proxy);
+        if (!proxy.shapes.empty()) setTerrainProxy(id, proxy);
+    }
+    return id;
 }
 
 std::size_t PhysicsWorld::addConvexHull(
@@ -2296,7 +2700,25 @@ std::size_t PhysicsWorld::addConvexHull(
     prepareBody(*b, options);
     sys_->AddBody(b);
     finishBody(b, mat, options);
-    return bodies_.size() - 1;
+    const std::size_t id = bodies_.size() - 1;
+    {
+        // テレインの接触: Chrono が当たり形状にした凸包の頂点そのもの
+        // （GetMesh = 体積重心へ寄せた後 = ボディローカル。ChBodyEasyConvexHull が
+        // 衝突形状に渡す points_reduced と同じ列）。寄せる前の点を使うなら
+        // 「p − center」になるが、こちらは Chrono の形と完全に一致する。
+        // 凸包が作れなかった（点が 4 個未満・退化 = 頂点が空）ときは Chrono 側にも
+        // 凸包の当たり形状が無いので、記録しない（テレインにも当てない）。
+        // 追加の当たり形状は attachExtraShapes と同じ置き場（ボディ原点 = 重心
+        // 基準。寄せる前の原点基準ではない）なので、そのまま足す。
+        std::vector<ChVector3d> hullPts;
+        if (const auto mesh = b->GetMesh()) hullPts = mesh->GetCoordsVertices();
+        wterrain::BodyProxy proxy;
+        if (!hullPts.empty())
+            proxy.shapes.push_back(pointsShapeProxy(decimatePoints(hullPts, kTerrainMaxProxyPoints)));
+        appendExtraProxies(extras, proxy);
+        if (!proxy.shapes.empty()) setTerrainProxy(id, proxy);
+    }
+    return id;
 }
 
 std::size_t PhysicsWorld::bodyCount() const {
@@ -2325,6 +2747,7 @@ void PhysicsWorld::setBodyPose(std::size_t id, const ChVector3d& pos,
     bodies_[id]->SetRot(rot);
     bodies_[id]->ForceToRest();  // zero linear + angular velocity and accel
     wakeUp(bodies_[id].get(), 0);  // a re-dropped body must not stay asleep
+    forgetTerrainContacts(id);     // 置き直した = 前の場所での反力は使わない
 
     // ...and it must not fall straight back asleep. Chrono only refreshes a
     // body's "last moving" timestamp while it is above the sleep speed, so a
@@ -2355,6 +2778,7 @@ void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
     b->ForceToRest();
     wakeUp(b.get(), 0);
     resetSleepTimer(*b);  // 静止させた直後に眠らせない
+    forgetTerrainContacts(id);  // 置き直した = 前の場所での反力は使わない
     // setBodyPose と違って落下速度は与えない。エディタで置いた物は、
     // シミュレートを始めるまでその場に止まっていてほしい。
 }
@@ -2370,6 +2794,7 @@ void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
             bodies_[p]->SetFixed(fixed);
             if (fixed) bodies_[p]->ForceToRest();
             else wakeUp(bodies_[p].get(), 0);
+            if (active_[p]) updateStaticPairs(*bodies_[p]);  // 固定物どうしのペア
         }
         return;
     }
@@ -2380,6 +2805,8 @@ void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
         wakeUp(bodies_[id].get(), 0);
         resetSleepTimer(*bodies_[id]);  // 固定を外した直後に眠らせない
     }
+    // 固定物どうしのペア: 固定にしたら掃除、外したら作り直させる。
+    if (active_[id]) updateStaticPairs(*bodies_[id]);
 }
 
 bool PhysicsWorld::bodyFixed(std::size_t id) const {
@@ -2391,6 +2818,12 @@ bool PhysicsWorld::bodyFixed(std::size_t id) const {
 
 void PhysicsWorld::disableBody(std::size_t id) {
     if (id >= bodies_.size() || !active_[id]) return;
+    // テレインのゴーストは PhysicsWorld の持ち物: 系から外すと、直前の
+    // ステップの接触が外れたボディを指したまま残るので、外さずに接触だけ止める。
+    if (terrain_ && id == terrain_->ghost) {
+        clearTerrain();
+        return;
+    }
     if (SoftBody* soft = softOfRoot(id)) {
         // 粒子を全部退場させ、ばねも解かない。
         soft->active = false;
@@ -2398,6 +2831,7 @@ void PhysicsWorld::disableBody(std::size_t id) {
             if (p == id) continue;  // 代表は下の通常経路で
             auto& pb = bodies_[p];
             pb->SetFixed(true);
+            forgetStaticPairs(*pb);  // 衝突モデルを手放す前に
             if (backend_ != PhysicsBackend::Multicore) pb->EnableCollision(false);
             pb->ForceToRest();
             pb->SetPos(ChVector3d(0, -1000.0, 0));
@@ -2406,6 +2840,9 @@ void PhysicsWorld::disableBody(std::size_t id) {
     }
     auto& b = bodies_[id];
     b->SetFixed(true);
+    // 固定物の集合から先に外す（下の EnableCollision(false) で Bullet 側の
+    // 実体が解放され、そのアドレスが別のボディに使い回されうるため）。
+    forgetStaticPairs(*b);
     // Multicore の衝突系は Remove() が未実装で、Chrono 9 は
     // "ChCollisionSystemMulticore::Remove() not yet implemented." を出して
     // 例外を投げる（物理スレッドで捕まらず、アプリごと落ちる）。そちらでは
@@ -2453,11 +2890,268 @@ void PhysicsWorld::detachBody(std::size_t id) {
         loadsOf_[id].clear();
     }
 #endif
+    forgetStaticPairs(*b);  // RemoveBody が衝突モデルを手放す前に
     sys_->RemoveBody(b);
 }
 
 bool PhysicsWorld::bodyActive(std::size_t id) const {
     return id < active_.size() && active_[id];
+}
+
+// ---- テレイン（高さ格子との自前の接触）---------------------------------------
+// 検出は terrain::collectContacts（Chrono 非依存、tests/terrain で検査）。ここは
+// その結果を Chrono の接触へ詰め替えるだけで、詰め方はベンチ
+// （tests/chrono_bench の mode=hf hfimpl=lib、B1 / B2 で検証済み）と同じ:
+//   A = 物（vpA = onBody）、B = ゴースト（vpB = onTerrain）、vN = −normal
+//   （A → B）、distance = gap（負 = めり込み）、reaction_cache = 点ごとの永続
+//   float[6]（前のステップに接触しなかった点は 0 に戻してから渡す）、
+//   材質 = AddContact(物の材質, round ? 転がりあり : 転がり・スピン 0)。
+// ゴーストは空の衝突モデルを持つ固定ボディで、EnableCollision を呼ばない =
+// Bullet に登録されない（StaticPairFilter の集合にも入らない: bulletKeyOf が
+// null）。AddBody と registerBody は通す（接触の相手の変数・逆引きに要る）。
+
+void PhysicsWorld::setTerrainProxy(std::size_t id, const wterrain::BodyProxy& proxy) {
+    if (id >= terrainProxies_.size()) return;
+    auto rec = std::make_shared<TerrainProxyRec>();
+    rec->proxy = proxy;
+    rec->proxy.boundRadius = wterrain::computeBoundRadius(rec->proxy);
+    const int points = wterrain::proxyPointCount(rec->proxy, terrainContactParams());
+    if (points <= 0) {
+        terrainProxies_[id].reset();
+        return;
+    }
+    // ここで 1 回だけ確保する（以後は大きさを変えない = アドレスが動かない）。
+    rec->cache.assign(std::size_t(points), std::array<float, 6>{0.f, 0.f, 0.f, 0.f, 0.f, 0.f});
+    rec->was.assign(std::size_t(points), 0);
+    rec->now.assign(std::size_t(points), 0);
+    terrainProxies_[id] = std::move(rec);
+}
+
+void PhysicsWorld::forgetTerrainContacts(std::size_t id) {
+    if (id >= terrainProxies_.size() || !terrainProxies_[id]) return;
+    TerrainProxyRec& rec = *terrainProxies_[id];
+    std::fill(rec.was.begin(), rec.was.end(), char(0));
+    for (auto& c : rec.cache) c.fill(0.0f);
+}
+
+bool PhysicsWorld::hasTerrainProxy(std::size_t id) const {
+    return id < terrainProxies_.size() && terrainProxies_[id] && !terrainProxies_[id]->fallback;
+}
+
+// テレインと接触しうるボディか（眠りは見ない = 一時的なので）。
+// terrainContactShape と collectTerrainContacts の共通の条件はここ 1 か所:
+// 範囲内・ゴーストでない・退場していない・系に居る・固定でない・当たり判定が
+// 有効・衝突モデルがあって形が 1 つ以上ある（Chrono 側に形が無い物 = 例えば
+// 円柱の口の無い版で円柱の部品だけのフレーム・退化した凸包は、他の何とも
+// 当たらないのでテレインにも当てない = 安全網も作らない）。
+bool PhysicsWorld::terrainEligible(std::size_t id) const {
+    if (id >= bodies_.size() || id >= active_.size()) return false;
+    if (terrain_ && id == terrain_->ghost) return false;
+    const ChBody* b = bodies_[id].get();
+    if (!active_[id] || !b->GetSystem() || b->IsFixed() || !b->IsCollisionEnabled())
+        return false;
+    const auto model = b->GetCollisionModel();
+    return model && !model->GetShapeInstances().empty();
+}
+
+PhysicsWorld::TerrainContactShape PhysicsWorld::terrainContactShape(std::size_t id) const {
+    if (!terrainEligible(id)) return TerrainContactShape::None;
+    return hasTerrainProxy(id) ? TerrainContactShape::Exact : TerrainContactShape::BoundingBox;
+}
+
+// 安全網: 形の記録の無い動くボディに、衝突モデルの AABB の 8 角で当てる記録を
+// 作る（中身の点は毎ステップ collectTerrainContacts が入れ直す）。
+PhysicsWorld::TerrainProxyRec* PhysicsWorld::terrainFallbackRec(std::size_t id) {
+    if (id >= terrainProxies_.size()) return nullptr;
+    if (!terrainProxies_[id]) {
+        auto rec = std::make_shared<TerrainProxyRec>();
+        rec->fallback = true;
+        wterrain::ShapeProxy sp;
+        sp.kind = wterrain::ShapeProxy::Kind::Points;
+        sp.points.assign(8, wterrain::Vec3::Zero());
+        rec->proxy.shapes.push_back(sp);
+        rec->cache.assign(8, std::array<float, 6>{0.f, 0.f, 0.f, 0.f, 0.f, 0.f});
+        rec->was.assign(8, 0);
+        rec->now.assign(8, 0);
+        terrainProxies_[id] = std::move(rec);
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            LOGW("physics",
+                 "terrain contact: body %zu has no terrain shape record - using its "
+                 "collision bounding box (coarse; later bodies like this are not logged)",
+                 id);
+        }
+    }
+    return terrainProxies_[id].get();
+}
+
+void PhysicsWorld::refreshTerrainMaterials() {
+    if (!terrain_ || !terrain_->matRound || !terrain_->matFlat) return;
+    TerrainState& t = *terrain_;
+    applySurface(*t.matRound, t.options);
+    applySurface(*t.matFlat, t.options);
+    // 多点で触れる形には転がり・スピン摩擦を効かせない（SMC の材質には欄が無い）。
+    if (auto* n = dynamic_cast<ChContactMaterialNSC*>(t.matFlat.get())) {
+        n->SetRollingFriction(0.0f);
+        n->SetSpinningFriction(0.0f);
+    }
+}
+
+std::size_t PhysicsWorld::setTerrain(std::shared_ptr<const wterrain::HeightField> field,
+                                     const BodyOptions& terrainOptions) {
+    if (!field) {
+        clearTerrain();
+        return kInvalidId;
+    }
+    if (backend_ == PhysicsBackend::Multicore || !terrainCallback_) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            LOGW("physics", "terrain contact needs the core backend - terrain is not collidable");
+        }
+        return kInvalidId;
+    }
+    if (!terrain_) terrain_ = std::make_shared<TerrainState>();
+    TerrainState& t = *terrain_;
+    if (t.ghost == kInvalidId) {
+        auto ghost = chrono_types::make_shared<ChBody>();
+        ghost->SetFixed(true);
+        // 空の衝突モデル: ChCollisionInfo の modelB（GetContactable の元）に要る。
+        // EnableCollision は呼ばない = Bullet に登録されない。
+        ghost->AddCollisionModel(chrono_types::make_shared<ChCollisionModel>());
+        sys_->AddBody(ghost);
+        registerBody(ghost);
+        t.ghost = bodies_.size() - 1;
+    }
+    t.field = std::move(field);
+    t.contactTerrain = wterrain::ContactTerrain(*t.field);
+    t.options = terrainOptions;
+    if (!t.matRound || !t.matFlat) {
+        t.matRound = makeMaterial();
+        t.matFlat = makeMaterial();
+    }
+    refreshTerrainMaterials();
+
+    // 地面が変わったので、前の地面に対する接触の印と眠りを捨てる。
+    std::size_t bodies = 0, points = 0;
+    for (std::size_t i = 0; i < terrainProxies_.size(); ++i) {
+        const auto& rec = terrainProxies_[i];
+        if (!rec) continue;
+        std::fill(rec->was.begin(), rec->was.end(), char(0));
+        if (!active_[i]) continue;
+        ++bodies;
+        points += rec->cache.size();
+    }
+    wakeAll();
+    LOGI("physics",
+         "terrain contact: ghost body %zu, %d x %d cells, %zu bodies with a proxy (%zu points)",
+         t.ghost, t.field->resolution(), t.field->resolution(), bodies, points);
+    return t.ghost;
+}
+
+void PhysicsWorld::clearTerrain() {
+    if (!terrain_ || !terrain_->field) return;
+    terrain_->field.reset();
+    terrain_->contactTerrain = wterrain::ContactTerrain();
+    for (const auto& rec : terrainProxies_) {
+        if (rec) std::fill(rec->was.begin(), rec->was.end(), char(0));
+    }
+    // 載っていた物が浮いたまま眠らないように起こす。
+    wakeAll();
+    LOGI("physics", "terrain contact cleared (ghost body %zu kept)", terrain_->ghost);
+}
+
+bool PhysicsWorld::hasTerrain() const {
+    return terrain_ && terrain_->field && terrain_->ghost < bodies_.size();
+}
+
+std::size_t PhysicsWorld::terrainBodyId() const {
+    return hasTerrain() ? terrain_->ghost : kInvalidId;
+}
+
+void PhysicsWorld::collectTerrainContacts(ChSystem& sys) {
+    // テレインが無い（setTerrain されていない・clearTerrain 後）なら何もしない。
+    if (!hasTerrain()) return;
+    TerrainState& t = *terrain_;
+    const auto container = sys.GetContactContainer();
+    const auto& ghostBody = bodies_[t.ghost];
+    ChCollisionModel* ghostModel = ghostBody->GetCollisionModel().get();
+    if (!container || !ghostModel) return;
+    t.params.dt = sys.GetStep();
+
+    const std::size_t n = std::min(terrainProxies_.size(), bodies_.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        if (i == t.ghost) continue;
+        TerrainProxyRec* rec = terrainProxies_[i].get();
+        ChBody* b = bodies_[i].get();
+        // 対象外（terrainEligible）と眠っている物は足さない（眠っている物は
+        // 足しても AddContact が捨てる）。次に起きたら「前の接触なし」から。
+        if (!terrainEligible(i) || b->IsSleeping()) {
+            if (rec) std::fill(rec->was.begin(), rec->was.end(), char(0));
+            continue;
+        }
+        ChCollisionModel* model = b->GetCollisionModel().get();
+        // 形の記録が無い動く物 = 安全網（AABB の 8 角）。
+        if (!rec) rec = terrainFallbackRec(i);
+        if (!rec) continue;
+
+        wterrain::Pose pose;
+        pose.position = toTerrainVec(b->GetPos());
+        pose.rotation = toTerrainMat(b->GetRotMat());
+        if (rec->fallback) {
+            // 衝突モデルの AABB はワールド軸・絶対座標（ベンチ B1 で確認）。
+            // 角をボディ原点からの相対で入れ、回転は単位にする（点がワールドの
+            // 箱の角そのものになる）。順は箱の 8 角と同じ = pointId が安定。
+            const ChAABB box = model->GetBoundingBox();
+            if (box.IsInverted() || !std::isfinite(box.min.x()) || !std::isfinite(box.max.x())) {
+                std::fill(rec->was.begin(), rec->was.end(), char(0));
+                continue;
+            }
+            auto& pts = rec->proxy.shapes[0].points;
+            int k = 0;
+            for (int a = 0; a < 2; ++a)
+                for (int c = 0; c < 2; ++c)
+                    for (int e = 0; e < 2; ++e)
+                        pts[std::size_t(k++)] =
+                            wterrain::Vec3(a ? box.max.x() : box.min.x(), c ? box.max.y() : box.min.y(),
+                                           e ? box.max.z() : box.min.z()) -
+                            pose.position;
+            rec->proxy.boundRadius = wterrain::computeBoundRadius(rec->proxy);
+            pose.rotation = wterrain::Mat3::Identity();
+        }
+        wterrain::BodyVelocity vel;
+        vel.linear = toTerrainVec(getLinVel(b, 0));
+        vel.angular = toTerrainVec(getAngVel(b, 0));
+        wterrain::collectContacts(t.contactTerrain, rec->proxy, pose, vel, t.params, t.contacts);
+
+        std::fill(rec->now.begin(), rec->now.end(), char(0));
+        const auto& bodyMat = mats_[i] ? mats_[i] : mat_;
+        for (const wterrain::Contact& c : t.contacts) {
+            if (c.pointId < 0 || std::size_t(c.pointId) >= rec->cache.size()) continue;
+            const std::size_t pid = std::size_t(c.pointId);
+            ChCollisionInfo ci;
+            ci.modelA = model;
+            ci.modelB = ghostModel;
+            ci.shapeA = nullptr;
+            ci.shapeB = nullptr;
+            ci.vpA = fromTerrainVec(c.onBody);
+            ci.vpB = fromTerrainVec(c.onTerrain);
+            ci.vN = -fromTerrainVec(c.normal);  // A（物）→ B（テレイン）
+            ci.distance = c.gap;
+            // 曲率半径（SMC だけが使う）: 球はその半径（Multicore の球対平面と同じ）、
+            // それ以外は Chrono の既定値のまま（Bullet の接触も既定値を渡している）。
+            if (c.round && c.shape >= 0 && std::size_t(c.shape) < rec->proxy.shapes.size()) {
+                const double r = rec->proxy.shapes[std::size_t(c.shape)].radius;
+                if (std::isfinite(r) && r > 0.0) ci.eff_radius = r;
+            }
+            if (!rec->was[pid]) rec->cache[pid].fill(0.0f);
+            ci.reaction_cache = rec->cache[pid].data();
+            rec->now[pid] = 1;
+            container->AddContact(ci, bodyMat, c.round ? t.matRound : t.matFlat);
+        }
+        rec->was.swap(rec->now);
+    }
 }
 
 // ---- ジョイント -----------------------------------------------------------

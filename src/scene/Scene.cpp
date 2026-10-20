@@ -443,7 +443,8 @@ void Scene::build() {
         if (readSceneDocument(kStartupScene, doc, reason)) {
             loadDocument(doc);
             editor_.setSceneFile(kStartupScene);
-            editor_.setStatus(std::string("読み込みました: ") + kStartupScene);
+            editor_.setStatus(std::string("読み込みました: ") + kStartupScene +
+                              terrainCombineCaveat(true));
             LOGI("scene", "startup scene '%s' loaded (%zu bodies, %zu meshes)",
                  kStartupScene, doc.bodies.size(), doc.meshes.size());
         } else {
@@ -666,6 +667,9 @@ void Scene::enterMode(ed::AppMode target) {
         for (std::size_t i = 0; i < boxes_.size(); ++i) {
             if (boxes_[i].alive && boxes_[i].physDirty) rebuildBody(i);
         }
+        // テレインに安全網（外接箱）で粗く当たる物を
+        // 知らせる（同じ顔ぶれなら繰り返さない）。
+        warnTerrainPassThrough();
         // 設計どおりの姿勢から始める。ジョイントはここで作り直す:
         // エディタで物を動かしたあとも、拘束が今の位置に合った状態で張られる。
         restoreAuthoredPoses();
@@ -759,6 +763,74 @@ void Scene::syncGround() {
     renderer_.addGround(float(ground_.visualHalf),
                         {ground_.tint.r, ground_.tint.g, ground_.tint.b},
                         float(ground_.tile), ground_.texture, groundMat);
+}
+
+// テレインの上限の照合。Renderer は src/terrain を知らず、src/terrain は
+// Renderer を知らないので、両方を見るここで食い違いを止める。
+static_assert(wizengine::terrain::kMaxChunkQuads == wizengine::Renderer::kMaxTerrainQuads,
+              "terrain::kMaxChunkQuads and Renderer::kMaxTerrainQuads must match");
+static_assert(kTerrainChunkQuads >= 1 && kTerrainChunkQuads <= wizengine::Renderer::kMaxTerrainQuads,
+              "kTerrainChunkQuads is out of the Renderer's range");
+static_assert(ed::kTerrainMaxResolution <= wizengine::terrain::kMaxResolution,
+              "the document's terrain resolution limit exceeds HeightField's");
+// 解像度の上限でも 1 辺のチャンク数が Renderer の上限に収まること
+// （1024 / 64 = 16 <= 64）。
+static_assert((ed::kTerrainMaxResolution + kTerrainChunkQuads - 1) / kTerrainChunkQuads <=
+                  wizengine::Renderer::kMaxTerrainChunks,
+              "kTerrainMaxResolution / kTerrainChunkQuads exceeds Renderer::kMaxTerrainChunks");
+
+// RENDER スレッド（applyToRenderer がロックを外してから呼ぶ）。
+void Scene::syncTerrain(bool rebuildMesh, bool updateSurface, bool enabled,
+                        const ed::TerrainDesc& desc,
+                        const std::shared_ptr<const wizengine::terrain::HeightField>& field) {
+    if (!enabled || (rebuildMesh && (!field || !field->valid()))) {
+        renderer_.removeTerrain();  // 無ければ何もしない
+        return;
+    }
+    if (rebuildMesh) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const int chunks = field->chunksPerSide(kTerrainChunkQuads);
+        if (!renderer_.addTerrain(chunks, chunks, kTerrainChunkQuads)) {
+            LOGW("scene", "terrain: the renderer refused %dx%d chunks - not drawn", chunks,
+                 chunks);
+            return;
+        }
+        wizengine::terrain::ChunkMesh built;
+        wizengine::TerrainChunkMesh upload;
+        int failed = 0;
+        for (int cz = 0; cz < chunks; ++cz) {
+            for (int cx = 0; cx < chunks; ++cx) {
+                const bool ok = field->buildChunkMesh(cx, cz, kTerrainChunkQuads, built);
+                if (!ok) {
+                    ++failed;
+                    continue;
+                }
+                // 同じ並びの素の配列なので move で渡す（コピーしない）。インデックス
+                // も毎回渡す: addTerrain の直後は全部 0 = 何も描かれないため。
+                upload.positions = std::move(built.positions);
+                upload.normals = std::move(built.normals);
+                upload.uvs = std::move(built.uvs);
+                upload.indices = std::move(built.indices);
+                if (!renderer_.setTerrainChunk(cx, cz, upload)) ++failed;
+            }
+        }
+        if (failed > 0) {
+            LOGW("scene", "terrain: %d of %d chunks could not be built", failed,
+                 chunks * chunks);
+        }
+        LOGI("scene", "terrain mesh: %dx%d chunks (%d quads each) built and uploaded in %.1f ms",
+             chunks, chunks, kTerrainChunkQuads, elapsedMs(t0));
+    }
+    // メッシュを作り直したときは表面も必ず入れ直す。addTerrain が失敗した
+    // フレームは上で return しており、そのとき消えた表面の dirty は次の
+    // 作り直しがここで埋め合わせる（材質が既定の白のまま残らない）。
+    // テクスチャはパスが同じなら Renderer が読み直さないので、入れ直しは安い。
+    if (updateSurface || rebuildMesh) {
+        renderer_.setTerrainSurface(
+            desc.texture, float(desc.tile),
+            filament::math::float4{desc.color.r, desc.color.g, desc.color.b, 1.0f},
+            float(desc.roughness), float(desc.metallic));
+    }
 }
 
 // RENDER スレッド。実体の無いライトを作り、消されたもの・作り直しが要る
@@ -1002,6 +1074,11 @@ PhysicsBackend Scene::requiredBackend(ContactMethod& contact, std::string& reaso
     if (ed::solverNeedsCore(s.solver)) why.push_back("solver '" + s.solver + "'");
     if (ed::integratorNeedsCore(s.integrator)) why.push_back("integrator '" + s.integrator + "'");
     if (s.modal > 0) why.push_back("modal analysis");
+    // テレイン。SceneConfig.h の kTerrainForcesCore。当たり判定は自前の接触
+    // （CustomCollisionCallback。Multicore では PhysicsWorld が張らない）。
+    if (kTerrainForcesCore && hasTerrain_) {
+        why.push_back("terrain (custom contact; Multicore untested)");
+    }
     if (!why.empty()) {
         for (std::size_t i = 0; i < why.size(); ++i) reason += (i ? ", " : "") + why[i];
         return PhysicsBackend::Core;
@@ -1047,7 +1124,7 @@ PhysicsBackend Scene::requiredBackend(ContactMethod& contact, std::string& reaso
     return want;
 }
 
-void Scene::syncBackend() {
+bool Scene::syncBackend() {
     ContactMethod contact;
     std::string reason;
     const PhysicsBackend want = requiredBackend(contact, reason);
@@ -1066,6 +1143,7 @@ void Scene::syncBackend() {
     if (!reason.empty()) note += " (" + reason + ")";
     std::lock_guard<std::mutex> lk(poseMutex_);
     backendNote_ = note;
+    return !same;
 }
 
 void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
@@ -1080,6 +1158,14 @@ void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
     applySimSettings();
     groundPhysId_ = GameObject::kInvalidId;
     rebuildGroundBody();
+    // テレインも地面と同じく組み直す（古い系の番号は捨てる。高さ格子は
+    // 系とは無関係なのでそのまま使う）。recreate がゴーストも自前の接触も
+    // 捨てているので、必ず張り直す。
+    // 順序: 全ボディの後 - 形の記録（proxy）は PhysicsWorld の add* が
+    // 書き、接触の収集は毎ステップ全ボディを見るのでどちらの順でも当たるが、
+    // 後に置くと setTerrain の LOGI（proxy を持つボディの数）が実数になり、
+    // 安全網で粗く当たる物の警告も実体を見て出せる。
+    terrainPhysId_ = PhysicsWorld::kInvalidId;
     for (std::size_t i = 0; i < boxes_.size(); ++i) {
         GameObject& obj = boxes_[i];
         // 消えたオブジェクトも番号は捨てる（古い系の番号を持ったままだと、
@@ -1092,6 +1178,7 @@ void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
         }
         if (obj.alive) rebuildBody(i);
     }
+    rebuildTerrainBody();
     if (simulating) {
         restoreAuthoredPoses();
         buildJoints();
@@ -1581,7 +1668,26 @@ void Scene::applyToRenderer() {
         renderPending = render_;
         applyRender = true;
     }
+    // テレインも同じ扱い。全チャンクのメッシュ化（解像度 1024 で 16x16
+    // チャンク）とテクスチャの読込はロックの外で。格子は dirty と同じロックの
+    // 中で取り出す（setTerrain が同じロックの中で差し替えるので組が揃う）。
+    bool terrainMesh = false, terrainSurface = false, terrainOn = false;
+    ed::TerrainDesc terrainPending;
+    std::shared_ptr<const wizengine::terrain::HeightField> terrainFieldPending;
+    if (terrainMeshDirty_ || terrainSurfaceDirty_) {
+        terrainMesh = terrainMeshDirty_;
+        terrainSurface = terrainSurfaceDirty_;
+        terrainMeshDirty_ = false;
+        terrainSurfaceDirty_ = false;
+        terrainOn = hasTerrain_;
+        terrainPending = terrain_;
+        if (terrainMesh) terrainFieldPending = terrainField();  // 末端のロック
+    }
     lk.unlock();
+    if (terrainMesh || terrainSurface) {
+        syncTerrain(terrainMesh, terrainSurface, terrainOn, terrainPending,
+                    terrainFieldPending);
+    }
     if (applyRender) {
         renderer_.setRenderSettings(wizengine::toRendererSettings(renderPending));
     }

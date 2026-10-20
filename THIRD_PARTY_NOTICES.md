@@ -21,7 +21,7 @@ Charon（旧コードネーム WizEngine）が使っている外部ソフトウ�
 | [nlohmann/json](https://github.com/nlohmann/json) | 3.11.3 | MIT | ヘッダのみ。ブラウザ API と設定の JSON |
 | [cpp-httplib](https://github.com/yhirose/cpp-httplib) | 0.15.3 | MIT | ヘッダのみ。操作ページ・WHEP・`/input` の HTTP サーバ |
 | [cgltf](https://github.com/jkuhlmann/cgltf) | 1.14 | MIT | ヘッダのみ。glTF の当たり判定用メッシュ読み込み |
-| [stb](https://github.com/nothings/stb)（`stb_image.h`） | master | MIT または Public Domain（Unlicense）の選択 | ヘッダのみ。テクスチャと HDR 環境マップの読み込み |
+| [stb](https://github.com/nothings/stb)（`stb_image.h` / `stb_perlin.h`） | master | MIT または Public Domain（Unlicense）の選択 | ヘッダのみ。テクスチャと HDR 環境マップの読み込み、テレインの高さのノイズ（Perlin の fbm） |
 | [Google Filament](https://github.com/google/filament) | 1.74.0 | Apache-2.0 | 描画エンジン。公式プレビルド（`filament` / `gltfio` / `ibl` など）をリンク |
 | [GStreamer](https://gstreamer.freedesktop.org/) | 1.x（システムの版） | LGPL-2.1-or-later | 映像のエンコードと配信。動的リンク（core / base / app / webrtc / sdp / video） |
 

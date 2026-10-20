@@ -177,8 +177,8 @@ inline const std::vector<filament::math::float3>& cameraColors() {
 
 // 物理バックエンドの既定。シーンが何も要求しないときに使う系で、Scene が
 // 文書の中身を見て上書きする（Scene::requiredBackend）:
-//   - Core を要する機能（FEA ケーブル・ChLoad・直接法・HHT・モーダル）が
-//     あれば Core。
+//   - Core を要する機能（FEA ケーブル・ChLoad・直接法・HHT・モーダル、
+//     kTerrainForcesCore ならテレイン）があれば Core。
 //   - なければ、ソフトボディがある（kMulticoreForSoftBodies）か、ボディの
 //     数が kMulticoreMinBodies 以上なら Multicore（ビルドにあれば）。
 //   - どちらでもなければこの既定。
@@ -196,6 +196,29 @@ constexpr PhysicsBackend kBackend = PhysicsBackend::Core;
 // collide 部品も 1 個と数える）がこの数以上で Multicore。0 で無効。
 constexpr bool kMulticoreForSoftBodies = true;
 constexpr int kMulticoreMinBodies = 200;
+
+// ---- テレイン（文書の <terrain>）-----------------------------------------
+// テレインの当たり判定は高さ格子との自前の接触（PhysicsWorld::setTerrain +
+// CustomCollisionCallback。terrain/TerrainContact）。相手は空の衝突モデルを
+// 持つゴーストの固定ボディ 1 個で、作り直しは格子を渡し直すだけ（高さ格子の生成より軽い）
+// なので、エディタ中の edit.terrain も即時に当たり判定へ映る。
+// 箱・球・凸包（glTF モデル）・フレーム（geom の無いボディ）・ソフトボディの
+// 粒子・動く三角メッシュは形の記録で当たり、記録の無い動く物は安全網
+// （衝突モデルの外接箱）で粗く当たる（シミュレート開始時に該当する物を
+// LOGW で 1 回知らせる）。衝突レイヤ（<geom layer nocollide>）は見ない（未対応）。
+//
+// テレインのあるシーンは Core にする（Scene::requiredBackend の Core を要する
+// 理由に "terrain (custom contact; Multicore untested)" が加わる）。自前の
+// 接触は Multicore では張らない（PhysicsWorld::setTerrain が無効の番号を
+// 返す）ので、false にして Multicore が選ばれると、テレインは見えるが
+// 何も当たらない（Multicore の自前接触は chrono-install に無く未検証）。
+constexpr bool kTerrainForcesCore = true;
+// 描画のチャンク 1 辺のクアッド数（Renderer::addTerrain の quadsPerChunk）。
+// **描画専用**（当たり判定は上の自前の接触なのでチャンクに分けない）。
+// 1 チャンク 65^2 頂点。解像度の上限（editor::kTerrainMaxResolution = 1024）
+// でも 1 辺 16 チャンク = Renderer::kMaxTerrainChunks（64）以内に収まる
+// （Scene.cpp が static_assert で照合する）。
+constexpr int kTerrainChunkQuads = 64;
 
 // In web mode, do nothing at all while no browser holds the viewer session:
 // no physics steps, no rendering, no encoding. Set false to keep simulating in

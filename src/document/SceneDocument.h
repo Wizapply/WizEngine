@@ -55,6 +55,13 @@
 //     <worldbody>
 //       <environment hdr="studio.hdr" intensity="30000"/>
 //       <ground size="10" visual="8" texture="textures/ground.png" tile="2"/>
+//       <terrain size="200" resolution="256" height="20" pos="0 0 0" seed="0"
+//                octaves="5" gain="0.5" lacunarity="2" scale="80"
+//                texture="" tile="2" rgba="..." roughness="0.9" metallic="0"/>
+//                                    ... 起伏のある地面（Unity の Terrain。
+//                                        EditorTypes.h の TerrainDesc）。
+//                                        size は**全幅**（ground と違い半寸法
+//                                        ではない）、pos の y は最低点
 //       <light .../> <camera .../>
 //       <body name pos euler fixed>
 //         <geom type size mass rgba collision="trimesh"
@@ -109,6 +116,10 @@
 //   * <ground> と <environment> は worldbody 直下の単一要素（WizEngine の
 //     語彙）。ground の size / visual は半分の広さ（物理の床と見える地面）、
 //     texture / hdr は assets/ 相対パス。節を書かない文書は既定値で開く。
+//   * <terrain> も worldbody 直下の単一要素（WizEngine の語彙）。こちらは
+//     **size が全幅**（Unity の Terrain Width と同じ数え方）で、pos は
+//     X / Z が中心・Y が最低点。節を書かない文書はテレイン無し（hasTerrain
+//     = false）で、書き出しにも <terrain> は出ない。texture は assets/ 相対。
 //   * 色は rgba="r g b a"（リニア値、a は今は常に 1）。
 //   * body1 / body2 は名前でも番号でも書ける。"world" と -1 が地面。
 //     保存側は名前が一意ならその名前、そうでなければ番号を書く。
@@ -156,6 +167,8 @@ struct SceneDocument {
     std::vector<MeshAssetDesc> meshes;  // <asset> の <mesh> 宣言
     GroundDesc ground;
     EnvironmentDesc environment;
+    // テレイン（<worldbody> の <terrain>）。hasTerrain が false なら無し。
+    TerrainDesc terrain;
     std::vector<LightDesc> lights;
     std::vector<CameraPose> cameras;
     std::vector<BodyDesc> bodies;
@@ -179,6 +192,8 @@ struct SceneDocument {
     bool hasVisual = false;
     bool hasGround = false;
     bool hasEnvironment = false;
+    // テレインは「節が無い = 無い」（既定の構成へ戻す意味ではない）。
+    bool hasTerrain = false;
     bool hasLights = false;
     bool hasCameras = false;
     bool hasEvents = false;

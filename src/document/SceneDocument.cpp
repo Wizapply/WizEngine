@@ -1251,6 +1251,64 @@ xml::Element eventAssetElement(const EventAssetDesc& a) {
     return e;
 }
 
+// ---- テレイン（<worldbody> の <terrain/>）-----------------------------------
+// 書き出しと読み込みの対。<ground> と同じく全属性を書く（要素そのものが
+// テレインを持つ文書にしか出ないので、既定値の省略で差分を減らす意味が薄い。
+// 書いておけば手で値を変えるときに属性名を探さずに済む）。size は全幅。
+xml::Element terrainElement(const TerrainDesc& t) {
+    xml::Element e("terrain");
+    e.setNumber("size", t.size);
+    e.setInt("resolution", t.resolution);
+    e.setNumber("height", t.height);
+    setVec3(e, "pos", t.position);
+    e.setInt("seed", static_cast<long long>(t.seed));
+    e.setInt("octaves", t.octaves);
+    e.setNumber("gain", t.gain);
+    e.setNumber("lacunarity", t.lacunarity);
+    e.setNumber("scale", t.scale);
+    e.set("texture", t.texture);
+    e.setNumber("tile", t.tile);
+    setColor(e, "rgba", t.color);
+    e.setNumber("roughness", t.roughness, 4);
+    e.setNumber("metallic", t.metallic, 4);
+    return e;
+}
+// 読み込みは全部既定値付き（無い属性・読めない値 = 既定値）。範囲外の値は
+// clampTerrain が丸める。黙って意味が変わるもの（不正な texture）だけ警告。
+TerrainDesc terrainFromXml(const xml::Element& e, Warn& warn) {
+    TerrainDesc t;
+    t.size = e.number("size", t.size);
+    // 整数の属性は実数で読んでから範囲を決めて詰める（"5000" や "1e20" を
+    // int へそのまま変換しない）。上限の丸めは clampTerrain と同じ値。
+    t.resolution = int(roundedInteger(e.number("resolution", t.resolution), 1,
+                                      kTerrainMaxResolution, t.resolution));
+    t.height = e.number("height", t.height);
+    t.position = getVec3(e, "pos", t.position);
+    t.seed = std::uint32_t(roundedInteger(e.number("seed", double(t.seed)), 0,
+                                          4294967295LL, t.seed));
+    t.octaves = int(roundedInteger(e.number("octaves", t.octaves), 0,
+                                   kTerrainMaxOctaves, t.octaves));
+    t.gain = e.number("gain", t.gain);
+    t.lacunarity = e.number("lacunarity", t.lacunarity);
+    t.scale = e.number("scale", t.scale);
+    if (e.has("texture")) {
+        const std::string tex = e.attr("texture");
+        if (tex.empty() || assetFileAllowed(tex)) {
+            t.texture = tex;
+        } else {
+            warn("<terrain> texture=\"" + tex +
+                 "\" is not allowed (assets-relative paths only) - "
+                 "using a solid color");
+            t.texture.clear();
+        }
+    }
+    t.tile = e.number("tile", t.tile);
+    t.color = getColor(e, "rgba", t.color);
+    t.roughness = e.number("roughness", t.roughness);
+    t.metallic = e.number("metallic", t.metallic);
+    return clampTerrain(t);
+}
+
 }  // namespace
 
 xml::Element toXml(const SceneDocument& doc) {
@@ -1303,6 +1361,8 @@ xml::Element toXml(const SceneDocument& doc) {
         g.setNumber("metallic", doc.ground.metallic, 4);
         world.append(std::move(g));
     }
+    // テレインは持っているときだけ（無い文書の保存ファイルを太らせない）。
+    if (doc.hasTerrain) world.append(terrainElement(doc.terrain));
     for (const auto& l : doc.lights) world.append(lightElement(l));
     for (std::size_t i = 0; i < doc.cameras.size(); ++i) {
         world.append(cameraElement(doc.cameras[i], i));
@@ -1451,7 +1511,8 @@ SceneDocument fromXml(const xml::Element& root,
 
     if (const xml::Element* world = root.first("worldbody")) {
         warnUnknownChildren(*world,
-                            {"environment", "ground", "light", "camera", "body", "cable"},
+                            {"environment", "ground", "terrain", "light", "camera",
+                             "body", "cable"},
                             "<worldbody>", warn);
 
         // 環境光と地面は worldbody 直下の単一要素。2 個目以降は警告して無視。
@@ -1503,6 +1564,15 @@ SceneDocument fromXml(const xml::Element& root,
             doc.ground = clampGround(doc.ground);
             if (grounds.size() > 1) {
                 warn("multiple <ground> elements - using the first");
+            }
+        }
+        // テレインも worldbody 直下の単一要素。書いていなければ無し。
+        const auto terrains = world->all("terrain");
+        if (!terrains.empty()) {
+            doc.hasTerrain = true;
+            doc.terrain = terrainFromXml(*terrains[0], warn);
+            if (terrains.size() > 1) {
+                warn("multiple <terrain> elements - using the first");
             }
         }
         // ライト・カメラを 1 つも書かない文書は「指定なし」＝初期構成で開く
