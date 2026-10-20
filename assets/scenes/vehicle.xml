@@ -12,6 +12,21 @@
       <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
       <wire from="1" to="2"/>
     </event>
+    <!-- カメラ追従（Camera 1 = target="1"）: 「毎フレーム」から 3 つのカメラの
+         アクションへ繋いだもの。注視点を車へ・車の後ろへ回る・距離と仰角。
+         車体に付けたアセットなので other="-1" = 付けた相手 = この車。要らない
+         項目はワイヤーを外せばマウス操作に戻る（例: 後ろへ回るを外すと、注視
+         点だけ車に付いて回り込みは自由）。止めると元の視点へ戻る。Camera 1 の
+         ページ（または Scene タブの目アイコン）で見る。 -->
+    <event name="follow_car">
+      <node id="1" type="onUpdate" pos="40 60"/>
+      <node id="2" type="cameraLookAt" pos="300 20" target="1" other="-1" height="0.8"/>
+      <node id="3" type="cameraBehind" pos="300 130" target="1" other="-1" smooth="0.35"/>
+      <node id="4" type="cameraOrbit" pos="300 250" target="1" distance="9" elevation="14"/>
+      <wire from="1" to="2"/>
+      <wire from="1" to="3"/>
+      <wire from="1" to="4"/>
+    </event>
     <!-- 計算式アセット（🧮）: タイヤの「スリップ → 力」。組み込みの Magic
          Formula + 摩擦楕円 + 上限 + 緩和長をそのままノードで組んだもの
          （vehicle_test - -dump-formula の出力）。<tire formula="tire_mf"/> で
@@ -132,11 +147,15 @@
     <environment hdr="studio.hdr" intensity="30000"/>
     <ground size="60" visual="60" texture="textures/ground.png" tile="2" rgba="1 1 1 1"/>
     <camera name="cam0" target="0 0.7 0" azimuth="150" elevation="18" radius="9"/>
+    <!-- Camera 1: 車の追従用（イベント follow_car が後ろに付ける）。編集は
+         Camera 0（Editor Camera）のまま。ここの姿勢は走らせる前と止めた後の視点。 -->
+    <camera name="cam1" target="0 0.7 0" azimuth="0" elevation="14" radius="9"/>
     <!-- 車体: 1.4 × 0.5 × 4.2 m、1400 kg。重心高さ 0.72 m は静的な縮みを
          引いた値（サスの rest 0.35 - 縮み 0.1 + 半径 0.32 - 取り付け y -0.15）。
          トレッド 1.7 m は車体幅より広く、タイヤが横にはみ出して見える。 -->
     <body name="car" pos="0 0.77 0" euler="0 0 0">
       <geom type="box" size="0.7 0.25 2.1" mass="1400" rgba="0.85 0.2 0.15 1"/>
+      <event name="follow_car"/>
       <vehicle ticks="10" brake="2500" drag="0.7">
         <engine torque="300" idle="900" max="6500" inertia="0.25"/>
         <clutch torque="500" engage="1300" full="2200"/>

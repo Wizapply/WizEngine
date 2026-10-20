@@ -248,11 +248,17 @@ public:
     void rotatePartWorld(int part, double qw, double qx, double qy, double qz);
     void resizePart(int part, double sx, double sy, double sz);
 
-    // 直近のスナップショットにあるオブジェクトの姿勢（RENDER スレッド用。
-    // onRender の中で車輪など「オブジェクトに付いた見た目」を、描かれる
-    // 車体と同じ姿勢から組むための口）。poseMutex_ を取るのでロック順は
-    // objects → poses のまま。無ければ false。
-    bool latestPose(std::size_t index, BodyTransform& out);
+    // このフレームに描くオブジェクトの姿勢（RENDER スレッド専用。onRender の
+    // 中で車輪など「オブジェクトに付いた見た目」を、描かれる車体と同じ姿勢
+    // から組むための口）。シミュレート中は物理の 2 フレームの間を補間した
+    // もの（buildRenderFrame）。applyToRenderer の先頭で作るので、ロックは
+    // 取らない。無ければ false。
+    bool latestPose(std::size_t index, BodyTransform& out) const;
+    // このフレームの補間係数（RENDER スレッド専用）。0〜1 = 前回の物理
+    // フレーム → 今回の間、負 = 補間していない（最新の姿勢をそのまま描く）。
+    // 物理とは別に描画用の値を持つ部品（VehicleComponent の車輪）が、車体と
+    // 同じ割合で補間するために読む。
+    double renderAlpha() const { return renderAlpha_; }
 
     // Whiten strength for a grabbed object (kSelectedWhiten in SceneConfig.h).
     float selectedWhiten() const;
@@ -315,6 +321,10 @@ public:
     std::string documentXml();
 
     void stepPhysics(double dt);
+    // PHYSICS thread: 物理の 1 パス（サブステップと取り戻しのぶん全部）を
+    // 回し終えたら呼ぶ。最新の姿勢を描画補間用のフレームとして公開する
+    // （前回のフレームと合わせて、描画はその間を補間する）。
+    void endPhysicsPass();
     // Re-drop the boxes (browser Reset / R key).
     // Integration substeps per physics update (perf/stability trade-off).
     int substeps() const;
@@ -329,7 +339,12 @@ public:
     void applyToRenderer();
 
 private:
-    void snapshot();  // copy body poses into latestPoses_ (thread-safe)
+    // copy body poses into latestPoses_ (thread-safe)。cut = true は「連続した
+    // 動きではない」更新（置き直し・読込・モード切替・Reset など、物理の
+    // ステップ以外から呼ぶもの全部）で、描画はそこを補間でつながない。
+    void snapshot(bool cut = true);
+    // RENDER thread: このフレームに描く姿勢（renderPoses_ など）を作る。
+    void buildRenderFrame();
 
     // ---- エディタの実装（すべて PHYSICS スレッド）------------------------
     void enterMode(wizengine::editor::AppMode target);
@@ -598,6 +613,51 @@ private:
     // RENDER スレッド専用の作業領域（毎フレームの再確保を避ける）。
     std::vector<float> softVerts_, softNormals_;
 
+    // ---- 描画の補間（物理 30 Hz と描画 60 fps の間を埋める）----------------
+    // 物理は描画とは別の時計の固定ステップなので、最新の姿勢をそのまま描くと
+    // 1 フレームに 0 / 1 / 2 ステップ進むフレームが不規則に混ざり、動く物
+    // （とそれを追うカメラ）がガタつく。物理パスの終わりの姿勢を 2 つ持ち、
+    // 描画はその間を「1 パスぶん遅れて」補間する。
+    struct PoseFrame {
+        std::vector<BodyTransform> poses;
+        std::vector<std::vector<float>> soft;    // latestSoft_ と同じ並び
+        std::vector<std::vector<float>> cables;  // latestCables_ と同じ並び
+        double simTime = 0.0;   // このフレームのシミュレーション時刻 (s)
+        double wallTime = 0.0;  // 公開した実時間（steady_clock の秒）
+        std::uint64_t cut = 0;  // 作ったときの poseCut_
+        bool valid = false;
+    };
+    PoseFrame framePrev_, frameCur_;  // poseMutex_
+    // snapshot(cut = true) のたびに進む。2 つのフレームの番号が違えば、間で
+    // 置き直しなどがあった = 補間しない。poseMutex_ の下。
+    std::uint64_t poseCut_ = 0;
+    double simClock_ = 0.0;  // PHYSICS: stepPhysics が進めるシミュレーション時刻
+    // RENDER スレッド専用: このフレームに描く姿勢（buildRenderFrame が作る）。
+    std::vector<BodyTransform> renderPoses_;
+    std::vector<std::vector<float>> renderSoft_;
+    std::vector<std::vector<float>> renderCables_;
+    double renderAlpha_ = -1.0;
+
+    // ---- カメラのアクション（CameraLookAt / Behind / Orbit）---------------
+    // イベントの「そのステップのカメラへの注文」。物理スレッドがノードの発火で
+    // 書き（graphRt_.rigs → 毎ステップ cameraRigs_ へ）、RENDER スレッドが
+    // applyToRenderer の中で、描画に使うのと同じ補間した姿勢からカメラを
+    // 動かす（物理スレッドで動かすと、描画が別の物理ステップの物の姿勢と
+    // 組み合わせて、追わせた物が画面で震える）。項目ごとに注文の時刻を持ち、
+    // kCameraHoldSeconds 来なければその項目は手放す。
+    struct CameraRig {
+        double lookStamp = -1.0, behindStamp = -1.0, orbitStamp = -1.0;  // 実時間 s
+        int lookObject = -1;
+        double lookHeight = 0.0;
+        int behindObject = -1;
+        double behindSmooth = 0.0, behindAngleDeg = 0.0;
+        double distance = 0.0, elevationDeg = 0.0;  // 0 = マウス操作のまま
+    };
+    std::vector<CameraRig> cameraRigs_;   // poseMutex_
+    // 実行状態を捨てるたびに進む（poseMutex_）。RENDER はこれが変わったら
+    // カメラを掛かる前の視点へ戻す（Reset・停止・読込）。
+    std::uint64_t rigGeneration_ = 0;
+
     // ---- イベントグラフの実行状態（PHYSICS スレッド専用）------------------
     // グラフ本体は EditorState が持ち、ここにあるのは実行のためのキャッシュと
     // 走らせている最中にだけ意味を持つ値。resetGraphRuntime が全部捨てる。
@@ -634,8 +694,28 @@ private:
         // 直前のステップで破断したジョイント（文書の番号）。OnJointBreak が
         // 見て、そのパスの終わりで空にする。
         std::vector<int> brokenJoints;
+        // カメラのアクションの注文（カメラ番号ごと、PHYSICS 専用）。毎ステップ
+        // の終わりに cameraRigs_ へ写す。
+        std::vector<CameraRig> rigs;
     };
     GraphRuntime graphRt_;
+    // ステップの注文を cameraRigs_ へ写す（PHYSICS）。
+    void publishCameraRigs();
+    // RENDER スレッド専用: カメラごとの状態と、掛かる前のカメラの姿勢（止め
+    // たらそこへ戻す = エディタの視点に戻る。姿勢が desc へ戻るのと同じ）。
+    struct CameraRigState {
+        bool engaged = false;
+        std::uint64_t generation = 0;  // 掛けたときの rigGeneration_
+        int behindObject = -1;         // 前フレームに後ろへ回った相手
+        double lastTime = 0.0;         // steady_clock の秒
+        double azimuth = 0.0, elevation = 0.0, radius = 0.0;
+        double tx = 0.0, ty = 0.0, tz = 0.0;
+    };
+    std::vector<CameraRigState> rigState_;
+    // 注文をこのフレームの姿勢（renderPoses_）でカメラへ当てる（RENDER）。
+    void updateCameraRigs(const std::vector<BodyTransform>& poses,
+                          const std::vector<CameraRig>& rigs,
+                          std::uint64_t generation);
 
     // ---- マウスの掴み（PHYSICS スレッド）----------------------------------
     // 掴んだ時点のカメラからの奥行き。掴み直すたびに測り直す（held）ので、

@@ -15,6 +15,10 @@ class Scene;
 // THREADING CONTRACT - the hook name says which thread calls it:
 //   onPhysicsStep : PHYSICS thread, every step, before integration.
 //   onEditorStep  : PHYSICS thread, every pass while in EDITOR mode.
+//   onPhysicsPassEnd : PHYSICS thread, after each SIMULATE pass that stepped
+//                   (all substeps + catch-up). Publish render-side state here
+//                   so it lines up with the pose frames the renderer
+//                   interpolates between (Scene::renderAlpha).
 //   onRender      : RENDER thread, once per frame, before poses are drawn.
 //   onCommand     : INPUT thread, for each browser JSON command.
 // A component that keeps state shared between hooks must make that state
@@ -35,6 +39,11 @@ public:
         (void)scene;
         (void)dt;
     }
+
+    // シミュレート中、物理の 1 パス（サブステップと取り戻しの全部）を回し
+    // 終えたあと。描画が補間する姿勢のフレームはここで切り替わるので、自前の
+    // 描画用の値（車輪の姿勢など）を同じ区切りで「前回 / 今回」に回す。
+    virtual void onPhysicsPassEnd(Scene& scene) { (void)scene; }
 
     virtual void onRender(Scene& scene) { (void)scene; }
 

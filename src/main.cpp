@@ -774,6 +774,9 @@ int run(int argc, char** argv) {
             if (accumulator >= stepDt) {
                 accumulator = 0.0;  // behind and out of catch-up budget
             }
+            // このパスの終わりの姿勢を描画の補間用に公開する（描画は前回と
+            // 今回のパスの間を補間する = 物理 30 Hz でも 60 fps で滑らか）。
+            if (stepped > 0) scene.endPhysicsPass();
             const auto t1 = std::chrono::steady_clock::now();
 
             if (stepped > 0) {
@@ -904,15 +907,18 @@ int run(int argc, char** argv) {
             }
         }
 
+        // Copy the latest physics poses to the renderables.
+        scene.applyToRenderer();
+
         // Each camera turns its state into eye/target for its own view.
+        // applyToRenderer の後: イベントのカメラのアクション（注視・後ろへ・
+        // 距離と仰角）はそこでこのフレームの姿勢からカメラを動かすので、先に
+        // 当てると 1 フレーム古いカメラで描いて、追わせた車が画面の中で震える。
         for (std::size_t i = 0; i < endpoints.size(); ++i) {
             if (endpoints[i]->viewIndex == kNoView) continue;  // ビュー未生成
             scene.camera(i).applyTo(renderer, endpoints[i]->viewIndex);
         }
         if (endpoints.empty()) scene.camera(0).applyTo(renderer);
-
-        // Copy the latest physics poses to the renderables and draw.
-        scene.applyToRenderer();
         const auto renderStart = std::chrono::steady_clock::now();
         if (endpoints.empty()) {
             renderer.renderFrame([&](const uint8_t* data, size_t size) {

@@ -45,12 +45,15 @@ public:
                    const nlohmann::json& msg) override;
     void onPhysicsStep(Scene& scene, double dt) override;
     void onEditorStep(Scene& scene, double dt) override;
+    void onPhysicsPassEnd(Scene& scene) override;
 
-    // RENDER スレッド用: そのオブジェクトの車輪の車体ローカル姿勢（物理
-    // スレッドが最後に渡したもの）。無ければ false。PrefabComponent が
-    // ソケット付きの部品（タイヤ）をこれに重ねる。
+    // RENDER スレッド用: そのオブジェクトの車輪の車体ローカル姿勢。無ければ
+    // false。PrefabComponent がソケット付きの部品（タイヤ）をこれに重ねる。
+    // alpha は Scene::renderAlpha（0〜1 = 前回 → 今回の物理パスの間を車体と
+    // 同じ割合で補間、負 = 物理スレッドが最後に渡したものをそのまま）。
     bool wheelLocalPoses(std::size_t objectIndex,
-                         std::vector<wizengine::vehicle::WheelLocalPose>& out);
+                         std::vector<wizengine::vehicle::WheelLocalPose>& out,
+                         double alpha = -1.0);
 
     // /stats 用の計測値（最初の車両ぶん）。どのスレッドから読んでもよい。
     struct Snapshot {
@@ -92,6 +95,11 @@ private:
     // 車輪の見た目（PHYSICS → RENDER）。キーはオブジェクト番号。
     std::mutex visMutex_;
     std::map<std::size_t, std::vector<wizengine::vehicle::WheelLocalPose>> visuals_;
+    // 描画の補間用: 物理パスの終わりの visuals_（onPhysicsPassEnd で回す）。
+    // Scene の姿勢フレームと同じ区切りなので、同じ alpha で補間すれば車体と
+    // 車輪が揃う。visMutex_ の下。
+    std::map<std::size_t, std::vector<wizengine::vehicle::WheelLocalPose>> visPrev_;
+    std::map<std::size_t, std::vector<wizengine::vehicle::WheelLocalPose>> visCur_;
 
 
     // 計測値（PHYSICS → HTTP）。
