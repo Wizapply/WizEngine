@@ -537,12 +537,6 @@ void Scene::stepEditor(double dt) {
         obj.softRebuildTimer -= dt;
         if (obj.softRebuildTimer <= 0.0 && obj.physDirty) rebuildBody(i);
     }
-    // テレインの当たり判定も同じ: edit.terrain が積んだタイマーが切れたら
-    // （＝スライダーが落ち着いたら）作り直す。
-    if (terrainPhysDirty_) {
-        terrainRebuildTimer_ -= dt;
-        if (terrainRebuildTimer_ <= 0.0) rebuildTerrainBody();
-    }
     snapshot();
 }
 
@@ -673,11 +667,7 @@ void Scene::enterMode(ed::AppMode target) {
         for (std::size_t i = 0; i < boxes_.size(); ++i) {
             if (boxes_[i].alive && boxes_[i].physDirty) rebuildBody(i);
         }
-        // テレインの当たり判定がエディタ中の変更を待っている（タイマーが
-        // 切れる前に開始した）なら、走らせる前に必ず作る。系を作り直した
-        // 場合はその中で作られて印は消えている。
-        if (terrainPhysDirty_) rebuildTerrainBody();
-        // HeightField の方式でテレインに安全網（外接箱）で粗く当たる物を
+        // テレインに安全網（外接箱）で粗く当たる物を
         // 知らせる（同じ顔ぶれなら繰り返さない）。
         warnTerrainPassThrough();
         // 設計どおりの姿勢から始める。ジョイントはここで作り直す:
@@ -1084,13 +1074,10 @@ PhysicsBackend Scene::requiredBackend(ContactMethod& contact, std::string& reaso
     if (ed::solverNeedsCore(s.solver)) why.push_back("solver '" + s.solver + "'");
     if (ed::integratorNeedsCore(s.integrator)) why.push_back("integrator '" + s.integrator + "'");
     if (s.modal > 0) why.push_back("modal analysis");
-    // テレイン。SceneConfig.h の kTerrainForcesCore。理由文は当たり判定の方式
-    // （kTerrainCollision）で変わる: 大きな固定の三角メッシュか、自前の接触
-    // （CustomCollisionCallback。Multicore では PhysicsWorld が張らない）か。
+    // テレイン。SceneConfig.h の kTerrainForcesCore。当たり判定は自前の接触
+    // （CustomCollisionCallback。Multicore では PhysicsWorld が張らない）。
     if (kTerrainForcesCore && hasTerrain_) {
-        why.push_back(kTerrainCollision == TerrainCollision::HeightField
-                          ? "terrain (custom contact; Multicore untested)"
-                          : "terrain (triangle mesh)");
+        why.push_back("terrain (custom contact; Multicore untested)");
     }
     if (!why.empty()) {
         for (std::size_t i = 0; i < why.size(); ++i) reason += (i ? ", " : "") + why[i];
@@ -1173,14 +1160,12 @@ void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
     rebuildGroundBody();
     // テレインも地面と同じく組み直す（古い系の番号は捨てる。高さ格子は
     // 系とは無関係なのでそのまま使う）。recreate がゴーストも自前の接触も
-    // 捨てているので、HeightField の方式でも必ず張り直す。
-    // 順序: TriangleMesh は従来どおり地面の直後（チャンクのボディ）。
-    // HeightField は全ボディの後 - 形の記録（proxy）は PhysicsWorld の add* が
+    // 捨てているので、必ず張り直す。
+    // 順序: 全ボディの後 - 形の記録（proxy）は PhysicsWorld の add* が
     // 書き、接触の収集は毎ステップ全ボディを見るのでどちらの順でも当たるが、
     // 後に置くと setTerrain の LOGI（proxy を持つボディの数）が実数になり、
     // 安全網で粗く当たる物の警告も実体を見て出せる。
-    terrainPhysIds_.clear();
-    if (kTerrainCollision == TerrainCollision::TriangleMesh) rebuildTerrainBody();
+    terrainPhysId_ = PhysicsWorld::kInvalidId;
     for (std::size_t i = 0; i < boxes_.size(); ++i) {
         GameObject& obj = boxes_[i];
         // 消えたオブジェクトも番号は捨てる（古い系の番号を持ったままだと、
@@ -1193,7 +1178,7 @@ void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
         }
         if (obj.alive) rebuildBody(i);
     }
-    if (kTerrainCollision == TerrainCollision::HeightField) rebuildTerrainBody();
+    rebuildTerrainBody();
     if (simulating) {
         restoreAuthoredPoses();
         buildJoints();

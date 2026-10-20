@@ -189,23 +189,19 @@ public:
     // 触らない。スレッドの扱いは terrainField() と同じ。
     bool terrainRaycast(const double origin[3], const double dir[3], double maxDist,
                         double& t, double normal[3]) const;
-    // テレインの当たり判定のボディ（rebuildTerrainBody）。方式は SceneConfig.h の
-    // kTerrainCollision で、HeightField なら自前の接触の相手のゴースト 1 個
-    // （PhysicsWorld::setTerrain が返す番号。GameObject ではない = boxes_ に
-    // 入らず、選択・掴み・イベントの対象にならない）、TriangleMesh なら
-    // kTerrainChunkQuads 四方ごとの固定ボディ。以下 2 つは PHYSICS スレッド専用。
-    // **TriangleMesh のエディタ中は古いボディを指すことがある**: edit.terrain の当たり判定の
-    // 作り直しは落ち着くまで遅らせる（/scene の terrainPending が true の間）
-    // ので、その間のボディは変更前の形のまま（シミュレート開始で必ず揃う）。
-    // エディタ中の配置などで今の地表が要るなら、こちらではなく
-    // terrainRaycast（高さ格子 = 常に最新）を使うこと。
-    // id がテレインのボディ（ゴースト / チャンク）か。接触の相手を「地面」と見なしたい側
-    // （イベントの衝突・車両の診断）用。毎ステップの接触ごとに呼ばれるので
-    // 整列済みの番号を二分探索する（チャンクは最大 256 個、ゴーストは 1 個）。
-    bool isTerrainBody(std::size_t id) const;
-    // テレインの当たり判定ボディが 1 個でもあるか（作れなかった・Chrono に
-    // 三角メッシュが無い・自前の接触を張れない（Multicore）・テレインが無いなら false）。
-    bool hasTerrainCollision() const { return !terrainPhysIds_.empty(); }
+    // テレインの当たり判定のボディ（rebuildTerrainBody）は自前の接触の相手の
+    // ゴースト 1 個（PhysicsWorld::setTerrain が返す番号。GameObject ではない =
+    // boxes_ に入らず、選択・掴み・イベントの対象にならない）。以下 2 つは
+    // PHYSICS スレッド専用。当たり判定は edit.terrain のたびにその場で張り
+    // 直す（格子を渡し直すだけ）ので、高さ格子（terrainRaycast）と常に一致している。
+    // id がテレインのボディ（ゴースト）か。接触の相手を「地面」と見なしたい側
+    // （イベントの衝突・車両の診断）用。
+    bool isTerrainBody(std::size_t id) const {
+        return terrainPhysId_ != PhysicsWorld::kInvalidId && id == terrainPhysId_;
+    }
+    // テレインの当たり判定があるか（作れなかった・自前の接触を張れない
+    // （Multicore）・テレインが無いなら false）。
+    bool hasTerrainCollision() const { return terrainPhysId_ != PhysicsWorld::kInvalidId; }
 
     // Pick the object under a screen position, given in normalised device
     // coords (x, y in [-1, 1], y up), through the given camera. Selects it (or
@@ -494,43 +490,29 @@ private:
     // 使う。形（大きさ・解像度・高さ・位置・ノイズ）が変わったら高さ格子と
     // 描画の dirty はすぐ更新する。表面（テクスチャ・色・材質）だけの変更は
     // 描画の dirty だけ。hasTerrain = false で両方を消す（当たり判定も即外す）。
-    // 当たり判定（最大 200 万三角形）の作り直しは deferCollision で変わる:
-    //   false … その場で作る。未反映のぶん（terrainPhysDirty_）もここで済ます
-    //           ＝戻ったときは必ず当たり判定が今の格子と一致している。
-    //   true  … terrainPhysDirty_ を立ててタイマー（kTerrainRebuildDelay）を
-    //           積み直すだけ。stepEditor が落ち着いてから作る（edit.terrain の
-    //           スライダー連打用 = エディタモード中だけ使う。ソフトボディの
-    //           softRebuildTimer と同じ流儀）。シミュレート開始（enterMode）は
-    //           未反映なら必ず作ってから走らせる。
-    //   HeightField の方式（kTerrainCollision）では無視して常に false 扱い
-    //   （setTerrain が O(1) なので間引く理由が無い）。
+    // 当たり判定（自前の接触）は形が変わったらその場で張り直す（ゴーストに
+    // 格子を渡し直すだけ。高さ格子の生成より軽い）ので、戻ったときは必ず今の格子と一致している。
     // 最後に必ず syncBackend を呼ぶ（テレインは Core を要する）ので、読込では
     // 他の中身を作り終えてから呼ぶこと。系を作り直した場合は、その中
     // （rebuildPhysicsWorld → rebuildTerrainBody）で当たり判定も組まれる。
-    void setTerrain(bool hasTerrain, const wizengine::editor::TerrainDesc& desc,
-                    bool deferCollision = false);
-    // テレインの当たり判定（固定の三角メッシュ）を今の高さ格子から作り直す。
-    // 古いボディは disableBody（地面の作り直しと同じ流儀）。テレインが
-    // 無ければ古いボディを外すだけ。どちらでも未反映の印（terrainPhysDirty_）
-    // とタイマーは消える。PHYSICS thread（objectsMutex_ を持たずに呼ぶこと）。
-    // 例外は投げない: 構築の失敗（bad_alloc・Chrono の例外）は中で捕まえて
-    // LOGE とステータスに出し、当たり判定の無いテレイン（terrainPhysIds_ が
-    // 空、高さ格子と見た目はそのまま）で続ける。途中まで作れたチャンクも
-    // 全部外す（一部だけ当たる地面は、車輪のレイ = 高さ格子全体と食い違う）。
+    void setTerrain(bool hasTerrain, const wizengine::editor::TerrainDesc& desc);
+    // テレインの当たり判定（自前の接触。PhysicsWorld::setTerrain）を今の高さ
+    // 格子で張り直す。テレインが無ければ接触を止めるだけ（ゴーストは
+    // PhysicsWorld が持ち続ける）。PHYSICS thread（objectsMutex_ を持たずに呼ぶこと）。
+    // 例外は投げない: 失敗は中で捕まえて LOGE とステータスに出し、当たり判定の
+    // 無いテレイン（terrainPhysId_ が無効、高さ格子と見た目はそのまま）で続ける。
     void rebuildTerrainBody();
     // 上の本体（例外をそのまま投げる）。rebuildTerrainBody からだけ呼ぶ。
     void rebuildTerrainBodyUnguarded();
-    // テレインの全チャンクのボディを外す（disableBody）。番号は先に手放す。
-    // 1 個の disableBody が投げても残りは外し、例外は外へ出さない（LOGW）。
-    void releaseTerrainBodies();
-    // 当たり判定の未反映の印を書く（/scene に出すので objectsMutex_ の下）。
-    void setTerrainPhysDirty(bool dirty);
-    // HeightField の方式で、テレインがあるのに形の記録（proxy）を持たない動く
-    // ボディ（PhysicsWorld::terrainContactShape が BoundingBox = 安全網の AABB で
+    // テレインの接触を止めて番号を手放す（番号は先に手放す）。例外は外へ
+    // 出さない（LOGE）。
+    void releaseTerrainContact();
+    // テレインがあるのに形の記録（proxy）を持たない動くボディ
+    // （PhysicsWorld::terrainContactShape が BoundingBox = 安全網の AABB で
     // 粗く当たる物）を LOGW 1 行で名前付きで知らせる。顔ぶれが前回と同じなら
     // 黙る。PHYSICS thread。
     void warnTerrainPassThrough();
-    // HeightField の方式でテレインがあり、NSC で `<option combine>` が min 以外
+    // テレインがあり、NSC で `<option combine>` が min 以外
     // なら、LOGW を 1 回出して日本語の注意書き（ステータスの後ろに足す文）を
     // 返す。それ以外・同じ合成方式で既に知らせた後は空文字列。force = 前回の
     // 記録を捨てて必ず知らせ直す（シーン読込）。PHYSICS thread。
@@ -607,18 +589,11 @@ private:
     // スレッドから毎ステップ引くので、objectsMutex_ とは分けてある。
     std::shared_ptr<const wizengine::terrain::HeightField> terrainField_;
     mutable std::mutex terrainFieldMutex_;
-    // テレインの物理ボディ（チャンクごとの固定の三角メッシュ）の番号。
-    // HeightField の方式では自前の接触のゴースト 1 個だけが入る。昇順に整列して持つ（isTerrainBody の二分探索）。PhysicsWorld は今は
-    // 連番で割り当てるが、それは約束ではないので範囲では判定しない。
+    // テレインの接触の相手（ゴースト）の番号。無い・張れなかったら kInvalidId。
+    // ゴーストは PhysicsWorld の持ち物で、張り直しでも同じ番号が返る。
     // 物理スレッド専用。
-    std::vector<std::size_t> terrainPhysIds_;
-    // 当たり判定が今の高さ格子より古い（エディタ中の edit.terrain で作り直しを
-    // 遅らせている）。書くのは物理スレッドだけで objectsMutex_ の下（/scene の
-    // terrainPending に出す）。物理スレッドは読むときにロック不要。
-    bool terrainPhysDirty_ = false;
-    // 作り直しまでの残り秒数（stepEditor が減らす）。物理スレッド専用。
-    double terrainRebuildTimer_ = 0.0;
-    // 上の 2 つの警告の「前回知らせた内容」（繰り返さないため）。物理スレッド専用。
+    std::size_t terrainPhysId_ = PhysicsWorld::kInvalidId;
+    // テレインの 2 つの警告の「前回知らせた内容」（繰り返さないため）。物理スレッド専用。
     std::string terrainPassThroughWarned_;
     std::string terrainCombineWarned_;
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る

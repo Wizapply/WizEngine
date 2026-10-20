@@ -2187,8 +2187,8 @@ inline EnvironmentDesc clampEnvironment(EnvironmentDesc e) {
 
 // テレインの常識的な範囲。NaN は既定値へ戻す（XML の strtod は "nan" も
 // 読むので、比較だけの丸めでは素通りしてしまう）。
-//   * resolution は 1〜1024（(1024 + 1)^2 頂点 ≒ 105 万。描画・衝突の三角形が
-//     200 万を超えると構築が重い）。チャンク数の上限との整合は Scene が見る。
+//   * resolution は 1〜1024（(1024 + 1)^2 頂点 ≒ 105 万。描画の三角形が
+//     200 万を超えると作り直しが重い）。チャンク数の上限との整合は Scene が見る。
 //   * size は 1〜4000 m（描画距離 kFarPlane 2000 m の 2 倍まで）、height は
 //     0〜1000 m、pos は各軸 ±10000 m。
 //   * octaves は 0〜16（HeightField の安全弁と同じ）、gain は 0〜1、

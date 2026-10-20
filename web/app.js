@@ -2233,8 +2233,6 @@
     // しれない間）は、チェックの見た目に合わせる（古い値で一瞬戻さない）。
     const onEl = document.getElementById('edTerrainOn');
     props.hidden = !(onEl === document.activeElement ? onEl.checked : on);
-    document.getElementById('edTerrainPending').hidden =
-      !(on && sceneData.terrainPending);
     if (!t) return;
     // 送信待ちの欄は上書きしない（間引きの間にポーリングが来ても戻さない）。
     const set = (key, id, v) => { if (!(key in terrainPatch)) setField(id, v); };

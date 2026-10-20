@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -12,8 +11,8 @@
 // （EditorTypes.h）も知らない。だから単体で回してテストできる
 // （tests/terrain/）し、どのスレッドでもコピーできる。境界（Scene）が
 // 文書の値（editor::TerrainDesc）を TerrainParams に詰め替え、出てきた
-// 配列を Renderer（TerrainChunkMesh）と PhysicsWorld（addTriangleMesh）へ
-// 詰め替えて渡す。
+// 配列を Renderer（TerrainChunkMesh）へ詰め替えて渡す。当たり判定は
+// 格子そのものを使う（TerrainContact = PhysicsWorld::setTerrain の自前の接触）。
 //
 // 座標の約束:
 //   * 格子は X-Z 平面に並ぶ正方形。頂点 (i, j) の i が +X、j が +Z の向き。
@@ -76,15 +75,6 @@ struct ChunkMesh {
     std::vector<float> normals;
     std::vector<float> uvs;
     std::vector<uint32_t> indices;
-};
-
-// 衝突用の三角メッシュ（全体 1 枚）。PhysicsWorld::addTriangleMesh の引数
-// （ChVector3d の配列 + std::array<int, 3> の配列）へ要素ごとに詰め替える。
-// 頂点はワールド座標なので、ボディは原点・回転なし（fixed）で置く。
-// 巻き方は描画と同じ（上から見て反時計回り = 法線が +Y 側）。
-struct CollisionMesh {
-    std::vector<std::array<double, 3>> vertices;
-    std::vector<std::array<int, 3>> triangles;
 };
 
 class HeightField {
@@ -156,20 +146,6 @@ public:
     // 番号が範囲外・quadsPerChunk が 1〜kMaxChunkQuads の外）なら false。
     bool buildChunkMesh(int cx, int cz, int quadsPerChunk, ChunkMesh& out) const;
 
-    // 衝突用の三角メッシュ（全体 1 枚、セルあたり 2 三角形）。穴のセルは
-    // 三角形を出さない（後の段階）。空の格子なら空。
-    CollisionMesh buildCollisionMesh() const;
-    // チャンク (cx, cz)（1 辺 quadsPerChunk クアッド。chunksPerSide と同じ
-    // 割り方）だけの衝突メッシュ。三角形・巻き方・穴（isSolidCell）の扱いは
-    // buildCollisionMesh と同じで、範囲だけがチャンク。頂点はワールド座標で、
-    // 番号はチャンク内の行優先（番号 = r * (チャンク内の 1 辺の頂点数) + c）。
-    // 格子の外にはみ出す部分（割り切れない解像度の最後の列 / 行）は、頂点も
-    // 三角形も出さない（描画の buildChunkMesh と違い、数は固定でない）。
-    // 三角形が 1 個も無いチャンク・引数が不正（範囲外の番号・quadsPerChunk が
-    // 1〜kMaxChunkQuads の外）・空の格子は、頂点も三角形も空を返す。
-    // 隣のチャンクとは境目の頂点を両方が持つ（同じ座標）。
-    CollisionMesh buildChunkCollisionMesh(int cx, int cz, int quadsPerChunk) const;
-
     // レイと地表の交差。origin から dir（正規化しなくてよい。内部で正規化
     // する）の向きへ maxDist (m) まで、格子を DDA で辿ってセルの 2 三角形と
     // 当てる。当たれば最初の交点までの距離 (m) と面法線を書いて true。
@@ -193,8 +169,8 @@ public:
 
 private:
     // セル (i, j) が中身を持つか。いまは範囲内なら常に true。穴（後の段階）は
-    // ここで穴のマスクを見る - 描画（縮退三角形）と衝突（三角形を出さない）と
-    // レイ（当たらない）が同時に従う。
+    // ここで穴のマスクを見る - 描画（縮退三角形）と接触（solidAt = 接触を
+    // 作らない）とレイ（当たらない）が同時に従う。
     bool isSolidCell(int i, int j) const;
     // セル (i, j) の 2 三角形とレイの交差（片面）。t の範囲 [tMin, tMax]。
     bool hitCell(int i, int j, const Vec3& o, const Vec3& d, double tMin,

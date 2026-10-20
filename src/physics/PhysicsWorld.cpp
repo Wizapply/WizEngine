@@ -1492,10 +1492,11 @@ void PhysicsWorld::bindCollision(const std::shared_ptr<chrono::ChBody>& body) {
 // 同じなら固定物どうしも普通のペアになる（Chrono 9.0.0 の
 // cbtOverlappingPairCache.h の needsBroadphaseCollision と
 // cbtCollisionDispatcher.cpp の needsCollision）。動かない物どうしの接触は
-// ソルバでは何の役にも立たないのに、狭域判定は毎ステップ走る。テレインを
-// チャンクごとの固定ボディに分けると、隣どうしのチャンク（と床）の AABB が
-// 重なって三角メッシュどうしの判定が 44 組でき、物が 1 つも無くても
-// 22 ms/step 掛かった（Chrono 単体のベンチ。除外すると 0.4〜0.6 ms）。
+// ソルバでは何の役にも立たないのに、狭域判定は毎ステップ走る。固定物どうし
+// 一般（階段の部品と床、固定の三角メッシュと床など）の対策で、重なった固定物の
+// 組ごとに毎ステップ判定が走るのを止める（以前のテレインの三角メッシュの
+// チャンクでは、隣どうしのチャンクと床の判定が 44 組でき、物が 1 つも無くても
+// 22 ms/step 掛かった。Chrono 単体のベンチ。除外すると 0.4〜0.6 ms）。
 //
 // そこで Bullet の広域判定の重なりフィルタ（cbtOverlapFilterCallback。ヘッダ
 // だけの仮想インターフェース = DLL の書き出しに依存しない）を付け、既定の
@@ -2554,9 +2555,8 @@ std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertice
                         "collision is slow (GImpact); prefer fixed=\"true\"");
         // テレインの接触: 頂点（ボディローカル。ChBody の原点 = 頂点の原点）を
         // 間引いて点の集合に + 追加の当たり形状。固定の物はテレインと接触を
-        // 作らないので記録しない（テレインの三角メッシュ経路のチャンクもここを
-        // 通る = 大きな頂点列を持たない）。走行中に固定を外された物は安全網
-        // （AABB）になる。
+        // 作らないので記録しない（大きな固定の器・トンネルの頂点列を持たない）。
+        // 走行中に固定を外された物は安全網（AABB）になる。
         wterrain::BodyProxy proxy;
         proxy.shapes.push_back(pointsShapeProxy(decimatePoints(vertices, kTerrainMaxProxyPoints)));
         appendExtraProxies(extras, proxy);
@@ -3071,7 +3071,7 @@ std::size_t PhysicsWorld::terrainBodyId() const {
 }
 
 void PhysicsWorld::collectTerrainContacts(ChSystem& sys) {
-    // テレインが無い（既定の TriangleMesh の経路）なら何もしない。
+    // テレインが無い（setTerrain されていない・clearTerrain 後）なら何もしない。
     if (!hasTerrain()) return;
     TerrainState& t = *terrain_;
     const auto container = sys.GetContactContainer();

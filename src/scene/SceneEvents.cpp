@@ -263,8 +263,7 @@ void Scene::runEventGraph(double dt) {
             const auto ib = byPhys.find(c.b);
             // テレインは地面（-1）と同じ扱い: 「地面に落ちた」を書いたイベントが
             // 起伏のある地面でも同じように鳴る。
-            // テレインは自前の接触の相手のゴースト 1 個か、チャンクごとの複数の
-            // ボディ（kTerrainCollision。どちらも isTerrainBody が二分探索）。
+            // テレインは自前の接触の相手のゴースト 1 個（isTerrainBody）。
             auto isGround = [this](std::size_t id) {
                 return id == groundPhysId_ || isTerrainBody(id);
             };
