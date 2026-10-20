@@ -221,6 +221,13 @@ constexpr int kTerrainChunkQuads = 64;
 // いる間は作らない（ソフトボディの拡縮の 0.35 s と同じ考え方）。高さ格子と
 // 見た目は待たずに更新する。シミュレート開始時は待たずに必ず作る。
 constexpr double kTerrainRebuildDelay = 0.35;
+// テレインの当たり判定の方式（段階 1.5 の切替）:
+//   TriangleMesh … 従来どおりチャンクごとの固定三角メッシュ（Bullet）
+//   HeightField  … 高さ格子との自前の接触（PhysicsWorld::setTerrain +
+//                  CustomCollisionCallback。terrain/TerrainContact）
+// いまは Scene がまだ参照しない（H3 で配線する）。
+enum class TerrainCollision { TriangleMesh, HeightField };
+constexpr TerrainCollision kTerrainCollision = TerrainCollision::TriangleMesh;
 
 // In web mode, do nothing at all while no browser holds the viewer session:
 // no physics steps, no rendering, no encoding. Set false to keep simulating in
