@@ -122,6 +122,11 @@ public:
 
     // (x, z) が格子の水平な範囲（境界を含む）に入っているか。
     bool contains(double x, double z) const;
+    // (x, z) の真下に地面の中身があるか（= contains かつ、そのセルが穴でない）。
+    // セルは heightAt / normalAt と同じ選び方（floor、最後の頂点の上は端の
+    // セル）。範囲外・空の格子・有限でない座標は false。テレインの接触検出
+    // （TerrainContact）が点ごとに見る。穴（後の段階）は isSolidCell が受け持つ。
+    bool solidAt(double x, double z) const;
 
     // 地表のワールド Y。描画・衝突と同じ 2 三角形の平面で補間する（セル内で
     // 区分線形 = 格子点では格子値そのもの）。**範囲外は端へ丸めた点の高さ**

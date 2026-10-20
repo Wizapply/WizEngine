@@ -105,6 +105,15 @@ bool HeightField::isSolidCell(int i, int j) const {
     return i >= 0 && j >= 0 && i < resolution_ && j < resolution_;
 }
 
+bool HeightField::solidAt(double x, double z) const {
+    // contains は NaN / 無限大・空の格子で false（locate に有限でない値を渡さない）。
+    if (!contains(x, z)) return false;
+    int i = 0, j = 0;
+    double u = 0.0, w = 0.0;
+    locate(x, z, i, j, u, w);
+    return isSolidCell(i, j);
+}
+
 Vec3 HeightField::vertexWorld(int i, int j) const {
     return {double(minX_) + double(i) * double(cell_),
             double(baseY_) + double(sample(i, j)),
