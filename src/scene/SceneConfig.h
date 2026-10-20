@@ -199,7 +199,9 @@ constexpr int kMulticoreMinBodies = 200;
 
 // ---- テレイン（文書の <terrain>）-----------------------------------------
 // テレインのあるシーンは Core にする（Scene::requiredBackend の Core を要する
-// 理由に "terrain (triangle mesh)" が加わる）。当たり判定は 10 万〜200 万
+// 理由に "terrain (triangle mesh)"、HeightField の方式（下の kTerrainCollision）
+// なら "terrain (custom contact; Multicore untested)" が加わる。自前の接触は
+// Multicore では張らない）。TriangleMesh の方式の当たり判定は 10 万〜200 万
 // 三角形の固定メッシュを kTerrainChunkQuads 四方ごとのボディに分けたもの
 // （ChTriangleMeshConnected は Core の Bullet でも BVH にならず三角形ごとの
 // 形になる。Scene::rebuildTerrainBodyUnguarded の説明を参照）。false にすると
@@ -224,10 +226,18 @@ constexpr double kTerrainRebuildDelay = 0.35;
 // テレインの当たり判定の方式（段階 1.5 の切替）:
 //   TriangleMesh … 従来どおりチャンクごとの固定三角メッシュ（Bullet）
 //   HeightField  … 高さ格子との自前の接触（PhysicsWorld::setTerrain +
-//                  CustomCollisionCallback。terrain/TerrainContact）
-// いまは Scene がまだ参照しない（H3 で配線する）。
+//                  CustomCollisionCallback。terrain/TerrainContact）。
+//                  当たり判定の作り直しは O(1) なので、上の kTerrainRebuildDelay
+//                  の間引きは使わず即時に反映する。Core を要する理由は
+//                  "terrain (custom contact; Multicore untested)"。
+//                  **H4 までは箱・球（addBox / addSphere）だけが当たる** -
+//                  凸包（glTF モデル）・フレーム（geom の無いボディ）・ソフト
+//                  ボディの粒子・動く三角メッシュはテレインを素通りする
+//                  （シミュレート開始時に該当する物を LOGW で 1 回知らせる）。
+//                  衝突レイヤ（<geom layer nocollide>）は見ない（未対応）。
+// 分岐は Scene::rebuildTerrainBodyUnguarded と rebuildPhysicsWorld。
 enum class TerrainCollision { TriangleMesh, HeightField };
-constexpr TerrainCollision kTerrainCollision = TerrainCollision::TriangleMesh;
+constexpr TerrainCollision kTerrainCollision = TerrainCollision::HeightField;
 
 // In web mode, do nothing at all while no browser holds the viewer session:
 // no physics steps, no rendering, no encoding. Set false to keep simulating in

@@ -565,7 +565,9 @@ void Scene::setTerrain(bool hasTerrain, const ed::TerrainDesc& descIn,
         if (had) rebuildTerrainBody();
         return;
     }
-    if (deferCollision) {
+    // HeightField の方式は張り直しが O(1)（ゴーストに格子を渡すだけ）なので
+    // 間引かない = エディタ中の edit.terrain も即時に当たり判定へ映る。
+    if (deferCollision && kTerrainCollision == TerrainCollision::TriangleMesh) {
         // 当たり判定は落ち着いてから（stepEditor）。古いボディはそれまで
         // 残す - エディタ中は積分しないので、形が古くても何も起きない。
         if (shapeChanged) {
@@ -594,16 +596,32 @@ void Scene::rebuildTerrainBody() {
     // 作る前に手放し、途中で投げたら作れたチャンクも全部外す（一部の
     // チャンクだけが当たる地面にしない: 車輪のレイは高さ格子全体に当たる
     // ので、抜けたチャンクの上で車輪だけが乗って車体が抜ける）。
+    // HeightField の方式は setTerrain の前に番号を手放すので、途中で投げると
+    // releaseTerrainBodies は何もせず、PhysicsWorld 側は格子を差し替え済みの
+    // ことがある（「当たらない」と言いながら物は当たり、車輪のレイは使わない
+    // 食い違い）。接触そのものも止める。clearTerrain が投げても外へ出さない。
+    auto clearContact = [this]() {
+        if (kTerrainCollision != TerrainCollision::HeightField) return;
+        try {
+            if (physics_.hasTerrain()) physics_.clearTerrain();
+        } catch (const std::exception& e) {
+            LOGE("scene", "terrain: clearing the custom contact failed (%s)", e.what());
+        } catch (...) {
+            LOGE("scene", "terrain: clearing the custom contact failed (unknown exception)");
+        }
+    };
     try {
         rebuildTerrainBodyUnguarded();
     } catch (const std::exception& e) {
         releaseTerrainBodies();
+        clearContact();
         LOGE("scene", "terrain: building the collision failed (%s) - the terrain is "
                       "visible but nothing collides with it", e.what());
         editor_.setStatus(std::string("テレインの当たり判定を作れませんでした（") +
                           e.what() + "）- 見た目だけ残します");
     } catch (...) {
         releaseTerrainBodies();
+        clearContact();
         LOGE("scene", "terrain: building the collision failed (unknown exception) - the "
                       "terrain is visible but nothing collides with it");
         editor_.setStatus("テレインの当たり判定を作れませんでした（不明な例外）- "
@@ -641,6 +659,49 @@ bool Scene::isTerrainBody(std::size_t id) const {
 }
 
 void Scene::rebuildTerrainBodyUnguarded() {
+    if (kTerrainCollision == TerrainCollision::HeightField) {
+        // 自前の接触（PhysicsWorld::setTerrain）。terrainPhysIds_ にはゴースト
+        // 1 個だけを入れる = isTerrainBody / hasTerrainCollision の意味はチャンクの
+        // ときと同じ（接触の報告にはゴーストの番号が出る）。ゴーストは
+        // PhysicsWorld の持ち物で、差し替えでも同じ番号を使い回す。
+        const std::shared_ptr<const wizengine::terrain::HeightField> field =
+            hasTerrain_ ? terrainField_ : nullptr;
+        if (!field || !field->valid()) {
+            // 無し: releaseTerrainBodies → disableBody(ゴースト) = clearTerrain
+            // （ゴーストは残し、接触だけ止める）。
+            releaseTerrainBodies();
+            if (physics_.hasTerrain()) physics_.clearTerrain();
+            return;
+        }
+        terrainPhysIds_.clear();  // 古い番号は手放す（同じ番号が返る）
+        // 材質（案 A）: 摩擦・反発・転がりは全部シーン任せ（負）。PhysicsWorld が
+        // 「球 = このまま（転がり摩擦あり）/ 箱など多点の形 = 転がり・スピン 0」
+        // に分ける（BB ソルバで斜面の箱が沈むため。ベンチ B1 / B2）。
+        // **`<option combine>` が average / max だと箱の転がり 0 が効かない**
+        // （相手の材質との平均 / 大きい方になる）- terrainCombineCaveat が知らせる。
+        // **衝突レイヤ（<geom layer nocollide>）は見ない**: 自前の接触は Chrono の
+        // 衝突ファミリを通らないので、どのレイヤの物もテレインに当たる（未対応）。
+        const BodyOptions terrainOpt;
+        const std::size_t id = physics_.setTerrain(field, terrainOpt);
+        if (id == PhysicsWorld::kInvalidId) {
+            // Multicore（kTerrainForcesCore = false のとき）など。前の格子で
+            // 当たり続けないように外しておく。
+            if (physics_.hasTerrain()) physics_.clearTerrain();
+            // 張り直しのたびに来る（スライダーで連発する）ので 1 回だけ。
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                LOGW("scene", "terrain: custom contact is not available on the %s backend - "
+                              "the terrain is visible but nothing collides with it",
+                     physics_.backendName());
+            }
+            return;
+        }
+        terrainPhysIds_.push_back(id);
+        return;
+    }
+
+    // ---- TriangleMesh の方式（チャンクごとの固定三角メッシュ）----------------
     // 古いテレインは退場（地面・オブジェクトの作り直しと同じ disableBody。
     // Core では系から本当に外れる）。
     releaseTerrainBodies();
@@ -721,6 +782,64 @@ void Scene::rebuildTerrainBodyUnguarded() {
                   "(%d quads per side; mesh %.1f ms, physics %.1f ms) on the %s backend",
          totalTriangles, totalVertices, terrainPhysIds_.size(), kTerrainChunkQuads,
          meshMs, physMs, physics_.backendName());
+}
+
+void Scene::warnTerrainPassThrough() {
+    if (kTerrainCollision != TerrainCollision::HeightField || !hasTerrainCollision()) {
+        terrainPassThroughWarned_.clear();
+        return;
+    }
+    // PhysicsWorld が形の記録（proxy）を書くのは addBox / addSphere だけ（H4 まで）。
+    // createBody の分岐と同じ判定で「それ以外の経路で作った動く物」を拾う。
+    // 固定の物はテレインと接触を作らない（固定どうし）ので数えない。
+    std::string list;
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < boxes_.size(); ++i) {
+        const GameObject& obj = boxes_[i];
+        if (!obj.alive || obj.physId == GameObject::kInvalidId || obj.desc.fixed) continue;
+        const char* kind = nullptr;
+        if (obj.lattice) {
+            kind = "soft body";
+        } else if (obj.desc.collision == ed::ShapeKind::None) {
+            kind = "frame";
+        } else if (obj.desc.collision == ed::ShapeKind::Trimesh &&
+                   (meshTrimesh(obj.meshIndex) || meshHull(obj.meshIndex))) {
+            kind = "mesh";
+        } else if (obj.desc.collision == ed::ShapeKind::Model && meshHull(obj.meshIndex)) {
+            kind = "convex hull";
+        }
+        if (!kind) continue;
+        if (count < 8) {
+            list += (count ? ", " : "") + std::string("'") + obj.desc.name + "' (" + kind + ")";
+        }
+        ++count;
+    }
+    if (count > 8) list += ", ... (" + std::to_string(count) + " in total)";
+    if (list == terrainPassThroughWarned_) return;
+    terrainPassThroughWarned_ = list;
+    if (count == 0) return;
+    LOGW("scene", "terrain: %zu moving bodies have no terrain contact yet and will fall "
+                  "through it: %s", count, list.c_str());
+}
+
+std::string Scene::terrainCombineCaveat(bool force) {
+    if (force) terrainCombineWarned_.clear();
+    const ed::SimSettings s = editor_.sim();
+    // 転がり摩擦は NSC だけの欄（SMC には無い = 何も変わらない）。
+    const bool affected = kTerrainCollision == TerrainCollision::HeightField &&
+                          hasTerrain_ && s.contact != "smc" &&
+                          (s.combine == "average" || s.combine == "max");
+    if (!affected) {
+        terrainCombineWarned_.clear();
+        return std::string();
+    }
+    if (s.combine == terrainCombineWarned_) return std::string();
+    terrainCombineWarned_ = s.combine;
+    LOGW("scene", "terrain: <option combine=\"%s\"> mixes the terrain's zero rolling friction "
+                  "with the body's - boxes on slopes may sink into the terrain (use \"min\")",
+         s.combine.c_str());
+    return "（注意: 合成方式が " + s.combine +
+           " なので、テレインの斜面で箱が沈むことがあります - min を推奨）";
 }
 
 std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainField() const {
@@ -1581,7 +1700,8 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         applySimSettings();
         // 接触の解き方（nsc / smc）・直接法・HHT・モーダルは系の種類を変える。
         syncBackend();
-        editor_.setStatus("シミュレート設定を更新");
+        // 合成方式を min 以外にした = テレインの箱の転がり 0 が効かなくなる。
+        editor_.setStatus("シミュレート設定を更新" + terrainCombineCaveat(false));
         return;
     }
 
@@ -1606,6 +1726,8 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         // エディタ中は当たり判定の作り直しを落ち着くまで遅らせる（スライダーの
         // 連打で 200 万三角形を毎回作らない。stepEditor / enterMode が作る）。
         // シミュレート中は即作る - 走っている物が古い形に当たり続けないため。
+        // （TriangleMesh の方式だけの話。HeightField では setTerrain が defer を
+        // 無視して常に即時に反映する。）
         const bool defer = editor_.mode() == ed::AppMode::Editor;
         // ステータスは setTerrain の前に置く: 有無の切替で系が変わったときは
         // syncBackend の「物理を切り替えました」が上書きして残る（clear と同じ順序）。
@@ -1656,10 +1778,11 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         // 保存名は触らない: 適用はファイルにしていない編集で、💾 保存して
         // 初めてファイルになる（モーダルの見出しにもそう書いてある）。
         editor_.setStatus(
-            warnings.empty()
-                ? "XML を適用しました"
-                : "XML を適用しました（警告 " +
-                      std::to_string(warnings.size()) + " 件 - コンソール参照）");
+            (warnings.empty()
+                 ? std::string("XML を適用しました")
+                 : "XML を適用しました（警告 " +
+                       std::to_string(warnings.size()) + " 件 - コンソール参照）") +
+            terrainCombineCaveat(true));
         return;
     }
 
@@ -1763,10 +1886,11 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         loadDocument(doc);
         editor_.setSceneFile(name);
         editor_.setStatus(
-            warnCount == 0
-                ? "読み込みました: " + name
-                : "読み込みました: " + name + "（警告 " +
-                      std::to_string(warnCount) + " 件 - コンソール参照）");
+            (warnCount == 0
+                 ? "読み込みました: " + name
+                 : "読み込みました: " + name + "（警告 " +
+                       std::to_string(warnCount) + " 件 - コンソール参照）") +
+            terrainCombineCaveat(true));
         editor_.refreshSceneFiles();
         return;
     }

@@ -102,8 +102,9 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
     // terrainFieldMutex_ を 1 回）、車輪のレイはロックの外でこれを辿る
     // （レイごとに Scene::terrainRaycast を呼ぶと 扇 × 車輪 × 車両 回ロックを
     // 取る）。差し替えられても手元の格子は生きている。
-    // 当たり判定のボディが無いとき（作れなかった・Chrono に三角メッシュが
-    // 無い）は使わない: 車輪だけが乗って車体と他の物は抜ける、という
+    // 当たり判定のボディ（自前の接触のゴースト / 三角メッシュのチャンク）が
+    // 無いとき（作れなかった・Chrono に三角メッシュが無い・Multicore）は
+    // 使わない: 車輪だけが乗って車体と他の物は抜ける、という
     // 「レイと接触の食い違い」を作らないため（プレハブの collide 部品と同じ考え）。
     std::shared_ptr<const wizengine::terrain::HeightField> terrain;
     if (scene.hasTerrainCollision()) {
