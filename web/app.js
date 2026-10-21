@@ -105,13 +105,15 @@
     setTimeout(() => location.reload(), 400);
   }
 
-  function send(cmd, args) {
+  // keepalive: ページを離れる途中（pagehide）でも打ち切られずに届ける。
+  function send(cmd, args, keepalive) {
     if (!owner) return;
     const msg = Object.assign({ cmd: cmd }, args || {});
     fetch('input', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(msg)
+      body: JSON.stringify(msg),
+      keepalive: !!keepalive
     }).catch(() => {});
   }
   // ---- Input: one code path for mouse, touch and pen ---------------------
@@ -309,7 +311,14 @@
   // サイドバーのボタンかマウス操作に寄せてある。
   document.addEventListener('keydown', (e) => {
     if (e.repeat) return;
-    if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+    const el = document.activeElement;
+    // 文字を打つ欄にフォーカスがある間は Tab をブラウザの欄移動に任せる（打って
+    // いる途中でサイドバーが閉じないように）。チェックボックス・色などクリック
+    // しただけでフォーカスが乗る欄では、今までどおりサイドバーの開閉。
+    const typing = !!el && (el.tagName === 'TEXTAREA' || el.isContentEditable ||
+      (el.tagName === 'INPUT' &&
+       !['checkbox', 'radio', 'button', 'range', 'color'].includes(el.type)));
+    if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.shiftKey && !typing) {
       e.preventDefault();
       toggleSidebar();
       return;
@@ -320,7 +329,6 @@
       return;
     }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
-    const el = document.activeElement;
     if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' ||
                el.tagName === 'TEXTAREA')) {
       return;
@@ -1532,6 +1540,12 @@
     return Number.isFinite(v) ? v : fallback;
   }
   const round2 = (v) => Math.round((v || 0) * 1000) / 1000;
+  // アセット名（イベント・計算式・プレハブ・テレイン）の正規化。サーバーの
+  // 名前の規則（core/SafeName.h: 英数字と _ -、kSafeNameMaxLength 文字）と同じ。
+  const ASSET_NAME_MAX = 64;
+  function cleanAssetName(s) {
+    return String(s).replace(/[^A-Za-z0-9_-]/g, '').slice(0, ASSET_NAME_MAX);
+  }
 
   function setMode(mode) { send('mode', { mode: mode }); }
 
@@ -2621,8 +2635,10 @@
     if (!show) {
       assetListKey = '';
       panel.classList.remove('active');  // 隠れたパネルにホイールを渡さない
+      cancelTerrainRename();             // 隠れた入力欄に名前を残さない
       return;
     }
+    if (terrainRenameActive()) return;  // テレインの名前を打っている間は組み直さない
 
     const files = sceneData.files || [];
     const meshes = sceneData.meshes || [];
@@ -2637,7 +2653,8 @@
       '&' + ndAsset + '$' +
       formulas.map((f) => f.name + ':' + (f.nodes || []).length).join('|') +
       '&' + ndFormula + ndKind + '^' +
-      prefabs.map((p) => p.name + ':' + p.parts).join('|');
+      prefabs.map((p) => p.name + ':' + p.parts).join('|') + '~' +
+      terrainTilesKey();
     if (key === assetListKey) return;  // 変化が無ければ DOM を組み直さない
     assetListKey = key;
 
@@ -2678,12 +2695,10 @@
     // カメラ正面に配置する。名前は XML 由来（手で書ける）なので HTML には
     // エスケープして出し、onclick へは配列番号だけを埋め込む（名前を JS
     // 文字列に埋め込むと引用符入りの名前で壊れる）。
-    const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     meshes.forEach((m, i) => {
       html += '<div class="asItem" title="クリックでカメラ正面に配置（' +
-        esc(m.file) + '）" onclick="addMeshAsset(' + i + ')">' +
-        '<span class="ico">🧊</span><span class="name">' + esc(m.name) +
+        ndEsc(m.file) + '）" onclick="addMeshAsset(' + i + ')">' +
+        '<span class="ico">🧊</span><span class="name">' + ndEsc(m.name) +
         '</span><span class="kind">mesh</span></div>';
     });
     // イベントアセット（ノードで組むスクリプト）。クリックでノードエディタが
@@ -2697,7 +2712,7 @@
         '" title="クリック: ノードエディタで開く（' + (e.nodes || []).length +
         ' ノード） ／ 右クリック: メニュー" onclick="openEventAsset(\'' +
         e.name + '\')">' +
-        '<span class="ico">⚡&#xFE0E;</span><span class="name">' + esc(e.name) +
+        '<span class="ico">⚡&#xFE0E;</span><span class="name">' + ndEsc(e.name) +
         '</span><span class="kind">event</span></div>';
     }
     // 計算式アセット（🧮）。クリックでノードエディタが開き、右クリックで
@@ -2709,7 +2724,7 @@
         '" title="クリック: ノードエディタで開く（' + (f.nodes || []).length +
         ' ノード） ／ 右クリック: メニュー" onclick="openFormulaAsset(\'' +
         f.name + '\')">' +
-        '<span class="ico">🧮</span><span class="name">' + esc(f.name) +
+        '<span class="ico">🧮</span><span class="name">' + ndEsc(f.name) +
         '</span><span class="kind">formula</span></div>';
     }
     // プレハブ（🧩）。右クリックで選択オブジェクトに付ける / 削除。中身の
@@ -2717,9 +2732,10 @@
     for (const p of prefabs) {
       html += '<div class="asItem" data-prefab="' + p.name +
         '" title="' + p.parts + ' 部品 ／ 右クリック: メニュー（選択オブジェクトに付ける）">' +
-        '<span class="ico">🧩</span><span class="name">' + esc(p.name) +
+        '<span class="ico">🧩</span><span class="name">' + ndEsc(p.name) +
         '</span><span class="kind">prefab</span></div>';
     }
+    html += renderTerrainTiles();  // ⛰ assets/terrains/*.terrain（terrain.js）
     for (const f of files) {
       const cur = f === sceneData.sceneFile;
       html += '<div class="asItem' + (cur ? ' sel' : '') +
@@ -2754,7 +2770,12 @@
     const tile = e.target.closest ? e.target.closest('[data-event]') : null;
     const ftile = e.target.closest ? e.target.closest('[data-formula]') : null;
     const ptile = e.target.closest ? e.target.closest('[data-prefab]') : null;
+    const ttile = e.target.closest ? e.target.closest('[data-terrain]') : null;
     const sel = mySelectedDesc();
+    if (ttile) {
+      showContextMenu(e, terrainMenuItems(ttile.dataset.terrain));
+      return;
+    }
     if (ptile) {
       const pname = ptile.dataset.prefab;
       showContextMenu(e, [
@@ -2799,6 +2820,7 @@
         { label: '✨ 新しいイベント…', onClick: newEventAsset },
         { label: '🧮 新しい計算式…', onClick: newFormulaAsset },
         { label: '🧩 新しい（空の）プレハブ…', onClick: newPrefabAsset },
+        { label: '⛰ 新しいテレイン…', onClick: newTerrain },
       ]);
       return;
     }
@@ -2938,7 +2960,7 @@
   function newFormulaAsset() {
     const name = prompt('新しい計算式の名前（英数字と _ -）', 'tire');
     if (name === null) return;
-    const clean = String(name).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+    const clean = cleanAssetName(name);
     if (!clean) return;
     const pick = prompt('最初の中身を選んでください:\n' +
                         '  1 = タイヤ式（Magic Formula + 摩擦楕円 + 緩和長）\n' +
@@ -2966,7 +2988,7 @@
   function newPrefabAsset() {
     const name = prompt('新しいプレハブの名前（英数字と _ -）', 'prefab');
     if (name === null) return;
-    const clean = String(name).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+    const clean = cleanAssetName(name);
     if (!clean) return;
     send('edit.prefab.add', { name: clean });
   }
@@ -3179,7 +3201,7 @@
   function newEventAsset() {
     const name = prompt('新しいイベントアセットの名前（英数字と _ -）', 'event');
     if (name === null) return;
-    const clean = String(name).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+    const clean = cleanAssetName(name);
     if (!clean) return;
     ndAsset = clean;   // 作られたら次のポーリングでこれが選ばれる
     ndGraphKey = '';
@@ -4091,15 +4113,42 @@
     send('edit.node.remove', { asset: asset, id: id });
   }
 
+  // アセットパネルの操作列（#asStatus）の文。サーバーのステータス（名前の
+  // 変更・テレインの保存などの結果）と、ブラウザ側の知らせ（名前に使えない
+  // 文字など）の両方を出し、出してから AS_STATUS_MS たったら消す。
+  const AS_STATUS_MS = 8000;
+  let asStatusText = '';
+  let asStatusAt = 0;
+  let asStatusSeq = null;  // 最後に見たサーバーの statusSeq（null = まだ見ていない）
+  function showAssetStatus(text) {
+    asStatusText = text;
+    asStatusAt = Date.now();
+    renderAssetStatus();
+  }
+  function renderAssetStatus() {
+    const el = document.getElementById('asStatus');
+    if (!el) return;  // キャッシュされた古い index.html
+    const shown = Date.now() - asStatusAt < AS_STATUS_MS ? asStatusText : '';
+    if (el.textContent !== shown) el.textContent = el.title = shown;
+  }
+  // サーバーのステータスは番号（statusSeq）が変わったときだけ出し直す = 同じ文が
+  // 続けて来ても出る。読み込んだ直後の古い文は出さない（最初は番号を覚えるだけ）。
+  function noteServerStatus(seq, text) {
+    if (asStatusSeq !== null && seq !== asStatusSeq) showAssetStatus(text);
+    asStatusSeq = seq;
+    renderAssetStatus();
+  }
+
   async function pollScene() {
     try {
       const r = await fetch('scene');
       sceneData = await r.json();
       noteSceneChanges(sceneData);
+      const status = sceneData.status || '';
       if (xmlEdOpen) {
-        document.getElementById('xmStatus').textContent =
-          sceneData.status || '';
+        document.getElementById('xmStatus').textContent = status;
       }
+      noteServerStatus(sceneData.statusSeq, status);
       renderCameras();
       renderHierarchy();
       renderInspector();

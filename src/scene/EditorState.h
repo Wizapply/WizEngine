@@ -224,6 +224,10 @@ public:
     // 直近の操作結果（「保存しました」「ジョイントを作成」など）。
     void setStatus(std::string text);
     std::string status() const;
+    // setStatus のたびに 1 進む番号（同じ文が続けて来ても「新しい結果」と
+    // 分かるように）。status() より先に読めば、番号が新しいのに文が古い、は
+    // 起きない（setStatus は文を書いてから番号を進める）。
+    std::uint64_t statusSeq() const { return statusSeq_.load(); }
 
     void setSceneFile(std::string name);
     std::string sceneFile() const;
@@ -296,6 +300,7 @@ private:
     wizengine::editor::SimSettings sim_;
     wizengine::editor::GizmoSettings gizmo_;
     std::string status_ = "ready";
+    std::atomic<std::uint64_t> statusSeq_{0};
     std::string sceneFile_;
     std::vector<std::string> files_;
 };

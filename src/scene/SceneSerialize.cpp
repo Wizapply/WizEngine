@@ -113,6 +113,7 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     }
     j["modal"] = modalFrequencies();
     j["gizmo"] = ed::toJson(editor_.gizmo());
+    j["statusSeq"] = editor_.statusSeq();  // status より先に読む（EditorState.h）
     j["status"] = editor_.status();
     j["sceneFile"] = editor_.sceneFile();
     for (const auto& f : editor_.sceneFiles()) j["files"].push_back(f);

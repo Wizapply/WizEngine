@@ -638,6 +638,7 @@ void EditorState::setGizmo(const wizengine::editor::GizmoSettings& g) {
 void EditorState::setStatus(std::string text) {
     std::lock_guard<std::mutex> lk(mutex_);
     status_ = std::move(text);
+    ++statusSeq_;  // 文を書いてから進める（statusSeq() の約束）
 }
 
 std::string EditorState::status() const {

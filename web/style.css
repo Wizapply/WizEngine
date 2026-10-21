@@ -641,6 +641,15 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .asItem .kind { display: block; font-size: 9.5px; color: #7b7f88; }
+  /* テレインのタイルの名前の変更（.name と差し替える input）。 */
+  .asItem .asRename {
+    display: block; width: 100%; box-sizing: border-box; margin-top: 2px;
+    padding: 1px 3px; font-size: 11px; text-align: center;
+    background: #14161a; color: #dfe2e7; border: 1px solid #4a70ad;
+    border-radius: 3px;
+  }
+  /* 操作列の右端のステータス（見た目は .xmStatus。折り返した行でも縮める）。 */
+  .asBar #asStatus { min-width: 0; max-width: 45%; }
 
   /* ---- ノードエディタ（Node-RED 風のイベント設計）------------------------ */
   /* 画面中央の大きなウィンドウ（各辺 90%、.ndWin）。外側の全画面レイヤ

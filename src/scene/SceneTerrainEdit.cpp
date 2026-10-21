@@ -27,6 +27,21 @@ nlohmann::json toJson(const wt::TerrainEntry& e) {
                           {"height", e.height}};
 }
 
+// 部分更新のステータスの文（applyTerrainOp）。
+const char* terrainPatchStatus(bool hasTerrain, int oldResolution, int newResolution) {
+    if (!hasTerrain) return "テレインの設定を更新（無効のまま）";
+    // 再サンプル（HeightField::resampled）の性質を一言。
+    if (newResolution != oldResolution)
+        return "テレインを更新（解像度を下げると細い起伏は消え、穴は少し太ります）";
+    return "テレインを更新";
+}
+
+// args の key が true か（型違い・無しは false = 投げない）。
+bool argIsTrue(const nlohmann::json& a, const char* key) {
+    const auto it = a.find(key);
+    return it != a.end() && it->is_boolean() && it->get<bool>();
+}
+
 // 形（size / resolution / height）を新規テレインの既定値（ed::TerrainDesc{}）へ。
 // 位置と表面はそのまま。
 void resetToDefaultShape(ed::TerrainDesc& d) {
@@ -362,13 +377,24 @@ void Scene::refreshTerrainFiles() {
 }
 
 // edit.terrain（PHYSICS スレッド）。applyEditorOp の "terrain" 分岐から呼ぶ。
-// キーで分岐: refresh / rename{from,to} / open / generate{seed,...} / undo /
-// enabled(+name) / それ以外は部分更新。
+// キーで分岐: refresh / rename{from,to} / open / new / generate{seed,...}
+// （同じメッセージの部分更新を先に当てる）/ undo / enabled(+name) / それ以外は
+// 部分更新。open と new は、保存していない変更があれば discard:true が付いて
+// いるときだけ取り替える（ブラウザの dirty 表示が古くても黙って捨てない）。
 // モードによらず受ける（名前の変更もシミュレート中に受ける）。
 void Scene::applyTerrainOp(const EditorState::Op& op) {
     const nlohmann::json& a = op.args;
-    if (const auto it = a.find("refresh");
-        it != a.end() && it->is_boolean() && it->get<bool>()) {
+    // 送られてきたキーだけ上書きした形（edit.ground と同じ部分更新）。
+    const auto patched = [this, &a]() {
+        return ed::clampTerrain(ed::terrainFromJson(a, terrain_));
+    };
+    // 取り替える前の守り: 未保存の変更があり、捨てる確認が無ければ止める。
+    const auto keepUnsaved = [this, &a]() {
+        if (!terrainDirty_ || argIsTrue(a, "discard")) return false;
+        editor_.setStatus("保存していない変更があります（もう一度選ぶと確認します）");
+        return true;
+    };
+    if (argIsTrue(a, "refresh")) {
         // ブラウザのタブに戻ったとき（focus）に来る。ステータスは変えない。
         refreshTerrainFiles();
         return;
@@ -378,7 +404,18 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
         return;
     }
     if (a.contains("open")) {
-        openTerrain(ed::jsonString(a, "open", ""));
+        const std::string name = ed::jsonString(a, "open", "");
+        // 開いているもの（openTerrain は何もしない）なら守りの文も出さない。
+        if (!(hasTerrain_ && wt::sameTerrainName(terrain_.data, name)) && keepUnsaved())
+            return;
+        openTerrain(name);
+        return;
+    }
+    // 新規（テレインの有無によらず、今のテレインを平らな新しいテレインに取り替える。
+    // 古いテレインのファイルは消さない）。値は名前の元（空ならシーン名）。
+    if (a.contains("new")) {
+        if (keepUnsaved()) return;
+        newTerrain(ed::jsonString(a, "new", ""));
         return;
     }
     // generate / undo は形がおかしくても部分更新へ落とさない（成功に見せない）。
@@ -387,6 +424,9 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
             editor_.setStatus("ノイズの指定が正しくありません（generate はオブジェクト）");
             return;
         }
+        // 同じ 1 通の部分更新（確定待ちだった形の欄）を先に当てる。値が今と同じ
+        // なら reshapeTerrain は格子を作り直さない（キーの一覧で判定しない）。
+        reshapeTerrain(patched());
         // 送られなかったキーは既定値（ノイズの値はテレインに覚えない）。
         generateTerrainNoise(ed::terrainNoiseFromJson(*it, ed::TerrainNoiseParams{}));
         return;
@@ -410,24 +450,15 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
             return;
         }
         if (!hasTerrain_) {
-            // 新規: 同じパッチの他のキー（size など）は使わず、既定の大きさの
-            // 平らなテレインを今の位置と表面で作る（name だけを使う）。
+            // 新規（互換の口。new と同じ newTerrain）: 同じパッチの他のキーは
+            // 使わず、既定の大きさの平らなテレインを今の位置と表面で作る。
             newTerrain(ed::jsonString(a, "name", ""));
             return;
         }
     }
-    // 部分更新: 送られてきたキーだけ上書き（edit.ground と同じ）。テレインが無い
-    // 間に送った値は位置と表面だけが次の新規に効く（形は新規の既定値）。
+    // 部分更新。テレインが無い間の値は位置と表面だけが次の新規に効く。
     // 当たり判定はモードによらずその場で張り直す（publishTerrainField）。
-    const ed::TerrainDesc next = ed::clampTerrain(ed::terrainFromJson(a, terrain_));
-    if (!hasTerrain_) {
-        editor_.setStatus("テレインの設定を更新（無効のまま）");
-    } else if (next.resolution != terrain_.resolution) {
-        // 再サンプル（HeightField::resampled）の性質を一言。
-        editor_.setStatus("テレインを更新（解像度を下げると細い起伏は消え、穴は少し"
-                          "太ります）");
-    } else {
-        editor_.setStatus("テレインを更新");
-    }
+    const ed::TerrainDesc next = patched();
+    editor_.setStatus(terrainPatchStatus(hasTerrain_, terrain_.resolution, next.resolution));
     reshapeTerrain(next);
 }
