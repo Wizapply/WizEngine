@@ -12,6 +12,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/SafeName.h"
 #include "vehicle/VehicleTypes.h"
 
 // エディタモードが編集する「シーン文書」の型。
@@ -990,16 +991,10 @@ struct EventAssetDesc {
 
 // アセット名の正規化（英数字と _ - だけ・64 文字まで）。空になったら不正な
 // 名前（呼び出し側で弾く）。シーン名（EditorState::sanitizeSceneName）と
-// 同じ規則だが、あちらはファイル名、こちらは文書内の参照名。
+// 同じ規則だが、あちらはファイル名、こちらは文書内の参照名。規則の本体は
+// core/SafeName.h。
 inline std::string sanitizeEventName(const std::string& name) {
-    std::string out;
-    for (const char c : name) {
-        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9') || c == '_' || c == '-';
-        if (ok) out.push_back(c);
-        if (out.size() >= 64) break;
-    }
-    return out;
+    return sanitizeSafeName(name);
 }
 
 // 付け先。オブジェクト番号か、ワールド（シーン全体）。ワールドに付けた

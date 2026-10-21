@@ -7,18 +7,12 @@
 
 #include "core/AssetError.h"
 #include "core/Log.h"
+#include "core/SafeName.h"
 
 // 保存名に使ってよい文字だけ残す。".." や "/" を弾くのが目的（保存先は
 // assets/scenes に固定したい）。
 std::string EditorState::sanitizeSceneName(const std::string& name) {
-    std::string out;
-    for (char c : name) {
-        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9') || c == '_' || c == '-';
-        if (ok) out.push_back(c);
-        if (out.size() >= 64) break;
-    }
-    return out;
+    return wizengine::sanitizeSafeName(name);
 }
 
 void EditorState::push(Op op) {
