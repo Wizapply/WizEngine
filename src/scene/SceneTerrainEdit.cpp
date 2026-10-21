@@ -362,6 +362,8 @@ void Scene::refreshTerrainFiles() {
 }
 
 // edit.terrain（PHYSICS スレッド）。applyEditorOp の "terrain" 分岐から呼ぶ。
+// キーで分岐: refresh / rename{from,to} / open / generate{seed,...} / undo /
+// enabled(+name) / それ以外は部分更新。
 // モードによらず受ける（名前の変更もシミュレート中に受ける）。
 void Scene::applyTerrainOp(const EditorState::Op& op) {
     const nlohmann::json& a = op.args;
@@ -377,6 +379,24 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
     }
     if (a.contains("open")) {
         openTerrain(ed::jsonString(a, "open", ""));
+        return;
+    }
+    // generate / undo は形がおかしくても部分更新へ落とさない（成功に見せない）。
+    if (const auto it = a.find("generate"); it != a.end()) {
+        if (!it->is_object()) {
+            editor_.setStatus("ノイズの指定が正しくありません（generate はオブジェクト）");
+            return;
+        }
+        // 送られなかったキーは既定値（ノイズの値はテレインに覚えない）。
+        generateTerrainNoise(ed::terrainNoiseFromJson(*it, ed::TerrainNoiseParams{}));
+        return;
+    }
+    if (const auto it = a.find("undo"); it != a.end()) {
+        if (!it->is_boolean() || !it->get<bool>()) {
+            editor_.setStatus("取り消しの指定が正しくありません（undo は true）");
+            return;
+        }
+        undoTerrain();
         return;
     }
     if (const auto it = a.find("enabled"); it != a.end() && it->is_boolean()) {
@@ -399,6 +419,15 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
     // 部分更新: 送られてきたキーだけ上書き（edit.ground と同じ）。テレインが無い
     // 間に送った値は位置と表面だけが次の新規に効く（形は新規の既定値）。
     // 当たり判定はモードによらずその場で張り直す（publishTerrainField）。
-    editor_.setStatus(hasTerrain_ ? "テレインを更新" : "テレインの設定を更新（無効のまま）");
-    reshapeTerrain(ed::clampTerrain(ed::terrainFromJson(a, terrain_)));
+    const ed::TerrainDesc next = ed::clampTerrain(ed::terrainFromJson(a, terrain_));
+    if (!hasTerrain_) {
+        editor_.setStatus("テレインの設定を更新（無効のまま）");
+    } else if (next.resolution != terrain_.resolution) {
+        // 再サンプル（HeightField::resampled）の性質を一言。
+        editor_.setStatus("テレインを更新（解像度を下げると細い起伏は消え、穴は少し"
+                          "太ります）");
+    } else {
+        editor_.setStatus("テレインを更新");
+    }
+    reshapeTerrain(next);
 }

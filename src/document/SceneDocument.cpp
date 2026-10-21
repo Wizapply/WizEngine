@@ -1295,15 +1295,8 @@ TerrainLegacyDesc terrainLegacyFromXml(const xml::Element& e, TerrainDesc& t) {
     t.resolution = int(roundedInteger(e.number("resolution", t.resolution), 1,
                                       kTerrainMaxResolution, t.resolution));
     t.height = e.number("height", t.height);
-    TerrainNoiseParams& n = l.noise;
-    n.seed = std::uint32_t(roundedInteger(e.number("seed", double(n.seed)), 0,
-                                          4294967295LL, n.seed));
-    n.octaves = int(roundedInteger(e.number("octaves", n.octaves), 0,
-                                   kTerrainMaxOctaves, n.octaves));
-    n.gain = e.number("gain", n.gain);
-    n.lacunarity = e.number("lacunarity", n.lacunarity);
-    n.scale = e.number("scale", n.scale);
-    n = clampTerrainNoise(n);
+    l.noise = terrainNoiseFrom(
+        [&e](const char* key, double fallback) { return e.number(key, fallback); }, l.noise);
     return l;
 }
 

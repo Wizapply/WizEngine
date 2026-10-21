@@ -2213,6 +2213,31 @@ inline TerrainNoiseParams clampTerrainNoise(TerrainNoiseParams n) {
     return n;
 }
 
+// ノイズの値の読み取り（XML の旧形式の互換読込と JSON の「ノイズで生成」の
+// 共通部分）。get(キー, 既定値) が数値を返す口（読めなければ既定値）で、
+// 書いていないキーは base のまま。整数のキーは実数で読んでから範囲を決めて
+// 詰める（"1e20" を int へそのまま変換しない）。最後に clampTerrainNoise。
+template <class GetNumber>
+TerrainNoiseParams terrainNoiseFrom(GetNumber get, TerrainNoiseParams n) {
+    n.seed = std::uint32_t(roundedInteger(get("seed", double(n.seed)), 0,
+                                          4294967295LL, n.seed));
+    n.octaves = int(roundedInteger(get("octaves", double(n.octaves)), 0,
+                                   kTerrainMaxOctaves, n.octaves));
+    n.gain = get("gain", n.gain);
+    n.lacunarity = get("lacunarity", n.lacunarity);
+    n.scale = get("scale", n.scale);
+    return clampTerrainNoise(n);
+}
+
+// edit.terrain の generate（オブジェクト）。送られたキーだけ base から変える。
+// 型違いのキー・オブジェクトでない JSON は base のまま（投げない）。
+inline TerrainNoiseParams terrainNoiseFromJson(const nlohmann::json& j,
+                                               const TerrainNoiseParams& base) {
+    return terrainNoiseFrom(
+        [&j](const char* key, double fallback) { return jsonNumber(j, key, fallback); },
+        base);
+}
+
 // テレインの常識的な範囲。NaN は既定値へ戻す。
 //   * data（テレイン名）は isSafeName（core/SafeName.h、TerrainLibrary と同じ
 //     規則 = assets/terrains の直下の名前だけ）を通らなければ空 = 名前無し。

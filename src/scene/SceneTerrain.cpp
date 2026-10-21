@@ -1,5 +1,6 @@
 // テレインの実体（PHYSICS / RENDER スレッド）: 高さ格子の差し替え
-// （publishTerrainField）と形の変更（reshapeTerrain）、自前の接触（当たり判定）の
+// （publishTerrainField）と形の変更（reshapeTerrain）、格子の書き換え（コピー
+// オンライトの editTerrainField = ノイズ生成・取り消し）、自前の接触（当たり判定）の
 // 張り直し、描画のチャンクへの同期。
 // 入口（ブラウザの edit.terrain・シーン文書・保存）は SceneTerrainEdit.cpp。
 // dirty の取り出し（ロックの枠組み）は applyToRenderer（Scene.cpp）が持つ。
@@ -106,6 +107,82 @@ void Scene::reshapeTerrain(const ed::TerrainDesc& next) {
         next, std::make_shared<const wizengine::terrain::HeightField>(std::move(grid)),
         fileChanged ? TerrainHistory::Clear : TerrainHistory::Keep,
         fileChanged ? TerrainFileState::Dirty : TerrainFileState::Keep);
+}
+
+bool Scene::editTerrainField(
+    const wizengine::terrain::GridRect& rect,
+    const std::function<bool(wizengine::terrain::HeightField&)>& mutate, bool record) {
+    const std::shared_ptr<const wizengine::terrain::HeightField> field =
+        hasTerrain_ ? terrainField_ : nullptr;
+    if (!field) return false;
+    // 共有中の格子（描画・当たり判定が持っている）は書き換えず、コピーを差し替える。
+    wizengine::terrain::HeightField copy = *field;
+    wizengine::terrain::TerrainEdit before;
+    if (record) before = wizengine::terrain::captureRegion(copy, rect);
+    if (!mutate(copy)) return false;
+    // 書き換えが成功してから積む（失敗した操作の記録を残さない）。
+    if (record) terrainUndo_->push(std::move(before));
+    publishTerrainField(terrain_,
+                        std::make_shared<const wizengine::terrain::HeightField>(std::move(copy)),
+                        TerrainHistory::Keep, TerrainFileState::Dirty);
+    return true;
+}
+
+void Scene::generateTerrainNoise(const ed::TerrainNoiseParams& n) {
+    if (!hasTerrain_ || !terrainField_) {
+        editor_.setStatus("テレインがありません（ノイズで生成できません）");
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    // 今の形（大きさ・解像度・高さ・位置）でノイズの格子を作り、その高さだけを
+    // 今の格子のコピーへ入れる（穴はコピーのまま残る）。
+    wizengine::terrain::HeightField gen =
+        wizengine::terrain::generateHeightField(toTerrainParams(terrain_, n));
+    const int res = terrainField_->resolution();
+    const bool ok = editTerrainField(
+        wizengine::terrain::GridRect{0, 0, res, res},
+        [&gen](wizengine::terrain::HeightField& f) {
+            // 形は terrain_ と同じはずだが、食い違えば書き換えない。
+            if (gen.samples().size() != f.samples().size()) return false;
+            f.samples() = std::move(gen.samples());  // gen はここで使い終わり
+            return true;
+        },
+        true);
+    // ステータスは結果が分かってから 1 回だけ。
+    if (!ok) {
+        LOGW("scene", "terrain: the generated grid does not match the current grid - "
+                      "not applied");
+        editor_.setStatus("テレインをノイズで生成できませんでした（コンソール参照）");
+        return;
+    }
+    editor_.setStatus("テレインをノイズで生成しました（種 " + std::to_string(n.seed) +
+                      "、取り消しできます）");
+    LOGI("scene", "terrain generated from noise (seed %u, %d octaves): %dx%d cells in %.1f ms",
+         n.seed, n.octaves, res, res, elapsedMs(t0));
+}
+
+void Scene::undoTerrain() {
+    const wizengine::terrain::TerrainEdit edit = terrainUndo_->pop();
+    if (edit.empty()) {
+        editor_.setStatus("取り消すものがありません");
+        return;
+    }
+    // 戻す操作そのものは記録しない（Redo は作らない）。applyEdit が空を返す =
+    // 解像度が違う格子など、当てられない記録（取り出したまま捨てる）。
+    const bool ok = editTerrainField(
+        edit.rect,
+        [&edit](wizengine::terrain::HeightField& f) {
+            return !wizengine::terrain::applyEdit(f, edit).empty();
+        },
+        false);
+    // ステータスは結果が分かってから 1 回だけ。
+    if (!ok) {
+        LOGW("scene", "terrain: an undo record (resolution %d) does not fit the current grid "
+                      "- discarded", edit.resolution);
+        editor_.setStatus("テレインの編集を取り消せませんでした");
+        return;
+    }
+    editor_.setStatus("テレインの編集を取り消しました");
 }
 
 void Scene::rebuildTerrainBody() {

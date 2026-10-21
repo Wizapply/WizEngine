@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <memory>
@@ -27,6 +28,7 @@ namespace wizengine {
 class Renderer;
 namespace terrain {
 class HeightField;
+struct GridRect;
 class TerrainLibrary;
 class TerrainUndoStack;
 struct TerrainResolution;
@@ -525,6 +527,18 @@ private:
     // 直すだけ（Undo もファイルもそのまま）。形が同じなら表面だけ（テレインが
     // 無ければ値を覚えるだけ）。
     void reshapeTerrain(const wizengine::editor::TerrainDesc& next);
+    // 格子の書き換えの唯一の口（コピーオンライト）: 今の格子をコピーし、record
+    // なら rect（セル単位 = TerrainUndo の約束）の今の値を Undo に積んでから
+    // mutate(コピー) を呼び、publishTerrainField で差し替える（Undo は残し、
+    // ファイルの dirty を立てる）。mutate が false を返したら何も出さない
+    // （記録も積まない）。テレインが無ければ何もせず false。
+    bool editTerrainField(
+        const wizengine::terrain::GridRect& rect,
+        const std::function<bool(wizengine::terrain::HeightField&)>& mutate, bool record);
+    // 今の格子の高さをノイズで作り直す（形・穴はそのまま。Undo は 1 段）。
+    void generateTerrainNoise(const wizengine::editor::TerrainNoiseParams& n);
+    // 最後の編集を 1 段取り消す（結果はステータス）。
+    void undoTerrain();
 
     // ---- テレインの出入り（SceneTerrainEdit.cpp、すべて PHYSICS thread）-------
     // 文書の <terrain> から今のテレインを作る（loadDocument から）。
