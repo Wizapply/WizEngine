@@ -55,13 +55,13 @@
 //     <worldbody>
 //       <environment hdr="studio.hdr" intensity="30000"/>
 //       <ground size="10" visual="8" texture="textures/ground.png" tile="2"/>
-//       <terrain size="200" resolution="256" height="20" pos="0 0 0" seed="0"
-//                octaves="5" gain="0.5" lacunarity="2" scale="80"
+//       <terrain data="hills" guid="(32 桁の hex)" pos="0 0 0"
 //                texture="" tile="2" rgba="..." roughness="0.9" metallic="0"/>
 //                                    ... 起伏のある地面（Unity の Terrain。
 //                                        EditorTypes.h の TerrainDesc）。
-//                                        size は**全幅**（ground と違い半寸法
-//                                        ではない）、pos の y は最低点
+//                                        高さ格子と size / resolution / height は
+//                                        assets/terrains/<data>.terrain が持つ
+//                                        （XML には書かない）。pos の y は最低点
 //       <light .../> <camera .../>
 //       <body name pos euler fixed>
 //         <geom type size mass rgba collision="trimesh"
@@ -116,10 +116,17 @@
 //   * <ground> と <environment> は worldbody 直下の単一要素（WizEngine の
 //     語彙）。ground の size / visual は半分の広さ（物理の床と見える地面）、
 //     texture / hdr は assets/ 相対パス。節を書かない文書は既定値で開く。
-//   * <terrain> も worldbody 直下の単一要素（WizEngine の語彙）。こちらは
-//     **size が全幅**（Unity の Terrain Width と同じ数え方）で、pos は
-//     X / Z が中心・Y が最低点。節を書かない文書はテレイン無し（hasTerrain
-//     = false）で、書き出しにも <terrain> は出ない。texture は assets/ 相対。
+//   * <terrain> も worldbody 直下の単一要素（WizEngine の語彙）。中身
+//     （高さ格子・大きさ）は Unity の TerrainData と同じく別ファイル
+//     assets/terrains/<data>.terrain で、文書はその名前（data）と背番号
+//     （guid）・pos（X / Z が中心・Y が最低点）・表面だけを持つ。節を
+//     書かない文書はテレイン無し（hasTerrain = false）で、書き出しにも
+//     <terrain> は出ない。texture は assets/ 相対。
+//     **旧形式**（data 属性の無い <terrain>。size（全幅）/ resolution /
+//     height と seed / octaves / gain / lacunarity / scale のノイズを属性に
+//     持つ）も読める: 値は terrainLegacy に入り、読込側が一度生成して開く。
+//     書き出しは常に新形式（次の保存で移る）。<terrain/> だけは既定の
+//     大きさで平ら。新形式に旧属性が混ざっていたら警告して無視する。
 //   * 色は rgba="r g b a"（リニア値、a は今は常に 1）。
 //   * body1 / body2 は名前でも番号でも書ける。"world" と -1 が地面。
 //     保存側は名前が一意ならその名前、そうでなければ番号を書く。
@@ -160,6 +167,22 @@ namespace editor {
 // 文書バージョン。1〜3 は旧 JSON 形式（読み込みのみ対応）、4 から XML が正。
 constexpr int kSceneDocVersion = 4;
 
+// 旧形式の <terrain> の属性。読み込みだけで使い、書き出さない。
+// 新形式か旧形式かを決めるのは fromXml の 1 か所だけで、結果は used に残る
+// （読込側は used だけを見る）。新形式では既定値のまま。
+struct TerrainLegacyDesc {
+    // 旧形式（互換読込）として読んだか。検査を通った data が空でなければ
+    // 新形式（false）、それ以外（data が無い・空・不正）は旧形式（true）。
+    // 大きさ（size / resolution / height）は持たない: 旧形式でも
+    // SceneDocument::terrain の実行時の値に読む（同じ値を 2 か所に置かない）。
+    bool used = false;
+    TerrainNoiseParams noise;
+    // 旧属性（大きさかノイズ）が 1 つでも書いてあったか。true なら noise で
+    // 生成する（書いていないノイズの属性は既定値 = 以前の版と同じ丘）。
+    // false（<terrain/> や表面だけの <terrain>）は平ら。
+    bool hasNoise = false;
+};
+
 struct SceneDocument {
     std::string model;  // <wizengine model="...">。ふつうは保存名
     SimSettings sim;
@@ -168,7 +191,10 @@ struct SceneDocument {
     GroundDesc ground;
     EnvironmentDesc environment;
     // テレイン（<worldbody> の <terrain>）。hasTerrain が false なら無し。
+    // terrainLegacy.used なら旧形式（または名前の無い <terrain>）で、大きさは
+    // terrain の実行時の値、ノイズは terrainLegacy にある。
     TerrainDesc terrain;
+    TerrainLegacyDesc terrainLegacy;
     std::vector<LightDesc> lights;
     std::vector<CameraPose> cameras;
     std::vector<BodyDesc> bodies;

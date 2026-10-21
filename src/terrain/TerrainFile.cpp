@@ -1,5 +1,7 @@
 #include "terrain/TerrainFile.h"
 
+#include "core/Guid.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -93,13 +95,6 @@ TerrainGuid fallbackGuid() {
     return g;
 }
 
-int hexValue(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 uint16_t quantize(float h, float height) {
     float t = h / height;
     if (!(t >= 0.0f)) t = 0.0f;  // NaN も 0
@@ -158,32 +153,13 @@ bool scanSections(const uint8_t* data, std::size_t size, uint32_t count,
 
 }  // namespace
 
-bool TerrainGuid::empty() const {
-    return std::all_of(bytes.begin(), bytes.end(), [](uint8_t b) { return b == 0; });
-}
+bool TerrainGuid::empty() const { return guidBytesEmpty(bytes); }
 
-std::string guidToHex(const TerrainGuid& guid) {
-    static const char kDigits[] = "0123456789abcdef";
-    std::string s;
-    s.reserve(32);
-    for (const uint8_t b : guid.bytes) {
-        s.push_back(kDigits[b >> 4]);
-        s.push_back(kDigits[b & 0xf]);
-    }
-    return s;
-}
+// hex の規則は core/Guid.h の 1 か所（document 層の TerrainDesc::guid と共通）。
+std::string guidToHex(const TerrainGuid& guid) { return guidBytesToHex(guid.bytes); }
 
 bool guidFromHex(const std::string& hex, TerrainGuid& out) {
-    if (hex.size() != 32) return false;
-    TerrainGuid g;
-    for (std::size_t k = 0; k < 16; ++k) {
-        const int hi = hexValue(hex[2 * k]);
-        const int lo = hexValue(hex[2 * k + 1]);
-        if (hi < 0 || lo < 0) return false;
-        g.bytes[k] = uint8_t((hi << 4) | lo);
-    }
-    out = g;
-    return true;
+    return guidBytesFromHex(hex, out.bytes);
 }
 
 TerrainGuid makeRandomGuid() {

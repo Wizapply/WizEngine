@@ -14,7 +14,8 @@ using namespace scene_detail;
 namespace {
 
 // 文書の値 → 高さ格子の生成パラメータ（src/terrain は文書の型を知らない）。
-wizengine::terrain::TerrainParams toTerrainParams(const ed::TerrainDesc& d) {
+wizengine::terrain::TerrainParams toTerrainParams(const ed::TerrainDesc& d,
+                                                  const ed::TerrainNoiseParams& n) {
     wizengine::terrain::TerrainParams p;
     p.size = float(d.size);
     p.resolution = d.resolution;
@@ -22,20 +23,22 @@ wizengine::terrain::TerrainParams toTerrainParams(const ed::TerrainDesc& d) {
     p.posX = float(d.position.x);
     p.posY = float(d.position.y);
     p.posZ = float(d.position.z);
-    p.seed = d.seed;
-    p.octaves = d.octaves;
-    p.gain = float(d.gain);
-    p.lacunarity = float(d.lacunarity);
-    p.scale = float(d.scale);
+    p.seed = n.seed;
+    p.octaves = n.octaves;
+    p.gain = float(n.gain);
+    p.lacunarity = float(n.lacunarity);
+    p.scale = float(n.scale);
     return p;
 }
 
 // 形（高さ格子と当たり判定）を決める値が同じか。
-bool sameTerrainShape(const ed::TerrainDesc& a, const ed::TerrainDesc& b) {
+bool sameTerrainShape(const ed::TerrainDesc& a, const ed::TerrainNoiseParams& an,
+                      const ed::TerrainDesc& b, const ed::TerrainNoiseParams& bn) {
     return a.size == b.size && a.resolution == b.resolution && a.height == b.height &&
            a.position.x == b.position.x && a.position.y == b.position.y &&
-           a.position.z == b.position.z && a.seed == b.seed && a.octaves == b.octaves &&
-           a.gain == b.gain && a.lacunarity == b.lacunarity && a.scale == b.scale;
+           a.position.z == b.position.z && an.seed == bn.seed &&
+           an.octaves == bn.octaves && an.gain == bn.gain &&
+           an.lacunarity == bn.lacunarity && an.scale == bn.scale;
 }
 
 // 表面（描画の材質だけ）が同じか。
@@ -47,13 +50,21 @@ bool sameTerrainSurface(const ed::TerrainDesc& a, const ed::TerrainDesc& b) {
 
 }  // namespace
 
-void Scene::setTerrain(bool hasTerrain, const ed::TerrainDesc& descIn) {
+void Scene::setTerrain(bool hasTerrain, const ed::TerrainDesc& descIn,
+                       const ed::TerrainNoiseParams* noiseIn) {
     const ed::TerrainDesc desc = ed::clampTerrain(descIn);
+    ed::TerrainNoiseParams noise;
+    if (noiseIn) {
+        noise = ed::clampTerrainNoise(*noiseIn);
+    } else {
+        noise.octaves = 0;  // 平ら
+    }
     // terrain_ / hasTerrain_ / terrainField_ を書くのはこのスレッドだけなので、
     // 読むだけならロックは要らない（地面と同じ約束）。
     const bool had = hasTerrain_;
     const bool shapeChanged =
-        hasTerrain && (!had || !terrainField_ || !sameTerrainShape(desc, terrain_));
+        hasTerrain &&
+        (!had || !terrainField_ || !sameTerrainShape(desc, noise, terrain_, terrainNoise_));
     const bool surfaceChanged =
         hasTerrain && (!had || !sameTerrainSurface(desc, terrain_));
 
@@ -63,7 +74,7 @@ void Scene::setTerrain(bool hasTerrain, const ed::TerrainDesc& descIn) {
     if (shapeChanged) {
         const auto t0 = std::chrono::steady_clock::now();
         field = std::make_shared<const wizengine::terrain::HeightField>(
-            wizengine::terrain::generateHeightField(toTerrainParams(desc)));
+            wizengine::terrain::generateHeightField(toTerrainParams(desc, noise)));
         LOGI("scene", "terrain height field: %dx%d cells, %.0f m, generated in %.1f ms",
              desc.resolution, desc.resolution, desc.size, elapsedMs(t0));
     }
@@ -73,6 +84,7 @@ void Scene::setTerrain(bool hasTerrain, const ed::TerrainDesc& descIn) {
         // 格子」の組を見ることが無い。ロック順は objects → terrainField（末端）。
         std::lock_guard<std::mutex> lk(objectsMutex_);
         terrain_ = desc;  // 無しでも値は覚えておく（/scene の欄に出す）
+        terrainNoise_ = noise;
         hasTerrain_ = hasTerrain;
         if (shapeChanged || (had && !hasTerrain)) {
             std::lock_guard<std::mutex> fl(terrainFieldMutex_);
@@ -260,7 +272,10 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
     } else {
         editor_.setStatus(on ? "テレインを有効にしました" : "テレインを無効にしました");
     }
-    setTerrain(on, t);
+    // ノイズは今のまま（仮、A4。旧形式で開いた丘を大きさの変更でも保つ。
+    // A6 で形の変更を格子の置き直しにしたら消す）。
+    const ed::TerrainNoiseParams noise = terrainNoise_;
+    setTerrain(on, t, &noise);
     return;
 }
 

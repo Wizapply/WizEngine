@@ -609,7 +609,19 @@ void Scene::loadDocument(const ed::SceneDocument& doc) {
     // ジョイント・ケーブル・設定）を全部入れたここで呼ぶ - 途中の状態で
     // 系の種類を判定して二度作り直さないため。同じテレインのままの読み直し
     // （形が同じ）なら格子も当たり判定も作り直さない。
-    setTerrain(doc.hasTerrain, doc.hasTerrain ? doc.terrain : ed::TerrainDesc{});
+    // **仮**（A4。A5 の setTerrainFromDocument = .terrain の解決と読込に置き換える）:
+    // 旧形式（data 無し）は terrainLegacy の大きさとノイズで生成し（同梱の
+    // terrain.xml が今までどおりの丘で開く）、新形式はまだファイルを読まずに
+    // 既定の大きさで平ら。
+    // 新旧の判定は fromXml の 1 か所（terrainLegacy.used）。
+    const ed::TerrainLegacyDesc& legacy = doc.terrainLegacy;
+    const ed::TerrainNoiseParams* noise = nullptr;  // null = 平ら
+    if (doc.hasTerrain && legacy.used) {
+        LOGI("scene", "terrain: legacy <terrain> without data - generating it from the "
+                      "attributes (%s)", legacy.hasNoise ? "noise" : "flat");
+        if (legacy.hasNoise) noise = &legacy.noise;
+    }
+    setTerrain(doc.hasTerrain, doc.hasTerrain ? doc.terrain : ed::TerrainDesc{}, noise);
 
     // 文書が Core 専用の機能を使っていれば系を切り替える（使わなくなって
     // いれば既定へ戻す）。setTerrain の中で済んでいるので、ここは確認だけ。

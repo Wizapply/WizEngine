@@ -489,7 +489,10 @@ private:
     void syncGround();
 
     // テレインの差し替え（PHYSICS thread）。desc は clampTerrain してから
-    // 使う。形（大きさ・解像度・高さ・位置・ノイズ）が変わったら高さ格子と
+    // 使う。noise は高さ格子を作るノイズ（null = 平ら）。**仮の口**（A4）:
+    // 格子はまだ .terrain から読まず、desc の大きさと noise から作る（A5 で
+    // ファイルの読込に、A6 で形の変更・ノイズ生成に置き換える）。
+    // 形（大きさ・解像度・高さ・位置・ノイズ）が変わったら高さ格子と
     // 描画の dirty はすぐ更新する。表面（テクスチャ・色・材質）だけの変更は
     // 描画の dirty だけ。hasTerrain = false で両方を消す（当たり判定も即外す）。
     // 当たり判定（自前の接触）は形が変わったらその場で張り直す（ゴーストに
@@ -497,7 +500,8 @@ private:
     // 最後に必ず syncBackend を呼ぶ（テレインは Core を要する）ので、読込では
     // 他の中身を作り終えてから呼ぶこと。系を作り直した場合は、その中
     // （rebuildPhysicsWorld → rebuildTerrainBody）で当たり判定も組まれる。
-    void setTerrain(bool hasTerrain, const wizengine::editor::TerrainDesc& desc);
+    void setTerrain(bool hasTerrain, const wizengine::editor::TerrainDesc& desc,
+                    const wizengine::editor::TerrainNoiseParams* noise);
     // テレインの当たり判定（自前の接触。PhysicsWorld::setTerrain）を今の高さ
     // 格子で張り直す。テレインが無ければ接触を止めるだけ（ゴーストは
     // PhysicsWorld が持ち続ける）。PHYSICS thread（objectsMutex_ を持たずに呼ぶこと）。
@@ -581,6 +585,10 @@ private:
     // メッシュ化とアップロード・テクスチャの読込）は**ロックを外してから**
     // 行う（環境光と同じ）。
     wizengine::editor::TerrainDesc terrain_;
+    // 今の高さ格子を作ったノイズ（octaves 0 = 平ら）。PHYSICS スレッドだけが
+    // 読み書きする。**仮**（A4）: 旧形式の文書の丘を、edit.terrain で大きさを
+    // 変えたときも保つためだけに持つ。A6（形の変更 = 格子の置き直し）で消す。
+    wizengine::editor::TerrainNoiseParams terrainNoise_;
     bool hasTerrain_ = false;
     bool terrainMeshDirty_ = false;     // 形が変わった = チャンクを作り直す
     bool terrainSurfaceDirty_ = false;  // 表面（テクスチャ・色・材質）だけ

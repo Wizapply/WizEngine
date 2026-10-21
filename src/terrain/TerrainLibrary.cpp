@@ -57,8 +57,9 @@ std::string describe(const std::string& dataName, const TerrainGuid& guid) {
 
 // 一覧に入れられない名前なら、その理由（英語）。入れられるなら空。
 std::string unusableNameReason(const std::string& name) {
+    if (isSafeName(name)) return {};
+    if (name.empty()) return "name is empty";
     const std::string safe = sanitizeSafeName(name);
-    if (safe == name) return {};
     if (name.size() > kSafeNameMaxLength && safe == name.substr(0, kSafeNameMaxLength))
         return "name is too long (max " + std::to_string(kSafeNameMaxLength) + " characters)";
     return "name must use only letters, digits, '_' and '-'";
@@ -246,7 +247,7 @@ std::string TerrainLibrary::uniqueName(const std::string& base) const {
 }
 
 std::filesystem::path TerrainLibrary::pathFor(const std::string& name) const {
-    if (name.empty() || sanitizeSafeName(name) != name) return {};
+    if (!isSafeName(name)) return {};
     return dir_ / (name + kExtension);
 }
 

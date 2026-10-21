@@ -1412,7 +1412,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         // ボディもテレインも無くなれば既定へ戻す）ので、ステータスの後に
         // 置く - 系を切り替えたときは「物理を切り替えました」が残る（以前の
         // 末尾の syncBackend と同じ順序）。
-        setTerrain(false, ed::TerrainDesc{});
+        setTerrain(false, ed::TerrainDesc{}, nullptr);
         snapshot();
         return;
     }

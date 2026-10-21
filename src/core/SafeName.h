@@ -24,4 +24,10 @@ inline std::string sanitizeSafeName(const std::string& name) {
     return out;
 }
 
+// 正規化済みの名前か（空でなく、sanitizeSafeName で変わらない）。ファイル名に
+// する前の関所（テレイン名の検査と TerrainLibrary のパスの組み立て）が使う。
+inline bool isSafeName(const std::string& name) {
+    return !name.empty() && sanitizeSafeName(name) == name;
+}
+
 }  // namespace wizengine
