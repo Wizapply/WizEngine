@@ -372,7 +372,9 @@ set(WIZ_TERRAIN_SOURCES
     src/terrain/HeightFieldOps.cpp
     src/terrain/TerrainContact.cpp
     src/terrain/TerrainFile.cpp
-    src/terrain/TerrainNoise.cpp)
+    src/terrain/TerrainLibrary.cpp
+    src/terrain/TerrainNoise.cpp
+    src/terrain/TerrainUndo.cpp)
 
 add_executable(wizengine
     src/main.cpp

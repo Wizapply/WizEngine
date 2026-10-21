@@ -1,8 +1,12 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 
 namespace wizengine {
+
+// 正規化した名前の最大の長さ（文字数）。
+constexpr std::size_t kSafeNameMaxLength = 64;
 
 // 名前の正規化（英数字と _ - だけ・64 文字まで）。ファイル名にも文書内の
 // 参照名にも使える文字だけを残す（".." や "/" を弾き、保存先のフォルダの
@@ -15,7 +19,7 @@ inline std::string sanitizeSafeName(const std::string& name) {
         const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                         (c >= '0' && c <= '9') || c == '_' || c == '-';
         if (ok) out.push_back(c);
-        if (out.size() >= 64) break;
+        if (out.size() >= kSafeNameMaxLength) break;
     }
     return out;
 }
