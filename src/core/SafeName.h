@@ -30,4 +30,23 @@ inline bool isSafeName(const std::string& name) {
     return !name.empty() && sanitizeSafeName(name) == name;
 }
 
+// 空いている名前の採番の規則（唯一の定義）: base が空いていれば base、
+// ふさがっていれば base_2, base_3 … を順に taken(name) に聞いて最初の空き。
+// 候補が maxLength を超えるときは接尾辞が入るよう base 側を削る。上限
+// （_999）まで探しても空かなければ空文字列。TerrainLibrary::uniqueName と
+// core/Trash（.trash/ の名前の衝突）が使う。
+template <class Taken>
+std::string firstFreeName(const std::string& base, std::size_t maxLength, Taken taken) {
+    constexpr int kMaxSuffix = 999;
+    const std::string first = base.substr(0, maxLength);
+    if (!taken(first)) return first;
+    for (int n = 2; n <= kMaxSuffix; ++n) {
+        const std::string suffix = "_" + std::to_string(n);
+        if (suffix.size() > maxLength) break;
+        const std::string candidate = base.substr(0, maxLength - suffix.size()) + suffix;
+        if (!taken(candidate)) return candidate;
+    }
+    return {};
+}
+
 }  // namespace wizengine

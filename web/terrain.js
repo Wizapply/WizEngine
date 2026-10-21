@@ -192,7 +192,7 @@
       const dirty = cur && e.cur.dirty;
       const title = '解像度 ' + f.resolution + ' ／ 全幅 ' + round2(f.size) +
         ' m ／ 高さ ' + round2(f.height) + ' m' + (dirty ? '（未保存）' : '') +
-        '\nダブルクリック: 開く ／ 右クリック: メニュー（名前の変更）';
+        '\nダブルクリック: 開く ／ 右クリック: メニュー（名前の変更・削除）';
       // 名前は属性から読む（JS 文字列に埋め込まない）。
       html += '<div class="asItem' + (cur ? ' sel' : '') +
         '" data-terrain="' + ndEsc(f.name) + '" title="' + ndEsc(title) +
@@ -268,6 +268,7 @@
   // 組み直されうるので、タイルは選んだ時点で名前から引き直す。
   function terrainMenuItems(name) {
     const isCur = sameTerrainName(name, currentTerrain().name);
+    const simulating = !!sceneData && sceneData.mode !== 'editor';
     const tileNow = () => Array.from(
       document.querySelectorAll('#assetList [data-terrain]'))
       .find((el) => el.dataset.terrain === name);
@@ -276,7 +277,24 @@
       { label: '✎ 名前の変更', onClick: () => startTerrainRename(tileNow()) },
       { label: '開く', hint: isCur ? '開いています' : 'ダブルクリック',
         disabled: isCur, onClick: () => openTerrain(name) },
+      { sep: true },
+      // 今のテレイン（保存前でファイルの無いタイルも）とシミュレート中は
+      // 消せない。最後の守りはサーバー（Scene::deleteTerrain）。
+      { label: '🗑 削除', danger: true, disabled: isCur || simulating,
+        hint: simulating ? 'エディタモードでだけ削除できます'
+          : isCur ? '使っているテレインは削除できません' : '',
+        onClick: () => deleteTerrain(name) },
     ];
+  }
+  // ごみ箱へ移す（OK のときだけ送る）。一覧はサーバーのキャッシュから
+  // 次のポーリングで消える。
+  function deleteTerrain(name) {
+    if (!confirm('テレイン「' + name + '」をごみ箱へ移しますか？\n' +
+                 'このテレインを使っているシーンは、開くと平らになります' +
+                 '（ローカルのドライブなら、ごみ箱から戻せます）')) {
+      return;
+    }
+    send('edit.terrain', { delete: name });
   }
   // 取り替える前の確認。戻り値は送るキーに足すもの（null = やめる）。
   // OK を受けたときだけ discard:true を付ける: サーバーは未保存の変更があれば

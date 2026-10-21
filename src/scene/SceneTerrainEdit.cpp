@@ -178,11 +178,15 @@ std::shared_ptr<const wt::HeightField> Scene::loadTerrainField(ed::TerrainDesc& 
     return flatTerrainField(desc);
 }
 
+bool Scene::isCurrentTerrain(const std::string& name) const {
+    return hasTerrain_ && wt::sameTerrainName(terrain_.data, name);
+}
+
 bool Scene::sameTerrainIdentity(const ed::TerrainDesc& a) const {
     if (!hasTerrain_) return false;
     // 背番号は正規化済み（clampTerrain = 小文字の 32 桁）なので文字列で比べてよい。
     if (!a.guid.empty() && !terrain_.guid.empty()) return a.guid == terrain_.guid;
-    return !a.data.empty() && wt::sameTerrainName(a.data, terrain_.data);
+    return !a.data.empty() && isCurrentTerrain(a.data);
 }
 
 void Scene::setTerrainFromDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
@@ -253,7 +257,7 @@ void Scene::newTerrain(const std::string& base) {
 }
 
 void Scene::openTerrain(const std::string& name) {
-    if (hasTerrain_ && wt::sameTerrainName(terrain_.data, name)) return;  // 開いている
+    if (isCurrentTerrain(name)) return;  // 開いている
     // 一覧の正式な綴り（"HILL" と送られても "hill"）。名前だけの解決（規則 D）は
     // 名前のファイルがあればその名前を返す。エクスプローラーで足したファイルも
     // 開けるよう、引く前に一覧を取り直す。
@@ -273,10 +277,10 @@ void Scene::openTerrain(const std::string& name) {
 }
 
 void Scene::renameTerrain(const std::string& from, const std::string& to) {
-    const bool current = hasTerrain_ && wt::sameTerrainName(terrain_.data, from);
+    const bool current = isCurrentTerrain(from);
     wt::TerrainRenameResult r;
     const std::string toName = wizengine::sanitizeSafeName(to);
-    if (hasTerrain_ && !current && wt::sameTerrainName(toName, terrain_.data)) {
+    if (!current && isCurrentTerrain(toName)) {
         // 今のテレインの名前（未保存でファイルが無くても）は使用中: 改名させると
         // 次の保存でそのファイルを今の格子で上書きしてしまう。
         r.status = wt::TerrainRenameStatus::AlreadyExists;
@@ -322,6 +326,35 @@ void Scene::renameTerrain(const std::string& from, const std::string& to) {
     }
     LOGW("scene", "terrain rename '%s' -> '%s': %s", from.c_str(), to.c_str(),
          r.reason.c_str());
+}
+
+// ---- 削除 ---------------------------------------------------------------------
+
+void Scene::deleteTerrain(const std::string& name) {
+    // ファイルを消すのは設計の作業（名前の変更と違い、シミュレート中は受けない）。
+    if (editor_.mode() == ed::AppMode::Simulate) {
+        editor_.setStatus("テレインの削除はエディタモードでだけできます");
+        return;
+    }
+    // 今のテレインは消さない（消すと次の保存で同じ名前のファイルが書き戻る）。
+    if (isCurrentTerrain(name)) {
+        editor_.setStatus("使っているテレインは削除できません（別のテレインを開くか外してから）");
+        return;
+    }
+    const wt::TerrainRemoveResult r = terrainLibrary_->remove(name);
+    switch (r.status) {
+        case wt::TerrainRemoveStatus::Ok:
+            LOGI("scene", "terrain '%s' moved to the trash", r.name.c_str());
+            editor_.setStatus("テレイン " + r.name + " をごみ箱へ移しました");
+            return;
+        case wt::TerrainRemoveStatus::NotFound:
+            editor_.setStatus("テレイン " + r.name + " が見つかりません");
+            break;
+        case wt::TerrainRemoveStatus::IoError:
+            editor_.setStatus("テレイン " + r.name + " をごみ箱へ移せません（コンソール参照）");
+            break;
+    }
+    LOGW("scene", "terrain delete '%s': %s", r.name.c_str(), r.reason.c_str());
 }
 
 // ---- 保存 ---------------------------------------------------------------------
@@ -376,18 +409,11 @@ void Scene::refreshTerrainFiles() {
         LOGW("scene", "terrain files: %s", w.c_str());
 }
 
-// edit.terrain（PHYSICS スレッド）。applyEditorOp の "terrain" 分岐から呼ぶ。
-// キーで分岐: refresh / rename{from,to} / open / new / generate{seed,...}
-// （同じメッセージの部分更新を先に当てる）/ undo / enabled(+name) / それ以外は
-// 部分更新。open と new は、保存していない変更があれば discard:true が付いて
-// いるときだけ取り替える（ブラウザの dirty 表示が古くても黙って捨てない）。
-// モードによらず受ける（名前の変更もシミュレート中に受ける）。
-void Scene::applyTerrainOp(const EditorState::Op& op) {
-    const nlohmann::json& a = op.args;
-    // 送られてきたキーだけ上書きした形（edit.ground と同じ部分更新）。
-    const auto patched = [this, &a]() {
-        return ed::clampTerrain(ed::terrainFromJson(a, terrain_));
-    };
+// edit.terrain のうちファイルを扱う分岐（refresh / rename{from,to} / delete /
+// open / new）。扱ったら true（applyTerrainOp はそこで終わる）。
+// open と new は、保存していない変更があれば discard:true が付いているときだけ
+// 取り替える（ブラウザの dirty 表示が古くても黙って捨てない）。
+bool Scene::applyTerrainFileOp(const nlohmann::json& a) {
     // 取り替える前の守り: 未保存の変更があり、捨てる確認が無ければ止める。
     const auto keepUnsaved = [this, &a]() {
         if (!terrainDirty_ || argIsTrue(a, "discard")) return false;
@@ -397,27 +423,47 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
     if (argIsTrue(a, "refresh")) {
         // ブラウザのタブに戻ったとき（focus）に来る。ステータスは変えない。
         refreshTerrainFiles();
-        return;
+        return true;
     }
     if (const auto it = a.find("rename"); it != a.end() && it->is_object()) {
         renameTerrain(ed::jsonString(*it, "from", ""), ed::jsonString(*it, "to", ""));
-        return;
+        return true;
+    }
+    if (const auto it = a.find("delete"); it != a.end()) {
+        if (!it->is_string()) {
+            editor_.setStatus("削除の指定が正しくありません（delete はテレインの名前）");
+            return true;
+        }
+        deleteTerrain(it->get<std::string>());
+        return true;
     }
     if (a.contains("open")) {
         const std::string name = ed::jsonString(a, "open", "");
         // 開いているもの（openTerrain は何もしない）なら守りの文も出さない。
-        if (!(hasTerrain_ && wt::sameTerrainName(terrain_.data, name)) && keepUnsaved())
-            return;
-        openTerrain(name);
-        return;
+        if (isCurrentTerrain(name) || !keepUnsaved()) openTerrain(name);
+        return true;
     }
     // 新規（テレインの有無によらず、今のテレインを平らな新しいテレインに取り替える。
     // 古いテレインのファイルは消さない）。値は名前の元（空ならシーン名）。
     if (a.contains("new")) {
-        if (keepUnsaved()) return;
-        newTerrain(ed::jsonString(a, "new", ""));
-        return;
+        if (!keepUnsaved()) newTerrain(ed::jsonString(a, "new", ""));
+        return true;
     }
+    return false;
+}
+
+// edit.terrain（PHYSICS スレッド）。applyEditorOp の "terrain" 分岐から呼ぶ。
+// ファイルの分岐（applyTerrainFileOp）のあとはキーで分岐: generate{seed,...}
+// （同じメッセージの部分更新を先に当てる）/ undo / enabled(+name) / それ以外は
+// 部分更新。モードによらず受ける（名前の変更もシミュレート中に受ける）。delete
+// だけはエディタモードのみ（deleteTerrain が断る）。
+void Scene::applyTerrainOp(const EditorState::Op& op) {
+    const nlohmann::json& a = op.args;
+    if (applyTerrainFileOp(a)) return;
+    // 送られてきたキーだけ上書きした形（edit.ground と同じ部分更新）。
+    const auto patched = [this, &a]() {
+        return ed::clampTerrain(ed::terrainFromJson(a, terrain_));
+    };
     // generate / undo は形がおかしくても部分更新へ落とさない（成功に見せない）。
     if (const auto it = a.find("generate"); it != a.end()) {
         if (!it->is_object()) {

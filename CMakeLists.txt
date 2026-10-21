@@ -316,6 +316,7 @@ set(WIZ_CORE_SOURCES
     src/core/CpuAffinity.cpp
     src/core/Log.cpp
     src/core/PortScan.cpp
+    src/core/Trash.cpp
     src/core/Versions.cpp)
 set(WIZ_PHYSICS_SOURCES
     src/physics/MeshCollision.cpp
@@ -616,7 +617,8 @@ endif()
 if(WIN32)
     # Filament's GL loader (bluegl) calls into Windows OpenGL/GDI; ws2_32 for httplib.
     # shlwapi: utils::Path (pulled in by gltfio) calls PathIsRelative.
-    target_link_libraries(wizengine PRIVATE opengl32 gdi32 user32 ws2_32 shlwapi)
+    # shell32: SHFileOperationW (src/core/Trash.cpp, the recycle bin).
+    target_link_libraries(wizengine PRIVATE opengl32 gdi32 user32 ws2_32 shlwapi shell32)
 endif()
 
 # ---------------------------------------------------------------------------

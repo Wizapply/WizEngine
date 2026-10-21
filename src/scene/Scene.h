@@ -359,8 +359,12 @@ private:
     void enterMode(wizengine::editor::AppMode target);
     void applyEditorOp(const EditorState::Op& op);
     // applyEditorOp の "terrain" 分岐の中身（edit.terrain、SceneTerrainEdit.cpp）。
-    // キーで分岐: refresh / rename{from,to} / open / enabled(+name) / 部分更新。
+    // ファイルの分岐（applyTerrainFileOp）のあと、generate / undo / enabled(+name) /
+    // 部分更新。
     void applyTerrainOp(const EditorState::Op& op);
+    // edit.terrain のファイルを扱う分岐（refresh / rename / delete / open / new）。
+    // 扱ったら true。
+    bool applyTerrainFileOp(const nlohmann::json& a);
     // 設計値からオブジェクトを1個作る。番号を返す。
     std::size_t createObject(const wizengine::editor::BodyDesc& desc);
     // プレハブ編集モードのオブジェクトに付いているプレハブ名（無ければ空）。
@@ -557,6 +561,9 @@ private:
     // 注意は terrainLoadCaveat_ に、理由（英語）は res.warnings に入れる。
     std::shared_ptr<const wizengine::terrain::HeightField> loadTerrainField(
         wizengine::editor::TerrainDesc& desc, wizengine::terrain::TerrainResolution& res);
+    // name が今のテレインの名前か（テレインがあり、大文字・小文字を問わず一致）。
+    // 未保存でファイルが無いテレインも含む。「今のテレインか」の唯一の判定。
+    bool isCurrentTerrain(const std::string& name) const;
     // a が今のテレインと同じものか（背番号が両方にあれば背番号、無ければ名前）。
     bool sameTerrainIdentity(const wizengine::editor::TerrainDesc& a) const;
     // 直前の読込で出たテレインの注意（ステータスの末尾に足す日本語 1 文）を返して
@@ -583,6 +590,9 @@ private:
     // 今のテレインの名前（未保存でファイルが無くても）へ別のテレインを改名する
     // のは「既にある」と同じエラー（次の保存でそのファイルを上書きしてしまう）。
     void renameTerrain(const std::string& from, const std::string& to);
+    // ファイルを OS のごみ箱へ移す（TerrainLibrary::remove）。エディタモードだけ。
+    // 今のテレイン（未保存でファイルが無くても）は消さない。
+    void deleteTerrain(const std::string& name);
     // 保存（"save" の document() の前）。テレインがあり、dirty かファイルが
     // 無いときだけ書く。名前が無ければ sceneName から採る。書いた名前を
     // written に（書かなければ空）。失敗なら false と英語の reason。

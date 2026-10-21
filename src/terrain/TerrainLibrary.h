@@ -74,7 +74,21 @@ struct TerrainRenameResult {
     bool ok() const { return status == TerrainRenameStatus::Ok; }
 };
 
-// 所有者は Scene（refresh / rename は物理スレッド）。entries() だけは他の
+// 削除（ごみ箱へ移す）の結果。
+enum class TerrainRemoveStatus {
+    Ok,
+    NotFound,  // name のファイルが無い（名前が不正なときも）
+    IoError,   // ごみ箱へ移せなかった
+};
+
+struct TerrainRemoveResult {
+    TerrainRemoveStatus status = TerrainRemoveStatus::NotFound;
+    std::string name;    // 一覧の正式な綴り（一覧に無ければ頼まれた名前）
+    std::string reason;  // 英語。Ok なら空
+    bool ok() const { return status == TerrainRemoveStatus::Ok; }
+};
+
+// 所有者は Scene（refresh / rename / remove は物理スレッド）。entries() だけは他の
 // スレッド（HTTP）からも呼べる = キャッシュは mutex で守り、コピーを返す。
 class TerrainLibrary {
 public:
@@ -99,6 +113,11 @@ public:
     // 空いている）。
     TerrainRenameResult rename(const std::string& from, const std::string& to);
 
+    // ファイル name.terrain を OS のごみ箱へ移し（core/Trash.h の moveToTrash）、
+    // 一覧からその 1 件を外す。同じ背番号の別のファイルは残る。失敗したら
+    // 何も変えない。
+    TerrainRemoveResult remove(const std::string& name);
+
     // base（正規化する。空なら "terrain"）が空いていればそれ、ふさがって
     // いれば base_2, base_3 …。64 文字に収まるよう base 側を削る。
     std::string uniqueName(const std::string& base) const;
@@ -110,6 +129,14 @@ private:
     // 名前がふさがっているか（キャッシュとディスクの両方を見る）。except と
     // 同じ名前（大文字・小文字を問わず）のキャッシュは数えない。
     bool taken(const std::string& name, const std::string& except = {}) const;
+
+    // name のファイルのパス（ファイルがあるときだけ）。名前が不正・ファイルが
+    // 無ければ空のパスと英語の reason（rename / remove の NotFound の判定）。
+    std::filesystem::path existingFile(const std::string& name, std::string& reason) const;
+
+    // キャッシュの中の name の 1 件（綴りまで一致するもの、無ければ大文字・
+    // 小文字を問わず最初の 1 件）。無ければ end()。mutex_ を持って呼ぶ。
+    std::vector<TerrainEntry>::iterator findCached(const std::string& name);
 
     std::filesystem::path dir_;
     mutable std::mutex mutex_;  // entries_ だけを守る（ファイル操作の間は持たない）

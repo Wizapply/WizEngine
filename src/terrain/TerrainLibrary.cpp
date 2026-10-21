@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "core/SafeName.h"
+#include "core/Trash.h"
 
 namespace wizengine {
 namespace terrain {
@@ -195,11 +196,9 @@ TerrainRenameResult TerrainLibrary::rename(const std::string& from, const std::s
         r.reason = "terrain " + inQuotes(r.name) + " already exists";
         return r;
     }
-    const std::filesystem::path src = pathFor(from);
-    std::error_code ec;
-    if (src.empty() || !std::filesystem::is_regular_file(src, ec)) {
+    const std::filesystem::path src = existingFile(from, r.reason);
+    if (src.empty()) {
         r.status = TerrainRenameStatus::NotFound;
-        r.reason = "terrain file " + inQuotes(from) + " not found";
         return r;
     }
     // 置き換え先が既にあれば失敗にする（std::filesystem::rename は上書きする）。
@@ -214,6 +213,7 @@ TerrainRenameResult TerrainLibrary::rename(const std::string& from, const std::s
         r.reason = "terrain " + inQuotes(r.name) + " already exists";
         return r;
     }
+    std::error_code ec;
     std::filesystem::rename(src, dst, ec);
     if (ec) {
         r.status = TerrainRenameStatus::IoError;
@@ -222,28 +222,65 @@ TerrainRenameResult TerrainLibrary::rename(const std::string& from, const std::s
     }
     r.status = TerrainRenameStatus::Ok;
     std::lock_guard<std::mutex> lock(mutex_);
-    // 改名した 1 件だけを書き換える（綴りまで一致するもの、無ければ大文字・
-    // 小文字を問わず最初の 1 件）。背番号と見出しはそのまま。
-    auto it = std::find_if(entries_.begin(), entries_.end(),
-                           [&](const TerrainEntry& e) { return e.name == from; });
-    if (it == entries_.end())
-        it = std::find_if(entries_.begin(), entries_.end(), [&](const TerrainEntry& e) {
-            return sameTerrainName(e.name, from);
-        });
+    // 改名した 1 件だけを書き換える。背番号と見出しはそのまま。
+    const auto it = findCached(from);
     if (it != entries_.end()) it->name = r.name;
     std::sort(entries_.begin(), entries_.end(), byName);
     return r;
 }
 
+TerrainRemoveResult TerrainLibrary::remove(const std::string& name) {
+    TerrainRemoveResult r;
+    // 名前は一覧の正式な綴りで返す（"HILL" と頼まれても "hill"。一覧に無ければ
+    // 頼まれたまま）。
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = findCached(name);
+        r.name = it != entries_.end() ? it->name : name;
+    }
+    const std::filesystem::path path = existingFile(name, r.reason);
+    if (path.empty()) {
+        r.status = TerrainRemoveStatus::NotFound;
+        return r;
+    }
+    if (!moveToTrash(path, r.reason)) {
+        r.status = TerrainRemoveStatus::IoError;
+        return r;
+    }
+    r.status = TerrainRemoveStatus::Ok;
+    std::lock_guard<std::mutex> lock(mutex_);
+    // 消した 1 件だけを外す（同じ背番号の別のファイルは残す）。
+    const auto it = findCached(name);
+    if (it != entries_.end()) entries_.erase(it);
+    return r;
+}
+
+std::filesystem::path TerrainLibrary::existingFile(const std::string& name,
+                                                   std::string& reason) const {
+    const std::filesystem::path path = pathFor(name);
+    std::error_code ec;
+    if (path.empty() || !std::filesystem::is_regular_file(path, ec)) {
+        reason = "terrain file " + inQuotes(name) + " not found";
+        return {};
+    }
+    return path;
+}
+
+std::vector<TerrainEntry>::iterator TerrainLibrary::findCached(const std::string& name) {
+    auto it = std::find_if(entries_.begin(), entries_.end(),
+                           [&](const TerrainEntry& e) { return e.name == name; });
+    if (it == entries_.end())
+        it = std::find_if(entries_.begin(), entries_.end(), [&](const TerrainEntry& e) {
+            return sameTerrainName(e.name, name);
+        });
+    return it;
+}
+
 std::string TerrainLibrary::uniqueName(const std::string& base) const {
     std::string name = sanitizeSafeName(base);
     if (name.empty()) name = "terrain";
-    if (!taken(name)) return name;
-    for (int n = 2;; ++n) {
-        const std::string suffix = "_" + std::to_string(n);
-        const std::string candidate = name.substr(0, kSafeNameMaxLength - suffix.size()) + suffix;
-        if (!taken(candidate)) return candidate;
-    }
+    return firstFreeName(name, kSafeNameMaxLength,
+                         [this](const std::string& n) { return taken(n); });
 }
 
 std::filesystem::path TerrainLibrary::pathFor(const std::string& name) const {
