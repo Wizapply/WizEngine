@@ -123,10 +123,8 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     // 地面と環境光（Inspector の World 節が編集する）。
     j["ground"] = ed::toJson(ground_);
     j["environment"] = ed::toJson(environment_);
-    // テレイン（World 節の Terrain 欄）。値は無しのときも直前の設定を出す
-    // （チェックを入れ直したときに欄が既定値へ飛ばないように）。
-    j["hasTerrain"] = hasTerrain_;
-    j["terrain"] = ed::toJson(terrain_);
+    // テレイン（World 節の Terrain 欄とアセットパネルのタイル）。
+    j.update(terrainJson());
     // 描画設定（Inspector の「描画」節）。文書の <visual> と同じ値。
     j["render"] = ed::toJson(render_);
     j["objects"] = nlohmann::json::array();
@@ -452,7 +450,7 @@ std::string Scene::documentXml() {
     return ed::toXmlText(document());
 }
 
-void Scene::loadDocument(const ed::SceneDocument& doc) {
+void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     // いま在るものを全部畳んでから作り直す。番号は 0 から振り直されるので、
     // 掴んでいる選択も落とす。
     removeAllCables();
@@ -605,26 +603,14 @@ void Scene::loadDocument(const ed::SceneDocument& doc) {
     }
 
     // テレイン。節の無い文書はテレイン無し（前のシーンのテレインは消す）。
-    // setTerrain は最後に syncBackend を呼ぶので、他の中身（オブジェクト・
-    // ジョイント・ケーブル・設定）を全部入れたここで呼ぶ - 途中の状態で
-    // 系の種類を判定して二度作り直さないため。同じテレインのままの読み直し
-    // （形が同じ）なら格子も当たり判定も作り直さない。
-    // **仮**（A4。A5 の setTerrainFromDocument = .terrain の解決と読込に置き換える）:
-    // 旧形式（data 無し）は terrainLegacy の大きさとノイズで生成し（同梱の
-    // terrain.xml が今までどおりの丘で開く）、新形式はまだファイルを読まずに
-    // 既定の大きさで平ら。
-    // 新旧の判定は fromXml の 1 か所（terrainLegacy.used）。
-    const ed::TerrainLegacyDesc& legacy = doc.terrainLegacy;
-    const ed::TerrainNoiseParams* noise = nullptr;  // null = 平ら
-    if (doc.hasTerrain && legacy.used) {
-        LOGI("scene", "terrain: legacy <terrain> without data - generating it from the "
-                      "attributes (%s)", legacy.hasNoise ? "noise" : "flat");
-        if (legacy.hasNoise) noise = &legacy.noise;
-    }
-    setTerrain(doc.hasTerrain, doc.hasTerrain ? doc.terrain : ed::TerrainDesc{}, noise);
+    // 最後に syncBackend を呼ぶので、他の中身（オブジェクト・ジョイント・
+    // ケーブル・設定）を全部入れたここで呼ぶ - 途中の状態で系の種類を判定して
+    // 二度作り直さないため。XML の適用（keepSameTerrain）で同じテレインなら
+    // 格子も当たり判定も作り直さない。
+    setTerrainFromDocument(doc, keepSameTerrain);
 
     // 文書が Core 専用の機能を使っていれば系を切り替える（使わなくなって
-    // いれば既定へ戻す）。setTerrain の中で済んでいるので、ここは確認だけ。
+    // いれば既定へ戻す）。setTerrainFromDocument の中で済んでいるので、ここは確認だけ。
     // シミュレート中ならジョイントとケーブルも張り直す。
     syncBackend();
     if (editor_.mode() == ed::AppMode::Simulate) {

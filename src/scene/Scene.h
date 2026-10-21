@@ -27,6 +27,9 @@ namespace wizengine {
 class Renderer;
 namespace terrain {
 class HeightField;
+class TerrainLibrary;
+class TerrainUndoStack;
+struct TerrainResolution;
 }
 }
 
@@ -41,8 +44,10 @@ class HeightField;
 // Engine defaults live in SceneConfig.h; scene content (objects, joints,
 // events) lives in the scene document (assets/scenes/*.xml). The
 // implementation is split by concern: Scene.cpp (build / step / render sync),
-// SceneEdit.cpp (editor ops), SceneEvents.cpp (grab + event graphs) and
-// SceneSerialize.cpp (document + browser JSON); SceneInternal.h is shared.
+// SceneEdit.cpp (editor ops), SceneEvents.cpp (grab + event graphs),
+// SceneSerialize.cpp (document + browser JSON), SceneTerrain.cpp (terrain
+// grid / collision / render sync) and SceneTerrainEdit.cpp (terrain ops and
+// .terrain file I/O); SceneInternal.h is shared.
 //
 // ---- 2つのモード ----------------------------------------------------------
 // エディタモードは物理を進めない。オブジェクトを置き、大きさや質量を決め、
@@ -68,6 +73,9 @@ public:
     // エディタの「カメラを追加」もこの数まで（1〜16 に丸める）。
     Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
           std::size_t maxCameras = 0);
+    // .cpp で定義する（テレインの窓口と Undo を前方宣言の型の unique_ptr で
+    // 持つため。完全な型が見える所で壊す）。
+    ~Scene();
 
     // The scene's cameras. Each one has its own Filament view and its own
     // browser endpoint; index 0 is the default camera. Input events are routed
@@ -348,7 +356,8 @@ private:
     // ---- エディタの実装（すべて PHYSICS スレッド）------------------------
     void enterMode(wizengine::editor::AppMode target);
     void applyEditorOp(const EditorState::Op& op);
-    // applyEditorOp の "terrain" 分岐の中身（edit.terrain、SceneTerrain.cpp）。
+    // applyEditorOp の "terrain" 分岐の中身（edit.terrain、SceneTerrainEdit.cpp）。
+    // キーで分岐: refresh / rename{from,to} / open / enabled(+name) / 部分更新。
     void applyTerrainOp(const EditorState::Op& op);
     // 設計値からオブジェクトを1個作る。番号を返す。
     std::size_t createObject(const wizengine::editor::BodyDesc& desc);
@@ -460,8 +469,10 @@ private:
     void restoreAuthoredPoses();
     // シミュレート設定を PhysicsWorld へ流し込む。
     void applySimSettings();
-    // 文書の中身で今のシーンを置き換える（読み込み・起動時のシーン指定）。
-    void loadDocument(const wizengine::editor::SceneDocument& doc);
+    // 文書の中身で今のシーンを置き換える（読み込み・起動時のシーン指定・XML の
+    // 適用）。keepSameTerrain = 文書のテレインが今のものと同じなら手元の格子を
+    // 保つ（XML の適用だけ。シーンの読込はファイルから読み直す）。
+    void loadDocument(const wizengine::editor::SceneDocument& doc, bool keepSameTerrain);
     // ジョイントの端点に使う物理ボディ番号。-1 は地面。
     std::size_t jointBodyId(int objectIndex) const;
 
@@ -488,20 +499,87 @@ private:
     // RENDER thread: 見える地面の作り直し（applyToRenderer のロック中）。
     void syncGround();
 
-    // テレインの差し替え（PHYSICS thread）。desc は clampTerrain してから
-    // 使う。noise は高さ格子を作るノイズ（null = 平ら）。**仮の口**（A4）:
-    // 格子はまだ .terrain から読まず、desc の大きさと noise から作る（A5 で
-    // ファイルの読込に、A6 で形の変更・ノイズ生成に置き換える）。
-    // 形（大きさ・解像度・高さ・位置・ノイズ）が変わったら高さ格子と
-    // 描画の dirty はすぐ更新する。表面（テクスチャ・色・材質）だけの変更は
-    // 描画の dirty だけ。hasTerrain = false で両方を消す（当たり判定も即外す）。
-    // 当たり判定（自前の接触）は形が変わったらその場で張り直す（ゴーストに
-    // 格子を渡し直すだけ。高さ格子の生成より軽い）ので、戻ったときは必ず今の格子と一致している。
+    // ---- テレイン（SceneTerrain.cpp、すべて PHYSICS thread）----------------
+    // publishTerrainField の指定: Undo の記録を残すか消すか。
+    enum class TerrainHistory { Keep, Clear };
+    // 同じく .terrain に書くべき変更（terrainDirty_）: そのまま / 立てる /
+    // 戻す（ファイルと一致している）。
+    enum class TerrainFileState { Keep, Dirty, Saved };
+    // 高さ格子の差し替え。**格子・描画の dirty・ファイルの dirty・Undo の消去を
+    // 触るのはここだけ**（保存の成功で dirty を戻す saveTerrainData を除く）。
+    // field = null ならテレイン無し（当たり判定も即外し、ファイルの dirty も
+    // 指定によらず戻す = 外した物に書く変更は無い）。
+    // desc はそのまま覚える（丸めない = 呼び手が clampTerrain 済み）。
+    // 格子が変わったら描画の dirty を立て、表面だけの変更は表面の dirty だけ。
     // 最後に必ず syncBackend を呼ぶ（テレインは Core を要する）ので、読込では
     // 他の中身を作り終えてから呼ぶこと。系を作り直した場合は、その中
     // （rebuildPhysicsWorld → rebuildTerrainBody）で当たり判定も組まれる。
-    void setTerrain(bool hasTerrain, const wizengine::editor::TerrainDesc& desc,
-                    const wizengine::editor::TerrainNoiseParams* noise);
+    // そうでなければ、格子が変わったか当たり判定が無いときにその場で張り直す
+    // （ゴーストに格子を渡し直すだけ）ので、戻ったときは必ず今の格子と一致している。
+    void publishTerrainField(const wizengine::editor::TerrainDesc& desc,
+                             std::shared_ptr<const wizengine::terrain::HeightField> field,
+                             TerrainHistory history, TerrainFileState file);
+    // 形の変更（size / pos = 値を保って置き直し、resolution = 再サンプル、
+    // height = 比例伸縮）。.terrain が持つ形（size / resolution / height）が
+    // 変われば Undo を消してファイルの dirty を立てる。pos だけなら格子を置き
+    // 直すだけ（Undo もファイルもそのまま）。形が同じなら表面だけ（テレインが
+    // 無ければ値を覚えるだけ）。
+    void reshapeTerrain(const wizengine::editor::TerrainDesc& next);
+
+    // ---- テレインの出入り（SceneTerrainEdit.cpp、すべて PHYSICS thread）-------
+    // 文書の <terrain> から今のテレインを作る（loadDocument から）。
+    // keepSameTerrain かつ同じテレイン（sameTerrainIdentity）なら格子を保って
+    // pos と表面だけ取る、旧形式ならノイズで一度生成、新形式なら .terrain を
+    // 解決して読む。
+    void setTerrainFromDocument(const wizengine::editor::SceneDocument& doc,
+                                bool keepSameTerrain);
+    // desc.data / guid を assets/terrains/ で解決して格子を読む（desc の data /
+    // guid / size / resolution / height を読んだ結果で埋める）。res.dirty なら
+    // 平らな格子（ファイルの dirty で出すこと）:
+    //   * ファイルが無い → 名前と解決した背番号のまま（次の保存でできる）。
+    //   * ファイルはあるが使えない（読めない・形が clampTerrain の範囲外・
+    //     背番号が全部 0）→ そのファイルは使わず上書きもしない = 新しい名前と
+    //     背番号（fillTerrainIdentity）。
+    // 注意は terrainLoadCaveat_ に、理由（英語）は res.warnings に入れる。
+    std::shared_ptr<const wizengine::terrain::HeightField> loadTerrainField(
+        wizengine::editor::TerrainDesc& desc, wizengine::terrain::TerrainResolution& res);
+    // a が今のテレインと同じものか（背番号が両方にあれば背番号、無ければ名前）。
+    bool sameTerrainIdentity(const wizengine::editor::TerrainDesc& a) const;
+    // 直前の読込で出たテレインの注意（ステータスの末尾に足す日本語 1 文）を返して
+    // 消す。無ければ空。terrainCombineCaveat と同じ使い方。
+    std::string terrainLoadCaveat();
+    // desc の名前が空なら base から空いている名前（uniqueName）を、背番号が空なら
+    // 新しい背番号を入れる（空でない方はそのまま）。新しいテレインの名前と背番号を
+    // 決める唯一の口: 新規・旧形式の読込・使えないファイルは両方を空にしてから
+    // 呼び、保存は欠けている方だけを埋める。
+    void fillTerrainIdentity(wizengine::editor::TerrainDesc& desc,
+                             const std::string& base) const;
+    // 名前と背番号を新しく決めて（fillTerrainIdentity）、ファイルの dirty を立てて
+    // 出す（Undo は消す）。
+    // 付けた名前を返す。
+    std::string publishNewTerrain(wizengine::editor::TerrainDesc desc,
+                           std::shared_ptr<const wizengine::terrain::HeightField> field,
+                           const std::string& base);
+    // 新規（平ら・既定の大きさ・今の位置と表面）。名前は base（空ならシーン名）から。
+    void newTerrain(const std::string& base);
+    // 名前のファイルに差し替える（名前は一覧の綴り）。一覧に無い・使えない
+    // （読込と同じ判定）なら何も変えない。
+    void openTerrain(const std::string& name);
+    // ファイルの名前の変更（背番号は変えない）。今のテレインなら参照も変える。
+    // 今のテレインの名前（未保存でファイルが無くても）へ別のテレインを改名する
+    // のは「既にある」と同じエラー（次の保存でそのファイルを上書きしてしまう）。
+    void renameTerrain(const std::string& from, const std::string& to);
+    // 保存（"save" の document() の前）。テレインがあり、dirty かファイルが
+    // 無いときだけ書く。名前が無ければ sceneName から採る。書いた名前を
+    // written に（書かなければ空）。失敗なら false と英語の reason。
+    bool saveTerrainData(const std::string& sceneName, std::string& written,
+                         std::string& reason);
+    // /scene のテレイン部分（hasTerrain / terrain / terrainDirty / terrainFiles）。
+    // hierarchyJson（objectsMutex_ を持った HTTP スレッド）から呼ぶ。
+    nlohmann::json terrainJson() const;
+    // assets/terrains/ を走査し直す（警告は LOGW）。
+    void refreshTerrainFiles();
+
     // テレインの当たり判定（自前の接触。PhysicsWorld::setTerrain）を今の高さ
     // 格子で張り直す。テレインが無ければ接触を止めるだけ（ゴーストは
     // PhysicsWorld が持ち続ける）。PHYSICS thread（objectsMutex_ を持たずに呼ぶこと）。
@@ -580,15 +658,11 @@ private:
     bool envDirty_ = true;
     bool renderDirty_ = true;
     // テレイン（文書の <terrain>）。地面と同じ扱い: 書くのは物理スレッド
-    // （setTerrain）、desc・有無・dirty は objectsMutex_ の下。描画は RENDER
+    // （publishTerrainField）、desc・有無・dirty は objectsMutex_ の下。描画は RENDER
     // スレッドが applyToRenderer で dirty を拾い、重い作業（全チャンクの
     // メッシュ化とアップロード・テクスチャの読込）は**ロックを外してから**
     // 行う（環境光と同じ）。
     wizengine::editor::TerrainDesc terrain_;
-    // 今の高さ格子を作ったノイズ（octaves 0 = 平ら）。PHYSICS スレッドだけが
-    // 読み書きする。**仮**（A4）: 旧形式の文書の丘を、edit.terrain で大きさを
-    // 変えたときも保つためだけに持つ。A6（形の変更 = 格子の置き直し）で消す。
-    wizengine::editor::TerrainNoiseParams terrainNoise_;
     bool hasTerrain_ = false;
     bool terrainMeshDirty_ = false;     // 形が変わった = チャンクを作り直す
     bool terrainSurfaceDirty_ = false;  // 表面（テクスチャ・色・材質）だけ
@@ -606,6 +680,18 @@ private:
     // テレインの 2 つの警告の「前回知らせた内容」（繰り返さないため）。物理スレッド専用。
     std::string terrainPassThroughWarned_;
     std::string terrainCombineWarned_;
+    // 系が自前の接触を扱えず張れなかった（警告済み）。この間 publish は張り直さない。
+    // 張れたとき・releaseTerrainContact（外す・例外）で戻す。
+    bool terrainBackendWarned_ = false;
+    // 直前の読込の注意（terrainLoadCaveat が返して消す）。物理スレッド専用。
+    std::string terrainLoadCaveat_;
+    // 今のテレインに .terrain へ書いていない変更があるか（保存で書く目印）。
+    // 書くのは物理スレッド、/scene（HTTP）も読むので atomic。
+    std::atomic<bool> terrainDirty_{false};
+    // assets/terrains/ の窓口（一覧・解決・改名・採番）と編集の取り消しの記録。
+    // どちらも Scene が持つ（コンストラクタで作る）。
+    std::unique_ptr<wizengine::terrain::TerrainLibrary> terrainLibrary_;
+    std::unique_ptr<wizengine::terrain::TerrainUndoStack> terrainUndo_;
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る
     std::mutex poseMutex_;
     std::vector<BodyTransform> latestPoses_;  // one per box, in box order

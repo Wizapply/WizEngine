@@ -1368,7 +1368,9 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         for (const auto& w : warnings) {
             LOGW("editor", "xml apply: %s", w.c_str());
         }
-        loadDocument(doc);
+        // 同じテレインなら手元の格子を保つ（/scene.xml を貼り直しても未保存の
+        // 編集を捨てない）。
+        loadDocument(doc, true);
         // 保存名は触らない: 適用はファイルにしていない編集で、💾 保存して
         // 初めてファイルになる（モーダルの見出しにもそう書いてある）。
         editor_.setStatus(
@@ -1376,7 +1378,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                  ? std::string("XML を適用しました")
                  : "XML を適用しました（警告 " +
                        std::to_string(warnings.size()) + " 件 - コンソール参照）") +
-            terrainCombineCaveat(true));
+            terrainLoadCaveat() + terrainCombineCaveat(true));
         return;
     }
 
@@ -1408,11 +1410,13 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         editor_.setSceneFile("");
         editor_.setStatus("シーンを空にしました");
         // テレインも初期値（= 無し）へ。地面が既定へ戻るのと同じ扱い。
-        // setTerrain は最後に syncBackend を呼ぶ（Core 専用の物もソフト
+        // .terrain ファイルは消さない（外すだけ）。
+        // publishTerrainField は最後に syncBackend を呼ぶ（Core 専用の物もソフト
         // ボディもテレインも無くなれば既定へ戻す）ので、ステータスの後に
         // 置く - 系を切り替えたときは「物理を切り替えました」が残る（以前の
         // 末尾の syncBackend と同じ順序）。
-        setTerrain(false, ed::TerrainDesc{}, nullptr);
+        publishTerrainField(ed::TerrainDesc{}, nullptr, TerrainHistory::Clear,
+                            TerrainFileState::Saved);
         snapshot();
         return;
     }
@@ -1453,12 +1457,24 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             editor_.setStatus("保存名が不正です（英数字と _ - のみ）");
             return;
         }
+        // テレインのファイルを先に書く（名前が無ければここで決まる = XML に
+        // data="" を出さない）。書けなければ XML も書かない（XML だけ新しく
+        // なると、読み直したときに古い形を指す）。
+        std::string terrainWritten, reason;
+        if (!saveTerrainData(name, terrainWritten, reason)) {
+            LOGW("editor", "save '%s': terrain not written: %s", name.c_str(),
+                 reason.c_str());
+            editor_.setStatus("保存できません（テレインのファイルを書けません）: " + reason);
+            return;
+        }
         ed::SceneDocument doc = document();
         doc.model = name;  // <wizengine model="..."> に出る名前
-        std::string reason;
         if (EditorState::writeText(path, ed::toXmlText(doc), reason)) {
             editor_.setSceneFile(name);
-            editor_.setStatus("保存しました: " + name + ".xml");
+            editor_.setStatus("保存しました: " + name + ".xml" +
+                              (terrainWritten.empty()
+                                   ? std::string()
+                                   : "（テレイン " + terrainWritten + " を書きました）"));
         } else {
             editor_.setStatus("保存できません: " + reason);
         }
@@ -1477,14 +1493,14 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                               (reason.empty() ? name : reason));
             return;
         }
-        loadDocument(doc);
+        loadDocument(doc, false);  // テレインはファイルから読み直す
         editor_.setSceneFile(name);
         editor_.setStatus(
             (warnCount == 0
                  ? "読み込みました: " + name
                  : "読み込みました: " + name + "（警告 " +
                        std::to_string(warnCount) + " 件 - コンソール参照）") +
-            terrainCombineCaveat(true));
+            terrainLoadCaveat() + terrainCombineCaveat(true));
         editor_.refreshSceneFiles();
         return;
     }

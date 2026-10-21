@@ -202,7 +202,11 @@ bool Scene::dispatchCommand(std::size_t camIndex, const nlohmann::json& msg) {
 
 Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
              std::size_t maxCameras)
-    : physics_(physics), renderer_(renderer) {
+    : physics_(physics),
+      renderer_(renderer),
+      terrainLibrary_(std::make_unique<wizengine::terrain::TerrainLibrary>(
+          std::filesystem::u8path(wizengine::assetPath("terrains")))),
+      terrainUndo_(std::make_unique<wizengine::terrain::TerrainUndoStack>()) {
     // スロット数: exe 引数（--max-cameras、0 = 未指定）が優先、無ければ
     // SceneConfig.h の kMaxCameras。カメラ 0（エディタカメラ）は必ず要るので
     // 1 未満にはしない。極端な値はページ・受け口・スレッドを無駄に増やす
@@ -237,6 +241,10 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     addComponent(std::make_unique<CameraControlComponent>());
     addComponent(std::make_unique<BoxControlComponent>());
 }
+
+// 前方宣言の型（TerrainLibrary / TerrainUndoStack）の unique_ptr を壊すので、
+// 完全な型が見えるここで定義する。
+Scene::~Scene() = default;
 
 std::size_t Scene::pickBoxAt(double ndcX, double ndcY,
                              std::size_t cameraIndex) {
@@ -393,6 +401,9 @@ void Scene::build() {
     }
     editor_.setMode(kStartMode);
     editor_.refreshSceneFiles();
+    // テレインの一覧（アセットパネルのタイル）。起動シーンが読めなかった・
+    // テレインを持たないときも一覧は要るので、読込とは別に 1 回取る。
+    refreshTerrainFiles();
 
     // Must precede body creation.
     configurePhysicsDefaults();
@@ -441,10 +452,10 @@ void Scene::build() {
         ed::SceneDocument doc;
         std::string reason;
         if (readSceneDocument(kStartupScene, doc, reason)) {
-            loadDocument(doc);
+            loadDocument(doc, false);
             editor_.setSceneFile(kStartupScene);
             editor_.setStatus(std::string("読み込みました: ") + kStartupScene +
-                              terrainCombineCaveat(true));
+                              terrainLoadCaveat() + terrainCombineCaveat(true));
             LOGI("scene", "startup scene '%s' loaded (%zu bodies, %zu meshes)",
                  kStartupScene, doc.bodies.size(), doc.meshes.size());
         } else {
@@ -1602,7 +1613,7 @@ void Scene::applyToRenderer() {
     }
     // テレインも同じ扱い。全チャンクのメッシュ化（解像度 1024 で 16x16
     // チャンク）とテクスチャの読込はロックの外で。格子は dirty と同じロックの
-    // 中で取り出す（setTerrain が同じロックの中で差し替えるので組が揃う）。
+    // 中で取り出す（publishTerrainField が同じロックの中で差し替えるので組が揃う）。
     bool terrainMesh = false, terrainSurface = false, terrainOn = false;
     ed::TerrainDesc terrainPending;
     std::shared_ptr<const wizengine::terrain::HeightField> terrainFieldPending;

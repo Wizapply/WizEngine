@@ -649,6 +649,9 @@ struct EnvironmentDesc {
 // pos.y + height の間に収まる）。
 // 整数の属性の上限（JSON・XML の読み込みと clampTerrain が共通で使う）。
 constexpr int kTerrainMaxResolution = 1024;
+// 高さの上限の下限 (m)。0 にすると起伏が潰れて戻らず（比例伸縮の倍率が無限大）、
+// .terrain にも書けない（TerrainFile は正の高さだけを受ける）ので、0 より上に保つ。
+constexpr double kTerrainMinHeight = 0.1;
 constexpr int kTerrainMaxOctaves = 16;
 struct TerrainDesc {
     // テレイン名（assets/terrains/<data>.terrain）と背番号（32 桁の小文字 hex、
@@ -1165,6 +1168,13 @@ inline int jsonInt(const nlohmann::json& j, const char* key, int fallback) {
     const auto it = j.find(key);
     return (it != j.end() && it->is_number()) ? int(it->get<double>())
                                               : fallback;
+}
+// 文字列版（型が違えば fallback。nlohmann の value() のように投げない）。
+inline std::string jsonString(const nlohmann::json& j, const char* key,
+                              const std::string& fallback) {
+    if (!j.is_object()) return fallback;
+    const auto it = j.find(key);
+    return (it != j.end() && it->is_string()) ? it->get<std::string>() : fallback;
 }
 // 文字列の配列（イベントアセット名の一覧）。文字列以外の要素は捨てる
 // - /input は誰でも叩けるので、型を信じない、の同じ流儀。
@@ -2210,7 +2220,7 @@ inline TerrainNoiseParams clampTerrainNoise(TerrainNoiseParams n) {
 //   * resolution は 1〜1024（(1024 + 1)^2 頂点 ≒ 105 万。描画の三角形が
 //     200 万を超えると作り直しが重い）。チャンク数の上限との整合は Scene が見る。
 //   * size は 1〜4000 m（描画距離 kFarPlane 2000 m の 2 倍まで）、height は
-//     0〜1000 m、pos は各軸 ±10000 m。
+//     kTerrainMinHeight〜1000 m、pos は各軸 ±10000 m。
 //   * 表面は地面と同じ範囲（tile 0.1〜100 m、roughness 0.02〜1、metallic 0〜1）
 //     で、色は各成分 0〜1。
 inline TerrainDesc clampTerrain(TerrainDesc t) {
@@ -2226,7 +2236,7 @@ inline TerrainDesc clampTerrain(TerrainDesc t) {
     t.resolution = t.resolution < 1 ? 1
                  : (t.resolution > kTerrainMaxResolution ? kTerrainMaxResolution
                                                          : t.resolution);
-    t.height = cl(t.height, 0.0, 1000.0, d.height);
+    t.height = cl(t.height, kTerrainMinHeight, 1000.0, d.height);
     t.position.x = cl(t.position.x, -10000.0, 10000.0, d.position.x);
     t.position.y = cl(t.position.y, -10000.0, 10000.0, d.position.y);
     t.position.z = cl(t.position.z, -10000.0, 10000.0, d.position.z);

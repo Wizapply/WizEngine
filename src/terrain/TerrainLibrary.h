@@ -21,6 +21,10 @@
 namespace wizengine {
 namespace terrain {
 
+// テレイン名の一致（大文字・小文字を区別しない。名前は正規化済み = ASCII
+// だけ）。この窓口の中と、Scene が「今のテレインか」を見るときの唯一の比較。
+bool sameTerrainName(const std::string& a, const std::string& b);
+
 // 一覧の 1 件（見出しだけを読んだ値）。
 struct TerrainEntry {
     std::string name;

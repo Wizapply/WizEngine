@@ -13,18 +13,6 @@ namespace {
 
 constexpr const char* kExtension = ".terrain";
 
-// 大文字・小文字を区別しない比較（名前は正規化済み = ASCII だけ）。
-bool sameName(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) return false;
-    for (std::size_t k = 0; k < a.size(); ++k) {
-        char x = a[k], y = b[k];
-        if (x >= 'A' && x <= 'Z') x = char(x - 'A' + 'a');
-        if (y >= 'A' && y <= 'Z') y = char(y - 'A' + 'a');
-        if (x != y) return false;
-    }
-    return true;
-}
-
 // 名前順（一覧の並び・「名前順の最初」の選び方）。
 bool byName(const TerrainEntry& a, const TerrainEntry& b) { return a.name < b.name; }
 
@@ -32,7 +20,7 @@ const TerrainEntry* findByName(const std::vector<TerrainEntry>& entries,
                                const std::string& name) {
     if (name.empty()) return nullptr;
     for (const TerrainEntry& e : entries)
-        if (sameName(e.name, name)) return &e;
+        if (sameTerrainName(e.name, name)) return &e;
     return nullptr;
 }
 
@@ -83,6 +71,17 @@ bool adoptByGuid(const std::vector<TerrainEntry>& entries, const std::string& da
 }
 
 }  // namespace
+
+bool sameTerrainName(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t k = 0; k < a.size(); ++k) {
+        char x = a[k], y = b[k];
+        if (x >= 'A' && x <= 'Z') x = char(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = char(y - 'A' + 'a');
+        if (x != y) return false;
+    }
+    return true;
+}
 
 TerrainResolution resolveTerrain(const std::vector<TerrainEntry>& entries,
                                  const std::string& dataName, const TerrainGuid& guid) {
@@ -143,7 +142,7 @@ std::vector<std::string> TerrainLibrary::refresh() {
             // 書き込みの残骸 *.terrain.tmp は拡張子が .tmp なのでここで落ちる。
             // 拡張子の大文字・小文字は問わない（Windows の Hill.TERRAIN）。
             if (!it->is_regular_file(fileEc) ||
-                !sameName(path.extension().u8string(), kExtension))
+                !sameTerrainName(path.extension().u8string(), kExtension))
                 continue;
             const std::string name = path.stem().u8string();
             const std::string unusable = unusableNameReason(name);
@@ -228,8 +227,9 @@ TerrainRenameResult TerrainLibrary::rename(const std::string& from, const std::s
     auto it = std::find_if(entries_.begin(), entries_.end(),
                            [&](const TerrainEntry& e) { return e.name == from; });
     if (it == entries_.end())
-        it = std::find_if(entries_.begin(), entries_.end(),
-                          [&](const TerrainEntry& e) { return sameName(e.name, from); });
+        it = std::find_if(entries_.begin(), entries_.end(), [&](const TerrainEntry& e) {
+            return sameTerrainName(e.name, from);
+        });
     if (it != entries_.end()) it->name = r.name;
     std::sort(entries_.begin(), entries_.end(), byName);
     return r;
@@ -255,11 +255,11 @@ bool TerrainLibrary::taken(const std::string& name, const std::string& except) c
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const TerrainEntry& e : entries_)
-            if (sameName(e.name, name) && !sameName(e.name, except)) return true;
+            if (sameTerrainName(e.name, name) && !sameTerrainName(e.name, except)) return true;
     }
     // キャッシュの後にできたファイルも見る。except と同じ名前（大文字・小文字
     // だけの違い）は、大文字・小文字を区別しないファイルシステムでは自分自身。
-    if (sameName(name, except)) return false;
+    if (sameTerrainName(name, except)) return false;
     std::error_code ec;
     return std::filesystem::exists(pathFor(name), ec);
 }

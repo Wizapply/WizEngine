@@ -1,6 +1,7 @@
-// テレインの実体（PHYSICS / RENDER スレッド）: 文書の <terrain> から高さ格子を
-// 作り、自前の接触（当たり判定）を張り直し、描画のチャンクへ同期する。
-// ブラウザからの入口は applyEditorOp の "terrain" 分岐（applyTerrainOp）。
+// テレインの実体（PHYSICS / RENDER スレッド）: 高さ格子の差し替え
+// （publishTerrainField）と形の変更（reshapeTerrain）、自前の接触（当たり判定）の
+// 張り直し、描画のチャンクへの同期。
+// 入口（ブラウザの edit.terrain・シーン文書・保存）は SceneTerrainEdit.cpp。
 // dirty の取り出し（ロックの枠組み）は applyToRenderer（Scene.cpp）が持つ。
 #include "scene/SceneInternal.h"
 
@@ -13,34 +14,6 @@ using namespace scene_detail;
 
 namespace {
 
-// 文書の値 → 高さ格子の生成パラメータ（src/terrain は文書の型を知らない）。
-wizengine::terrain::TerrainParams toTerrainParams(const ed::TerrainDesc& d,
-                                                  const ed::TerrainNoiseParams& n) {
-    wizengine::terrain::TerrainParams p;
-    p.size = float(d.size);
-    p.resolution = d.resolution;
-    p.height = float(d.height);
-    p.posX = float(d.position.x);
-    p.posY = float(d.position.y);
-    p.posZ = float(d.position.z);
-    p.seed = n.seed;
-    p.octaves = n.octaves;
-    p.gain = float(n.gain);
-    p.lacunarity = float(n.lacunarity);
-    p.scale = float(n.scale);
-    return p;
-}
-
-// 形（高さ格子と当たり判定）を決める値が同じか。
-bool sameTerrainShape(const ed::TerrainDesc& a, const ed::TerrainNoiseParams& an,
-                      const ed::TerrainDesc& b, const ed::TerrainNoiseParams& bn) {
-    return a.size == b.size && a.resolution == b.resolution && a.height == b.height &&
-           a.position.x == b.position.x && a.position.y == b.position.y &&
-           a.position.z == b.position.z && an.seed == bn.seed &&
-           an.octaves == bn.octaves && an.gain == bn.gain &&
-           an.lacunarity == bn.lacunarity && an.scale == bn.scale;
-}
-
 // 表面（描画の材質だけ）が同じか。
 bool sameTerrainSurface(const ed::TerrainDesc& a, const ed::TerrainDesc& b) {
     return a.texture == b.texture && a.tile == b.tile && a.color.r == b.color.r &&
@@ -50,61 +23,89 @@ bool sameTerrainSurface(const ed::TerrainDesc& a, const ed::TerrainDesc& b) {
 
 }  // namespace
 
-void Scene::setTerrain(bool hasTerrain, const ed::TerrainDesc& descIn,
-                       const ed::TerrainNoiseParams* noiseIn) {
-    const ed::TerrainDesc desc = ed::clampTerrain(descIn);
-    ed::TerrainNoiseParams noise;
-    if (noiseIn) {
-        noise = ed::clampTerrainNoise(*noiseIn);
-    } else {
-        noise.octaves = 0;  // 平ら
-    }
+void Scene::publishTerrainField(const ed::TerrainDesc& desc,
+                                std::shared_ptr<const wizengine::terrain::HeightField> field,
+                                TerrainHistory history, TerrainFileState file) {
     // terrain_ / hasTerrain_ / terrainField_ を書くのはこのスレッドだけなので、
     // 読むだけならロックは要らない（地面と同じ約束）。
     const bool had = hasTerrain_;
-    const bool shapeChanged =
-        hasTerrain &&
-        (!had || !terrainField_ || !sameTerrainShape(desc, noise, terrain_, terrainNoise_));
-    const bool surfaceChanged =
-        hasTerrain && (!had || !sameTerrainSurface(desc, terrain_));
-
-    // 高さ格子の生成はロックの外で（解像度 1024 で数十 ms〜。描画スレッドを
-    // 待たせない）。
-    std::shared_ptr<const wizengine::terrain::HeightField> field;
-    if (shapeChanged) {
-        const auto t0 = std::chrono::steady_clock::now();
-        field = std::make_shared<const wizengine::terrain::HeightField>(
-            wizengine::terrain::generateHeightField(toTerrainParams(desc, noise)));
-        LOGI("scene", "terrain height field: %dx%d cells, %.0f m, generated in %.1f ms",
-             desc.resolution, desc.resolution, desc.size, elapsedMs(t0));
-    }
+    const bool on = field != nullptr;
+    const bool fieldChanged = field != terrainField_;
+    const bool surfaceChanged = on && (!had || !sameTerrainSurface(desc, terrain_));
     {
         // 格子の差し替えと dirty は同じロックの中で: 描画スレッドは dirty を
         // 見たのと同じロックの中で格子を取り出すので、「新しい dirty と古い
         // 格子」の組を見ることが無い。ロック順は objects → terrainField（末端）。
         std::lock_guard<std::mutex> lk(objectsMutex_);
         terrain_ = desc;  // 無しでも値は覚えておく（/scene の欄に出す）
-        terrainNoise_ = noise;
-        hasTerrain_ = hasTerrain;
-        if (shapeChanged || (had && !hasTerrain)) {
+        hasTerrain_ = on;
+        if (fieldChanged) {
             std::lock_guard<std::mutex> fl(terrainFieldMutex_);
-            terrainField_ = hasTerrain ? field : nullptr;
+            terrainField_ = std::move(field);
             terrainMeshDirty_ = true;  // 無しになったときは描画側が外す
         }
         if (surfaceChanged) terrainSurfaceDirty_ = true;
     }
+    if (history == TerrainHistory::Clear) terrainUndo_->clear();
+    // 無いテレインに書くべき変更は無い（外したら指定によらず戻す）。
+    if (!on || file == TerrainFileState::Saved) {
+        terrainDirty_ = false;
+    } else if (file == TerrainFileState::Dirty) {
+        terrainDirty_ = true;
+    }
 
     // テレインの有無は系の種類を変えうる（kTerrainForcesCore）。作り直したら
     // テレインの当たり判定もそこで組み直し済みなので、二重に張らない。
-    const bool rebuilt = syncBackend();
-    if (rebuilt) return;
-    if (!hasTerrain) {
-        if (had) rebuildTerrainBody();  // 接触を止める
+    if (syncBackend()) return;
+    // 張り直しはゴーストに格子を渡すだけ（高さ格子の生成より軽い）なので間引かない =
+    // エディタ中の edit.terrain も即時に当たり判定へ映る。格子が同じでも、
+    // テレインがあるのに当たり判定が無く、その理由が系の制約（Multicore =
+    // terrainBackendWarned_）でない（例外で作れなかった）なら張り直す。系の制約
+    // なら表面の変更のたびに張り直さない（O(res²) と全ボディの wakeAll が走る）-
+    // Core へ戻ったときは syncBackend → rebuildPhysicsWorld → rebuildTerrainBody
+    // が張る。無しになったときは接触を止める（rebuildTerrainBody が格子無しを見る）。
+    const bool retryFailed =
+        on && terrainPhysId_ == PhysicsWorld::kInvalidId && !terrainBackendWarned_;
+    if (fieldChanged || retryFailed) rebuildTerrainBody();
+}
+
+void Scene::reshapeTerrain(const ed::TerrainDesc& next) {
+    const std::shared_ptr<const wizengine::terrain::HeightField> field =
+        hasTerrain_ ? terrainField_ : nullptr;
+    const ed::TerrainDesc& now = terrain_;
+    const bool sized = next.size != now.size;
+    const bool moved = next.position.x != now.position.x ||
+                       next.position.y != now.position.y ||
+                       next.position.z != now.position.z;
+    const bool resampled = next.resolution != now.resolution;
+    const bool scaled = next.height != now.height;
+    // .terrain が持つ形（size / resolution / height）が変わったか。pos は XML が
+    // 持つので、置き直しだけならファイルは書き直さず、Undo の記録（セルの添字と
+    // 相対高さ）もそのまま使える。
+    const bool fileChanged = sized || resampled || scaled;
+    if (!field || !(moved || fileChanged)) {
+        // 形はそのまま（またはテレイン無し = 値だけ覚える）: 表面だけ。
+        publishTerrainField(next, field, TerrainHistory::Keep, TerrainFileState::Keep);
         return;
     }
-    // 張り直しはゴーストに格子を渡すだけ（高さ格子の生成より軽い）なので間引かない =
-    // エディタ中の edit.terrain も即時に当たり判定へ映る。
-    if (shapeChanged) rebuildTerrainBody();
+    // 形の変更は今の格子のコピーから作る（共有中の格子は書き換えない）。
+    // 置き直し → 再サンプル → 比例伸縮の順。
+    const auto t0 = std::chrono::steady_clock::now();
+    wizengine::terrain::HeightField grid =
+        (sized || moved)
+            ? field->withGeometry(float(next.size), float(next.position.x),
+                                  float(next.position.y), float(next.position.z))
+            : *field;
+    if (resampled) grid = grid.resampled(next.resolution);
+    // 高さは [0, height] に保つ（.terrain の量子化の範囲）。height は
+    // clampTerrain が kTerrainMinHeight 以上に保つので、倍率は有限。
+    if (scaled) grid.scaleHeights(float(next.height / now.height));
+    LOGI("scene", "terrain reshaped: %dx%d cells, %.0f m, %.0f m high in %.1f ms",
+         next.resolution, next.resolution, next.size, next.height, elapsedMs(t0));
+    publishTerrainField(
+        next, std::make_shared<const wizengine::terrain::HeightField>(std::move(grid)),
+        fileChanged ? TerrainHistory::Clear : TerrainHistory::Keep,
+        fileChanged ? TerrainFileState::Dirty : TerrainFileState::Keep);
 }
 
 void Scene::rebuildTerrainBody() {
@@ -134,6 +135,7 @@ void Scene::releaseTerrainContact() {
     // 番号は止める前に手放す（clearTerrain が投げても古い番号を持ち続けない）。
     // ゴーストは PhysicsWorld の持ち物なので外さない（接触だけ止める）。
     terrainPhysId_ = PhysicsWorld::kInvalidId;
+    terrainBackendWarned_ = false;
     try {
         if (physics_.hasTerrain()) physics_.clearTerrain();
     } catch (const std::exception& e) {
@@ -168,10 +170,10 @@ void Scene::rebuildTerrainBodyUnguarded() {
         // Multicore（kTerrainForcesCore = false のとき）など。前の格子で
         // 当たり続けないように外しておく。
         if (physics_.hasTerrain()) physics_.clearTerrain();
-        // 張り直しのたびに来る（スライダーで連発する）ので 1 回だけ。
-        static bool warned = false;
-        if (!warned) {
-            warned = true;
+        // 張り直しのたびに来る（スライダーで連発する）ので 1 回だけ
+        // （releaseTerrainContact = テレインを外す・作り直すたびに戻す）。
+        if (!terrainBackendWarned_) {
+            terrainBackendWarned_ = true;
             LOGW("scene", "terrain: custom contact is not available on the %s backend - "
                           "the terrain is visible but nothing collides with it",
                  physics_.backendName());
@@ -179,6 +181,7 @@ void Scene::rebuildTerrainBodyUnguarded() {
         return;
     }
     terrainPhysId_ = id;
+    terrainBackendWarned_ = false;  // 張れた = 次に張れなくなったら知らせ直す
 }
 
 void Scene::warnTerrainPassThrough() {
@@ -252,31 +255,6 @@ bool Scene::terrainRaycast(const double origin[3], const double dir[3], double m
     normal[1] = n.y();
     normal[2] = n.z();
     return true;
-}
-
-// edit.terrain（PHYSICS スレッド）。applyEditorOp の "terrain" 分岐から呼ぶ。
-void Scene::applyTerrainOp(const EditorState::Op& op) {
-    const nlohmann::json& a = op.args;
-    // 送られてきたキーだけ上書き（edit.ground と同じ部分更新）。テレインが
-    // 無い間も値は覚えている（terrain_）ので、enabled = true だけを送れば
-    // 直前の設定（一度も無ければ既定値）で作られる。enabled を送らなければ
-    // 有無はそのまま（無い間に送った値は次に有効にしたときに効く）。
-    const ed::TerrainDesc t = ed::clampTerrain(ed::terrainFromJson(a, terrain_));
-    bool on = hasTerrain_;
-    if (a.contains("enabled") && a["enabled"].is_boolean()) on = a["enabled"].get<bool>();
-    // 当たり判定はモードによらずその場で張り直す（setTerrain）。
-    // ステータスは setTerrain の前に置く: 有無の切替で系が変わったときは
-    // syncBackend の「物理を切り替えました」が上書きして残る（clear と同じ順序）。
-    if (on == hasTerrain_) {
-        editor_.setStatus(on ? "テレインを更新" : "テレインの設定を更新（無効のまま）");
-    } else {
-        editor_.setStatus(on ? "テレインを有効にしました" : "テレインを無効にしました");
-    }
-    // ノイズは今のまま（仮、A4。旧形式で開いた丘を大きさの変更でも保つ。
-    // A6 で形の変更を格子の置き直しにしたら消す）。
-    const ed::TerrainNoiseParams noise = terrainNoise_;
-    setTerrain(on, t, &noise);
-    return;
 }
 
 // テレインの上限の照合。Renderer は src/terrain を知らず、src/terrain は
