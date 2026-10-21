@@ -369,6 +369,7 @@ set(WIZ_VEHICLE_SOURCES
     src/vehicle/WheelController.cpp)
 set(WIZ_TERRAIN_SOURCES
     src/terrain/HeightField.cpp
+    src/terrain/HeightFieldOps.cpp
     src/terrain/TerrainContact.cpp
     src/terrain/TerrainNoise.cpp)
 

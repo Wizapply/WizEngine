@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -77,6 +78,38 @@ struct ChunkMesh {
     std::vector<uint32_t> indices;
 };
 
+// 格子の添字の矩形。半開区間 [i0, i1) x [j0, j1)（i が +X、j が +Z）。
+// 単位（頂点 = サンプルか、セルか）はこの型では決めず、使う側が決めて
+// clamped に渡す数で揃える: サンプルなら verticesPerSide()、セルなら
+// resolution()。編集の記録（Undo）と描画の作り直し（dirty チャンク）が使う。
+struct GridRect {
+    int i0 = 0;
+    int j0 = 0;
+    int i1 = 0;
+    int j1 = 0;
+
+    bool empty() const { return i0 >= i1 || j0 >= j1; }
+    // 両方を含む最小の矩形。空の側は無視する（両方空なら空）。
+    GridRect united(const GridRect& o) const {
+        if (empty()) return o;
+        if (o.empty()) return *this;
+        return {std::min(i0, o.i0), std::min(j0, o.j0), std::max(i1, o.i1),
+                std::max(j1, o.j1)};
+    }
+    // 四方へ n 広げる（負なら縮める）。空はそのまま。
+    GridRect expanded(int n) const {
+        if (empty()) return *this;
+        return {i0 - n, j0 - n, i1 + n, j1 + n};
+    }
+    // [0, count) x [0, count) に切り詰める。結果が空なら {0, 0, 0, 0}
+    // （裏返った矩形を返さない = (i1 - i0) * (j1 - j0) が負にならない）。
+    GridRect clamped(int count) const {
+        const GridRect r{std::max(i0, 0), std::max(j0, 0), std::min(i1, count),
+                         std::min(j1, count)};
+        return r.empty() ? GridRect{} : r;
+    }
+};
+
 class HeightField {
 public:
     // 空（resolution 0）。valid() が false で、問い合わせは全部「無い」扱い。
@@ -109,13 +142,38 @@ public:
     // 格子値の最小・最大（相対高さ）。空なら 0。
     float minSample() const;
     float maxSample() const;
+    // 高さ（格子値 = baseY からの相対値）を全部 k 倍する。高さの上限を変えた
+    // ときの比例伸縮に使う。k が正の有限値でなければ何もしない（0 や負で
+    // 潰したり裏返したりしない）。
+    // 共有中の格子（shared_ptr<const>）には呼べない = コピーに対して呼ぶ。
+    // HeightFieldOps.cpp。
+    void scaleHeights(float k);
+
+    // 穴（セル単位）。穴のセルは描画で面積 0、接触を作らず、レイが抜ける
+    // （どれも isSolidCell を通る）。範囲外の添字は setHole が無視し、
+    // holeAt が false。
+    void setHole(int i, int j, bool hole);
+    bool holeAt(int i, int j) const;
+    bool anyHoles() const;   // 穴が 1 つでもあるか（全セルを走査する）
+    void clearHoles();       // 穴を全部埋める
+
+    // 格子値（高さ・穴）を保ったまま、大きさと位置だけを変えた新しい格子。
+    // 引数の条件はコンストラクタと同じ（満たさなければ空）。HeightFieldOps.cpp。
+    HeightField withGeometry(float size, float centerX, float baseY, float centerZ) const;
+    // 大きさと位置を保ったまま、1 辺のセル数を resolution にした新しい格子。
+    // 高さは新しい格子点で heightAt（地表と同じ 2 三角形の補間。格子点が重なる
+    // 所では元の値そのもの）。縮小は格子点で拾うので、細い起伏は失われうる。
+    // 穴は、縮小なら新しいセルと重なる元のセルが 1 つでも穴なら穴（OR = 穴が
+    // 消えない）、拡大なら新しいセルの中心を含む元のセル（最近傍）。
+    // resolution が 1〜kMaxResolution の外・空の格子なら空。HeightFieldOps.cpp。
+    HeightField resampled(int resolution) const;
 
     // (x, z) が格子の水平な範囲（境界を含む）に入っているか。
     bool contains(double x, double z) const;
     // (x, z) の真下に地面の中身があるか（= contains かつ、そのセルが穴でない）。
     // セルは heightAt / normalAt と同じ選び方（floor、最後の頂点の上は端の
     // セル）。範囲外・空の格子・有限でない座標は false。テレインの接触検出
-    // （TerrainContact）が点ごとに見る。穴（後の段階）は isSolidCell が受け持つ。
+    // （TerrainContact）が点ごとに見る。穴は isSolidCell が受け持つ。
     bool solidAt(double x, double z) const;
 
     // 地表のワールド Y。描画・衝突と同じ 2 三角形の平面で補間する（セル内で
@@ -142,7 +200,7 @@ public:
     // チャンクが格子の外にはみ出す部分（resolution が quadsPerChunk で
     // 割り切れないとき）は、頂点を格子の端へ丸め、そのクアッドは面積 0 の
     // 三角形（同じ頂点 3 回）にする = 頂点数・インデックス数は常に固定。
-    // 穴（後の段階）も同じ形で入る（isSolidCell）。引数が不正（チャンクの
+    // 穴のセルも同じ形で入る（isSolidCell）。引数が不正（チャンクの
     // 番号が範囲外・quadsPerChunk が 1〜kMaxChunkQuads の外）なら false。
     bool buildChunkMesh(int cx, int cz, int quadsPerChunk, ChunkMesh& out) const;
 
@@ -168,9 +226,9 @@ public:
                  Vec3& normalOut) const;
 
 private:
-    // セル (i, j) が中身を持つか。いまは範囲内なら常に true。穴（後の段階）は
-    // ここで穴のマスクを見る - 描画（縮退三角形）と接触（solidAt = 接触を
-    // 作らない）とレイ（当たらない）が同時に従う。
+    // セル (i, j) が中身を持つか（範囲内かつ穴でない）。描画（縮退三角形）と
+    // 接触（solidAt = 接触を作らない）とレイ（hitCell = 当たらない）が
+    // ここを通るので、穴に同時に従う。
     bool isSolidCell(int i, int j) const;
     // セル (i, j) の 2 三角形とレイの交差（片面）。t の範囲 [tMin, tMax]。
     bool hitCell(int i, int j, const Vec3& o, const Vec3& d, double tMin,
@@ -191,6 +249,12 @@ private:
     float minZ_ = 0.0f;
     float baseY_ = 0.0f;
     std::vector<float> heights_;
+    // 穴のマスク（セルごと、行優先: 番号 = j * resolution + i）。1 = 穴、
+    // 0 = 中身。**空なら穴は無い**（ただし穴を全部埋めたあとは、全部 0 の
+    // 配列のこともある）: 最初の穴を開けるまで確保しない（穴の無いテレインが
+    // 大半で、1024 なら 1 MB を持たずに済む）。保存形式（.terrain の HOLE は
+    // 0 = 穴）とは別。
+    std::vector<uint8_t> holes_;
 };
 
 // パラメータから高さ格子を作る（TerrainNoise.cpp、stb_perlin の fbm）。
