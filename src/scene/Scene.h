@@ -348,6 +348,8 @@ private:
     // ---- エディタの実装（すべて PHYSICS スレッド）------------------------
     void enterMode(wizengine::editor::AppMode target);
     void applyEditorOp(const EditorState::Op& op);
+    // applyEditorOp の "terrain" 分岐の中身（edit.terrain、SceneTerrain.cpp）。
+    void applyTerrainOp(const EditorState::Op& op);
     // 設計値からオブジェクトを1個作る。番号を返す。
     std::size_t createObject(const wizengine::editor::BodyDesc& desc);
     // プレハブ編集モードのオブジェクトに付いているプレハブ名（無ければ空）。
