@@ -1019,7 +1019,7 @@ PhysicsBackend Scene::requiredBackend(ContactMethod& contact, std::string& reaso
     if (s.modal > 0) why.push_back("modal analysis");
     // テレイン。SceneConfig.h の kTerrainForcesCore。当たり判定は自前の接触
     // （CustomCollisionCallback。Multicore では PhysicsWorld が張らない）。
-    if (kTerrainForcesCore && hasTerrain_) {
+    if (kTerrainForcesCore && terrainLoaded()) {
         why.push_back("terrain (custom contact; Multicore untested)");
     }
     if (!why.empty()) {

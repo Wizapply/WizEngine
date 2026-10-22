@@ -98,7 +98,7 @@ TerrainResolution resolveTerrain(const std::vector<TerrainEntry>& entries,
             r.dirty = true;
             if (!dataName.empty())
                 r.warnings.push_back("terrain file " + inQuotes(dataName) +
-                                     " not found; starting flat");
+                                     " not found");
         }
     } else if (named && named->guid == guid) {
         // A
@@ -114,10 +114,10 @@ TerrainResolution resolveTerrain(const std::vector<TerrainEntry>& entries,
                                  guidToHex(named->guid));
         }
     } else if (!adoptByGuid(entries, dataName, guid, r)) {
-        // C の 0 個: 背番号を保ったまま平らで作る（次の保存でこの名前のファイルになる）。
+        // C の 0 個: 使えるファイルは無い。背番号は保つ（扱いは呼び手が決める）。
         r.guid = guid;
         r.dirty = true;
-        r.warnings.push_back(describe(dataName, guid) + " not found; starting flat");
+        r.warnings.push_back(describe(dataName, guid) + " not found");
     }
     r.dataChanged = !r.file.empty() && r.file != dataName;
     return r;

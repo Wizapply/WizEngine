@@ -32,6 +32,12 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
     // 読むだけならロックは要らない（地面と同じ約束）。
     const bool had = hasTerrain_;
     const bool on = field != nullptr;
+    // 文書上はある・格子は無い（Unity の Missing）。描画・当たり判定は格子 null の
+    // ときの処理のまま（外す）。Keep で格子無しが来たときは今の Missing を保つ
+    // （黙って「テレイン無し」に落とさない）。
+    const bool missing =
+        !on && (file == TerrainFileState::Missing || file == TerrainFileState::Unreadable ||
+                (file == TerrainFileState::Keep && terrainMissing()));
     const bool fieldChanged = field != terrainField_;
     const bool surfaceChanged = on && (!had || !sameTerrainSurface(desc, terrain_));
     {
@@ -40,21 +46,33 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
         // 格子」の組を見ることが無い。ロック順は objects → terrainField（末端）。
         std::lock_guard<std::mutex> lk(objectsMutex_);
         terrain_ = desc;  // 無しでも値は覚えておく（/scene の欄に出す）
-        hasTerrain_ = on;
+        hasTerrain_ = on || missing;
         if (fieldChanged) {
             std::lock_guard<std::mutex> fl(terrainFieldMutex_);
             terrainField_ = std::move(field);
             terrainMeshDirty_ = true;  // 無しになったときは描画側が外す
         }
         if (surfaceChanged) terrainSurfaceDirty_ = true;
+        // ファイルとの関係。無いテレインに書くべき変更は無い（外したら Saved）。
+        // hasTerrain_ と同じロックの中で書く（/scene が「有無と Missing」の食い違った
+        // 組を見ない）。
+        switch (file) {
+            case TerrainFileState::Keep:
+                if (!on && !missing) terrainFile_ = TerrainFileState::Saved;
+                break;
+            case TerrainFileState::Dirty:
+                terrainFile_ = on ? TerrainFileState::Dirty : TerrainFileState::Saved;
+                break;
+            case TerrainFileState::Saved:
+                terrainFile_ = TerrainFileState::Saved;
+                break;
+            case TerrainFileState::Missing:
+            case TerrainFileState::Unreadable:
+                terrainFile_ = on ? TerrainFileState::Saved : file;
+                break;
+        }
     }
     if (history == TerrainHistory::Clear) terrainUndo_->clear();
-    // 無いテレインに書くべき変更は無い（外したら指定によらず戻す）。
-    if (!on || file == TerrainFileState::Saved) {
-        terrainDirty_ = false;
-    } else if (file == TerrainFileState::Dirty) {
-        terrainDirty_ = true;
-    }
 
     // テレインの有無は系の種類を変えうる（kTerrainForcesCore）。作り直したら
     // テレインの当たり判定もそこで組み直し済みなので、二重に張らない。
@@ -295,7 +313,7 @@ std::string Scene::terrainCombineCaveat(bool force) {
     if (force) terrainCombineWarned_.clear();
     const ed::SimSettings s = editor_.sim();
     // 転がり摩擦は NSC だけの欄（SMC には無い = 何も変わらない）。
-    const bool affected = hasTerrain_ && s.contact != "smc" &&
+    const bool affected = terrainLoaded() && s.contact != "smc" &&
                           (s.combine == "average" || s.combine == "max");
     if (!affected) {
         terrainCombineWarned_.clear();

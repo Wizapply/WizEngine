@@ -62,12 +62,16 @@ void Scene::openTerrain(const std::string& name) {
 }
 
 void Scene::renameTerrain(const std::string& from, const std::string& to) {
-    const bool current = isCurrentTerrain(from);
+    // 名前の付け替えは「文書が参照している名前か」で決める（Missing も含む = Missing の
+    // テレインの名前を変えても、XML の参照が古い名前のまま残らない）。
+    const bool current = refersToTerrain(from);
     wt::TerrainRenameResult r;
     const std::string toName = wizengine::sanitizeSafeName(to);
+    // 改名先の守りは「読めている今のテレイン」だけ（isCurrentTerrain）。読めている
+    // テレインの名前（未保存でファイルが無くても）は使用中: 改名させると次の保存で
+    // そのファイルを今の格子で上書きしてしまう。Missing の名前へ別のファイルを
+    // 改名するのは「ファイルを戻す」のと同じ（Missing は保存で書かない）なので許す。
     if (!current && isCurrentTerrain(toName)) {
-        // 今のテレインの名前（未保存でファイルが無くても）は使用中: 改名させると
-        // 次の保存でそのファイルを今の格子で上書きしてしまう。
         r.status = wt::TerrainRenameStatus::AlreadyExists;
         r.name = toName;
         r.reason = "'" + toName + "' is the name of the current terrain";
@@ -82,6 +86,11 @@ void Scene::renameTerrain(const std::string& from, const std::string& to) {
     switch (r.status) {
         case wt::TerrainRenameStatus::Ok:
             if (current) retarget(r.name);
+            if (isUnreadableTerrainFile(from)) {
+                // 読めないファイルの名前が変わった（Missing の文の名前を追従させる）。
+                std::lock_guard<std::mutex> lk(objectsMutex_);
+                terrainUnreadableFile_ = r.name;
+            }
             LOGI("scene", "terrain renamed: '%s' -> '%s'", from.c_str(), r.name.c_str());
             editor_.setStatus("テレインの名前を " + r.name + " に変えました");
             return;
@@ -90,8 +99,12 @@ void Scene::renameTerrain(const std::string& from, const std::string& to) {
             // （NotFound なら r.name は正規化済みで空いている）。
             if (current) {
                 retarget(r.name);
-                editor_.setStatus("テレインの名前を " + r.name +
-                                  " に変えました（未保存 - 保存で書きます）");
+                // Missing は保存でファイルを作らない（参照だけが変わる）。
+                editor_.setStatus(terrainMissing()
+                                      ? "テレインの参照を " + r.name +
+                                            " に変えました（ファイルはまだありません）"
+                                      : "テレインの名前を " + r.name +
+                                            " に変えました（未保存 - 保存で書きます）");
                 return;
             }
             editor_.setStatus("テレイン " + from + " が見つかりません");
@@ -131,6 +144,11 @@ void Scene::deleteTerrain(const std::string& name) {
         case wt::TerrainRemoveStatus::Ok:
             LOGI("scene", "terrain '%s' moved to the trash", r.name.c_str());
             editor_.setStatus("テレイン " + r.name + " をごみ箱へ移しました");
+            if (isUnreadableTerrainFile(r.name)) {
+                // 参照中の読めないファイルを消した: 「読めません」から「見つかりません」へ。
+                publishTerrainField(terrain_, nullptr, TerrainHistory::Clear,
+                                    TerrainFileState::Missing);
+            }
             return;
         case wt::TerrainRemoveStatus::NotFound:
             editor_.setStatus("テレイン " + r.name + " が見つかりません");
@@ -149,7 +167,7 @@ void Scene::deleteTerrain(const std::string& name) {
 bool Scene::applyTerrainFileOp(const nlohmann::json& a) {
     // 取り替える前の守り: 未保存の変更があり、捨てる確認が無ければ止める。
     const auto keepUnsaved = [this, &a]() {
-        if (!terrainDirty_ || argIsTrue(a, "discard")) return false;
+        if (!terrainDirty() || argIsTrue(a, "discard")) return false;
         editor_.setStatus("保存していない変更があります（もう一度選ぶと確認します）");
         return true;
     };
@@ -186,13 +204,39 @@ bool Scene::applyTerrainFileOp(const nlohmann::json& a) {
 }
 
 // edit.terrain（PHYSICS スレッド）。applyEditorOp の "terrain" 分岐から呼ぶ。
-// ファイルの分岐（applyTerrainFileOp）のあとはキーで分岐: generate{seed,...}
-// （同じメッセージの部分更新を先に当てる）/ undo / enabled(+name) / それ以外は
-// 部分更新。モードによらず受ける（名前の変更もシミュレート中に受ける）。delete
-// だけはエディタモードのみ（deleteTerrain が断る）。
+// ファイルの分岐（applyTerrainFileOp）と enabled(+name) のあとは、Missing
+// （ファイルが無い・読めない）なら断る（編集を拒む唯一の場所）。そのあとはキーで
+// 分岐: generate{seed,...}（同じメッセージの部分更新を先に当てる）/ undo /
+// それ以外は部分更新。モードによらず受ける（名前の変更もシミュレート中に受ける）。
+// delete だけはエディタモードのみ（deleteTerrain が断る）。
 void Scene::applyTerrainOp(const EditorState::Op& op) {
     const nlohmann::json& a = op.args;
     if (applyTerrainFileOp(a)) return;
+    // 外す（enabled:false）は Missing でも受ける（Missing から抜ける口。新規は new）。
+    // enabled:true はテレインが無いときだけ新規で、Missing では下で断られる。
+    if (const auto it = a.find("enabled"); it != a.end() && it->is_boolean()) {
+        if (!it->get<bool>()) {
+            // 外す（.terrain ファイルは消さない）。ステータスは publish の前。
+            editor_.setStatus(terrainDirty() ? "テレインを外しました（保存していない変更は"
+                                               "捨てました。ファイルは残ります）"
+                                             : "テレインを外しました（ファイルは残ります）");
+            publishTerrainField(terrain_, nullptr, TerrainHistory::Clear,
+                                TerrainFileState::Saved);
+            return;
+        }
+        if (!hasTerrain_) {
+            // 新規（互換の口。new と同じ newTerrain）: 同じパッチの他のキーは
+            // 使わず、既定の大きさの平らなテレインを今の位置と表面で作る。
+            newTerrain(ed::jsonString(a, "name", ""));
+            return;
+        }
+    }
+    // Missing: 格子が無いので generate / undo / 部分更新は全部ここで止める。
+    if (terrainMissing()) {
+        editor_.setStatus("テレインのファイルが無いので編集できません（別のテレインを開く・"
+                          "新しいテレインを作る・外す、のどれかで）");
+        return;
+    }
     // 送られてきたキーだけ上書きした形（edit.ground と同じ部分更新）。
     const auto patched = [this, &a]() {
         return ed::clampTerrain(ed::terrainFromJson(a, terrain_));
@@ -217,23 +261,6 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
         }
         undoTerrain();
         return;
-    }
-    if (const auto it = a.find("enabled"); it != a.end() && it->is_boolean()) {
-        if (!it->get<bool>()) {
-            // 外す（.terrain ファイルは消さない）。ステータスは publish の前。
-            editor_.setStatus(terrainDirty_ ? "テレインを外しました（保存していない変更は"
-                                              "捨てました。ファイルは残ります）"
-                                            : "テレインを外しました（ファイルは残ります）");
-            publishTerrainField(terrain_, nullptr, TerrainHistory::Clear,
-                                TerrainFileState::Saved);
-            return;
-        }
-        if (!hasTerrain_) {
-            // 新規（互換の口。new と同じ newTerrain）: 同じパッチの他のキーは
-            // 使わず、既定の大きさの平らなテレインを今の位置と表面で作る。
-            newTerrain(ed::jsonString(a, "name", ""));
-            return;
-        }
     }
     // 部分更新。テレインが無い間の値は位置と表面だけが次の新規に効く。
     // 当たり判定はモードによらずその場で張り直す（publishTerrainField）。

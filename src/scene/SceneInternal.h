@@ -295,7 +295,7 @@ inline wizengine::terrain::TerrainParams toTerrainParams(const ed::TerrainDesc& 
 // d を書き換える: 形（size / resolution / height）を新規テレインの既定値
 // （ed::TerrainDesc{}）へ戻し、その大きさと d の位置の平らな格子を返す。
 // 位置と表面はそのまま。
-// 新規（SceneTerrainEdit.cpp）とファイルが無い・使えない読込（SceneTerrainFile.cpp）が使う。
+// 新規（SceneTerrainEdit.cpp の newTerrain）が使う。
 inline std::shared_ptr<const wizengine::terrain::HeightField> flatDefaultTerrain(
     ed::TerrainDesc& d) {
     const ed::TerrainDesc def;

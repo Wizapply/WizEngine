@@ -32,6 +32,19 @@ std::string terrainLabel(const std::string& name, const std::string& guid) {
     return "（名前なし）";
 }
 
+// Missing（ファイルが見つからない / 読めない）の説明の文。日本語の文はここだけが
+// 持つ（読込の注意 terrainLoadCaveat_ と /scene の terrainMissing が同じ文になる）。
+std::string terrainMissingNote(bool unreadable, const std::string& label) {
+    if (unreadable) {
+        return "テレインのファイル " + label +
+               " が読めません（コンソール参照。ファイルを差し替えて開き直すか、"
+               "別のテレインを開いてください）";
+    }
+    return "テレインのファイル " + label +
+           " が見つかりません（assets/terrains/ に戻して開き直すか、"
+           "別のテレインを開いてください）";
+}
+
 }  // namespace
 
 // ---- 新しいテレインの名前と背番号 -------------------------------------------
@@ -95,52 +108,70 @@ std::shared_ptr<const wt::HeightField> Scene::readTerrainFile(const std::string&
     return std::make_shared<const wt::HeightField>(std::move(field));
 }
 
-std::shared_ptr<const wt::HeightField> Scene::loadTerrainField(ed::TerrainDesc& desc,
-                                                               wt::TerrainResolution& res) {
-    const std::string asked = desc.data;
-    const std::string askedLabel = terrainLabel(desc.data, desc.guid);
+void Scene::loadTerrainField(const ed::TerrainDesc& doc) {
+    // 解決は一覧で引くので、読む前に取り直す（エクスプローラーで改名・追加された
+    // ファイルを拾う）。
+    refreshTerrainFiles();
+    const std::string label = terrainLabel(doc.data, doc.guid);
     wt::TerrainGuid guid;  // 空 = 背番号無し（D）
-    wt::guidFromHex(desc.guid, guid);
-    res = terrainLibrary_->resolve(asked, guid);
+    wt::guidFromHex(doc.guid, guid);
+    const wt::TerrainResolution res = terrainLibrary_->resolve(doc.data, guid);
+    for (const std::string& w : res.warnings) LOGW("scene", "terrain: %s", w.c_str());
+    for (const std::string& n : res.notes) LOGI("scene", "terrain: %s", n.c_str());
+    TerrainFileState missing = TerrainFileState::Missing;
     if (!res.file.empty()) {
+        ed::TerrainDesc desc = doc;
         std::string reason;
         auto field = readTerrainFile(res.file, desc, reason);
         if (field) {
             if (res.dataChanged) {
-                terrainLoadCaveat_ = "（テレイン " + askedLabel + " は背番号で見つけた " +
+                terrainLoadCaveat_ = "（テレイン " + label + " は背番号で見つけた " +
                                      desc.data + " を使いました）";
             } else if (!res.warnings.empty()) {
                 terrainLoadCaveat_ = "（テレインの警告 " +
                                      std::to_string(res.warnings.size()) +
                                      " 件 - コンソール参照）";
             }
-            return field;
+            publishTerrainField(desc, std::move(field), TerrainHistory::Clear,
+                                TerrainFileState::Saved);
+            return;
         }
         // 使えないファイル: 使わず、上書きもしない（壊れたファイル・共有ファイルの
-        // 劣化・背番号の重複を作らない）= 新しい名前と背番号の平らなテレイン。
-        res.warnings.push_back(reason + "; not used - starting flat as a new terrain");
-        res.dirty = true;
-        desc.data.clear();
-        desc.guid.clear();
-        fillTerrainIdentity(desc, asked);
-        terrainLoadCaveat_ = "（注意: テレイン " + res.file +
-                             " のファイルが使えないので、平らな新しいテレイン " +
-                             desc.data + " で開きました - 元のファイルは残ります）";
+        // 劣化・背番号の重複を作らない）。
+        LOGW("scene", "terrain: %s - not used; the terrain stays missing (not drawn, "
+                      "no collision, not editable) until the file is replaced",
+             reason.c_str());
+        missing = TerrainFileState::Unreadable;
+        // 文に出すのは実際に読めなかったファイル（背番号で別の名前に解決したときも）。
+        std::lock_guard<std::mutex> lk(objectsMutex_);
+        terrainUnreadableFile_ = res.file;
     } else {
-        // ファイルが無い: 名前と解決した背番号のまま（次の保存でできる）。
-        desc.guid = wt::guidToHex(res.guid);
-        terrainLoadCaveat_ = "（注意: テレイン " + terrainLabel(desc.data, desc.guid) +
-                             " のファイルが無いので平らで開きました）";
+        LOGW("scene", "terrain: no file for '%s' (guid '%s') in assets/terrains/ - the "
+                      "terrain stays missing (not drawn, no collision, not editable) until "
+                      "the file is back",
+             doc.data.c_str(), doc.guid.c_str());
     }
-    return flatDefaultTerrain(desc);
+    // Unity の Missing と同じ: 文書の名前と背番号をそのまま覚えて（次の保存の XML に
+    // 残る = ファイルを戻せば元に戻る）、格子無しで出す。注意の文は publish の後に
+    // 状態から作る（/scene の terrainMissing と同じ口 = 名前が食い違わない）。
+    publishTerrainField(doc, nullptr, TerrainHistory::Clear, missing);
+    terrainLoadCaveat_ = "（注意: " + terrainMissingText() + "）";
 }
 
-bool Scene::isCurrentTerrain(const std::string& name) const {
+bool Scene::refersToTerrain(const std::string& name) const {
     return hasTerrain_ && wt::sameTerrainName(terrain_.data, name);
 }
 
+bool Scene::isCurrentTerrain(const std::string& name) const {
+    return terrainLoaded() && refersToTerrain(name);
+}
+
+bool Scene::isUnreadableTerrainFile(const std::string& name) const {
+    return terrainUnreadable() && wt::sameTerrainName(terrainUnreadableFile_, name);
+}
+
 bool Scene::sameTerrainIdentity(const ed::TerrainDesc& a) const {
-    if (!hasTerrain_) return false;
+    if (!terrainLoaded()) return false;
     // 背番号は正規化済み（clampTerrain = 小文字の 32 桁）なので文字列で比べてよい。
     if (!a.guid.empty() && !terrain_.guid.empty()) return a.guid == terrain_.guid;
     return !a.data.empty() && isCurrentTerrain(a.data);
@@ -184,16 +215,8 @@ void Scene::setTerrainFromDocument(const ed::SceneDocument& doc, bool keepSameTe
                              " として開きました - 保存すると .terrain に移ります）";
         return;
     }
-    // 新形式: 名前と背番号で assets/terrains/ を解決して読む。解決は一覧で引くので、
-    // 読む前に取り直す（エクスプローラーで改名・追加されたファイルを拾う）。
-    refreshTerrainFiles();
-    ed::TerrainDesc desc = doc.terrain;
-    wt::TerrainResolution res;
-    auto field = loadTerrainField(desc, res);
-    for (const std::string& w : res.warnings) LOGW("scene", "terrain: %s", w.c_str());
-    for (const std::string& n : res.notes) LOGI("scene", "terrain: %s", n.c_str());
-    publishTerrainField(desc, std::move(field), TerrainHistory::Clear,
-                        res.dirty ? TerrainFileState::Dirty : TerrainFileState::Saved);
+    // 新形式: 名前と背番号で assets/terrains/ を解決して読む。
+    loadTerrainField(doc.terrain);
 }
 
 std::string Scene::terrainLoadCaveat() {
@@ -224,9 +247,9 @@ bool Scene::saveTerrainData(const std::string& sceneName, std::string& written,
     // 書き換えない）。ファイルが無ければ必ず書く。
     const std::filesystem::path path = terrainLibrary_->pathFor(terrain_.data);
     std::error_code ec;
-    if (!terrainDirty_ && !path.empty() && std::filesystem::exists(path, ec)) return true;
+    if (!terrainDirty() && !path.empty() && std::filesystem::exists(path, ec)) return true;
     if (!wt::writeFile(path, *field, float(terrain_.height), guid, reason)) return false;
-    terrainDirty_ = false;  // 保存の成功（publish の外で戻す唯一の場所）
+    terrainFile_ = TerrainFileState::Saved;  // 保存の成功（publish の外で書く唯一の場所）
     refreshTerrainFiles();
     written = terrain_.data;
     LOGI("scene", "terrain '%s' written: %s", written.c_str(), path.u8string().c_str());
@@ -235,6 +258,13 @@ bool Scene::saveTerrainData(const std::string& sceneName, std::string& written,
 
 // ---- ブラウザ ---------------------------------------------------------------
 
+std::string Scene::terrainMissingText() const {
+    if (!terrainMissing()) return std::string();
+    if (terrainUnreadable())
+        return terrainMissingNote(true, terrainUnreadableFile_);
+    return terrainMissingNote(false, terrainLabel(terrain_.data, terrain_.guid));
+}
+
 nlohmann::json Scene::terrainJson() const {
     nlohmann::json j;
     // 値はテレインが無いときも直前のものを出す（欄を空にしない）。ただし
@@ -242,7 +272,9 @@ nlohmann::json Scene::terrainJson() const {
     // この値。applyTerrainOp の enabled:true）。
     j["hasTerrain"] = hasTerrain_;
     j["terrain"] = ed::toJson(terrain_);
-    j["terrainDirty"] = terrainDirty_.load();
+    j["terrainDirty"] = terrainDirty();
+    // Missing（ファイルが無い・読めない）なら説明の文、そうでなければ空。
+    j["terrainMissing"] = terrainMissingText();
     nlohmann::json files = nlohmann::json::array();
     for (const wt::TerrainEntry& e : terrainLibrary_->entries()) files.push_back(toJson(e));
     j["terrainFiles"] = std::move(files);

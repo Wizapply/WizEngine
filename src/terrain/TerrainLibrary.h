@@ -36,10 +36,10 @@ struct TerrainEntry {
 
 // 読込時の解決の結果（resolveTerrain）。
 struct TerrainResolution {
-    std::string file;   // 使うファイルの名前。空 = ファイル無し（平らで作る）
+    std::string file;   // 使うファイルの名前。空 = ファイル無し（扱いは呼び手が決める）
     TerrainGuid guid;   // 採用する背番号
     bool dataChanged = false;  // XML の data を file に直すべき（file != data 名）
-    bool dirty = false;        // ファイルが無い = 次の保存で書くべき
+    bool dirty = false;        // 使えるファイルが無い（file が空）
     std::vector<std::string> warnings;  // 英語。ログ（LOGW）とステータスの件数へ
     std::vector<std::string> notes;     // 英語。ログ（LOGI）とステータスへ
 };
