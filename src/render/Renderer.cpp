@@ -265,7 +265,6 @@ Renderer::~Renderer() {
     scene_->setIndirectLight(nullptr);
     engine_->destroy(ibl_);
     if (iblTexture_) engine_->destroy(iblTexture_);
-    engine_->destroy(groundTexture_);
     engine_->destroy(matInstance_);
     for (auto& line : grabLines_) destroyLine(line);
     grabLines_.clear();
@@ -295,6 +294,9 @@ Renderer::~Renderer() {
     for (auto* mi : highlightInstances_) engine_->destroy(mi);
     engine_->destroy(material_);
     engine_->destroy(groundMatInstance_);
+    // 地面のテクスチャはマテリアルインスタンスが参照しているので、その後で壊す
+    // （RendererGround.cpp の removeGround の注記）。
+    engine_->destroy(groundTexture_);
     engine_->destroy(groundMaterial_);
     engine_->destroy(vb_);
     engine_->destroy(groundVb_);
