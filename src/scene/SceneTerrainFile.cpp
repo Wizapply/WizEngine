@@ -229,7 +229,7 @@ std::string Scene::terrainLoadCaveat() {
 bool Scene::saveTerrainData(const std::string& sceneName, std::string& written,
                             std::string& reason) {
     written.clear();
-    const std::shared_ptr<const wt::HeightField> field = hasTerrain_ ? terrainField_ : nullptr;
+    const std::shared_ptr<const wt::HeightField> field = terrainField();
     if (!field) return true;
     // 名前・背番号の欠けている方だけをここで決める（XML に data="" を出さない。
     // 正しい背番号・名前は捨てない）。

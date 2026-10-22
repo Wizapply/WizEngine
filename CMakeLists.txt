@@ -353,6 +353,8 @@ set(WIZ_SCENE_SOURCES
     src/scene/SceneTerrain.cpp
     src/scene/SceneTerrainEdit.cpp
     src/scene/SceneTerrainFile.cpp
+    src/scene/SceneTerrainRender.cpp
+    src/scene/SceneTerrainSculpt.cpp
     src/scene/SoftLattice.cpp)
 set(WIZ_COMPONENT_SOURCES
     src/components/EditorComponent.cpp

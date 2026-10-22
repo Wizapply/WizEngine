@@ -666,6 +666,9 @@ void Scene::buildJoints() {
 
 void Scene::enterMode(ed::AppMode target) {
     if (target == editor_.mode()) return;
+    // 筆のストロークはエディタだけのもの。途中で切り替えたら、そこまでを
+    // 1 段として積み、当たり判定を張り直してから移る。
+    endTerrainStroke();
     // どちら向きの遷移でもイベントの実行状態は捨てる: 開始はまっさらから
     // （タイマー・発火カウントのリセット）、停止は実行時の上書き（色・
     // ライト・固定）を設計値へ戻すため。
@@ -1618,17 +1621,23 @@ void Scene::applyToRenderer() {
     // テレインも同じ扱い。全チャンクのメッシュ化（解像度 1024 で 16x16
     // チャンク）とテクスチャの読込はロックの外で。格子は dirty と同じロックの
     // 中で取り出す（publishTerrainField が同じロックの中で差し替えるので組が揃う）。
+    // 筆が触ったチャンクの矩形（terrainChunkDirty_）も同じロックで取り出して空に戻す。
     bool terrainMesh = false, terrainSurface = false, terrainOn = false;
+    wizengine::terrain::GridRect terrainChunks;
     ed::TerrainDesc terrainPending;
     std::shared_ptr<const wizengine::terrain::HeightField> terrainFieldPending;
-    if (terrainMeshDirty_ || terrainSurfaceDirty_) {
+    if (terrainMeshDirty_ || terrainSurfaceDirty_ || !terrainChunkDirty_.empty()) {
         terrainMesh = terrainMeshDirty_;
         terrainSurface = terrainSurfaceDirty_;
+        terrainChunks = terrainChunkDirty_;
         terrainMeshDirty_ = false;
         terrainSurfaceDirty_ = false;
+        terrainChunkDirty_ = wizengine::terrain::GridRect{};
         terrainOn = hasTerrain_;
         terrainPending = terrain_;
-        if (terrainMesh) terrainFieldPending = terrainField();  // 末端のロック
+        if (terrainMesh || !terrainChunks.empty()) {
+            terrainFieldPending = terrainField();  // 末端のロック
+        }
     }
     // 地面とテレインの置き場所（エンティティの変換だけ = 安いのでロックの中で）。
     // Renderer は値を覚えていて、後から作り直した地面・チャンクにも当てる。
@@ -1644,8 +1653,8 @@ void Scene::applyToRenderer() {
         renderer_.setTerrainTransform(toFilament(pose));
     }
     lk.unlock();
-    if (terrainMesh || terrainSurface) {
-        syncTerrain(terrainMesh, terrainSurface, terrainOn, terrainPending,
+    if (terrainMesh || terrainSurface || !terrainChunks.empty()) {
+        syncTerrain(terrainMesh, terrainChunks, terrainSurface, terrainOn, terrainPending,
                     terrainFieldPending);
     }
     if (applyRender) {

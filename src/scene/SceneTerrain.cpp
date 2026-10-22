@@ -1,10 +1,10 @@
-// テレインの実体（PHYSICS / RENDER スレッド）: 高さ格子の差し替え
+// テレインの実体（PHYSICS スレッド）: 高さ格子の差し替え
 // （publishTerrainField）と形の変更（reshapeTerrain）、格子の書き換え（コピー
-// オンライトの editTerrainField = ノイズ生成・取り消し）、自前の接触（当たり判定）の
-// 張り直し、描画のチャンクへの同期。
+// オンライトの editTerrainField = ノイズ生成・取り消し・筆）、自前の接触（当たり
+// 判定）の張り直し。
 // 入口はブラウザの edit.terrain が SceneTerrainEdit.cpp、シーン文書・保存が
-// SceneTerrainFile.cpp。
-// dirty の取り出し（ロックの枠組み）は applyToRenderer（Scene.cpp）が持つ。
+// SceneTerrainFile.cpp、筆のストロークが SceneTerrainSculpt.cpp。描画への同期は
+// SceneTerrainRender.cpp（dirty の取り出し = ロックの枠組みは applyToRenderer）。
 #include "scene/SceneInternal.h"
 
 #include <chrono>
@@ -25,11 +25,32 @@ bool sameTerrainSurface(const ed::TerrainDesc& a, const ed::TerrainDesc& b) {
 
 }  // namespace
 
+void Scene::settleTerrainFileState(TerrainFileState file, bool on, bool missing) {
+    switch (file) {
+        case TerrainFileState::Keep:
+            if (!on && !missing) terrainFile_ = TerrainFileState::Saved;
+            break;
+        case TerrainFileState::Dirty:
+            terrainFile_ = on ? TerrainFileState::Dirty : TerrainFileState::Saved;
+            break;
+        case TerrainFileState::Saved:
+            terrainFile_ = TerrainFileState::Saved;
+            break;
+        case TerrainFileState::Missing:
+        case TerrainFileState::Unreadable:
+            terrainFile_ = on ? TerrainFileState::Saved : file;
+            break;
+    }
+}
+
 void Scene::publishTerrainField(const ed::TerrainDesc& desc,
                                 std::shared_ptr<const wizengine::terrain::HeightField> field,
-                                TerrainHistory history, TerrainFileState file) {
-    // terrain_ / hasTerrain_ / terrainField_ を書くのはこのスレッドだけなので、
-    // 読むだけならロックは要らない（地面と同じ約束）。
+                                TerrainHistory history, TerrainFileState file,
+                                const wizengine::terrain::GridRect& changedCells) {
+    // ストローク中に飛ばした張り直し（Clear はストロークを捨てるので先に読む）。
+    const bool collisionPending = terrainStroke_.collisionStale;
+    if (history == TerrainHistory::Clear) abortTerrainStroke();
+    // terrain_ / hasTerrain_ / terrainField_ を書くのはこのスレッドだけ（読むのにロック不要）。
     const bool had = hasTerrain_;
     const bool on = field != nullptr;
     // 文書上はある・格子は無い（Missing）。描画・当たり判定は格子 null の
@@ -40,6 +61,11 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
                 (file == TerrainFileState::Keep && terrainMissing()));
     const bool fieldChanged = field != terrainField_;
     const bool surfaceChanged = on && (!had || !sameTerrainSurface(desc, terrain_));
+    // 一部だけの書き換えなら、描画は触ったチャンクだけ（空 = 全部作り直す）。
+    const wizengine::terrain::GridRect chunks =
+        (fieldChanged && on && !changedCells.empty())
+            ? field->chunksTouched(changedCells, kTerrainChunkQuads)
+            : wizengine::terrain::GridRect{};
     // テレインのフレーム（置き場所 + 回転）。格子は原点基準なので、動かす・回すは
     // ここだけ（格子・メッシュは作り直さない）。
     const BodyTransform pose = placementPose(desc.position, desc.rotation);
@@ -55,7 +81,8 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
             std::lock_guard<std::mutex> fl(terrainFieldMutex_);
             if (fieldChanged) {
                 terrainField_ = std::move(field);
-                terrainMeshDirty_ = true;  // 無しになったときは描画側が外す
+                if (chunks.empty()) terrainMeshDirty_ = true;  // 無しなら描画側が外す
+                else terrainChunkDirty_ = terrainChunkDirty_.united(chunks);
             }
             if (!samePose(pose, terrainPose_)) {
                 terrainPose_ = pose;
@@ -64,24 +91,9 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
             }
         }
         if (surfaceChanged) terrainSurfaceDirty_ = true;
-        // ファイルとの関係。無いテレインに書くべき変更は無い（外したら Saved）。
-        // hasTerrain_ と同じロックの中で書く（/scene が「有無と Missing」の食い違った
-        // 組を見ない）。
-        switch (file) {
-            case TerrainFileState::Keep:
-                if (!on && !missing) terrainFile_ = TerrainFileState::Saved;
-                break;
-            case TerrainFileState::Dirty:
-                terrainFile_ = on ? TerrainFileState::Dirty : TerrainFileState::Saved;
-                break;
-            case TerrainFileState::Saved:
-                terrainFile_ = TerrainFileState::Saved;
-                break;
-            case TerrainFileState::Missing:
-            case TerrainFileState::Unreadable:
-                terrainFile_ = on ? TerrainFileState::Saved : file;
-                break;
-        }
+        // ファイルとの関係（外したら Saved）。/scene が「有無と Missing」の食い違った
+        // 組を見ないよう、hasTerrain_ と同じロックの中で書く。
+        settleTerrainFileState(file, on, missing);
     }
     if (history == TerrainHistory::Clear) terrainUndo_->clear();
     // 外したテレインを選んだままにしない（Inspector に欄だけ残る）。
@@ -104,14 +116,16 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
     // なら表面の変更のたびに張り直さない（O(res²) と全ボディの wakeAll が走る）-
     // Core へ戻ったときは syncBackend → rebuildPhysicsWorld → rebuildTerrainBody
     // が張る。無しになったときは接触を止める（rebuildTerrainBody が格子無しを見る）。
+    // 筆のストローク中は張らずに印だけ立てる（endTerrainStroke が 1 回張る）。
     const bool retryFailed =
         on && terrainPhysId_ == PhysicsWorld::kInvalidId && !terrainBackendWarned_;
-    if (fieldChanged || retryFailed) rebuildTerrainBody();
+    if (!(fieldChanged || retryFailed || collisionPending)) return;
+    if (terrainStroke_.active) terrainStroke_.collisionStale = true;
+    else rebuildTerrainBody();
 }
 
 void Scene::reshapeTerrain(const ed::TerrainDesc& next) {
-    const std::shared_ptr<const wizengine::terrain::HeightField> field =
-        hasTerrain_ ? terrainField_ : nullptr;
+    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
     const ed::TerrainDesc& now = terrain_;
     const bool sized = next.size != now.size;
     const bool resampled = next.resolution != now.resolution;
@@ -145,34 +159,36 @@ void Scene::reshapeTerrain(const ed::TerrainDesc& next) {
 
 bool Scene::editTerrainField(
     const wizengine::terrain::GridRect& rect,
-    const std::function<bool(wizengine::terrain::HeightField&)>& mutate, bool record) {
-    const std::shared_ptr<const wizengine::terrain::HeightField> field =
-        hasTerrain_ ? terrainField_ : nullptr;
+    const std::function<bool(wizengine::terrain::HeightField&)>& mutate,
+    TerrainRecord record) {
+    // 筆以外の書き換え（取り消し・生成）はストロークを先に終える: ストロークの
+    // 記録の後ろに積む / ストロークごと取り消す、の順序にする。
+    if (record != TerrainRecord::Stroke) endTerrainStroke();
+    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
     if (!field) return false;
     // 共有中の格子（描画・当たり判定が持っている）は書き換えず、コピーを差し替える。
+    // *field は書き換え前のまま残る（ストロークの「変更前」に使う）。
     wizengine::terrain::HeightField copy = *field;
     wizengine::terrain::TerrainEdit before;
-    if (record) before = wizengine::terrain::captureRegion(copy, rect);
+    if (record == TerrainRecord::Undo) before = wizengine::terrain::captureRegion(copy, rect);
     if (!mutate(copy)) return false;
-    // 書き換えが成功してから積む（失敗した操作の記録を残さない）。
-    if (record) terrainUndo_->push(std::move(before));
+    // 書き換えが成功してから記録する（失敗した操作の記録を残さない）。
+    if (record == TerrainRecord::Undo) {
+        terrainUndo_->push(std::move(before));
+    } else if (record == TerrainRecord::Stroke) {
+        terrainStroke_.before = wizengine::terrain::growEdit(*field, terrainStroke_.before, rect);
+        terrainStroke_.cells = terrainStroke_.cells.united(rect);
+    }
     publishTerrainField(terrain_,
                         std::make_shared<const wizengine::terrain::HeightField>(std::move(copy)),
-                        TerrainHistory::Keep, TerrainFileState::Dirty);
+                        TerrainHistory::Keep, TerrainFileState::Dirty, rect);
     return true;
 }
 
-void Scene::generateTerrainNoise(const ed::TerrainNoiseParams& n) {
-    if (!hasTerrain_ || !terrainField_) {
-        editor_.setStatus("テレインがありません（ノイズで生成できません）");
-        return;
-    }
-    const auto t0 = std::chrono::steady_clock::now();
-    // 今の形（大きさ・解像度・高さ・位置）でノイズの格子を作り、その高さだけを
-    // 今の格子のコピーへ入れる（穴はコピーのまま残る）。
-    wizengine::terrain::HeightField gen =
-        wizengine::terrain::generateHeightField(toTerrainParams(terrain_, n));
-    const int res = terrainField_->resolution();
+bool Scene::replaceTerrainHeights(wizengine::terrain::HeightField&& gen, const char* what) {
+    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
+    if (!field) return false;
+    const int res = field->resolution();
     const bool ok = editTerrainField(
         wizengine::terrain::GridRect{0, 0, res, res},
         [&gen](wizengine::terrain::HeightField& f) {
@@ -181,11 +197,28 @@ void Scene::generateTerrainNoise(const ed::TerrainNoiseParams& n) {
             f.samples() = std::move(gen.samples());  // gen はここで使い終わり
             return true;
         },
-        true);
-    // ステータスは結果が分かってから 1 回だけ。
+        TerrainRecord::Undo);
     if (!ok) {
-        LOGW("scene", "terrain: the generated grid does not match the current grid - "
-                      "not applied");
+        LOGW("scene", "terrain: the %s grid does not match the current grid - not applied",
+             what);
+    }
+    return ok;
+}
+
+void Scene::generateTerrainNoise(const ed::TerrainNoiseParams& n) {
+    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
+    if (!field) {
+        editor_.setStatus("テレインがありません（ノイズで生成できません）");
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    // 今の形（大きさ・解像度・高さ・位置）でノイズの格子を作り、その高さだけを
+    // 今の格子へ入れる（穴は今のまま残る）。
+    const int res = field->resolution();
+    // ステータスは結果が分かってから 1 回だけ。
+    if (!replaceTerrainHeights(
+            wizengine::terrain::generateHeightField(toTerrainParams(terrain_, n)),
+            "generated")) {
         editor_.setStatus("テレインをノイズで生成できませんでした（コンソール参照）");
         return;
     }
@@ -196,6 +229,8 @@ void Scene::generateTerrainNoise(const ed::TerrainNoiseParams& n) {
 }
 
 void Scene::undoTerrain() {
+    // 筆のストローク中なら先に終えて積む（取り出す前に。= そのストロークを戻す）。
+    endTerrainStroke();
     const wizengine::terrain::TerrainEdit edit = terrainUndo_->pop();
     if (edit.empty()) {
         editor_.setStatus("取り消すものがありません");
@@ -208,7 +243,7 @@ void Scene::undoTerrain() {
         [&edit](wizengine::terrain::HeightField& f) {
             return !wizengine::terrain::applyEdit(f, edit).empty();
         },
-        false);
+        TerrainRecord::None);
     // ステータスは結果が分かってから 1 回だけ。
     if (!ok) {
         LOGW("scene", "terrain: an undo record (resolution %d) does not fit the current grid "
@@ -260,8 +295,7 @@ void Scene::rebuildTerrainBodyUnguarded() {
     // 自前の接触（PhysicsWorld::setTerrain）。terrainPhysId_ はゴーストの番号
     // （接触の報告にはこの番号が出る）。ゴーストは PhysicsWorld の持ち物で、
     // 差し替えでも同じ番号を使い回す。
-    const std::shared_ptr<const wizengine::terrain::HeightField> field =
-        hasTerrain_ ? terrainField_ : nullptr;
+    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
     if (!field || !field->valid()) {
         // 無し: 接触だけ止める（ゴーストは残す）。
         releaseTerrainContact();
@@ -439,72 +473,4 @@ bool Scene::terrainRaycast(const double origin[3], const double dir[3], double m
     normal[1] = n.y();
     normal[2] = n.z();
     return true;
-}
-
-// テレインの上限の照合。Renderer は src/terrain を知らず、src/terrain は
-// Renderer を知らないので、両方を見るここで食い違いを止める。
-static_assert(wizengine::terrain::kMaxChunkQuads == wizengine::Renderer::kMaxTerrainQuads,
-              "terrain::kMaxChunkQuads and Renderer::kMaxTerrainQuads must match");
-static_assert(kTerrainChunkQuads >= 1 && kTerrainChunkQuads <= wizengine::Renderer::kMaxTerrainQuads,
-              "kTerrainChunkQuads is out of the Renderer's range");
-static_assert(ed::kTerrainMaxResolution <= wizengine::terrain::kMaxResolution,
-              "the document's terrain resolution limit exceeds HeightField's");
-// 解像度の上限でも 1 辺のチャンク数が Renderer の上限に収まること
-// （1024 / 64 = 16 <= 64）。
-static_assert((ed::kTerrainMaxResolution + kTerrainChunkQuads - 1) / kTerrainChunkQuads <=
-                  wizengine::Renderer::kMaxTerrainChunks,
-              "kTerrainMaxResolution / kTerrainChunkQuads exceeds Renderer::kMaxTerrainChunks");
-
-// RENDER スレッド（applyToRenderer がロックを外してから呼ぶ）。
-void Scene::syncTerrain(bool rebuildMesh, bool updateSurface, bool enabled,
-                        const ed::TerrainDesc& desc,
-                        const std::shared_ptr<const wizengine::terrain::HeightField>& field) {
-    if (!enabled || (rebuildMesh && (!field || !field->valid()))) {
-        renderer_.removeTerrain();  // 無ければ何もしない
-        return;
-    }
-    if (rebuildMesh) {
-        const auto t0 = std::chrono::steady_clock::now();
-        const int chunks = field->chunksPerSide(kTerrainChunkQuads);
-        if (!renderer_.addTerrain(chunks, chunks, kTerrainChunkQuads)) {
-            LOGW("scene", "terrain: the renderer refused %dx%d chunks - not drawn", chunks,
-                 chunks);
-            return;
-        }
-        wizengine::terrain::ChunkMesh built;
-        wizengine::TerrainChunkMesh upload;
-        int failed = 0;
-        for (int cz = 0; cz < chunks; ++cz) {
-            for (int cx = 0; cx < chunks; ++cx) {
-                const bool ok = field->buildChunkMesh(cx, cz, kTerrainChunkQuads, built);
-                if (!ok) {
-                    ++failed;
-                    continue;
-                }
-                // 同じ並びの素の配列なので move で渡す（コピーしない）。インデックス
-                // も毎回渡す: addTerrain の直後は全部 0 = 何も描かれないため。
-                upload.positions = std::move(built.positions);
-                upload.normals = std::move(built.normals);
-                upload.uvs = std::move(built.uvs);
-                upload.indices = std::move(built.indices);
-                if (!renderer_.setTerrainChunk(cx, cz, upload)) ++failed;
-            }
-        }
-        if (failed > 0) {
-            LOGW("scene", "terrain: %d of %d chunks could not be built", failed,
-                 chunks * chunks);
-        }
-        LOGI("scene", "terrain mesh: %dx%d chunks (%d quads each) built and uploaded in %.1f ms",
-             chunks, chunks, kTerrainChunkQuads, elapsedMs(t0));
-    }
-    // メッシュを作り直したときは表面も必ず入れ直す。addTerrain が失敗した
-    // フレームは上で return しており、そのとき消えた表面の dirty は次の
-    // 作り直しがここで埋め合わせる（材質が既定の白のまま残らない）。
-    // テクスチャはパスが同じなら Renderer が読み直さないので、入れ直しは安い。
-    if (updateSurface || rebuildMesh) {
-        renderer_.setTerrainSurface(
-            desc.texture, float(desc.tile),
-            filament::math::float4{desc.color.r, desc.color.g, desc.color.b, 1.0f},
-            float(desc.roughness), float(desc.metallic));
-    }
 }

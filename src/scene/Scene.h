@@ -23,6 +23,7 @@
 #include "document/SceneDocument.h"
 #include "physics/MeshCollision.h"  // CollisionTriangles
 #include "physics/PhysicsWorld.h"  // for BodyTransform
+#include "terrain/TerrainUndo.h"     // TerrainEdit / GridRect（ストロークの状態が値で持つ）
 
 namespace wizengine {
 class Renderer;
@@ -33,6 +34,7 @@ class TerrainLibrary;
 class TerrainUndoStack;
 struct TerrainResolution;
 struct TerrainFrame;
+struct BrushStamp;
 }
 }
 
@@ -49,9 +51,10 @@ struct TerrainFrame;
 // implementation is split by concern: Scene.cpp (build / step / render sync),
 // SceneEdit.cpp (editor ops), SceneEvents.cpp (grab + event graphs),
 // SceneSerialize.cpp (document + browser JSON), SceneTerrain.cpp (terrain
-// grid / collision / render sync), SceneTerrainFile.cpp (terrain <-> document,
-// .terrain files and browser JSON) and SceneTerrainEdit.cpp (edit.terrain
-// ops); SceneInternal.h is shared.
+// grid / collision), SceneTerrainRender.cpp (terrain render sync),
+// SceneTerrainSculpt.cpp (brush strokes), SceneTerrainFile.cpp (terrain <->
+// document, .terrain files and browser JSON) and SceneTerrainEdit.cpp
+// (edit.terrain ops); SceneInternal.h is shared.
 //
 // ---- 2つのモード ----------------------------------------------------------
 // エディタモードは物理を進めない。オブジェクトを置き、大きさや質量を決め、
@@ -237,7 +240,8 @@ public:
     // ゴースト 1 個（PhysicsWorld::setTerrain が返す番号。GameObject ではない =
     // boxes_ に入らず、選択・掴み・イベントの対象にならない）。以下 2 つは
     // PHYSICS スレッド専用。当たり判定は edit.terrain のたびにその場で張り
-    // 直す（格子を渡し直すだけ）ので、高さ格子（terrainRaycast）と常に一致している。
+    // 直す（格子を渡し直すだけ）ので、高さ格子（terrainRaycast）と常に一致している
+    // （筆のストローク中だけは終わるまで遅れる = endTerrainStroke が張る）。
     // id がテレインのボディ（ゴースト）か。接触の相手を「地面」と見なしたい側
     // （イベントの衝突・車両の診断）用。
     bool isTerrainBody(std::size_t id) const {
@@ -246,6 +250,22 @@ public:
     // テレインの当たり判定があるか（作れなかった・自前の接触を張れない
     // （Multicore）・テレインが無いなら false）。
     bool hasTerrainCollision() const { return terrainPhysId_ != PhysicsWorld::kInvalidId; }
+
+    // ---- テレインの筆のストローク（SceneTerrainSculpt.cpp、すべて PHYSICS thread）--
+    // 1 ストローク = begin → stamp（1 パスに 1 回）× N → end。格子は 1 パスに
+    // 1 回コピーして差し替え（editTerrainField）、描画は触ったチャンクだけ
+    // 作り直す。当たり判定の張り直しはストローク中は止め、end で 1 回。Undo は
+    // 1 ストローク = 1 段（end で積む）。
+    // 始める。エディタモードでない・格子の無いテレイン（Missing）・テレイン無し
+    // なら何もしない。ストローク中なら今のものを終えて（endTerrainStroke）から始める。
+    void beginTerrainStroke();
+    // 1 パスぶんのスタンプ（格子の座標 = ローカル）を当てる。ストロークの外
+    // （= エディタでない）・空なら何もしない。
+    void stampTerrain(const std::vector<wizengine::terrain::BrushStamp>& stamps);
+    // 終える。格子が変わっていれば Undo に 1 段積み、LOGI に回数と時間を出す。
+    // ストローク中に飛ばした当たり判定の張り直しがあれば張り直す。
+    // ストロークの外なら何もしない。
+    void endTerrainStroke();
 
     // Pick the object under a screen position, given in normalised device
     // coords (x, y in [-1, 1], y up), through the given camera. Selects it (or
@@ -558,6 +578,9 @@ private:
     // 文書上はテレインがあるが格子は無い = 描画も当たり判定もしない・編集できない・
     // 保存でファイルを作らない・XML には名前と背番号を残す）。
     enum class TerrainFileState { Keep, Dirty, Saved, Missing, Unreadable };
+    // editTerrainField の記録の仕方: 記録しない（取り消しそのもの）/ この書き換えを
+    // Undo に 1 段積む / 筆のストロークの「変更前」に足す（end で 1 段積む）。
+    enum class TerrainRecord { None, Undo, Stroke };
     // 以下 3 つは hasTerrain_ と同じく、PHYSICS スレッドか objectsMutex_ を持って呼ぶ。
     // 今のテレインに .terrain へ書いていない変更があるか（保存で書く目印）。
     bool terrainDirty() const { return terrainFile_ == TerrainFileState::Dirty; }
@@ -583,23 +606,41 @@ private:
     // （rebuildPhysicsWorld → rebuildTerrainBody）で当たり判定も組まれる。
     // そうでなければ、格子が変わったか当たり判定が無いときにその場で張り直す
     // （ゴーストに格子を渡し直すだけ）ので、戻ったときは必ず今の格子と一致している。
+    // ただし筆のストローク中は張り直さない（endTerrainStroke が 1 回張る）。
+    // history = Clear は筆のストロークも捨てる（abortTerrainStroke。形の変更・
+    // 読込・開くなど = 記録が今の格子に当てられなくなる操作）。
+    // changedCells = 書き換えたセルの矩形（TerrainEdit の rect と同じセル単位）。
+    // 空なら格子全体の作り直し、空でなければ触ったチャンクだけ描画を作り直す
+    // （同じ形の格子の書き換え = editTerrainField だけが渡す）。
     void publishTerrainField(const wizengine::editor::TerrainDesc& desc,
                              std::shared_ptr<const wizengine::terrain::HeightField> field,
-                             TerrainHistory history, TerrainFileState file);
+                             TerrainHistory history, TerrainFileState file,
+                             const wizengine::terrain::GridRect& changedCells = {});
+    // publishTerrainField の中（objectsMutex_ の下）: 渡された file と格子の有無
+    // （on / missing）から terrainFile_ を決める。
+    void settleTerrainFileState(TerrainFileState file, bool on, bool missing);
     // 形の変更（size / pos = 値を保って置き直し、resolution = 再サンプル、
     // height = 比例伸縮）。.terrain が持つ形（size / resolution / height）が
     // 変われば Undo を消してファイルの dirty を立てる。pos だけなら格子を置き
     // 直すだけ（Undo もファイルもそのまま）。形が同じなら表面だけ（テレインが
     // 無ければ値を覚えるだけ）。
     void reshapeTerrain(const wizengine::editor::TerrainDesc& next);
-    // 格子の書き換えの唯一の口（コピーオンライト）: 今の格子をコピーし、record
-    // なら rect（セル単位 = TerrainUndo の約束）の今の値を Undo に積んでから
+    // 格子の書き換えの唯一の口（コピーオンライト）: 今の格子をコピーして
     // mutate(コピー) を呼び、publishTerrainField で差し替える（Undo は残し、
-    // ファイルの dirty を立てる）。mutate が false を返したら何も出さない
-    // （記録も積まない）。テレインが無ければ何もせず false。
+    // ファイルの dirty を立て、描画は rect に触れたチャンクだけ作り直す）。
+    // rect はセル単位（TerrainUndo の約束）で、mutate が書き換える範囲を包むこと。
+    // record = Undo なら rect の元の値を Undo に 1 段積み、Stroke なら筆の
+    // ストロークの「変更前」に足す（growEdit）。Stroke 以外は、筆のストローク中
+    // なら先にそれを終える（記録の順序を崩さない）。mutate が false を返したら
+    // 何も出さない（記録も積まない）。テレインが無ければ何もせず false。
     bool editTerrainField(
         const wizengine::terrain::GridRect& rect,
-        const std::function<bool(wizengine::terrain::HeightField&)>& mutate, bool record);
+        const std::function<bool(wizengine::terrain::HeightField&)>& mutate,
+        TerrainRecord record);
+    // 生成した高さ（gen の格子値）を今の格子へ入れる（穴・形は今のまま。Undo は
+    // 1 段、ファイルの dirty を立てる）。形が今の格子と食い違えば入れずに false
+    // （what = 何の格子か、英語の LOGW に出す。例 "generated"）。
+    bool replaceTerrainHeights(wizengine::terrain::HeightField&& gen, const char* what);
     // 今の格子の高さをノイズで作り直す（形・穴はそのまま。Undo は 1 段）。
     void generateTerrainNoise(const wizengine::editor::TerrainNoiseParams& n);
     // 最後の編集を 1 段取り消す（結果はステータス）。
@@ -726,14 +767,26 @@ private:
     // 返す。それ以外・同じ合成方式で既に知らせた後は空文字列。force = 前回の
     // 記録を捨てて必ず知らせ直す（シーン読込）。PHYSICS thread。
     std::string terrainCombineCaveat(bool force);
-    // RENDER thread: テレインの見た目を反映する。applyToRenderer が
-    // objectsMutex_ の中で dirty と値を取り出し、**ロックを外してから**呼ぶ
-    // （全チャンクのメッシュ化とアップロード・テクスチャの読込は重い）。
-    // rebuildMesh: チャンクを作り直す（enabled = false なら外す）。
+    // 筆のストロークを記録せずに捨てる（PHYSICS thread、publishTerrainField が
+    // Clear のとき）。張り直し待ちの印も消えるので、呼び手が先に読んでおく。
+    // SceneTerrainSculpt.cpp。
+    void abortTerrainStroke();
+    // ---- テレインの描画の同期（SceneTerrainRender.cpp、RENDER thread）------
+    // テレインの見た目を反映する。applyToRenderer が objectsMutex_ の中で dirty と
+    // 値を取り出し、**ロックを外してから**呼ぶ（メッシュ化とアップロード・
+    // テクスチャの読込は重い）。
+    // rebuildMesh: チャンクを全部作り直す（enabled = false なら外す）。
+    // chunks: 作り直すチャンクの矩形（チャンク単位、空 = 無し）。まだ組んで
+    // いない（terrainRenderBuilt_ でない）なら全部の作り直しに倒す。
     // updateSurface: 材質だけ入れ直す。
-    void syncTerrain(bool rebuildMesh, bool updateSurface, bool enabled,
+    void syncTerrain(bool rebuildMesh, const wizengine::terrain::GridRect& chunks,
+                     bool updateSurface, bool enabled,
                      const wizengine::editor::TerrainDesc& desc,
                      const std::shared_ptr<const wizengine::terrain::HeightField>& field);
+    // field の chunkRect（チャンク単位）のチャンクをメッシュにして送る（全体 =
+    // 全チャンクの矩形）。作れなかった・送れなかったチャンクの数を返す。
+    int uploadTerrainChunks(const wizengine::terrain::HeightField& field,
+                            const wizengine::terrain::GridRect& chunkRect);
 
     PhysicsWorld& physics_;
     wizengine::Renderer& renderer_;
@@ -791,6 +844,24 @@ private:
     bool hasTerrain_ = false;
     bool terrainMeshDirty_ = false;     // 形が変わった = チャンクを作り直す
     bool terrainSurfaceDirty_ = false;  // 表面（テクスチャ・色・材質）だけ
+    // 格子の一部だけ書き換えた = このチャンクの矩形（チャンク単位）だけ作り
+    // 直す。溜まった分は united で広げる。空 = 無し。
+    wizengine::terrain::GridRect terrainChunkDirty_;
+    // RENDER スレッド専用: Renderer にテレインを組んである（addTerrain 済み）か。
+    bool terrainRenderBuilt_ = false;
+    // 筆のストローク（PHYSICS スレッド専用）。
+    struct TerrainStroke {
+        bool active = false;
+        wizengine::terrain::TerrainEdit before;  // ストローク前の値（growEdit で育てる）
+        wizengine::terrain::GridRect cells;      // 書き換えたセルの和（セル単位）
+        // ストローク中に publishTerrainField が飛ばした当たり判定の張り直しが
+        // ある（end か、Clear で捨てたときの publish が張る）。
+        bool collisionStale = false;
+        int passes = 0;       // 格子を実際に書き換えたパスの数
+        int stamps = 0;       // そのパスのスタンプの総数
+        double passMs = 0.0;  // そのパスの所要時間の合計
+    };
+    TerrainStroke terrainStroke_;
     // 高さ格子の実体。作り直すたびに新しい物へ差し替える（中身は書き換え
     // ない）ので、取り出した shared_ptr は他スレッドで読み続けてよい。
     // ポインタの差し替えと取り出しだけを terrainFieldMutex_（末端のロック:
