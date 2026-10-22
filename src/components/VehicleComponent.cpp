@@ -107,15 +107,12 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
     // 使わない: 車輪だけが乗って車体と他の物は抜ける、という
     // 「レイと接触の食い違い」を作らないため（プレハブの collide 部品と同じ考え）。
     std::shared_ptr<const wizengine::terrain::HeightField> terrain;
-    // 格子は原点基準で、置き場所（位置 + 回転）はフレーム。格子と同じロックで
-    // 組にして取る。
+    // 格子は原点基準で、置き場所（位置 + 回転）はフレーム。姿勢と格子を組で
+    // 取る（フレームはロックの外で組む）。
     wizengine::terrain::TerrainFrame terrainFrame;
     if (scene.hasTerrainCollision()) {
-        BodyTransform pose;
-        terrain = scene.terrainField(&pose);
+        terrain = scene.terrainField(&terrainFrame);
         if (terrain && !terrain->valid()) terrain.reset();
-        terrainFrame = wizengine::terrain::TerrainFrame::fromPose(
-            pose.px, pose.py, pose.pz, pose.qw, pose.qx, pose.qy, pose.qz);
     }
     // 地面の面（置き場所の原点を通り、回転した +Y が法線）。物理スレッドは
     // ground の唯一の書き手なのでロックは要らない。

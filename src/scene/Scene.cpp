@@ -1640,10 +1640,7 @@ void Scene::applyToRenderer() {
     if (terrainPoseDirty_) {
         terrainPoseDirty_ = false;
         BodyTransform pose;
-        {
-            std::lock_guard<std::mutex> fl(terrainFieldMutex_);  // 末端のロック
-            pose = terrainPose_;
-        }
+        copyTerrainFieldAndPose(pose);  // 末端のロック
         renderer_.setTerrainTransform(toFilament(pose));
     }
     lk.unlock();

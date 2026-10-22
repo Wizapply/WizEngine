@@ -32,6 +32,7 @@ struct GridRect;
 class TerrainLibrary;
 class TerrainUndoStack;
 struct TerrainResolution;
+struct TerrainFrame;
 }
 }
 
@@ -218,11 +219,14 @@ public:
     // 別スレッドで読み続けてよい。どのスレッドから呼んでもよい（専用の
     // 末端ロック terrainFieldMutex_ だけを取る = 他のロックの中から呼べる）。
     std::shared_ptr<const wizengine::terrain::HeightField> terrainField() const;
-    // 同じ。格子と同じロックの中でテレインのフレーム（置き場所 + 回転。格子は
-    // 原点基準 = terrain/TerrainFrame.h）も pose に返す（null なら返さない）。
-    // 格子を問い合わせる側はこの組で使う（片方だけ新しい組を見ない）。
+    // 高さ格子と、テレインのフレーム（置き場所 + 回転。格子は原点基準 =
+    // terrain/TerrainFrame.h）を組で返す。格子と姿勢は同じロックの中で取り、
+    // フレームはロックを放してから組んで frame に返す（null なら組まない）。
+    // 格子を問い合わせる側はこの組で使う（片方だけ新しい組を見ない）。格子を
+    // 問い合わせる側（車輪のレイ・筆）のフレームはここで組む（物理の接触へは
+    // setTerrainFrame で姿勢のまま渡す）。スレッドの扱いは terrainField() と同じ。
     std::shared_ptr<const wizengine::terrain::HeightField> terrainField(
-        BodyTransform* pose) const;
+        wizengine::terrain::TerrainFrame* frame) const;
     // レイと地表の交差（HeightField::raycast。車輪のレイ用）。テレインが無い・
     // 当たらなければ false で、t / normal（normal は x, y, z の 3 要素）は
     // 触らない。origin / dir / normal はワールド（フレームはここで掛ける）。
@@ -695,6 +699,11 @@ private:
     // 複製できなければ何も変えない。複製のあと開け
     // なかったときは、複製のファイルは残る（ステータスは開けない理由）。
     void duplicateTerrain(const std::string& name);
+
+    // 高さ格子とテレインの姿勢（terrainPose_）を terrainFieldMutex_ の中で組で
+    // 写す（ロックは自分で取る = 末端のロック）。姿勢だけ要る呼び手もこれを使う。
+    std::shared_ptr<const wizengine::terrain::HeightField> copyTerrainFieldAndPose(
+        BodyTransform& pose) const;
 
     // テレインの当たり判定（自前の接触。PhysicsWorld::setTerrain）を今の高さ
     // 格子で張り直す。テレインが無ければ接触を止めるだけ（ゴーストは

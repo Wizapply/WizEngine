@@ -280,10 +280,7 @@ void Scene::rebuildTerrainBodyUnguarded() {
     {
         // フレームは格子と組（PhysicsWorld が作り直されても当て直す）。
         BodyTransform pose;
-        {
-            std::lock_guard<std::mutex> fl(terrainFieldMutex_);
-            pose = terrainPose_;
-        }
+        copyTerrainFieldAndPose(pose);
         physics_.setTerrainFrame(ChVector3d(pose.px, pose.py, pose.pz),
                                  ChQuaternion<>(pose.qw, pose.qx, pose.qy, pose.qz));
     }
@@ -358,11 +355,23 @@ std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainField() con
     return terrainField_;
 }
 
-std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainField(
-    BodyTransform* pose) const {
+std::shared_ptr<const wizengine::terrain::HeightField> Scene::copyTerrainFieldAndPose(
+    BodyTransform& pose) const {
     std::lock_guard<std::mutex> fl(terrainFieldMutex_);
-    if (pose) *pose = terrainPose_;
+    pose = terrainPose_;
     return terrainField_;
+}
+
+std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainField(
+    wizengine::terrain::TerrainFrame* frame) const {
+    // ロックの中では写すだけ（描画スレッドも同じロックを取るので持つ時間を延ばさない）。
+    BodyTransform p;
+    std::shared_ptr<const wizengine::terrain::HeightField> field = copyTerrainFieldAndPose(p);
+    if (frame) {
+        *frame = wizengine::terrain::TerrainFrame::fromPose(p.px, p.py, p.pz, p.qw, p.qx,
+                                                            p.qy, p.qz);
+    }
+    return field;
 }
 
 // ---- ギズモの移動 / 回転（PHYSICS thread）----------------------------------
@@ -415,11 +424,9 @@ bool Scene::terrainRaycast(const double origin[3], const double dir[3], double m
                            double& t, double normal[3]) const {
     // 格子は共有ポインタで受け取ってからロックの外で辿る（差し替えられても
     // 手元の格子は生きている）。
-    BodyTransform pose;
-    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField(&pose);
+    wizengine::terrain::TerrainFrame frame;
+    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField(&frame);
     if (!field) return false;
-    const wizengine::terrain::TerrainFrame frame = wizengine::terrain::TerrainFrame::fromPose(
-        pose.px, pose.py, pose.pz, pose.qw, pose.qx, pose.qy, pose.qz);
     const wizengine::terrain::Vec3 o{origin[0], origin[1], origin[2]};
     const wizengine::terrain::Vec3 d{dir[0], dir[1], dir[2]};
     double hitT = 0.0;
