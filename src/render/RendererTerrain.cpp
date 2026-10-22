@@ -100,6 +100,7 @@ bool Renderer::addTerrain(int chunksX, int chunksZ, int quadsPerChunk) {
             .castShadows(true)
             .receiveShadows(true)
             .build(*engine_, chunk.entity);
+        setEntityTransform(*engine_, chunk.entity, terrainTransform_);
         scene_->addEntity(chunk.entity);
     }
     LOGI("render", "terrain: %dx%d chunks, %d quads per chunk", chunksX, chunksZ,
@@ -246,6 +247,13 @@ void Renderer::setTerrainSurface(const std::string& texturePath, float tileMeter
     terrainMatInstance_->setParameter("baseColor", RgbType::LINEAR, color.xyz);
     terrainMatInstance_->setParameter("roughness", std::clamp(roughness, 0.0f, 1.0f));
     terrainMatInstance_->setParameter("metallic", std::clamp(metallic, 0.0f, 1.0f));
+}
+
+void Renderer::setTerrainTransform(const filament::math::mat4f& transform) {
+    terrainTransform_ = transform;
+    for (const TerrainChunk& chunk : terrainChunks_) {
+        if (!chunk.entity.isNull()) setEntityTransform(*engine_, chunk.entity, transform);
+    }
 }
 
 void Renderer::removeTerrain() {

@@ -39,6 +39,8 @@ void Scene::newTerrain(const std::string& base) {
     editor_.setStatus("新しいテレインを作りました（保存すると書きます）");
     // 名前は base、空ならシーン名（どちらも空なら uniqueName が "terrain"）。
     publishNewTerrain(desc, std::move(field), base.empty() ? editor_.sceneFile() : base);
+    // 作ったテレインを選択にする（Inspector にその欄が出る = 他の追加と同じ）。
+    if (hasTerrain_) selectSceneItem(EditorState::SelKind::Terrain);
 }
 
 void Scene::openTerrain(const std::string& name) {
@@ -59,6 +61,7 @@ void Scene::openTerrain(const std::string& name) {
     editor_.setStatus("テレイン " + desc.data + " を開きました");
     publishTerrainField(desc, std::move(field), TerrainHistory::Clear,
                         TerrainFileState::Saved);
+    selectSceneItem(EditorState::SelKind::Terrain);
 }
 
 void Scene::renameTerrain(const std::string& from, const std::string& to) {

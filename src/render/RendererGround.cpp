@@ -18,12 +18,9 @@ const uint16_t kGroundIdx[6] = {0, 2, 1, 0, 3, 2};
 
 namespace wizengine {
 
-void Renderer::addGround(float halfSize, const filament::math::float3& color,
-                         float tileMeters, const std::string& texturePath,
-                         const ShapeMaterial& material) {
-    // 2 回目以降の呼び出しは作り直し（シーン文書の <ground> が実行時に
-    // 変わるため）。Filament の destroy は使用中の GPU 資源を安全に遅延破棄
-    // するので、前フレームが参照していても構わない。
+void Renderer::removeGround() {
+    // Filament の destroy は使用中の GPU 資源を安全に遅延破棄するので、
+    // 前フレームが参照していても構わない。
     if (!groundEntity_.isNull()) {
         scene_->remove(groundEntity_);
         engine_->destroy(groundEntity_);
@@ -36,6 +33,14 @@ void Renderer::addGround(float halfSize, const filament::math::float3& color,
         engine_->destroy(groundTexture_);
         groundTexture_ = nullptr;
     }
+}
+
+void Renderer::addGround(float halfSize, const filament::math::float3& color,
+                         float tileMeters, const std::string& texturePath,
+                         const ShapeMaterial& material) {
+    // 2 回目以降の呼び出しは作り直し（シーン文書の <ground> が実行時に
+    // 変わるため）。
+    removeGround();
 
     groundMatInstance_->setParameter("baseColor", RgbType::LINEAR, color);
     // 地面の材質（つや消しのままか、濡れた路面のように映り込ませるか）。
@@ -112,7 +117,13 @@ void Renderer::addGround(float halfSize, const filament::math::float3& color,
         .castShadows(false)
         .receiveShadows(true)
         .build(*engine_, groundEntity_);
+    setEntityTransform(*engine_, groundEntity_, groundTransform_);
     scene_->addEntity(groundEntity_);
+}
+
+void Renderer::setGroundTransform(const filament::math::mat4f& transform) {
+    groundTransform_ = transform;
+    if (!groundEntity_.isNull()) setEntityTransform(*engine_, groundEntity_, transform);
 }
 
 }  // namespace wizengine

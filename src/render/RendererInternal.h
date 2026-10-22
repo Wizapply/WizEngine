@@ -106,4 +106,13 @@ filament::Texture* loadTextureRGBA(filament::Engine& engine,
                                    const char* label,
                                    TextureFallback fallback);
 
+// エンティティの変換（無ければ変換の部品を作ってから当てる）。地面と
+// テレインのチャンクが使う。
+inline void setEntityTransform(filament::Engine& engine, utils::Entity entity,
+                               const filament::math::mat4f& transform) {
+    auto& tcm = engine.getTransformManager();
+    if (!tcm.hasComponent(entity)) tcm.create(entity);
+    tcm.setTransform(tcm.getInstance(entity), transform);
+}
+
 }  // namespace render_detail

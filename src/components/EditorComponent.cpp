@@ -86,6 +86,25 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         return true;
     }
 
+    // 地面 / テレイン（シーンに 1 つずつのオブジェクト。階層一覧のクリック）。
+    // index < 0 で解除。無いもの（削除した地面・外したテレイン）は選ばせない。
+    if (cmd == "select.ground" || cmd == "select.terrain") {
+        if (!isEditorCam || !state.isEditor()) return true;
+        const bool ground = cmd == "select.ground";
+        const EditorState::SelKind kind =
+            ground ? EditorState::SelKind::Ground : EditorState::SelKind::Terrain;
+        if (ed::jsonInt(msg, "index", 0) < 0) {
+            if (state.selKind() == kind) state.clearSel();
+            return true;
+        }
+        auto lk = scene.lockObjects();  // ground_ / hasTerrain_ は構造ロック下
+        if (ground ? scene.groundEnabled() : scene.hasTerrain()) {
+            scene.boxController(camIndex).setSelected(BoxController::kNone);
+            state.setSel(kind, 0);
+        }
+        return true;
+    }
+
     if (cmd == "select.light" || cmd == "select.camera") {
         if (!isEditorCam || !state.isEditor()) return true;
         const int index = msg.value("index", -1);

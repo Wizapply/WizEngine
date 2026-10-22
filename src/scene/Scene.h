@@ -189,15 +189,44 @@ public:
     // シミュレートしていないときは空 = 設計値の直線で描く）。
     bool latestCable(std::size_t index, std::vector<float>& out);
 
+    // ---- 地面（文書の <ground>）--------------------------------------------
+    // 地面があるか（削除 = <ground enabled="false"> でないか）。PHYSICS
+    // スレッドか objectsMutex_ を持って呼ぶ（ground_ と同じ約束）。
+    bool groundEnabled() const { return ground_.enabled; }
+    // テレインが文書上あるか（Missing も含む）。約束は groundEnabled と同じ。
+    bool hasTerrain() const { return hasTerrain_; }
+    // 置き場所（Transform）。読むのは groundEnabled と同じ約束。
+    const wizengine::editor::Vec3d& groundPosition() const { return ground_.position; }
+    const wizengine::editor::Vec3d& groundRotation() const { return ground_.rotation; }
+    const wizengine::editor::Vec3d& terrainPosition() const { return terrain_.position; }
+    const wizengine::editor::Vec3d& terrainRotation() const { return terrain_.rotation; }
+    // ギズモの移動 / 回転（PHYSICS thread、onEditorStep から毎フレーム来うる）。
+    // 地面は物理の床を置き直し（作り直さない）、テレインはフレームを差し替える
+    // だけ（格子・メッシュ・当たり判定は作り直さない）。角度はオイラー角（度）。
+    void moveGround(double x, double y, double z);
+    void rotateGround(double xDeg, double yDeg, double zDeg);
+    // テレインのギズモは「中心の地表」に出す（原点 = 中心の最低点は丘の下に
+    // 埋もれて見えないため）。moveTerrain はこの点の新しい位置を受け、
+    // rotateTerrain はこの点を中心に回す（どちらも terrain_.position へ換算）。
+    void moveTerrain(double x, double y, double z);
+    void rotateTerrain(double xDeg, double yDeg, double zDeg);
+    wizengine::editor::Vec3d terrainHandlePoint() const;
+
     // ---- テレイン（文書の <terrain>）--------------------------------------
     // 高さ格子の実体（読み取り専用）。無ければ nullptr。格子は差し替えるたびに
     // 新しく作る（中身は書き換えない）ので、受け取った shared_ptr はそのまま
     // 別スレッドで読み続けてよい。どのスレッドから呼んでもよい（専用の
     // 末端ロック terrainFieldMutex_ だけを取る = 他のロックの中から呼べる）。
     std::shared_ptr<const wizengine::terrain::HeightField> terrainField() const;
+    // 同じ。格子と同じロックの中でテレインのフレーム（置き場所 + 回転。格子は
+    // 原点基準 = terrain/TerrainFrame.h）も pose に返す（null なら返さない）。
+    // 格子を問い合わせる側はこの組で使う（片方だけ新しい組を見ない）。
+    std::shared_ptr<const wizengine::terrain::HeightField> terrainField(
+        BodyTransform* pose) const;
     // レイと地表の交差（HeightField::raycast。車輪のレイ用）。テレインが無い・
     // 当たらなければ false で、t / normal（normal は x, y, z の 3 要素）は
-    // 触らない。スレッドの扱いは terrainField() と同じ。
+    // 触らない。origin / dir / normal はワールド（フレームはここで掛ける）。
+    // スレッドの扱いは terrainField() と同じ。
     bool terrainRaycast(const double origin[3], const double dir[3], double maxDist,
                         double& t, double normal[3]) const;
     // テレインの当たり判定のボディ（rebuildTerrainBody）は自前の接触の相手の
@@ -501,7 +530,16 @@ private:
     // 描画設定（文書の <visual>）の差し替え（PHYSICS thread）。適用は
     // RENDER スレッド（Filament を触るのはそのスレッドだけ）。
     void setRenderDesc(const wizengine::editor::RenderDesc& render);
-    // ground_.half の物理の床を作り直す（初回は新規作成）。PHYSICS thread。
+    // 地面 / テレインをエディタ選択にする（追加・開いた直後に Inspector へ
+    // 出すため）。エディタカメラのオブジェクト選択は外す（排他）。PHYSICS thread。
+    void selectSceneItem(EditorState::SelKind kind);
+    // 物理の床の姿勢を ground_ の置き場所へ（作り直さない）。PHYSICS thread。
+    void placeGroundBody();
+    // 床の箱の中心と向き（上面 = 地面の面）。
+    void groundBodyPose(chrono::ChVector3d& center, chrono::ChQuaternion<>& rot) const;
+    // ground_.half の物理の床を作り直す（初回は新規作成）。地面を削除して
+    // あれば当たり判定の無い固定フレーム（ジョイントのワールド側の受けだけ）。
+    // PHYSICS thread。
     void rebuildGroundBody();
     // RENDER thread: 見える地面の作り直し（applyToRenderer のロック中）。
     void syncGround();
@@ -745,6 +783,13 @@ private:
     // これを持ったまま他のロックを取らない）が守る - 車輪のレイが物理
     // スレッドから毎ステップ引くので、objectsMutex_ とは分けてある。
     std::shared_ptr<const wizengine::terrain::HeightField> terrainField_;
+    // テレインのフレーム（terrain_ の pos + euler。格子は原点基準）。格子と
+    // 組で読むので同じ terrainFieldMutex_ の下。書くのは publishTerrainField。
+    BodyTransform terrainPose_{0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0};
+    // フレームが変わった = 描画のチャンクの変換を当て直す（objectsMutex_ の下。
+    // 安いのでロックの中で当てる）。地面の置き場所も同じ扱い。
+    bool terrainPoseDirty_ = true;
+    bool groundPoseDirty_ = true;
     mutable std::mutex terrainFieldMutex_;
     // テレインの接触の相手（ゴースト）の番号。無い・張れなかったら kInvalidId。
     // ゴーストは PhysicsWorld の持ち物で、張り直しでも同じ番号が返る。

@@ -3050,6 +3050,26 @@ std::size_t PhysicsWorld::setTerrain(std::shared_ptr<const wterrain::HeightField
     return t.ghost;
 }
 
+void PhysicsWorld::setTerrainFrame(const ChVector3d& origin, const ChQuaternion<>& rot) {
+    ChQuaternion<> q = rot;
+    const double n = q.Length();
+    q = (std::isfinite(n) && n > 1e-12) ? q * (1.0 / n) : ChQuaternion<>(1, 0, 0, 0);
+    const ChVector3d o = (std::isfinite(origin.x()) && std::isfinite(origin.y()) &&
+                          std::isfinite(origin.z()))
+                             ? origin
+                             : ChVector3d(0, 0, 0);
+    if (o == terrainFrameOrigin_ && q == terrainFrameRot_) return;
+    terrainFrameOrigin_ = o;
+    terrainFrameRot_ = q;
+    terrainFrameIdentity_ = o == ChVector3d(0, 0, 0) && q == ChQuaternion<>(1, 0, 0, 0);
+    if (!hasTerrain()) return;
+    // 地面が動いたので、前の位置に対する接触の印と眠りを捨てる（setTerrain と同じ）。
+    for (const auto& rec : terrainProxies_) {
+        if (rec) std::fill(rec->was.begin(), rec->was.end(), char(0));
+    }
+    wakeAll();
+}
+
 void PhysicsWorld::clearTerrain() {
     if (!terrain_ || !terrain_->field) return;
     terrain_->field.reset();
@@ -3079,6 +3099,12 @@ void PhysicsWorld::collectTerrainContacts(ChSystem& sys) {
     ChCollisionModel* ghostModel = ghostBody->GetCollisionModel().get();
     if (!container || !ghostModel) return;
     t.params.dt = sys.GetStep();
+
+    // テレインのフレーム（格子のローカル → ワールド）。ボディの姿勢と速度を
+    // ローカルへ直して格子に問い合わせ、接触の点と法線をワールドへ戻す。
+    const bool framed = !terrainFrameIdentity_;
+    const wterrain::Mat3 frameRot = toTerrainMat(ChMatrix33<>(terrainFrameRot_));
+    const wterrain::Vec3 frameOrigin = toTerrainVec(terrainFrameOrigin_);
 
     const std::size_t n = std::min(terrainProxies_.size(), bodies_.size());
     for (std::size_t i = 0; i < n; ++i) {
@@ -3123,7 +3149,21 @@ void PhysicsWorld::collectTerrainContacts(ChSystem& sys) {
         wterrain::BodyVelocity vel;
         vel.linear = toTerrainVec(getLinVel(b, 0));
         vel.angular = toTerrainVec(getAngVel(b, 0));
+        if (framed) {
+            const wterrain::Mat3 inv = frameRot.transpose();
+            pose.position = inv * (pose.position - frameOrigin);
+            pose.rotation = inv * pose.rotation;
+            vel.linear = inv * vel.linear;
+            vel.angular = inv * vel.angular;
+        }
         wterrain::collectContacts(t.contactTerrain, rec->proxy, pose, vel, t.params, t.contacts);
+        if (framed) {
+            for (wterrain::Contact& c : t.contacts) {
+                c.onBody = frameRot * c.onBody + frameOrigin;
+                c.onTerrain = frameRot * c.onTerrain + frameOrigin;
+                c.normal = frameRot * c.normal;
+            }
+        }
 
         std::fill(rec->now.begin(), rec->now.end(), char(0));
         const auto& bodyMat = mats_[i] ? mats_[i] : mat_;

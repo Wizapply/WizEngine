@@ -568,6 +568,12 @@ public:
     // recreate で系ごと消えるので、作り直したら呼び直すこと（Scene の役目）。
     std::size_t setTerrain(std::shared_ptr<const wizengine::terrain::HeightField> field,
                            const BodyOptions& terrainOptions);
+    // テレインのフレーム（格子のローカル → ワールド: ワールド = origin +
+    // rot * ローカル。格子は原点基準 = terrain/TerrainFrame.h）。接触の収集は
+    // ボディをこのローカルへ直してから格子に問い合わせ、結果をワールドへ戻す。
+    // setTerrain とは別に覚えていて（張り直し・clearTerrain でも残る）、
+    // 変わったら眠っている物を起こす。recreate のあとも Scene が当て直す。
+    void setTerrainFrame(const chrono::ChVector3d& origin, const chrono::ChQuaternion<>& rot);
     // テレインの接触をやめる（ゴーストは次の setTerrain のために残す。
     // 番号は terrainBodyId から消える）。眠っている物は起こす。
     void clearTerrain();
@@ -738,6 +744,10 @@ private:
     // 記録のときに 1 回だけ確保し、以後は再確保しない（アドレスを Chrono の
     // 接触へ渡すため）。
     std::vector<std::shared_ptr<TerrainProxyRec>> terrainProxies_;
+    // テレインのフレーム（setTerrainFrame）。単位なら変換を省く。
+    chrono::ChVector3d terrainFrameOrigin_{0, 0, 0};
+    chrono::ChQuaternion<> terrainFrameRot_{1, 0, 0, 0};
+    bool terrainFrameIdentity_ = true;
     // テレイン（setTerrain が作る。recreate で捨てる）とコールバック
     // （createSystem が Core のときだけ作って系に登録する）。
     std::shared_ptr<TerrainState> terrain_;

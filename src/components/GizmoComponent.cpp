@@ -420,7 +420,7 @@ void buildCameraIcon(Sink out, std::size_t batch, const CameraObject& cam,
 // 相手が違うだけで、ハンドルの見た目・当たり判定・ドラッグの計算は共通。
 struct Target {
     bool valid = false;
-    int type = 0;  // 0=オブジェクト 1=ライト 2=カメラ 3=プレハブの部品
+    int type = 0;  // 0=オブジェクト 1=ライト 2=カメラ 3=プレハブの部品 4=地面 5=テレイン
     std::size_t index = 0;
     ed::Vec3d pos, rot, size;
     bool uniformScale = false;  // 球・モデル・球の部品: 軸を掴んでも一様に
@@ -469,6 +469,27 @@ Target currentTarget(Scene& scene, std::size_t camIndex, bool lockLists) {
                 t.size = part.size;
                 t.uniformScale = part.kind != ed::PartKind::Box;
             }
+        }
+        return t;
+    }
+    // 地面 / テレイン（シーンに 1 つずつ）。原点は地面 = 床の面の中心、
+    // テレイン = 中心の地表（Scene::terrainHandlePoint）で、回転もそこを中心に回す。
+    // 大きさ（床の広さ・テレインの全幅）はギズモでは変えない（拡縮は移動に丸める）。
+    if (selKind == EditorState::SelKind::Ground) {
+        if (scene.groundEnabled()) {
+            t.valid = true;
+            t.type = 4;
+            t.pos = scene.groundPosition();
+            t.rot = scene.groundRotation();
+        }
+        return t;
+    }
+    if (selKind == EditorState::SelKind::Terrain) {
+        if (scene.hasTerrain()) {
+            t.valid = true;
+            t.type = 5;
+            t.pos = scene.terrainHandlePoint();  // 中心の地表（Scene::moveTerrain の約束）
+            t.rot = scene.terrainRotation();
         }
         return t;
     }
@@ -978,6 +999,10 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
                 scene.moveCamera(t.index, nx, ny, nz);
             } else if (t.type == 3) {
                 scene.movePart(int(t.index), nx, ny, nz);
+            } else if (t.type == 4) {
+                scene.moveGround(nx, ny, nz);
+            } else if (t.type == 5) {
+                scene.moveTerrain(nx, ny, nz);
             } else {
                 scene.moveObject(t.index, nx, ny, nz);
             }
@@ -1023,6 +1048,10 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
                 // ローカルへ直す（オイラーで往復すると親の回転で崩れる）。
                 scene.rotatePartWorld(int(t.index), world.w(), world.x(), world.y(),
                                       world.z());
+            } else if (t.type == 4) {
+                scene.rotateGround(euler.x(), euler.y(), euler.z());
+            } else if (t.type == 5) {
+                scene.rotateTerrain(euler.x(), euler.y(), euler.z());
             } else {
                 scene.rotateObject(t.index, euler.x(), euler.y(), euler.z());
             }

@@ -80,6 +80,8 @@ Vec3d getVec3(const xml::Element& e, const char* key, const Vec3d& fallback) {
     e.numbers(key, a, 3);
     return Vec3d{a[0], a[1], a[2]};
 }
+// 零ベクトルか（既定値と同じ置き場所・回転を書かないため）。
+bool isZero(const Vec3d& v) { return v.x == 0.0 && v.y == 0.0 && v.z == 0.0; }
 // 色は MuJoCo と同じ rgba="r g b a"（リニア値）。a は今は使わないが、
 // MJCF を見慣れた目に自然な形にしておく。
 void setColor(xml::Element& e, const char* key, const Color3& c) {
@@ -1261,6 +1263,7 @@ xml::Element terrainElement(const TerrainDesc& t) {
     e.set("data", t.data);
     if (!t.guid.empty()) e.set("guid", t.guid);
     setVec3(e, "pos", t.position);
+    if (!isZero(t.rotation)) setVec3(e, "euler", t.rotation);  // 回転なしは書かない
     e.set("texture", t.texture);
     e.setNumber("tile", t.tile);
     setColor(e, "rgba", t.color);
@@ -1334,6 +1337,7 @@ TerrainDesc terrainFromXml(const xml::Element& e, TerrainLegacyDesc& legacy,
              "\" is not a valid guid (32 hex digits, not all zero) - ignored");
     }
     t.position = getVec3(e, "pos", t.position);
+    t.rotation = getVec3(e, "euler", t.rotation);
     if (e.has("texture")) {
         const std::string tex = e.attr("texture");
         if (tex.empty() || assetFileAllowed(tex)) {
@@ -1395,6 +1399,11 @@ xml::Element toXml(const SceneDocument& doc) {
     }
     if (doc.hasGround) {
         xml::Element g("ground");
+        // 削除した地面だけ書く（既定 = ある。書かない文書は従来どおり地面あり）。
+        if (!doc.ground.enabled) g.setBool("enabled", false);
+        // 置き場所は既定（原点・回転なし）でなければ書く（従来の文書を太らせない）。
+        if (!isZero(doc.ground.position)) setVec3(g, "pos", doc.ground.position);
+        if (!isZero(doc.ground.rotation)) setVec3(g, "euler", doc.ground.rotation);
         g.setNumber("size", doc.ground.half);
         g.setNumber("visual", doc.ground.visualHalf);
         g.set("texture", doc.ground.texture);
@@ -1587,6 +1596,9 @@ SceneDocument fromXml(const xml::Element& root,
         if (!grounds.empty()) {
             doc.hasGround = true;
             const xml::Element& g = *grounds[0];
+            doc.ground.enabled = g.boolean("enabled", doc.ground.enabled);
+            doc.ground.position = getVec3(g, "pos", doc.ground.position);
+            doc.ground.rotation = getVec3(g, "euler", doc.ground.rotation);
             doc.ground.half = g.number("size", doc.ground.half);
             doc.ground.visualHalf = g.number("visual", doc.ground.visualHalf);
             if (g.has("texture")) {

@@ -40,6 +40,10 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
                 (file == TerrainFileState::Keep && terrainMissing()));
     const bool fieldChanged = field != terrainField_;
     const bool surfaceChanged = on && (!had || !sameTerrainSurface(desc, terrain_));
+    // テレインのフレーム（置き場所 + 回転）。格子は原点基準なので、動かす・回すは
+    // ここだけ（格子・メッシュは作り直さない）。
+    const BodyTransform pose = placementPose(desc.position, desc.rotation);
+    bool poseChanged = false;
     {
         // 格子の差し替えと dirty は同じロックの中で: 描画スレッドは dirty を
         // 見たのと同じロックの中で格子を取り出すので、「新しい dirty と古い
@@ -47,10 +51,17 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
         std::lock_guard<std::mutex> lk(objectsMutex_);
         terrain_ = desc;  // 無しでも値は覚えておく（/scene の欄に出す）
         hasTerrain_ = on || missing;
-        if (fieldChanged) {
+        {
             std::lock_guard<std::mutex> fl(terrainFieldMutex_);
-            terrainField_ = std::move(field);
-            terrainMeshDirty_ = true;  // 無しになったときは描画側が外す
+            if (fieldChanged) {
+                terrainField_ = std::move(field);
+                terrainMeshDirty_ = true;  // 無しになったときは描画側が外す
+            }
+            if (!samePose(pose, terrainPose_)) {
+                terrainPose_ = pose;
+                terrainPoseDirty_ = true;
+                poseChanged = true;
+            }
         }
         if (surfaceChanged) terrainSurfaceDirty_ = true;
         // ファイルとの関係。無いテレインに書くべき変更は無い（外したら Saved）。
@@ -73,6 +84,15 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
         }
     }
     if (history == TerrainHistory::Clear) terrainUndo_->clear();
+    // 外したテレインを選んだままにしない（Inspector に欄だけ残る）。
+    if (!hasTerrain_ && editor_.selKind() == EditorState::SelKind::Terrain) {
+        editor_.clearSel();
+    }
+
+    // 接触の側のフレーム（作り直しの rebuildTerrainBody も当て直す）。
+    if (poseChanged) physics_.setTerrainFrame(ChVector3d(pose.px, pose.py, pose.pz),
+                                              ChQuaternion<>(pose.qw, pose.qx, pose.qy,
+                                                             pose.qz));
 
     // テレインの有無は系の種類を変えうる（kTerrainForcesCore）。作り直したら
     // テレインの当たり判定もそこで組み直し済みなので、二重に張らない。
@@ -94,28 +114,23 @@ void Scene::reshapeTerrain(const ed::TerrainDesc& next) {
         hasTerrain_ ? terrainField_ : nullptr;
     const ed::TerrainDesc& now = terrain_;
     const bool sized = next.size != now.size;
-    const bool moved = next.position.x != now.position.x ||
-                       next.position.y != now.position.y ||
-                       next.position.z != now.position.z;
     const bool resampled = next.resolution != now.resolution;
     const bool scaled = next.height != now.height;
-    // .terrain が持つ形（size / resolution / height）が変わったか。pos は XML が
-    // 持つので、置き直しだけならファイルは書き直さず、Undo の記録（セルの添字と
-    // 相対高さ）もそのまま使える。
+    // .terrain が持つ形（size / resolution / height）が変わったか。pos / euler は
+    // XML が持ち、格子は原点基準なので、置き直し・回転は格子に触らない（フレーム
+    // だけ = publishTerrainField が描画と接触へ渡す）。ファイルも Undo の記録
+    // （セルの添字と相対高さ）もそのまま。
     const bool fileChanged = sized || resampled || scaled;
-    if (!field || !(moved || fileChanged)) {
-        // 形はそのまま（またはテレイン無し = 値だけ覚える）: 表面だけ。
+    if (!field || !fileChanged) {
+        // 形はそのまま（またはテレイン無し = 値だけ覚える）: 表面と置き場所だけ。
         publishTerrainField(next, field, TerrainHistory::Keep, TerrainFileState::Keep);
         return;
     }
     // 形の変更は今の格子のコピーから作る（共有中の格子は書き換えない）。
-    // 置き直し → 再サンプル → 比例伸縮の順。
+    // 大きさ → 再サンプル → 比例伸縮の順。
     const auto t0 = std::chrono::steady_clock::now();
     wizengine::terrain::HeightField grid =
-        (sized || moved)
-            ? field->withGeometry(float(next.size), float(next.position.x),
-                                  float(next.position.y), float(next.position.z))
-            : *field;
+        sized ? field->withGeometry(float(next.size), 0.0f, 0.0f, 0.0f) : *field;
     if (resampled) grid = grid.resampled(next.resolution);
     // 高さは [0, height] に保つ（.terrain の量子化の範囲）。height は
     // clampTerrain が kTerrainMinHeight 以上に保つので、倍率は有限。
@@ -262,6 +277,16 @@ void Scene::rebuildTerrainBodyUnguarded() {
     // 衝突ファミリを通らないので、どのレイヤの物もテレインに当たる（未対応）。
     const BodyOptions terrainOpt;
     const std::size_t id = physics_.setTerrain(field, terrainOpt);
+    {
+        // フレームは格子と組（PhysicsWorld が作り直されても当て直す）。
+        BodyTransform pose;
+        {
+            std::lock_guard<std::mutex> fl(terrainFieldMutex_);
+            pose = terrainPose_;
+        }
+        physics_.setTerrainFrame(ChVector3d(pose.px, pose.py, pose.pz),
+                                 ChQuaternion<>(pose.qw, pose.qx, pose.qy, pose.qz));
+    }
     if (id == PhysicsWorld::kInvalidId) {
         // Multicore（kTerrainForcesCore = false のとき）など。前の格子で
         // 当たり続けないように外しておく。
@@ -333,18 +358,74 @@ std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainField() con
     return terrainField_;
 }
 
+std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainField(
+    BodyTransform* pose) const {
+    std::lock_guard<std::mutex> fl(terrainFieldMutex_);
+    if (pose) *pose = terrainPose_;
+    return terrainField_;
+}
+
+// ---- ギズモの移動 / 回転（PHYSICS thread）----------------------------------
+// フレームだけを変える（reshapeTerrain は形が同じなら格子に触らない）。
+// Missing（格子が無い）でも値は覚える（ファイルを戻したらそこに出る）。
+// 掴み点 = 原点 + R·(0, 中心の地表の高さ, 0)。
+
+namespace {
+// 格子の中心の地表の高さ（ローカル = 最低点からの高さ）。格子が無ければ 0。
+double centerHeight(const std::shared_ptr<const wizengine::terrain::HeightField>& field) {
+    if (!field || !field->valid()) return 0.0;
+    const double h = field->heightAt(0.0, 0.0);
+    return std::isfinite(h) ? h : 0.0;
+}
+// R·(0, h, 0)（オイラー角は度）。
+ed::Vec3d liftedBy(const ed::Vec3d& eulerDeg, double h) {
+    const scenemath::Vec3 v =
+        scenemath::quatFromEulerDegrees(eulerDeg.x, eulerDeg.y, eulerDeg.z) *
+        scenemath::Vec3(0.0, h, 0.0);
+    return {v.x(), v.y(), v.z()};
+}
+}  // namespace
+
+ed::Vec3d Scene::terrainHandlePoint() const {
+    const ed::Vec3d up = liftedBy(terrain_.rotation, centerHeight(terrainField()));
+    return {terrain_.position.x + up.x, terrain_.position.y + up.y,
+            terrain_.position.z + up.z};
+}
+
+void Scene::moveTerrain(double x, double y, double z) {
+    if (!hasTerrain_) return;
+    ed::TerrainDesc next = terrain_;
+    const ed::Vec3d up = liftedBy(terrain_.rotation, centerHeight(terrainField()));
+    next.position = {x - up.x, y - up.y, z - up.z};
+    reshapeTerrain(ed::clampTerrain(next));
+}
+
+void Scene::rotateTerrain(double xDeg, double yDeg, double zDeg) {
+    if (!hasTerrain_) return;
+    // 掴み点を動かさずに回す = 新しい回転で持ち上げた分だけ原点をずらす。
+    const ed::Vec3d handle = terrainHandlePoint();
+    ed::TerrainDesc next = terrain_;
+    next.rotation = {xDeg, yDeg, zDeg};
+    const ed::Vec3d up = liftedBy(next.rotation, centerHeight(terrainField()));
+    next.position = {handle.x - up.x, handle.y - up.y, handle.z - up.z};
+    reshapeTerrain(ed::clampTerrain(next));
+}
+
 bool Scene::terrainRaycast(const double origin[3], const double dir[3], double maxDist,
                            double& t, double normal[3]) const {
     // 格子は共有ポインタで受け取ってからロックの外で辿る（差し替えられても
     // 手元の格子は生きている）。
-    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
+    BodyTransform pose;
+    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField(&pose);
     if (!field) return false;
+    const wizengine::terrain::TerrainFrame frame = wizengine::terrain::TerrainFrame::fromPose(
+        pose.px, pose.py, pose.pz, pose.qw, pose.qx, pose.qy, pose.qz);
     const wizengine::terrain::Vec3 o{origin[0], origin[1], origin[2]};
     const wizengine::terrain::Vec3 d{dir[0], dir[1], dir[2]};
     double hitT = 0.0;
     wizengine::terrain::Vec3 n = wizengine::terrain::Vec3::Zero();
     // 判定の戻り値は一度変数に受けてから使う（出力引数と同じ式に並べない規約）。
-    const bool hit = field->raycast(o, d, maxDist, hitT, n);
+    const bool hit = frame.raycast(*field, o, d, maxDist, hitT, n);
     if (!hit) return false;
     t = hitT;
     normal[0] = n.x();

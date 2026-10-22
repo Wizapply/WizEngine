@@ -164,10 +164,45 @@ PhysicsWorld.step(dt)
   見ているカメラは「視聴中」表示で再試行する。**シミュレートへ切り替えると
   窓は閉じる**（`closeCamPopups`、元のページを離れるときも）- 編集のための
   窓なので、走らせる段になったら残さない。Inspector には**常設の World 節**（`secWorld`）が
-  あり、地面（床の広さ・見える広さ・テクスチャ・タイル・色）と環境光
-  （HDR・強さ）を編集できる（`edit.ground` / `edit.environment`、部分更新で
-  物理スレッドが `setGroundAndEnvironment` を呼ぶ。パスは `assetFileAllowed`
-  の関所を通り、不正なら現状維持）。Inspector の選択オブジェクトは **Unity 風の
+  あり、環境光（HDR・強さ・背景）とシーン全体のイベントを編集できる
+  （`edit.environment`）。**地面とテレインは World 節の設定ではなく、シーンに
+  1 つずつの「オブジェクト」**: Scene タブの Objects 一覧の先頭（ライトの後）に
+  「▭ Ground」「⛰ Terrain <名前>」の行が出て、エディタモード×エディタカメラの
+  ページではクリックでエディタ選択（`EditorState::SelKind::Ground / Terrain`、
+  `select.ground` / `select.terrain`、オブジェクト選択とは排他）、右クリックで
+  削除。選ぶと Inspector に `secGround` / `secTerrain` 節が出る（床の広さ・
+  見える広さ・テクスチャ・タイル・色・材質 = `edit.ground`、テレインの欄 =
+  `edit.terrain`。部分更新で物理スレッドが `setGroundAndEnvironment` /
+  `applyTerrainOp` を呼ぶ。パスは `assetFileAllowed` の関所を通り、不正なら
+  現状維持）。**ギズモで移動 / 回転できる**（拡縮は移動に丸める。大きさは
+  欄で決める）: GizmoComponent の対象の種類 4 = 地面（原点 = 床の面の中心）、
+  5 = テレイン（原点 = 中心の地表 `Scene::terrainHandlePoint` - 文書の pos =
+  中心の最低点は丘に埋もれて見えないため。`moveTerrain` / `rotateTerrain` が
+  この点を基準に pos へ換算する）。置き場所は文書の `<ground pos euler>` /
+  `<terrain euler>`（既定値なら書かない）、JSON は `pos` / `rot`。**動かしても
+  作り直さない**: 地面は物理の床を `placeBody` で置き直し（床は厚さ 1 m の箱で
+  上面が面）、見た目は `Renderer::setGroundTransform`（エンティティの変換）。
+  **テレインの格子は原点基準**（中心 0・最低点 0。.terrain の decode と同じ）で、
+  pos + euler は「テレインのフレーム」（`terrain/TerrainFrame.h`）として境界で
+  掛ける: 接触は `PhysicsWorld::setTerrainFrame`（`collectTerrainContacts` が
+  ボディの姿勢と速度をローカルへ直し、接触点と法線をワールドへ戻す）、車輪の
+  レイは VehicleComponent が `Scene::terrainField(&pose)` で格子と組で取って
+  ローカルで当てる（埋まり判定の「上」もテレインの上）、描画は
+  `Renderer::setTerrainTransform`（チャンクのエンティティの変換。UV もローカル
+  なのでテクスチャは一緒に動く）。だから位置・回転の変更は格子・メッシュ・
+  当たり判定を作り直さず（`reshapeTerrain` が作り直すのは size / resolution /
+  height だけ）、ブラウザも pos / rot をすぐ送る。車輪のレイは地面も置き場所の
+  面で当てる（`veh::planeQuery`）。**地面は削除できる**（`edit.ground
+  {enabled:false}`、文書は `<ground enabled="false">`）: 見える地面
+  （`Renderer::removeGround`）も物理の床も無くなり、車輪のレイも y = 0 の
+  平面に当てない。物理側は当たり判定の無い固定フレーム（`addFrame`）を
+  `groundPhysId_` に残す = ジョイントの「ワールド側」はそのまま張れる。
+  追加はアセットパネルの **Ground タイル**（削除していれば戻す・あれば選ぶ）と
+  **Terrain タイル**（新しい平らなテレイン = `edit.terrain {new}`）で、追加・
+  開いたものはサーバーが選択にする（`Scene::selectSceneItem`）。テレインの
+  削除は「シーンから外す」（`edit.terrain {enabled:false}`、.terrain は残る）。
+  消えた物を選んでいたら選択は外れる（`setGroundAndEnvironment` /
+  `publishTerrainField`、/scene も無い物は none で返す）。Inspector の選択オブジェクトは **Unity 風の
   Transform 行**（`.trRow`、位置 / 回転 / スケールに X/Y/Z の色タグ。id は
   edPX〜edSZ のまま、スケールは倍率ではなく実寸 m）。**ギズモのモード切替
   （✥/⟳/⤢ と World⇄Local）と設定の ⚙ は映像左上のツールバー**（`#gizmoBar`、

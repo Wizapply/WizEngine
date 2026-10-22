@@ -43,6 +43,7 @@
 #include "scene/RenderBridge.h"
 #include "scene/PrefabFrame.h"
 #include "terrain/HeightField.h"
+#include "terrain/TerrainFrame.h"
 #include "terrain/TerrainLibrary.h"
 #include "terrain/TerrainUndo.h"
 #include "vehicle/TireFormula.h"
@@ -272,6 +273,18 @@ inline double elapsedMs(std::chrono::steady_clock::time_point from) {
         .count();
 }
 
+// ---- 地面とテレインの置き場所 -----------------------------------------------
+// 位置 + オイラー角（度）→ 姿勢（四元数は SceneMath の 1 か所の定義）。
+inline BodyTransform placementPose(const ed::Vec3d& pos, const ed::Vec3d& eulerDeg) {
+    const scenemath::Quat q =
+        scenemath::quatFromEulerDegrees(eulerDeg.x, eulerDeg.y, eulerDeg.z);
+    return BodyTransform{pos.x, pos.y, pos.z, q.w(), q.x(), q.y(), q.z()};
+}
+inline bool samePose(const BodyTransform& a, const BodyTransform& b) {
+    return a.px == b.px && a.py == b.py && a.pz == b.pz && a.qw == b.qw && a.qx == b.qx &&
+           a.qy == b.qy && a.qz == b.qz;
+}
+
 // ---- テレイン -----------------------------------------------------------------
 // 文書の値 → 高さ格子の生成パラメータ（src/terrain は文書の型を知らない）。
 // 旧形式の互換読込（SceneTerrainFile.cpp）とノイズ生成（SceneTerrain.cpp）が使う。
@@ -281,9 +294,10 @@ inline wizengine::terrain::TerrainParams toTerrainParams(const ed::TerrainDesc& 
     p.size = float(d.size);
     p.resolution = d.resolution;
     p.height = float(d.height);
-    p.posX = float(d.position.x);
-    p.posY = float(d.position.y);
-    p.posZ = float(d.position.z);
+    // 格子は原点基準（置き場所はテレインのフレーム = terrain/TerrainFrame.h）。
+    p.posX = 0.0f;
+    p.posY = 0.0f;
+    p.posZ = 0.0f;
     p.seed = n.seed;
     p.octaves = n.octaves;
     p.gain = float(n.gain);
@@ -293,8 +307,8 @@ inline wizengine::terrain::TerrainParams toTerrainParams(const ed::TerrainDesc& 
 }
 
 // d を書き換える: 形（size / resolution / height）を新規テレインの既定値
-// （ed::TerrainDesc{}）へ戻し、その大きさと d の位置の平らな格子を返す。
-// 位置と表面はそのまま。
+// （ed::TerrainDesc{}）へ戻し、その大きさの平らな格子（原点基準）を返す。
+// 位置・回転と表面はそのまま。
 // 新規（SceneTerrainEdit.cpp の newTerrain）が使う。
 inline std::shared_ptr<const wizengine::terrain::HeightField> flatDefaultTerrain(
     ed::TerrainDesc& d) {
@@ -303,8 +317,7 @@ inline std::shared_ptr<const wizengine::terrain::HeightField> flatDefaultTerrain
     d.resolution = def.resolution;
     d.height = def.height;
     return std::make_shared<const wizengine::terrain::HeightField>(
-        d.resolution, float(d.size), float(d.position.x), float(d.position.y),
-        float(d.position.z));
+        d.resolution, float(d.size), 0.0f, 0.0f, 0.0f);
 }
 
 // ---- シーンファイルの読み込み -----------------------------------------------

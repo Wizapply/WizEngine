@@ -10,6 +10,7 @@
 #include "scene/Scene.h"
 #include "scene/SceneMath.h"
 #include "terrain/HeightField.h"
+#include "terrain/TerrainFrame.h"
 
 namespace veh = wizengine::vehicle;
 
@@ -106,9 +107,28 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
     // 使わない: 車輪だけが乗って車体と他の物は抜ける、という
     // 「レイと接触の食い違い」を作らないため（プレハブの collide 部品と同じ考え）。
     std::shared_ptr<const wizengine::terrain::HeightField> terrain;
+    // 格子は原点基準で、置き場所（位置 + 回転）はフレーム。格子と同じロックで
+    // 組にして取る。
+    wizengine::terrain::TerrainFrame terrainFrame;
     if (scene.hasTerrainCollision()) {
-        terrain = scene.terrainField();
+        BodyTransform pose;
+        terrain = scene.terrainField(&pose);
         if (terrain && !terrain->valid()) terrain.reset();
+        terrainFrame = wizengine::terrain::TerrainFrame::fromPose(
+            pose.px, pose.py, pose.pz, pose.qw, pose.qx, pose.qy, pose.qz);
+    }
+    // 地面の面（置き場所の原点を通り、回転した +Y が法線）。物理スレッドは
+    // ground の唯一の書き手なのでロックは要らない。
+    const bool groundOn = scene.groundEnabled();
+    veh::Vec3 groundPoint{0.0, 0.0, 0.0};
+    veh::Vec3 groundNormal{0.0, 1.0, 0.0};
+    {
+        const wizengine::editor::Vec3d& gp = scene.groundPosition();
+        const wizengine::editor::Vec3d& gr = scene.groundRotation();
+        const scenemath::Vec3 up =
+            scenemath::quatFromEulerDegrees(gr.x, gr.y, gr.z) * scenemath::Vec3(0.0, 1.0, 0.0);
+        groundPoint = veh::Vec3{gp.x, gp.y, gp.z};
+        groundNormal = veh::Vec3{up.x(), up.y(), up.z()};
     }
 
     int count = 0;
@@ -165,15 +185,22 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
         chassis.angularVelocity = toVec(physics.bodyAngularVelocity(obj.physId));
         chassis.mass = physics.bodyMass(obj.physId);
 
-        // 車輪のレイは床（y = 0）だけでなく、シーンの剛体（箱・球。ソフト
+        // 車輪のレイは地面の面（置き場所の平面）だけでなく、シーンの剛体（箱・球。ソフト
         // ボディと自分自身は除く）にも当てる = 階段や坂の上を走れる。
         // レイキャスト式なので乗った物に力は返さない（固定の段差向き）。
         // 物理スレッドはオブジェクト一覧の唯一の書き手なのでロックは要らない。
         const std::size_t self = i;
         const wizengine::terrain::HeightField* const field = terrain.get();
-        const veh::GroundQuery query = [this, &scene, &physics, self, field](
+        const veh::GroundQuery query = [this, &scene, &physics, self, field, &terrainFrame,
+                                        groundOn, groundPoint, groundNormal](
                                            const veh::Vec3& origin, const veh::Vec3& dir,
                                            double maxDist) {
+            // テレインはそのローカル（格子の座標）で問い合わせ、法線をワールドへ
+            // 戻す（回転していなければ平行移動だけ）。
+            const wizengine::terrain::Vec3 lo =
+                terrainFrame.toLocal(wizengine::terrain::Vec3{origin.x, origin.y, origin.z});
+            const wizengine::terrain::Vec3 ld =
+                terrainFrame.dirToLocal(wizengine::terrain::Vec3{dir.x, dir.y, dir.z});
             // テレイン。始点（車体の取り付け点）が地中にあるときは、片面の
             // レイが何にも当たらず車輪が抜けて車体が落ちる（斜面の谷で前輪の
             // 取り付け点が登り坂に潜った場合など）。そのときは「距離 0 で
@@ -190,33 +217,39 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
             // 返す法線は地表の面法線だが、扇（rays > 1）では WheelController が
             // 「当たり点 → 円の中心」= ストラットの上向きに置き換えるので、
             // 使われるのは rays = 1 のときだけ。
+            // 「上」「下」はテレインのローカル（回したテレインの面の上向き）。
             // **下を向いたレイだけ**救う（dir.y < -1e-9、planeGroundQuery の
             // 「下を向いていない」と同じしきい値）。上向き・水平のレイは平面も
             // テレインの片面のレイも当たらない約束で、救済だけがそれを破ると、
             // 横転しかけ・裏返りの車で取り付け点がわずかに埋まったとき、
             // 下や横を向いたストラットの上向きに沿って車体を地面へ押し込む。
-            if (field && dir.y < -1e-9) {
+            if (field && ld.y() < -1e-9) {
                 // maxDist は dir の倍数（planeGroundQuery と同じ単位）なので、
                 // 鉛直の長さは maxDist * (-dir.y)。
-                const double reach = std::isfinite(maxDist) ? maxDist * (-dir.y) : 0.0;
+                const double reach = std::isfinite(maxDist) ? maxDist * (-ld.y()) : 0.0;
                 if (reach > 0.0) {
-                    const wizengine::terrain::Vec3 top{origin.x, origin.y + reach, origin.z};
+                    const wizengine::terrain::Vec3 top{lo.x(), lo.y() + reach, lo.z()};
                     const wizengine::terrain::Vec3 down{0.0, -1.0, 0.0};
                     double above = 0.0;
                     wizengine::terrain::Vec3 an = wizengine::terrain::Vec3::Zero();
                     // 戻り値は一度変数に受けてから使う（出力引数と同じ式に並べない規約）。
                     const bool covered = field->raycast(top, down, reach, above, an);
                     if (covered && above < reach) {
+                        const wizengine::terrain::Vec3 wn = terrainFrame.dirToWorld(an);
                         veh::GroundHit buried;
                         buried.hit = true;
                         buried.distance = 0.0;
                         buried.point = origin;
-                        buried.normal = veh::Vec3{an.x(), an.y(), an.z()};
+                        buried.normal = veh::Vec3{wn.x(), wn.y(), wn.z()};
                         return buried;  // 距離 0 より近い当たりは無い
                     }
                 }
             }
-            veh::GroundHit best = veh::planeGroundQuery(origin, dir, maxDist);
+            // 地面の平面は地面があるときだけ（削除した地面 = 物理の床も無い）。
+            // 地面は動かせる・傾けられるので、置き場所の面（groundPlane）で当てる。
+            veh::GroundHit best =
+                groundOn ? veh::planeQuery(origin, dir, maxDist, groundPoint, groundNormal)
+                         : veh::GroundHit{};
             // 当たり判定の結果（dist / normal は出力引数）を採用するかは、必ず
             // 判定を呼び終えてから決める。consider(rayHits...(.., dist, normal),
             // dist, normal) の一行書きは引数の評価順が未規定で、MSVC は右から
@@ -238,18 +271,17 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
             // 当たった三角形の面法線（HeightField::normalAt と同じ割り方）。
             // 扇のレイでは WheelController が「当たり点 → 円の中心」に置き換える。
             if (field) {
-                const wizengine::terrain::Vec3 to{origin.x, origin.y, origin.z};
-                const wizengine::terrain::Vec3 td{dir.x, dir.y, dir.z};
                 // raycast の距離は dir を正規化した m 単位、ここの maxDist / dist は
                 // dir の倍数（planeGroundQuery と同じ）。WheelController の dir は
                 // 正規化済みで両者は一致するが、単位は dir の長さで揃えておく。
                 const double len = dir.length();
                 double tt = 0.0;
                 wizengine::terrain::Vec3 tn = wizengine::terrain::Vec3::Zero();
-                const bool hit = len > 1e-12 && field->raycast(to, td, maxDist * len, tt, tn);
+                const bool hit = len > 1e-12 && field->raycast(lo, ld, maxDist * len, tt, tn);
                 if (hit) {
+                    const wizengine::terrain::Vec3 wn = terrainFrame.dirToWorld(tn);
                     dist = tt / len;
-                    normal = veh::Vec3{tn.x(), tn.y(), tn.z()};
+                    normal = veh::Vec3{wn.x(), wn.y(), wn.z()};
                 }
                 consider(hit);
             }

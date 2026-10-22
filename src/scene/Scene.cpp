@@ -768,6 +768,10 @@ const wizengine::CollisionTriangles* Scene::meshTrimesh(int meshIndex) {
 void Scene::syncGround() {
     if (!groundDirty_) return;
     groundDirty_ = false;
+    if (!ground_.enabled) {  // 削除した地面（物理の床も無い）
+        renderer_.removeGround();
+        return;
+    }
     wizengine::ShapeMaterial groundMat;
     groundMat.roughness = float(ground_.roughness);
     groundMat.metallic = float(ground_.metallic);
@@ -1625,6 +1629,22 @@ void Scene::applyToRenderer() {
         terrainOn = hasTerrain_;
         terrainPending = terrain_;
         if (terrainMesh) terrainFieldPending = terrainField();  // 末端のロック
+    }
+    // 地面とテレインの置き場所（エンティティの変換だけ = 安いのでロックの中で）。
+    // Renderer は値を覚えていて、後から作り直した地面・チャンクにも当てる。
+    if (groundPoseDirty_) {
+        groundPoseDirty_ = false;
+        renderer_.setGroundTransform(
+            toFilament(placementPose(ground_.position, ground_.rotation)));
+    }
+    if (terrainPoseDirty_) {
+        terrainPoseDirty_ = false;
+        BodyTransform pose;
+        {
+            std::lock_guard<std::mutex> fl(terrainFieldMutex_);  // 末端のロック
+            pose = terrainPose_;
+        }
+        renderer_.setTerrainTransform(toFilament(pose));
     }
     lk.unlock();
     if (terrainMesh || terrainSurface) {

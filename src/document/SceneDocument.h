@@ -55,7 +55,8 @@
 //     <worldbody>
 //       <environment hdr="studio.hdr" intensity="30000"/>
 //       <ground size="10" visual="8" texture="textures/ground.png" tile="2"/>
-//       <terrain data="hills" guid="(32 桁の hex)" pos="0 0 0"
+//                                    ... pos / euler は既定（原点・回転なし）でなければ書く
+//       <terrain data="hills" guid="(32 桁の hex)" pos="0 0 0" euler="0 0 0"
 //                texture="" tile="2" rgba="..." roughness="0.9" metallic="0"/>
 //                                    ... 起伏のある地面（
 //                                        EditorTypes.h の TerrainDesc）。
@@ -116,6 +117,11 @@
 //   * <ground> と <environment> は worldbody 直下の単一要素（WizEngine の
 //     語彙）。ground の size / visual は半分の広さ（物理の床と見える地面）、
 //     texture / hdr は assets/ 相対パス。節を書かない文書は既定値で開く。
+//     地面はシーンの 1 オブジェクトで、削除すると <ground enabled="false">
+//     が残る（見える地面も物理の床も無し。enabled は false のときだけ書く）。
+//     置き場所は pos（床の面の中心）と euler（度。傾けると斜面の床）。
+//     テレインも euler（度、回転の中心は pos）を持つ。どちらも既定値なら
+//     書かない（従来の文書はそのまま = 原点・回転なし）。
 //   * <terrain> も worldbody 直下の単一要素（WizEngine の語彙）。中身
 //     （高さ格子・大きさ）は別ファイル
 //     assets/terrains/<data>.terrain で、文書はその名前（data）と背番号

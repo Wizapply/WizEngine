@@ -96,10 +96,9 @@ std::shared_ptr<const wt::HeightField> Scene::readTerrainFile(const std::string&
                  " is outside the editor's range";
         return nullptr;
     }
-    // decode は原点中心・baseY 0 の格子を返すので、文書の pos へ置き直す。
-    wt::HeightField field = data.field.withGeometry(
-        data.field.size(), float(got.position.x), float(got.position.y),
-        float(got.position.z));
+    // decode は原点中心・baseY 0 の格子を返す = そのまま使う（置き場所は
+    // テレインのフレーム。terrain/TerrainFrame.h）。
+    wt::HeightField field = data.field.withGeometry(data.field.size(), 0.0f, 0.0f, 0.0f);
     if (!field.valid()) {
         reason = path.u8string() + ": cannot place the grid at the terrain position";
         return nullptr;

@@ -233,6 +233,12 @@ public:
     void addGround(float halfSize, const filament::math::float3& color,
                    float tileMeters, const std::string& texturePath,
                    const ShapeMaterial& material = ShapeMaterial{0.9f});
+    // 見える地面を外す（地面を削除したシーン = <ground enabled="false">）。
+    // 無ければ何もしない。次の addGround で作り直せる。RENDER スレッド。
+    void removeGround();
+    // 地面の置き場所（位置 + 回転。地面のメッシュはローカルの y = 0 の面）。
+    // 値を覚えていて、後から addGround で作り直した地面にも当てる。RENDER スレッド。
+    void setGroundTransform(const filament::math::mat4f& transform);
 
     // ---- テレイン（チャンク分割の高さメッシュ）---------------------------
     // シーンに 1 つ。chunksX × chunksZ 枚のチャンクを作り、各チャンクは
@@ -265,6 +271,10 @@ public:
                            float metallic);
     // テレインを外す（無ければ何もしない）。材質の設定は覚えたまま。
     void removeTerrain();
+    // テレインの置き場所（格子のローカル → ワールド。チャンクの頂点は原点
+    // 基準のまま）。値を覚えていて、後から addTerrain で作ったチャンクにも
+    // 当てる。動かす・回すのにメッシュを作り直さない。RENDER スレッド。
+    void setTerrainTransform(const filament::math::mat4f& transform);
 
     // ---- glTF モデル（シーン文書の <asset><mesh/> に対応）----------------
     // loadModel が原型（同じパスは 1 回だけ読む）、addModelInstance が実体。
@@ -594,6 +604,8 @@ private:
         filament::IndexBuffer* ib = nullptr;
     };
     std::vector<TerrainChunk> terrainChunks_;
+    filament::math::mat4f terrainTransform_;  // 単位で始まる（setTerrainTransform）
+    filament::math::mat4f groundTransform_;   // 同じく地面（setGroundTransform）
     int terrainChunksX_ = 0;
     int terrainChunksZ_ = 0;
     int terrainQuads_ = 0;  // 1 チャンクの 1 辺のクアッド数

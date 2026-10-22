@@ -446,17 +446,77 @@ void Scene::rebuildGroundBody() {
     }
     // 番号を覚えておくのは、ジョイントの「ワールド側」に使うため
     // （buildJoints はシミュレート開始のたびに読み直すのでずれない）。
+    // 床は厚さ 1 m の箱で、上面が地面の面（置き場所の原点）になるよう、
+    // 箱の中心を面の法線の逆向きへ 0.5 m 下げる（回転した床でも面が一致する）。
+    ChVector3d center;
+    ChQuaternion<> rot;
+    groundBodyPose(center, rot);
+    if (!ground_.enabled) {
+        // 削除した地面: 当たらない固定フレーム（extras 無し = 当たり判定無し）。
+        // ジョイントの「ワールド側」はこの番号に付くので、地面が無くても
+        // 地面へのジョイントはそのまま張れる（固定なので位置は意味を持たない）。
+        groundPhysId_ = physics_.addFrame(1000.0, center, rot, /*fixed*/ true, {});
+        return;
+    }
     groundPhysId_ = physics_.addBox(ground_.half * 2.0, 1.0, ground_.half * 2.0,
-                                    1000.0, ChVector3d(0, -0.5, 0), QUNIT,
-                                    /*fixed*/ true);
+                                    1000.0, center, rot, /*fixed*/ true);
+}
+
+void Scene::groundBodyPose(ChVector3d& center, ChQuaternion<>& rot) const {
+    const BodyTransform p = placementPose(ground_.position, ground_.rotation);
+    rot = ChQuaternion<>(p.qw, p.qx, p.qy, p.qz);
+    center = ChVector3d(p.px, p.py, p.pz) + rot.Rotate(ChVector3d(0, -0.5, 0));
+}
+
+void Scene::placeGroundBody() {
+    if (groundPhysId_ == GameObject::kInvalidId) return;
+    ChVector3d center;
+    ChQuaternion<> rot;
+    groundBodyPose(center, rot);
+    physics_.placeBody(groundPhysId_, center, rot);
+    // 走行中に床を動かしたら、載っていた物が浮いたまま眠らないように起こす。
+    if (editor_.mode() == ed::AppMode::Simulate) physics_.wakeAll();
+}
+
+// ギズモの移動 / 回転（PHYSICS thread）。setGroundAndEnvironment が物理の床を
+// 置き直し、見た目の変換は RENDER スレッドが当てる。
+void Scene::moveGround(double x, double y, double z) {
+    if (!ground_.enabled) return;
+    ed::GroundDesc g = ground_;
+    g.position = {x, y, z};
+    setGroundAndEnvironment(ed::clampGround(g), environment_);
+}
+
+void Scene::rotateGround(double xDeg, double yDeg, double zDeg) {
+    if (!ground_.enabled) return;
+    ed::GroundDesc g = ground_;
+    g.rotation = {xDeg, yDeg, zDeg};
+    setGroundAndEnvironment(ed::clampGround(g), environment_);
+}
+
+void Scene::selectSceneItem(EditorState::SelKind kind) {
+    // エディタ選択はエディタモードの状態（シミュレートに入るときに畳む）。
+    if (editor_.mode() != ed::AppMode::Editor) return;
+    const std::size_t cam = editorCamera();
+    if (cam < controllers_.size()) controllers_[cam]->setSelected(BoxController::kNone);
+    editor_.setSel(kind, 0);
 }
 
 void Scene::setGroundAndEnvironment(const ed::GroundDesc& ground,
                                     const ed::EnvironmentDesc& env) {
     bool groundBodyChanged = false;
+    bool groundMoved = false;
     {
         std::lock_guard<std::mutex> lk(objectsMutex_);
+        // 置き場所（位置・回転）は見た目を作り直さず、変換だけを当てる。
+        groundMoved = ground.position.x != ground_.position.x ||
+                      ground.position.y != ground_.position.y ||
+                      ground.position.z != ground_.position.z ||
+                      ground.rotation.x != ground_.rotation.x ||
+                      ground.rotation.y != ground_.rotation.y ||
+                      ground.rotation.z != ground_.rotation.z;
         const bool groundChanged =
+            ground.enabled != ground_.enabled ||
             ground.half != ground_.half ||
             ground.visualHalf != ground_.visualHalf ||
             ground.texture != ground_.texture || ground.tile != ground_.tile ||
@@ -464,11 +524,11 @@ void Scene::setGroundAndEnvironment(const ed::GroundDesc& ground,
             ground.tint.b != ground_.tint.b ||
             ground.roughness != ground_.roughness ||
             ground.metallic != ground_.metallic;
-        groundBodyChanged = ground.half != ground_.half;
-        if (groundChanged) {
-            ground_ = ground;
-            groundDirty_ = true;  // 見た目は RENDER スレッドが作り直す
-        }
+        groundBodyChanged =
+            ground.half != ground_.half || ground.enabled != ground_.enabled;
+        if (groundChanged || groundMoved) ground_ = ground;
+        if (groundChanged) groundDirty_ = true;  // 見た目は RENDER スレッドが作り直す
+        if (groundMoved) groundPoseDirty_ = true;
         // 環境光は差し替えが重い（HDR デコード + GPU プリフィルタ）ので、
         // 実際に変わったときだけ dirty を立てる。
         if (env.hdr != environment_.hdr ||
@@ -478,7 +538,15 @@ void Scene::setGroundAndEnvironment(const ed::GroundDesc& ground,
             envDirty_ = true;
         }
     }
-    if (groundBodyChanged) rebuildGroundBody();
+    if (groundBodyChanged) {
+        rebuildGroundBody();
+    } else if (groundMoved) {
+        placeGroundBody();  // 作り直さず置き直す（ギズモのドラッグで毎フレーム来る）
+    }
+    // 消えた地面を選んだままにしない（Inspector に欄だけ残る）。
+    if (!ground_.enabled && editor_.selKind() == EditorState::SelKind::Ground) {
+        editor_.clearSel();
+    }
 }
 
 // 描画設定（文書の <visual>）。実体（Filament の View / Camera /
@@ -1322,10 +1390,19 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     if (op.kind == "ground") {
         // 送られてきたキーだけ上書き（edit.sim と同じ部分更新）。パスの検証は
         // groundFromJson が行い、不正なら現状維持になる。
+        const bool had = ground_.enabled;
         const ed::GroundDesc g =
             ed::clampGround(ed::groundFromJson(a, ground_));
         setGroundAndEnvironment(g, environment_);
-        editor_.setStatus("地面を更新");
+        if (had && !g.enabled) {
+            editor_.setStatus("地面を削除しました（アセットパネルの Ground で戻せます）");
+        } else if (!had && g.enabled) {
+            // 置き直した地面はそのまま選択にする（他の追加と同じ）。
+            selectSceneItem(EditorState::SelKind::Ground);
+            editor_.setStatus("地面を追加しました");
+        } else {
+            editor_.setStatus("地面を更新");
+        }
         return;
     }
 

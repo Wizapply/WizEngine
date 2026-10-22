@@ -1,15 +1,19 @@
-// Charon web UI: テレイン欄（World 節の <terrain>）。app.js の後ろに読む
+// Charon web UI: テレイン欄（Inspector の secTerrain 節 = 選択したテレイン、XML の <terrain>）。app.js の後ろに読む
 // 古典スクリプトで、app.js のトップレベル（send / num / setField / round2 /
 // sceneData / owner など）をそのまま使う。ここの関数もグローバルのままにする
 // （index.html の onchange= と app.js の renderEditor などが名前で呼ぶため）。
 
-  // ---- テレイン（World 節）-----------------------------------------------
-  // 地面と違い、変えたキーだけを送る（サーバーは部分更新）。形のキーは
-  // 1 回で格子と全チャンクの作り直しが走るので、欄の change（確定時）
-  // だけで送り、さらにスピンボタンの連打を 1 回にまとめる（短い間引き）。
-  // 表面のキーは軽いのですぐ送る（溜まっている形のキーも一緒に）。
+  // ---- テレイン（選択オブジェクトの secTerrain 節）---------------------------
+  // テレインはシーンに 1 つのオブジェクト。Objects 一覧の Terrain 行で選ぶと
+  // この節が出る（renderEditor が出し入れ）。追加はアセットパネルの Terrain
+  // タイル（新規）か .terrain のタイル、削除は節の「シーンから外す」。
+  // 地面と違い、変えたキーだけを送る（サーバーは部分更新）。形のキー
+  // （全幅・解像度・高さ）は 1 回で格子と全チャンクの作り直しが走るので、
+  // 欄の change（確定時）だけで送り、さらにスピンボタンの連打を 1 回に
+  // まとめる（短い間引き）。表面と置き場所（位置・回転 = フレームの差し替え
+  // だけ）のキーは軽いのですぐ送る（溜まっている形のキーも一緒に）。
   // ノイズの値はここに混ぜない（「ノイズで生成」のボタンが generate で送る）。
-  const TERRAIN_SHAPE_KEYS = ['size', 'resolution', 'height', 'pos'];
+  const TERRAIN_SHAPE_KEYS = ['size', 'resolution', 'height'];
   const TERRAIN_SHAPE_DELAY_MS = 300;
   let terrainPatch = {};
   let terrainTimer = null;
@@ -38,12 +42,6 @@
     const n = (id, cur) => num(id, cur);
     let value;
     switch (key) {
-      case 'enabled':
-        value = pick('edTerrainOn').checked;
-        // 入れたら新規（名前を聞く）。hasTerrain が古い値（外した直後）でも
-        // new は有無によらず作るので、必ず意味のある操作になる。
-        if (value) { newTerrain(); return; }
-        break;
       case 'size': value = n('edTerrainSize', t.size); break;
       case 'resolution': value = Math.round(n('edTerrainRes', t.resolution)); break;
       case 'height': value = n('edTerrainHeight', t.height); break;
@@ -51,6 +49,14 @@
         const p = t.pos || {};
         value = { x: n('edTerrainPX', p.x), y: n('edTerrainPY', p.y),
                   z: n('edTerrainPZ', p.z) };
+        if (!Number.isFinite(value.x) || !Number.isFinite(value.y) ||
+            !Number.isFinite(value.z)) return;
+        break;
+      }
+      case 'rot': {
+        const r = t.rot || {};
+        value = { x: n('edTerrainRX', r.x), y: n('edTerrainRY', r.y),
+                  z: n('edTerrainRZ', r.z) };
         if (!Number.isFinite(value.x) || !Number.isFinite(value.y) ||
             !Number.isFinite(value.z)) return;
         break;
@@ -65,11 +71,6 @@
     if (typeof value === 'number' && !Number.isFinite(value)) return;
     if (value === undefined) return;
     terrainPatch[key] = value;
-    if (key === 'enabled') {
-      // チェックを入れた / 外した瞬間に欄の表示も切り替える（次のポーリング
-      // を待たない）。
-      document.getElementById('edTerrainProps').hidden = !value;
-    }
     if (TERRAIN_SHAPE_KEYS.includes(key)) {
       if (terrainTimer) clearTimeout(terrainTimer);
       terrainTimer = setTimeout(() => flushTerrain(), TERRAIN_SHAPE_DELAY_MS);
@@ -77,22 +78,21 @@
       flushTerrain();
     }
   }
+  // 節の出し入れは renderEditor（選択が terrain のときだけ）。ここは中身。
   function renderTerrainSection() {
-    const props = document.getElementById('edTerrainProps');
-    if (!props || !sceneData) return;
-    // 古いサーバー（hasTerrain / terrain を出さない）では欄を出さない。
+    if (!sceneData) return;
     const t = sceneData.terrain;
-    const on = !!sceneData.hasTerrain && !!t;
-    setField('edTerrainOn', on);
-    // チェックにフォーカスがある間（押した直後でサーバーへの反映待ちかも
-    // しれない間）は、チェックの見た目に合わせる（古い値で一瞬戻さない）。
-    const onEl = document.getElementById('edTerrainOn');
-    props.hidden = !(onEl === document.activeElement ? onEl.checked : on);
+    const cur = currentTerrain();
+    const label = document.getElementById('edTerrainLabel');
+    if (label) {
+      label.textContent = '⛰ ' + (cur.name || '(名前なし)') +
+        (cur.dirty ? ' *（未保存）' : '') + (cur.missing ? ' ／ ファイルなし' : '');
+    }
     // ファイルが無い・読めない（Missing）: サーバーの文を出し、欄をまとめて
     // 無効にする（fieldset 1 つ。子の disabled 属性は触らない）。Missing に
     // 変わる前に触った値の送信待ちも捨てる（サーバーは断り、残すと
     // terrainUnsaved が誤って確認を出す）。
-    const missing = currentTerrain().missing;
+    const missing = cur.missing;
     if (missing) discardTerrain();
     const note = document.getElementById('edTerrainMissing');
     if (note) {
@@ -111,6 +111,10 @@
     set('pos', 'edTerrainPX', round2(p.x));
     set('pos', 'edTerrainPY', round2(p.y));
     set('pos', 'edTerrainPZ', round2(p.z));
+    const r = t.rot || {};
+    set('rot', 'edTerrainRX', round2(r.x));
+    set('rot', 'edTerrainRY', round2(r.y));
+    set('rot', 'edTerrainRZ', round2(r.z));
     set('texture', 'edTerrainTex', t.texture || '');
     set('tile', 'edTerrainTile', round2(t.tile));
     if (t.color) set('color', 'edTerrainColor', t.color);
@@ -149,7 +153,7 @@
   // 名前に使える文字が 1 つも無かったときの知らせ（cleanAssetName の結果が空）。
   const TERRAIN_NAME_RULE = '名前に使えるのは英数字と _ - だけです';
 
-  // ---- ノイズで生成と取り消し（World 節のテレイン欄）------------------------
+  // ---- ノイズで生成と取り消し（secTerrain 節）-------------------------------
   // 値は送るときだけ使い、テレインには覚えない（サーバーは送られなかった
   // キーを既定値にし、整数の丸めもする）。次に開いたときのために、この
   // ブラウザの localStorage に覚えておく。欄が空ならそのキーは送らない。
@@ -340,25 +344,35 @@
   // 新しいテレイン（平ら、既定の大きさ）。今のテレインがあれば取り替える
   // （古いファイルは消えない）。名前が既にあればサーバーが _2 などを付ける。
   function newTerrain() {
-    const onEl = document.getElementById('edTerrainOn');
     const name = prompt('新しいテレインの名前（英数字と _ -）',
                         (sceneData && sceneData.sceneFile) || 'terrain');
     const clean = name === null ? '' : cleanAssetName(name);
     if (name !== null && !clean) showAssetStatus(TERRAIN_NAME_RULE);
     const extra = clean
       ? confirmReplaceTerrain('新しいテレイン「' + clean + '」を作ります') : null;
-    if (!extra) {
-      // 取り消したらチェックも今の状態へ戻す。
-      if (onEl) onEl.checked = !!currentTerrain().name;
-      return;
+    if (!extra) return;
+    discardTerrain();
+    // 作ったテレインはサーバーが選択にする（Inspector に欄が出る）。
+    send('edit.terrain', Object.assign({ new: clean }, extra));
+  }
+  // シーンから外す（.terrain ファイルは残る）。保存していない変更があれば
+  // 捨てる確認を出す（サーバーは外すときに未保存の変更を捨てる）。
+  function removeTerrainFromScene() {
+    const cur = currentTerrain();
+    if (terrainUnsaved()) {
+      if (!confirm('テレイン「' + cur.name + '」の保存していない変更を捨てて、' +
+                   'シーンから外します（ファイルは残ります）。')) {
+        return;
+      }
     }
     discardTerrain();
-    send('edit.terrain', Object.assign({ new: clean }, extra));
+    send('edit.terrain', { enabled: false });
   }
   // 開く（確認は confirmReplaceTerrain、最後の守りはサーバー）。
   function openTerrain(name) {
     if (!name || terrainRenameActive()) return;
-    if (isOpenTerrain(name)) return;  // 開いている（Missing なら開き直す）
+    // 開いている（Missing なら開き直す）: シーンのテレインを選ぶだけ。
+    if (isOpenTerrain(name)) { selectTerrain(); return; }
     const extra = confirmReplaceTerrain('「' + name + '」を開きます');
     if (!extra) return;
     discardTerrain();

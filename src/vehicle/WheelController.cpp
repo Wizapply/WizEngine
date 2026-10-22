@@ -35,6 +35,21 @@ GroundHit planeGroundQuery(const Vec3& origin, const Vec3& dir,
     return h;
 }
 
+GroundHit planeQuery(const Vec3& origin, const Vec3& dir, double maxDistance,
+                     const Vec3& point, const Vec3& normal) {
+    GroundHit h;
+    const double dn = dir.x * normal.x + dir.y * normal.y + dir.z * normal.z;
+    if (dn >= -1e-9) return h;  // 面へ向かっていない
+    const Vec3 d = point - origin;
+    const double t = (d.x * normal.x + d.y * normal.y + d.z * normal.z) / dn;
+    if (t < 0.0 || t > maxDistance) return h;
+    h.hit = true;
+    h.distance = t;
+    h.point = origin + dir * t;
+    h.normal = normal;
+    return h;
+}
+
 WheelController::WheelController(const TireDesc& tire,
                                  const SuspensionDesc& suspension,
                                  const Vec3& localAttach)

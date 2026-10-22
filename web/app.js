@@ -1336,6 +1336,8 @@
     }
     // 通常の節は隠す（Unity のプレハブモードと同じく、中身だけを見せる）。
     document.getElementById('secObj').hidden = true;
+    document.getElementById('secGround').hidden = true;
+    document.getElementById('secTerrain').hidden = true;
     document.getElementById('secJoint').hidden = true;
     document.getElementById('secCable').hidden = true;
     document.getElementById('vhPrefabName').textContent =
@@ -1464,6 +1466,35 @@
                 fmtI(l.intensity) + ' ' + unit + '</span></div>';
       }
     }
+    // 地面とテレイン: シーンに 1 つずつのオブジェクト（XML の <ground> /
+    // <terrain>）。ライトと同じくエディタモード中の Editor Camera ページでは
+    // クリックでエディタ選択（Inspector にその欄が出る）、右クリックで削除。
+    // 削除した地面・外したテレインは行ごと出さない（足すのはアセットパネル）。
+    if (!objFilter) {
+      const canPick = owner && sceneData.mode === 'editor' && isEditorCam();
+      const eSel = myEditorSel();
+      const row = (kind, icon, label, sub, title) =>
+        '<div class="item' + (eSel.kind === kind ? ' edsel' : '') +
+        '" data-scene-item="' + kind + '"' +
+        (canPick
+          ? ' onclick="selectSceneItem(\'' + kind + '\', true)" title="' + title + '"'
+          : ' style="cursor:default"') +
+        '><span class="dot"></span><span>' + icon + ' ' + label + '</span>' +
+        '<span class="sub">' + sub + '</span></div>';
+      const g = sceneData.ground;
+      if (g && g.enabled !== false) {
+        html += row('ground', '▭', 'Ground', '±' + round2(g.size) + ' m',
+                    'クリックで選択（床の広さ・テクスチャ・材質を編集）');
+      }
+      if (sceneData.hasTerrain && sceneData.terrain) {
+        const cur = currentTerrain();
+        html += row('terrain', '⛰&#xFE0E;',
+                    'Terrain' + (cur.name ? ' ' + ndEsc(cur.name) : '') +
+                      (cur.dirty ? ' *' : ''),
+                    cur.missing ? 'ファイルなし' : round2(sceneData.terrain.size) + ' m',
+                    'クリックで選択（大きさ・起伏・表面を編集）');
+      }
+    }
     for (const o of shown) {
       const isMine = o.index === mine;
       const dot = (o.heldBy >= 0)
@@ -1589,7 +1620,8 @@
   setInterval(() => {
     if (!owner || grabbing || dragMode) return;
     if (!sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
-    // ギズモが出ている対象（オブジェクト / ライト / カメラ）があるときだけ。
+    // ギズモが出ている対象（オブジェクト / ライト / カメラ / 部品 / 地面 /
+    // テレイン）があるときだけ。
     const hasTarget = sceneData.selected ||
         (sceneData.editorSel && sceneData.editorSel.kind !== 'none');
     if (!hasTarget || !hoverNdc) return;
@@ -1728,6 +1760,12 @@
     return (sceneData && sceneData.editorSel)
       ? sceneData.editorSel : { kind: 'none', index: -1 };
   }
+  // 地面 / テレイン（シーンに 1 つずつ）。toggle = 選んでいたら解除。
+  function selectSceneItem(kind, toggle) {
+    const s = myEditorSel();
+    send('select.' + kind, { index: (toggle && s.kind === kind) ? -1 : 0 });
+  }
+  function selectTerrain() { selectSceneItem('terrain', false); }
   function selectLight(index) {
     const s = myEditorSel();
     send('select.light',
@@ -2143,8 +2181,25 @@
       tile: num('edGroundTile', 2),
       color: document.getElementById('edGroundColor').value,
       roughness: num('edGroundRough', 0.9),
-      metallic: num('edGroundMetal', 0)
+      metallic: num('edGroundMetal', 0),
+      pos: { x: num('edGPX', 0), y: num('edGPY', 0), z: num('edGPZ', 0) },
+      rot: { x: num('edGRX', 0), y: num('edGRY', 0), z: num('edGRZ', 0) }
     });
+  }
+  // 地面を削除（見える地面も物理の床も外す。XML には enabled="false"）。
+  function removeGround() {
+    if (!confirm('地面を削除します（見える地面と物理の床が無くなります）。\n' +
+                 'アセットパネルの Ground で戻せます。')) {
+      return;
+    }
+    send('edit.ground', { enabled: false });
+  }
+  // アセットパネルの Ground タイル: 無ければ戻し（サーバーが選択にする）、
+  // あれば選ぶ。
+  function addGround() {
+    const g = sceneData && sceneData.ground;
+    if (g && g.enabled !== false) selectSceneItem('ground', false);
+    else send('edit.ground', { enabled: true });
   }
   function applyEnvironment() {
     send('edit.environment', {
@@ -2313,7 +2368,7 @@
       const scaleBtn = document.getElementById('gzScale');
       scaleBtn.disabled = !owner || nonObject;
       scaleBtn.title = nonObject
-        ? 'ライト / カメラは拡縮できません' : '拡縮 (R)';
+        ? 'この対象（ライト / カメラ / 地面 / テレイン）は拡縮できません' : '拡縮 (R)';
     }
     const gz = sceneData.gizmo;
     if (gz) {
@@ -2333,8 +2388,8 @@
       setField('gzGrid', gz.grid);
       setField('gzGridStep', gz.gridStep);
     }
-    // World 節（地面・環境光）。入力欄は「フォーカス中は触らない」の
-    // 既定どおり setField 経由で。
+    // 地面（secGround 節）と環境光（World 節）。入力欄は「フォーカス中は
+    // 触らない」の既定どおり setField 経由で。
     if (sceneData.ground) {
       const g = sceneData.ground;
       setField('edGroundSize', round2(g.size));
@@ -2344,13 +2399,17 @@
       setField('edGroundColor', g.color);
       setField('edGroundRough', round2(g.roughness));
       setField('edGroundMetal', round2(g.metallic));
+      const gp = g.pos || { x: 0, y: 0, z: 0 };
+      const gr = g.rot || { x: 0, y: 0, z: 0 };
+      setField('edGPX', round2(gp.x)); setField('edGPY', round2(gp.y)); setField('edGPZ', round2(gp.z));
+      setField('edGRX', round2(gr.x)); setField('edGRY', round2(gr.y)); setField('edGRZ', round2(gr.z));
     }
     if (sceneData.environment) {
       setField('edEnvHdr', sceneData.environment.hdr);
       setField('edEnvIntensity', Math.round(sceneData.environment.intensity));
       setField('edEnvSkybox', sceneData.environment.skybox);
     }
-    // テレイン（World 節）。hasTerrain / terrain が無い古いサーバーでも落ちない。
+    // テレイン（secTerrain 節）。hasTerrain / terrain が無い古いサーバーでも落ちない。
     renderTerrainSection();
     // 描画設定（<visual>）。select も setField で入る（フォーカス中の欄は
     // 触らない、は入力欄と同じ扱い）。
@@ -2395,9 +2454,16 @@
       ? sceneData.selectedLight : null;
     const camSel = (editing && sceneData.selectedCamera)
       ? sceneData.selectedCamera : null;
-    document.getElementById('secObj').hidden = !!lightSel || !!camSel;
+    // 地面 / テレイン（サーバーは無いものを選んでいたら none を返す）。
+    const eKind = editing ? myEditorSel().kind : 'none';
+    const groundSel = eKind === 'ground';
+    const terrainSel = eKind === 'terrain';
+    document.getElementById('secObj').hidden =
+      !!lightSel || !!camSel || groundSel || terrainSel;
     document.getElementById('secLight').hidden = !lightSel;
     document.getElementById('secCam').hidden = !camSel;
+    document.getElementById('secGround').hidden = !groundSel;
+    document.getElementById('secTerrain').hidden = !terrainSel;
 
     if (lightSel) {
       const K = { sun: '☀ Sun（平行光）', point: '💡 Point', spot: '🔦 Spot' };
@@ -2690,7 +2756,16 @@
       '<span class="name">Spot Light</span><span class="kind">light</span></div>' +
       '<div class="asItem" title="平行光を追加（太陽。位置は光に影響しない）" ' +
       'onclick="addLight(\'sun\')"><span class="ico">☀&#xFE0E;</span>' +
-      '<span class="name">Sun</span><span class="kind">light</span></div>';
+      '<span class="name">Sun</span><span class="kind">light</span></div>' +
+      // 地面とテレイン（シーンに 1 つずつのオブジェクト）。Ground は削除して
+      // いれば戻し、あれば選ぶ。Terrain は新しい平らなテレインを作る（今の
+      // テレインがあれば取り替える。既存のファイルは下の ⛰ タイルから開く）。
+      '<div class="asItem" title="地面（y = 0 の床）。削除していれば戻し、あれば選択" ' +
+      'onclick="addGround()"><span class="ico">▭</span>' +
+      '<span class="name">Ground</span><span class="kind">ground</span></div>' +
+      '<div class="asItem" title="新しいテレイン（平ら・既定の大きさ）を作ってシーンに置く。' +
+      '名前を聞きます" onclick="newTerrain()"><span class="ico">⛰&#xFE0E;</span>' +
+      '<span class="name">Terrain</span><span class="kind">new terrain</span></div>';
     // シーン文書の <asset><mesh/>。クリックでそのモデルのオブジェクトを
     // カメラ正面に配置する。名前は XML 由来（手で書ける）なので HTML には
     // エスケープして出し、onclick へは配列番号だけを埋め込む（名前を JS
@@ -2844,10 +2919,38 @@
   // 階層一覧のオブジェクト行の右クリック: プレハブを編集 / 外す / 選択。
   document.getElementById('objList').addEventListener('contextmenu', (e) => {
     if (!owner || !sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
+    const item = e.target.closest ? e.target.closest('[data-scene-item]') : null;
+    if (item) {
+      showContextMenu(e, sceneItemMenuItems(item.dataset.sceneItem));
+      return;
+    }
     const row = e.target.closest ? e.target.closest('[data-index]') : null;
     if (!row) return;
     showContextMenu(e, objectMenuItems(parseInt(row.dataset.index, 10)));
   });
+  // 地面 / テレインの行の右クリック: 選択 / 削除。
+  function sceneItemMenuItems(kind) {
+    const selected = myEditorSel().kind === kind;
+    if (kind === 'ground') {
+      return [
+        { head: '▭ Ground' },
+        { label: selected ? '選択を解除' : '選択',
+          onClick: () => selectSceneItem('ground', true) },
+        { sep: true },
+        { label: '🗑 地面を削除', danger: true, onClick: removeGround },
+      ];
+    }
+    const cur = currentTerrain();
+    return [
+      { head: '⛰ Terrain' + (cur.name ? ' ' + cur.name : '') },
+      { label: selected ? '選択を解除' : '選択',
+        onClick: () => selectSceneItem('terrain', true) },
+      { label: '⛰ 新しいテレインに取り替える…', onClick: newTerrain },
+      { sep: true },
+      { label: '🗑 シーンから外す', hint: 'ファイルは残ります', danger: true,
+        onClick: removeTerrainFromScene },
+    ];
+  }
 
   // Inspector の「イベント」一覧の右クリック（開く / 外す）。行は
   // renderEventAttachments が data-event / data-owner を付けて出す。

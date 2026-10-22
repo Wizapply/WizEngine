@@ -132,53 +132,13 @@
           ドラッグで軸に沿って、四角で平面上を、中央の箱で一様に。</div>
       </section>
 
-      <!-- World: シーン全体のプロパティ（地面・環境光）。選択とは無関係に
-           常設。値の実体はシーン文書の <ground> / <environment> で、変更は
-           edit.ground / edit.environment としてサーバーへ送る。 -->
+      <!-- World: シーン全体のプロパティ（環境光とシーン全体のイベント）。
+           選択とは無関係に常設。値の実体はシーン文書の <environment> で、
+           変更は edit.environment としてサーバーへ送る。地面とテレインは
+           シーンの 1 オブジェクトとして階層一覧（Scene タブの Objects）に
+           出し、選んだときだけ下の secGround / secTerrain に欄を出す。 -->
       <section class="sbSec" id="secWorld">
         <div class="sbSecHead">World</div>
-        <div class="edRow">
-          <span>床の広さ (±m)</span>
-          <input id="edGroundSize" class="num" type="number" step="1" min="1"
-                 max="1000" title="物理の床の半分の広さ。外に出た物は落下する"
-                 onchange="applyGround()">
-        </div>
-        <div class="edRow">
-          <span>見える広さ (±m)</span>
-          <input id="edGroundVisual" class="num" type="number" step="1" min="1"
-                 max="1000" title="描画される地面の半分の広さ"
-                 onchange="applyGround()">
-        </div>
-        <div class="edRow">
-          <span>テクスチャ</span>
-          <input id="edGroundTex" class="txt" type="text"
-                 placeholder="textures/ground.png"
-                 title="assets/ からの相対パス。空 = 市松模様"
-                 onchange="applyGround()">
-        </div>
-        <div class="edRow">
-          <span>タイル (m) / 色</span>
-          <span>
-            <input id="edGroundTile" class="num" type="number" step="0.5"
-                   min="0.1" max="100" title="テクスチャ 1 リピートのメートル"
-                   onchange="applyGround()">
-            <input id="edGroundColor" class="col" type="color"
-                   title="テクスチャに乗す色（白 = 画像のまま）"
-                   onchange="applyGround()">
-          </span>
-        </div>
-        <div class="edRow">
-          <span>地面の粗さ / 金属</span>
-          <span>
-            <input id="edGroundRough" class="num" type="number" step="0.05"
-                   min="0.02" max="1"
-                   title="0 = 鏡のように映り込む（濡れた路面）、1 = つや消し"
-                   onchange="applyGround()">
-            <input id="edGroundMetal" class="num" type="number" step="0.1"
-                   min="0" max="1" title="0 = アスファルト・土、1 = 金属の床"
-                   onchange="applyGround()">
-          </span>
-        </div>
         <div class="edRow">
           <span>環境光 HDR</span>
           <input id="edEnvHdr" class="txt" type="text" placeholder="studio.hdr"
@@ -197,128 +157,10 @@
                  title="環境マップを背景（スカイボックス）としても描く。映り込みと背景が一致する"
                  onchange="applyEnvironment()">
         </div>
-        <div class="edHint">地面と環境光はシーンの一部（XML の
-          &lt;ground&gt; / &lt;environment&gt;）として保存されます。HDR の
-          差し替えは一瞬固まります（GPU で変換するため）。</div>
-        <!-- テレイン（XML の <terrain>）。edit.terrain で変えたキーだけ送る。
-             形の欄（全幅〜位置）はサーバーで格子と全チャンクの作り直しが
-             走るので、確定（change）時だけ・まとめて送る。「使う」を入れると
-             新規（名前を聞く）。 -->
-        <div class="edLabel">テレイン</div>
-        <div class="edRow">
-          <span>テレインを使う</span>
-          <input id="edTerrainOn" type="checkbox"
-                 title="起伏のある地面（Unity の Terrain 相当）を置く"
-                 onchange="applyTerrain('enabled')">
-        </div>
-        <div id="edTerrainProps" hidden>
-          <!-- ファイルが無い・読めない（Missing）ときのサーバーの文。そのとき
-               下の欄（fieldset）はまとめて無効になる。「使う」のチェックは
-               外に置く（外す・新しいテレインは Missing でも使えるように）。 -->
-          <div id="edTerrainMissing" class="edHint warn" hidden></div>
-          <fieldset id="edTerrainFields">
-          <div class="edRow">
-            <span>全幅 (m)</span>
-            <input id="edTerrainSize" class="num" type="number" step="10" min="1"
-                   max="4000" title="1 辺の長さ（全幅。床の広さの ± とは違う）"
-                   onchange="applyTerrain('size')">
-          </div>
-          <div class="edRow">
-            <span>解像度</span>
-            <input id="edTerrainRes" class="num" type="number" step="1" min="1"
-                   max="1024" title="1 辺のセル数（1〜1024）。大きいほど細かいが重い"
-                   onchange="applyTerrain('resolution')">
-          </div>
-          <div class="edRow">
-            <span>起伏の高さ (m)</span>
-            <input id="edTerrainHeight" class="num" type="number" step="1" min="0"
-                   max="1000" title="最低点〜最高点の差"
-                   onchange="applyTerrain('height')">
-          </div>
-          <div class="trRow" title="位置 (m)。X / Z = 中心、Y = 最低点">
-            <span class="trName">位置</span>
-            <label class="trCell"><span class="axis axX">X</span>
-              <input id="edTerrainPX" class="num" type="number" step="1"
-                     onchange="applyTerrain('pos')"></label>
-            <label class="trCell"><span class="axis axY">Y</span>
-              <input id="edTerrainPY" class="num" type="number" step="0.5"
-                     onchange="applyTerrain('pos')"></label>
-            <label class="trCell"><span class="axis axZ">Z</span>
-              <input id="edTerrainPZ" class="num" type="number" step="1"
-                     onchange="applyTerrain('pos')"></label>
-          </div>
-          <!-- ノイズで生成（取り消しは 1 段ずつ）。欄の値はボタンを押したときに
-               だけ送る（テレインには覚えず、このブラウザに記憶。空 = 既定値）。
-               穴は保たれる。 -->
-          <div class="edRow">
-            <span>シード / オクターブ</span>
-            <span>
-              <input id="edTerrainSeed" class="num" type="number" step="1"
-                     min="0" placeholder="既定" title="ノイズの種。同じ種なら同じ地形">
-              <input id="edTerrainOct" class="num" type="number" step="1"
-                     min="0" max="16" placeholder="既定"
-                     title="ノイズの重ね数（0 = 平ら）">
-            </span>
-          </div>
-          <div class="edRow">
-            <span>ゲイン / 周波数倍率</span>
-            <span>
-              <input id="edTerrainGain" class="num" type="number" step="0.05"
-                     min="0" max="1" placeholder="既定"
-                     title="オクターブごとの振幅の倍率（小さいほどなめらか）">
-              <input id="edTerrainLac" class="num" type="number" step="0.1"
-                     min="1" max="4" placeholder="既定"
-                     title="オクターブごとの周波数の倍率（lacunarity）">
-            </span>
-          </div>
-          <div class="edRow">
-            <span>うねりの波長 (m)</span>
-            <input id="edTerrainScale" class="num" type="number" step="5" min="0.1"
-                   max="10000" placeholder="既定" title="最も大きなうねりの波長">
-          </div>
-          <div class="edRow btnRow">
-            <button onclick="generateTerrainNoise()"
-                    title="上の値でノイズの起伏を作り直す（今の形は取り消しで戻せる）"
-                    >⛰&#xFE0E; ノイズで生成</button>
-            <button onclick="undoTerrain()"
-                    title="テレインの直前の編集（ノイズで生成など）を取り消す"
-                    >↶ 取り消し</button>
-          </div>
-          <div class="edRow">
-            <span>テクスチャ</span>
-            <input id="edTerrainTex" class="txt" type="text"
-                   placeholder="textures/ground.png"
-                   title="assets/ からの相対パス。空 = 単色"
-                   onchange="applyTerrain('texture')">
-          </div>
-          <div class="edRow">
-            <span>タイル (m) / 色</span>
-            <span>
-              <input id="edTerrainTile" class="num" type="number" step="0.5"
-                     min="0.1" max="100" title="テクスチャ 1 リピートのメートル"
-                     onchange="applyTerrain('tile')">
-              <input id="edTerrainColor" class="col" type="color"
-                     title="単色 / テクスチャに乗せる色"
-                     onchange="applyTerrain('color')">
-            </span>
-          </div>
-          <div class="edRow">
-            <span>粗さ / 金属</span>
-            <span>
-              <input id="edTerrainRough" class="num" type="number" step="0.05"
-                     min="0.02" max="1" title="0 = 鏡のように映り込む、1 = つや消し"
-                     onchange="applyTerrain('roughness')">
-              <input id="edTerrainMetal" class="num" type="number" step="0.1"
-                     min="0" max="1" title="0 = 土・岩、1 = 金属"
-                     onchange="applyTerrain('metallic')">
-            </span>
-          </div>
-          </fieldset>
-          <div class="edHint">テレインの高さは assets/terrains/&lt;名前&gt;.terrain
-            に、位置と見た目はシーン（XML の &lt;terrain&gt;）に保存されます。
-            形の欄（全幅〜位置）は確定したときに送られ、地形を作り直します
-            （解像度が大きいと一瞬固まります）。</div>
-        </div>
+        <div class="edHint">環境光はシーンの一部（XML の &lt;environment&gt;）として
+          保存されます。HDR の差し替えは一瞬固まります（GPU で変換するため）。
+          地面とテレインは Scene タブの Objects 一覧で選ぶと、選択オブジェクトの
+          欄に出ます。</div>
         <!-- シーン全体に付いているイベントアセット（XML の &lt;events&gt;）。
              既定の「pickup」がマウスで掴んだ物を引き寄せるスクリプトで、
              外すと掴んでも動かなくなる。 -->
@@ -940,6 +782,221 @@
         <div class="edHint">削除しても一覧から消えるだけで、ページの URL 自体は
           生きています（追加すると同じ番号から再利用）。視聴中のページの
           カメラ操作と編集は、後から動かしたほうが勝ちます。</div>
+      </section>
+
+      <!-- 選択中の地面（エディタモード×Editor Camera 専用。XML の <ground>）。
+           シーンに 1 つのオブジェクトで、Objects 一覧の「Ground」行で選ぶ。
+           削除すると <ground enabled="false">（見える地面も物理の床も無し）。
+           戻すのはアセットパネルの Ground タイル。 -->
+      <section class="sbSec" id="secGround" hidden>
+        <div class="sbSecHead">選択オブジェクト: 地面</div>
+        <!-- 置き場所（ギズモの移動 / 回転と同じ値）。位置は床の面の中心。 -->
+        <div class="edLabel">Transform</div>
+        <div class="trRow" title="位置 (m)。床の面の中心">
+          <span class="trName">位置</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="edGPX" class="num" type="number" step="0.5" onchange="applyGround()"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="edGPY" class="num" type="number" step="0.1" onchange="applyGround()"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="edGPZ" class="num" type="number" step="0.5" onchange="applyGround()"></label>
+        </div>
+        <div class="trRow" title="回転 (度)。傾けると斜面の床になる">
+          <span class="trName">回転</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="edGRX" class="num" type="number" step="5" onchange="applyGround()"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="edGRY" class="num" type="number" step="5" onchange="applyGround()"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="edGRZ" class="num" type="number" step="5" onchange="applyGround()"></label>
+        </div>
+        <div class="edRow">
+          <span>床の広さ (±m)</span>
+          <input id="edGroundSize" class="num" type="number" step="1" min="1"
+                 max="1000" title="物理の床の半分の広さ。外に出た物は落下する"
+                 onchange="applyGround()">
+        </div>
+        <div class="edRow">
+          <span>見える広さ (±m)</span>
+          <input id="edGroundVisual" class="num" type="number" step="1" min="1"
+                 max="1000" title="描画される地面の半分の広さ"
+                 onchange="applyGround()">
+        </div>
+        <div class="edRow">
+          <span>テクスチャ</span>
+          <input id="edGroundTex" class="txt" type="text"
+                 placeholder="textures/ground.png"
+                 title="assets/ からの相対パス。空 = 市松模様"
+                 onchange="applyGround()">
+        </div>
+        <div class="edRow">
+          <span>タイル (m) / 色</span>
+          <span>
+            <input id="edGroundTile" class="num" type="number" step="0.5"
+                   min="0.1" max="100" title="テクスチャ 1 リピートのメートル"
+                   onchange="applyGround()">
+            <input id="edGroundColor" class="col" type="color"
+                   title="テクスチャに乗す色（白 = 画像のまま）"
+                   onchange="applyGround()">
+          </span>
+        </div>
+        <div class="edRow">
+          <span>地面の粗さ / 金属</span>
+          <span>
+            <input id="edGroundRough" class="num" type="number" step="0.05"
+                   min="0.02" max="1"
+                   title="0 = 鏡のように映り込む（濡れた路面）、1 = つや消し"
+                   onchange="applyGround()">
+            <input id="edGroundMetal" class="num" type="number" step="0.1"
+                   min="0" max="1" title="0 = アスファルト・土、1 = 金属の床"
+                   onchange="applyGround()">
+          </span>
+        </div>
+        <div class="edRow btnRow">
+          <button class="danger" onclick="removeGround()"
+                  title="見える地面と物理の床（当たり判定）を外す。アセットパネルの Ground で戻せる"
+                  >🗑 地面を削除</button>
+        </div>
+        <div class="edHint">地面はシーンの一部（XML の &lt;ground&gt;）として保存
+          されます。位置と回転はビューのギズモ（✥ / ⟳）でも動かせます。削除すると
+          床が無くなり、テレインの外や下に出た物は落ち続けます。</div>
+      </section>
+
+      <!-- 選択中のテレイン（エディタモード×Editor Camera 専用。XML の
+           <terrain>）。シーンに 1 つのオブジェクトで、Objects 一覧の
+           「Terrain」行で選ぶ。edit.terrain で変えたキーだけ送る。形の欄
+           （全幅・解像度・高さ）はサーバーで格子と全チャンクの作り直しが走る
+           ので、確定（change）時だけ・まとめて送る。位置と回転はフレームの
+           差し替えだけ（安い）なのですぐ送る。追加はアセットパネルの
+           Terrain タイル（新規）か .terrain のタイル（ダブルクリックで開く）。 -->
+      <section class="sbSec" id="secTerrain" hidden>
+        <div class="sbSecHead">選択オブジェクト: テレイン</div>
+        <div id="edTerrainLabel" class="edStatus">terrain</div>
+        <!-- ファイルが無い・読めない（Missing）ときのサーバーの文。そのとき
+             下の欄（fieldset）はまとめて無効になる。「シーンから外す」は
+             外に置く（Missing でも外せるように。新しいテレインはアセット
+             パネルの Terrain タイル）。 -->
+        <div id="edTerrainMissing" class="edHint warn" hidden></div>
+        <fieldset id="edTerrainFields">
+        <div class="edRow">
+          <span>全幅 (m)</span>
+          <input id="edTerrainSize" class="num" type="number" step="10" min="1"
+                 max="4000" title="1 辺の長さ（全幅。床の広さの ± とは違う）"
+                 onchange="applyTerrain('size')">
+        </div>
+        <div class="edRow">
+          <span>解像度</span>
+          <input id="edTerrainRes" class="num" type="number" step="1" min="1"
+                 max="1024" title="1 辺のセル数（1〜1024）。大きいほど細かいが重い"
+                 onchange="applyTerrain('resolution')">
+        </div>
+        <div class="edRow">
+          <span>起伏の高さ (m)</span>
+          <input id="edTerrainHeight" class="num" type="number" step="1" min="0"
+                 max="1000" title="最低点〜最高点の差"
+                 onchange="applyTerrain('height')">
+        </div>
+        <div class="trRow" title="位置 (m)。X / Z = 中心、Y = 最低点（ギズモは中心の地表に出ます）">
+          <span class="trName">位置</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="edTerrainPX" class="num" type="number" step="1"
+                   onchange="applyTerrain('pos')"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="edTerrainPY" class="num" type="number" step="0.5"
+                   onchange="applyTerrain('pos')"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="edTerrainPZ" class="num" type="number" step="1"
+                   onchange="applyTerrain('pos')"></label>
+        </div>
+        <div class="trRow" title="回転 (度)。中心は位置の点（中心の最低点）">
+          <span class="trName">回転</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="edTerrainRX" class="num" type="number" step="5"
+                   onchange="applyTerrain('rot')"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="edTerrainRY" class="num" type="number" step="5"
+                   onchange="applyTerrain('rot')"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="edTerrainRZ" class="num" type="number" step="5"
+                   onchange="applyTerrain('rot')"></label>
+        </div>
+        <!-- ノイズで生成（取り消しは 1 段ずつ）。欄の値はボタンを押したときに
+             だけ送る（テレインには覚えず、このブラウザに記憶。空 = 既定値）。
+             穴は保たれる。 -->
+        <div class="edRow">
+          <span>シード / オクターブ</span>
+          <span>
+            <input id="edTerrainSeed" class="num" type="number" step="1"
+                   min="0" placeholder="既定" title="ノイズの種。同じ種なら同じ地形">
+            <input id="edTerrainOct" class="num" type="number" step="1"
+                   min="0" max="16" placeholder="既定"
+                   title="ノイズの重ね数（0 = 平ら）">
+          </span>
+        </div>
+        <div class="edRow">
+          <span>ゲイン / 周波数倍率</span>
+          <span>
+            <input id="edTerrainGain" class="num" type="number" step="0.05"
+                   min="0" max="1" placeholder="既定"
+                   title="オクターブごとの振幅の倍率（小さいほどなめらか）">
+            <input id="edTerrainLac" class="num" type="number" step="0.1"
+                   min="1" max="4" placeholder="既定"
+                   title="オクターブごとの周波数の倍率（lacunarity）">
+          </span>
+        </div>
+        <div class="edRow">
+          <span>うねりの波長 (m)</span>
+          <input id="edTerrainScale" class="num" type="number" step="5" min="0.1"
+                 max="10000" placeholder="既定" title="最も大きなうねりの波長">
+        </div>
+        <div class="edRow btnRow">
+          <button onclick="generateTerrainNoise()"
+                  title="上の値でノイズの起伏を作り直す（今の形は取り消しで戻せる）"
+                  >⛰&#xFE0E; ノイズで生成</button>
+          <button onclick="undoTerrain()"
+                  title="テレインの直前の編集（ノイズで生成など）を取り消す"
+                  >↶ 取り消し</button>
+        </div>
+        <div class="edRow">
+          <span>テクスチャ</span>
+          <input id="edTerrainTex" class="txt" type="text"
+                 placeholder="textures/ground.png"
+                 title="assets/ からの相対パス。空 = 単色"
+                 onchange="applyTerrain('texture')">
+        </div>
+        <div class="edRow">
+          <span>タイル (m) / 色</span>
+          <span>
+            <input id="edTerrainTile" class="num" type="number" step="0.5"
+                   min="0.1" max="100" title="テクスチャ 1 リピートのメートル"
+                   onchange="applyTerrain('tile')">
+            <input id="edTerrainColor" class="col" type="color"
+                   title="単色 / テクスチャに乗せる色"
+                   onchange="applyTerrain('color')">
+          </span>
+        </div>
+        <div class="edRow">
+          <span>粗さ / 金属</span>
+          <span>
+            <input id="edTerrainRough" class="num" type="number" step="0.05"
+                   min="0.02" max="1" title="0 = 鏡のように映り込む、1 = つや消し"
+                   onchange="applyTerrain('roughness')">
+            <input id="edTerrainMetal" class="num" type="number" step="0.1"
+                   min="0" max="1" title="0 = 土・岩、1 = 金属"
+                   onchange="applyTerrain('metallic')">
+          </span>
+        </div>
+        </fieldset>
+        <div class="edHint">テレインの高さは assets/terrains/&lt;名前&gt;.terrain
+          に、位置と見た目はシーン（XML の &lt;terrain&gt;）に保存されます。
+          形の欄（全幅・解像度・起伏の高さ）は確定したときに送られ、地形を作り
+          直します（解像度が大きいと一瞬固まります）。位置と回転は作り直さずに
+          すぐ効きます（ビューのギズモでも動かせます）。</div>
+        <div class="edRow btnRow">
+          <button class="danger" onclick="removeTerrainFromScene()"
+                  title="シーンからテレインを外す（.terrain ファイルは残る）"
+                  >🗑 シーンから外す</button>
+        </div>
       </section>
 
       <!-- ジョイントも「選択しているオブジェクトの内容」として扱う:

@@ -74,7 +74,12 @@ public:
     // 食い違いうるが、読む側は必ず alive / active を確かめるので実害はない。
     // Part はプレハブ編集モード中の「部品」（index = 部品番号。どのプレハブ
     // かは prefabEditObject() のオブジェクトに付いているもの）。
-    enum class SelKind : int { None = 0, Light = 1, Camera = 2, Part = 3 };
+    // Ground / Terrain はシーンに 1 つずつのオブジェクト（index は使わない、
+    // 常に 0）。階層一覧のクリックで選び、Inspector にその節が出る。ギズモで
+    // 移動 / 回転できる（GizmoComponent の対象の種類 4 / 5。拡縮は移動に丸める）。
+    enum class SelKind : int {
+        None = 0, Light = 1, Camera = 2, Part = 3, Ground = 4, Terrain = 5
+    };
     void setSel(SelKind kind, int index) {
         selIndex_.store(index);
         selKind_.store(int(kind));

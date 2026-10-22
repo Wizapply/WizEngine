@@ -53,9 +53,17 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     // ライト / カメラのインスペクタを出す。
     {
         nlohmann::json s;
+        // 地面 / テレインは消えた瞬間（別スレッドの読込など）に食い違いうる
+        // ので、無いものを選んでいたら none として返す。
+        const bool groundSel =
+            selKind == EditorState::SelKind::Ground && ground_.enabled;
+        const bool terrainSel =
+            selKind == EditorState::SelKind::Terrain && hasTerrain_;
         s["kind"] = selKind == EditorState::SelKind::Light    ? "light"
                     : selKind == EditorState::SelKind::Camera ? "camera"
                     : selKind == EditorState::SelKind::Part   ? "part"
+                    : groundSel                               ? "ground"
+                    : terrainSel                              ? "terrain"
                                                               : "none";
         s["index"] = selIndex;
         j["editorSel"] = s;

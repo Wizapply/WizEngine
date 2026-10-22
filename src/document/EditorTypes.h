@@ -612,6 +612,17 @@ struct LightDesc {
 // 半分の広さを別々に持つ - 作業の目安になる床は見えている範囲より広く
 // 効いていてほしいため。texture は assets/ からの相対パス（空 = 市松模様）。
 struct GroundDesc {
+    // 地面はシーンの 1 オブジェクト（階層一覧に出て、選ぶと Inspector に
+    // 欄が出る）。false = 削除済み: 見える地面も物理の床（当たり判定）も
+    // 無く、車輪のレイも y = 0 の平面に当てない。ジョイントの「ワールド側」の
+    // 受けは当たり判定の無い固定フレームとして残る（番号は変わらない）。
+    bool enabled = true;
+    // 置き場所（Inspector の Transform とギズモで動かす）。position は床の面の
+    // 中心（既定 = 原点 = 従来の y = 0 の床）、rotation はオイラー角（度、
+    // SceneMath と同じ R = Rz*Ry*Rx）。回転すると斜面の床になる。size / visual
+    // はこのローカルの X / Z の半寸法。
+    Vec3d position{0.0, 0.0, 0.0};
+    Vec3d rotation{0.0, 0.0, 0.0};
     double half = 10.0;        // 物理の床の半分の広さ (m)。MuJoCo と同じ半寸法
     double visualHalf = 8.0;   // 見える地面の半分の広さ (m)
     std::string texture = "textures/ground.png";
@@ -659,6 +670,11 @@ struct TerrainDesc {
     std::string data;
     std::string guid;
     Vec3d position{0.0, 0.0, 0.0};  // X / Z = 中心、Y = 最低点 (m)
+    // 回転（オイラー角・度、R = Rz*Ry*Rx）。回転の中心は position。高さ格子は
+    // 原点基準（中心 0・最低点 0）のまま持ち、この位置と回転を「テレインの
+    // フレーム」として接触・レイ・描画の境界で掛ける（動かしても格子は
+    // 作り直さない）。
+    Vec3d rotation{0.0, 0.0, 0.0};
     // **実行時だけの値**（XML には書かない = .terrain ファイルだけが持つ）。
     // JSON（/scene と edit.terrain）とブラウザの欄のために持つ。
     double size = 200.0;          // 1 辺の長さ (m)。全幅（半寸法ではない）
@@ -1790,6 +1806,9 @@ inline nlohmann::json toJson(const wizengine::vehicle::FormulaGraphDesc& g) {
 
 inline nlohmann::json toJson(const GroundDesc& g) {
     nlohmann::json j;
+    j["enabled"] = g.enabled;
+    j["pos"] = toJson(g.position);
+    j["rot"] = toJson(g.rotation);
     j["size"] = g.half;
     j["visual"] = g.visualHalf;
     j["texture"] = g.texture;
@@ -1804,6 +1823,15 @@ inline GroundDesc groundFromJson(const nlohmann::json& j,
                                  const GroundDesc& base) {
     GroundDesc g = base;
     if (!j.is_object()) return g;
+    if (j.contains("enabled") && j["enabled"].is_boolean()) {
+        g.enabled = j["enabled"].get<bool>();
+    }
+    if (const auto pit = j.find("pos"); pit != j.end()) {
+        g.position = vec3FromJson(*pit, g.position);  // オブジェクト以外は無視
+    }
+    if (const auto rit = j.find("rot"); rit != j.end()) {
+        g.rotation = vec3FromJson(*rit, g.rotation);
+    }
     g.half = jsonNumber(j, "size", g.half);
     g.visualHalf = jsonNumber(j, "visual", g.visualHalf);
     if (j.contains("texture") && j["texture"].is_string()) {
@@ -1855,6 +1883,7 @@ inline nlohmann::json toJson(const TerrainDesc& t) {
     j["resolution"] = t.resolution;
     j["height"] = t.height;
     j["pos"] = toJson(t.position);
+    j["rot"] = toJson(t.rotation);
     j["texture"] = t.texture;
     j["tile"] = t.tile;
     j["color"] = colorToHex(t.color);
@@ -1889,6 +1918,9 @@ inline TerrainDesc terrainFromJson(const nlohmann::json& j,
     t.height = jsonNumber(j, "height", t.height);
     if (const auto pit = j.find("pos"); pit != j.end()) {
         t.position = vec3FromJson(*pit, t.position);  // オブジェクト以外は無視
+    }
+    if (const auto rit = j.find("rot"); rit != j.end()) {
+        t.rotation = vec3FromJson(*rit, t.rotation);
     }
     if (j.contains("texture") && j["texture"].is_string()) {
         // 空 = 単色。パスとして不正なもの（".." 等）は無視して現状維持。
@@ -2174,11 +2206,25 @@ inline LightDesc clampLight(LightDesc l) {
     return l;
 }
 
+// 置き場所の角度（度）。有限でなければ 0、±360 の外は 1 周ぶん畳む
+// （地面・テレインの rotation。オイラー角の意味は変えない）。
+inline double clampAngleDegrees(double v) {
+    if (!(v == v) || v > 1e9 || v < -1e9) return 0.0;
+    return std::fmod(v, 360.0);
+}
+inline Vec3d clampAngles(Vec3d r) {
+    return {clampAngleDegrees(r.x), clampAngleDegrees(r.y), clampAngleDegrees(r.z)};
+}
+
 // 地面・環境光の常識的な範囲。0 や負の広さは描画も物理も壊す。
 inline GroundDesc clampGround(GroundDesc g) {
     auto cl = [](double v, double lo, double hi) {
         return v < lo ? lo : (v > hi ? hi : v);
     };
+    // 位置は各軸 ±10000 m（テレインと同じ）。NaN は原点。
+    auto clp = [&cl](double v) { return (v == v) ? cl(v, -10000.0, 10000.0) : 0.0; };
+    g.position = {clp(g.position.x), clp(g.position.y), clp(g.position.z)};
+    g.rotation = clampAngles(g.rotation);
     g.half = cl(g.half, 1.0, 1000.0);
     g.visualHalf = cl(g.visualHalf, 1.0, 1000.0);
     g.tile = cl(g.tile, 0.1, 100.0);
@@ -2264,6 +2310,7 @@ inline TerrainDesc clampTerrain(TerrainDesc t) {
     t.position.x = cl(t.position.x, -10000.0, 10000.0, d.position.x);
     t.position.y = cl(t.position.y, -10000.0, 10000.0, d.position.y);
     t.position.z = cl(t.position.z, -10000.0, 10000.0, d.position.z);
+    t.rotation = clampAngles(t.rotation);
     if (!t.texture.empty() && !assetFileAllowed(t.texture)) t.texture.clear();
     t.tile = cl(t.tile, 0.1, 100.0, d.tile);
     t.color.r = clf(t.color.r, d.color.r);

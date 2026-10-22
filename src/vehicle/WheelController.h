@@ -35,6 +35,12 @@ using GroundQuery = std::function<GroundHit(const Vec3& origin, const Vec3& dir,
 // y = 0 の無限平面（物理の床と同じ高さ）。
 GroundHit planeGroundQuery(const Vec3& origin, const Vec3& dir,
                            double maxDistance);
+// point を通り normal（単位ベクトル、上向き）に垂直な無限平面（動かした・
+// 傾けた地面）。片面: 法線に逆らって進むレイだけが当たる（planeGroundQuery の
+// 「下を向いていない」と同じ）。normal = (0, 1, 0)・point = 原点なら
+// planeGroundQuery と同じ答え。
+GroundHit planeQuery(const Vec3& origin, const Vec3& dir, double maxDistance,
+                     const Vec3& point, const Vec3& normal);
 
 // 車体の状態（Chrono から詰め替える）。角速度はワールド座標。
 struct ChassisState {
