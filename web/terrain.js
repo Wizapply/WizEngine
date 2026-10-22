@@ -195,12 +195,18 @@
   // 無い新規（保存前）は一覧に無いので、今のテレインのぶんを先頭に足す。
   // Missing は足さない（ファイルが無い。読めないファイルは一覧にあれば出る）。
   // 単クリックは何もしない（開くのはダブルクリック、右クリックはメニュー）。
+  function terrainFileList() {
+    return (sceneData && sceneData.terrainFiles) || [];
+  }
+  // name の .terrain ファイルが一覧にあるか（保存前の新規のタイルは無い）。
+  function hasTerrainFile(name) {
+    return terrainFileList().some((f) => sameTerrainName(f.name, name));
+  }
   function terrainTileEntries() {
-    const files = (sceneData && sceneData.terrainFiles) || [];
+    const files = terrainFileList();
     const cur = currentTerrain();
     const list = files.slice();
-    if (isOpenTerrain(cur.name) &&
-        !files.some((f) => sameTerrainName(f.name, cur.name))) {
+    if (isOpenTerrain(cur.name) && !hasTerrainFile(cur.name)) {
       const t = sceneData.terrain;
       list.unshift({ name: cur.name, resolution: t.resolution, size: t.size,
                      height: t.height });
@@ -301,6 +307,7 @@
     const cur = currentTerrain();
     const referred = !!cur.name && sameTerrainName(name, cur.name);
     const simulating = !!sceneData && sceneData.mode !== 'editor';
+    const hasFile = hasTerrainFile(name);
     const tileNow = () => Array.from(
       document.querySelectorAll('#assetList [data-terrain]'))
       .find((el) => el.dataset.terrain === name);
@@ -309,6 +316,13 @@
       { label: '✎ 名前の変更', onClick: () => startTerrainRename(tileNow()) },
       { label: '開く', hint: isOpen ? '開いています' : 'ダブルクリック',
         disabled: isOpen, onClick: () => openTerrain(name) },
+      // 複製はファイルから作る（保存前の新規のタイルにはファイルが無い）。シミュレート
+      // 中は削除と同じく受けない。最後の守りはサーバー（Scene::duplicateTerrain と
+      // TerrainLibrary::duplicate）。
+      { label: '⧉ 複製', disabled: simulating || !hasFile,
+        hint: simulating ? 'エディタモードでだけ複製できます'
+          : !hasFile ? '保存してから複製できます' : '',
+        onClick: () => duplicateTerrain(name) },
       { sep: true },
       // シーンが参照しているテレイン（保存前でファイルの無いタイル・Missing も）
       // とシミュレート中は消せない。最後の守りはサーバー（Scene::deleteTerrain）。
@@ -377,6 +391,15 @@
     if (!extra) return;
     discardTerrain();
     send('edit.terrain', Object.assign({ open: name }, extra));
+  }
+  // 複製して開く（新しい名前 _2 などと背番号はサーバーが決める。確認は
+  // confirmReplaceTerrain、最後の守りはサーバー）。
+  function duplicateTerrain(name) {
+    if (!name || terrainRenameActive()) return;
+    const extra = confirmReplaceTerrain('「' + name + '」を複製して開きます');
+    if (!extra) return;
+    discardTerrain();
+    send('edit.terrain', Object.assign({ duplicate: name }, extra));
   }
 
   // ---- 一覧の取り直し --------------------------------------------------------

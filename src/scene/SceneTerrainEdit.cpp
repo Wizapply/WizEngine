@@ -1,5 +1,5 @@
 // ブラウザの edit.terrain の受け口（PHYSICS スレッド）: 新規・開く・名前の変更・
-// 削除・部分更新・生成・取り消しの操作に振り分ける。
+// 削除・複製・部分更新・生成・取り消しの操作に振り分ける。
 // テレインと文書・.terrain・ブラウザの JSON との出入り（読込・名前と背番号・保存）は
 // SceneTerrainFile.cpp、格子の差し替えそのもの（ロック・dirty・Undo・当たり判定）は
 // SceneTerrain.cpp の publishTerrainField / reshapeTerrain に任せる。
@@ -26,6 +26,15 @@ const char* terrainPatchStatus(bool hasTerrain, int oldResolution, int newResolu
 bool argIsTrue(const nlohmann::json& a, const char* key) {
     const auto it = a.find(key);
     return it != a.end() && it->is_boolean() && it->get<bool>();
+}
+
+// ファイルを増やす・消すのは設計の作業（名前の変更と違い、シミュレート中は受けない）。
+// シミュレート中ならステータス（「テレインの<what>はエディタモードでだけできます」）を
+// 出して true。deleteTerrain と applyTerrainFileOp の duplicate 分岐が使う。
+bool refuseWhileSimulating(EditorState& editor, const char* what) {
+    if (editor.mode() != ed::AppMode::Simulate) return false;
+    editor.setStatus(std::string("テレインの") + what + "はエディタモードでだけできます");
+    return true;
 }
 
 }  // namespace
@@ -132,11 +141,7 @@ void Scene::renameTerrain(const std::string& from, const std::string& to) {
 // ---- 削除 ---------------------------------------------------------------------
 
 void Scene::deleteTerrain(const std::string& name) {
-    // ファイルを消すのは設計の作業（名前の変更と違い、シミュレート中は受けない）。
-    if (editor_.mode() == ed::AppMode::Simulate) {
-        editor_.setStatus("テレインの削除はエディタモードでだけできます");
-        return;
-    }
+    if (refuseWhileSimulating(editor_, "削除")) return;
     // シーンが参照しているテレインは消さない。読めているなら次の保存で同じ名前の
     // ファイルが書き戻り、Missing / 読めないなら「ファイルを戻して開き直す」が
     // できなくなる。
@@ -160,9 +165,29 @@ void Scene::deleteTerrain(const std::string& name) {
     LOGW("scene", "terrain delete '%s': %s", r.name.c_str(), r.reason.c_str());
 }
 
+// ---- 複製 ---------------------------------------------------------------------
+
+void Scene::duplicateTerrain(const std::string& name) {
+    // シーンが参照している名前（未保存でファイルが無い・Missing・読めないも）は使用中:
+    // 読めている未保存の名前で書くと開けず（openTerrain は「開いている」で何もしない）
+    // 次の保存で上書きされ、Missing の名前で書くと別の中身がその参照に結び付く。
+    const wt::TerrainDuplicateResult r = terrainLibrary_->duplicate(
+        name, [this](const std::string& n) { return refersToTerrain(n); });
+    if (!r.ok()) {
+        LOGW("scene", "terrain duplicate '%s': %s", r.source.c_str(), r.reason.c_str());
+        editor_.setStatus("複製できません: テレイン " + r.source + "（コンソール参照）");
+        return;
+    }
+    LOGI("scene", "terrain duplicated: '%s' -> '%s'", r.source.c_str(), r.name.c_str());
+    openTerrain(r.name);
+    // 開けなかったときは openTerrain のステータス（理由）を残す。
+    if (isCurrentTerrain(r.name))
+        editor_.setStatus(r.source + " を " + r.name + " として複製して開きました");
+}
+
 // edit.terrain のうちファイルを扱う分岐（refresh / rename{from,to} / delete /
-// open / new）。扱ったら true（applyTerrainOp はそこで終わる）。
-// open と new は、保存していない変更があれば discard:true が付いているときだけ
+// open / duplicate / new）。扱ったら true（applyTerrainOp はそこで終わる）。
+// open・duplicate・new は、保存していない変更があれば discard:true が付いているときだけ
 // 取り替える（ブラウザの dirty 表示が古くても黙って捨てない）。
 bool Scene::applyTerrainFileOp(const nlohmann::json& a) {
     // 取り替える前の守り: 未保存の変更があり、捨てる確認が無ければ止める。
@@ -194,6 +219,14 @@ bool Scene::applyTerrainFileOp(const nlohmann::json& a) {
         if (isCurrentTerrain(name) || !keepUnsaved()) openTerrain(name);
         return true;
     }
+    // 複製は複製を開く（取り替える）ので open と同じ守り。守りで止めるときは
+    // ファイルも作らない。
+    // シミュレート中は未保存の確認より先に断る（確認させてから断らない）。
+    if (a.contains("duplicate")) {
+        if (!refuseWhileSimulating(editor_, "複製") && !keepUnsaved())
+            duplicateTerrain(ed::jsonString(a, "duplicate", ""));
+        return true;
+    }
     // 新規（テレインの有無によらず、今のテレインを平らな新しいテレインに取り替える。
     // 古いテレインのファイルは消さない）。値は名前の元（空ならシーン名）。
     if (a.contains("new")) {
@@ -208,7 +241,7 @@ bool Scene::applyTerrainFileOp(const nlohmann::json& a) {
 // （ファイルが無い・読めない）なら断る（編集を拒む唯一の場所）。そのあとはキーで
 // 分岐: generate{seed,...}（同じメッセージの部分更新を先に当てる）/ undo /
 // それ以外は部分更新。モードによらず受ける（名前の変更もシミュレート中に受ける）。
-// delete だけはエディタモードのみ（deleteTerrain が断る）。
+// delete と duplicate だけはエディタモードのみ（deleteTerrain / duplicate 分岐が断る）。
 void Scene::applyTerrainOp(const EditorState::Op& op) {
     const nlohmann::json& a = op.args;
     if (applyTerrainFileOp(a)) return;

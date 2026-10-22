@@ -38,6 +38,15 @@ std::vector<const TerrainEntry*> findByGuid(const std::vector<TerrainEntry>& ent
 
 std::string inQuotes(const std::string& s) { return "'" + s + "'"; }
 
+// 改名先 dst に src 以外のファイルが既にあるか（改名の直前の上書きの守り。
+// std::filesystem::rename は置き換える）。同じファイル（区別しない OS での
+// 大文字・小文字だけの改名）なら false。
+bool occupiedByOther(const std::filesystem::path& src, const std::filesystem::path& dst) {
+    std::error_code existsEc, sameEc;
+    return std::filesystem::exists(dst, existsEc) &&
+           !std::filesystem::equivalent(src, dst, sameEc);
+}
+
 // メッセージでのテレインの呼び方。data 名が空なら背番号だけ。
 std::string describe(const std::string& dataName, const TerrainGuid& guid) {
     if (dataName.empty()) return "terrain (guid " + guidToHex(guid) + ")";
@@ -206,9 +215,7 @@ TerrainRenameResult TerrainLibrary::rename(const std::string& from, const std::s
     // foo と Foo が両方あるときもここで止まる。同じファイル（区別しない OS での
     // 大文字・小文字だけの改名）なら通す。
     const std::filesystem::path dst = pathFor(r.name);
-    std::error_code existsEc, sameEc;
-    if (std::filesystem::exists(dst, existsEc) &&
-        !std::filesystem::equivalent(src, dst, sameEc)) {
+    if (occupiedByOther(src, dst)) {
         r.status = TerrainRenameStatus::AlreadyExists;
         r.reason = "terrain " + inQuotes(r.name) + " already exists";
         return r;
@@ -233,11 +240,7 @@ TerrainRemoveResult TerrainLibrary::remove(const std::string& name) {
     TerrainRemoveResult r;
     // 名前は一覧の正式な綴りで返す（"HILL" と頼まれても "hill"。一覧に無ければ
     // 頼まれたまま）。
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto it = findCached(name);
-        r.name = it != entries_.end() ? it->name : name;
-    }
+    r.name = cachedName(name, name);
     const std::filesystem::path path = existingFile(name, r.reason);
     if (path.empty()) {
         r.status = TerrainRemoveStatus::NotFound;
@@ -252,6 +255,43 @@ TerrainRemoveResult TerrainLibrary::remove(const std::string& name) {
     // 消した 1 件だけを外す（同じ背番号の別のファイルは残す）。
     const auto it = findCached(name);
     if (it != entries_.end()) entries_.erase(it);
+    return r;
+}
+
+TerrainDuplicateResult TerrainLibrary::duplicate(const std::string& name,
+                                                 const NameInUse& inUse) {
+    TerrainDuplicateResult r;
+    // 元も新しい名前の元も一覧の正式な綴り（"HILL" と頼まれても "hill" を読み、
+    // "hill_2" を書く。大文字・小文字を区別する OS でも見つかる）。
+    r.source = cachedName(name, name);
+    const std::filesystem::path src = existingFile(r.source, r.reason);
+    if (src.empty()) return r;
+    TerrainFileData data;
+    if (!readFile(src, data, r.reason)) return r;
+    // 末尾の _数字 を外した名前が一覧にあればそれを基に、空いている最初の番号を
+    // 採る（hill_2 を消してあれば hill_5 の複製は hill_2）。外すのは外した名前が
+    // 一覧にあるときだけ（元の無い level_10 は level_10_2）。
+    const std::string base = cachedName(stripNumberSuffix(r.source), r.source);
+    const std::string newName = uniqueName(base, inUse);
+    if (newName.empty()) {
+        r.reason = "cannot find a free name for terrain " + inQuotes(r.source);
+        return r;
+    }
+    // 採番のあとに同じ名前のファイルが置かれていたら書かない（writeFile は上書きする）。
+    const std::filesystem::path dst = pathFor(newName);
+    std::error_code existsEc;
+    if (std::filesystem::exists(dst, existsEc)) {
+        r.reason = "terrain " + inQuotes(newName) + " already exists";
+        return r;
+    }
+    // 背番号は新しく採る（同じ背番号のファイルを 2 つ作らない）。
+    const TerrainGuid guid = makeRandomGuid();
+    if (!writeFile(dst, data.field, data.height, guid, r.reason)) return r;
+    r.name = newName;
+    std::lock_guard<std::mutex> lock(mutex_);
+    entries_.push_back(
+        {newName, guid, data.field.resolution(), data.field.size(), data.height});
+    std::sort(entries_.begin(), entries_.end(), byName);
     return r;
 }
 
@@ -276,11 +316,18 @@ std::vector<TerrainEntry>::iterator TerrainLibrary::findCached(const std::string
     return it;
 }
 
-std::string TerrainLibrary::uniqueName(const std::string& base) const {
+std::string TerrainLibrary::cachedName(const std::string& name, const std::string& otherwise) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = findCached(name);
+    return it != entries_.end() ? it->name : otherwise;
+}
+
+std::string TerrainLibrary::uniqueName(const std::string& base, const NameInUse& inUse) const {
     std::string name = sanitizeSafeName(base);
     if (name.empty()) name = "terrain";
-    return firstFreeName(name, kSafeNameMaxLength,
-                         [this](const std::string& n) { return taken(n); });
+    return firstFreeName(name, kSafeNameMaxLength, [this, &inUse](const std::string& n) {
+        return taken(n) || (inUse && inUse(n));
+    });
 }
 
 std::filesystem::path TerrainLibrary::pathFor(const std::string& name) const {

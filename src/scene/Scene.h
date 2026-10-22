@@ -690,6 +690,11 @@ private:
     // ファイルを OS のごみ箱へ移す（TerrainLibrary::remove）。エディタモードだけ。
     // 今のテレイン（未保存でファイルが無くても）は消さない。
     void deleteTerrain(const std::string& name);
+    // ファイルを新しい背番号で複製し（TerrainLibrary::duplicate、名前は _2 など）、
+    // 複製を開く（openTerrain）。エディタモードだけ（applyTerrainFileOp が断る）。
+    // 複製できなければ何も変えない。複製のあと開け
+    // なかったときは、複製のファイルは残る（ステータスは開けない理由）。
+    void duplicateTerrain(const std::string& name);
 
     // テレインの当たり判定（自前の接触。PhysicsWorld::setTerrain）を今の高さ
     // 格子で張り直す。テレインが無ければ接触を止めるだけ（ゴーストは
