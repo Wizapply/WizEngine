@@ -212,6 +212,11 @@
                  onchange="applyTerrain('enabled')">
         </div>
         <div id="edTerrainProps" hidden>
+          <!-- ファイルが無い・読めない（Missing）ときのサーバーの文。そのとき
+               下の欄（fieldset）はまとめて無効になる。「使う」のチェックは
+               外に置く（外す・新しいテレインは Missing でも使えるように）。 -->
+          <div id="edTerrainMissing" class="edHint warn" hidden></div>
+          <fieldset id="edTerrainFields">
           <div class="edRow">
             <span>全幅 (m)</span>
             <input id="edTerrainSize" class="num" type="number" step="10" min="1"
@@ -308,6 +313,7 @@
                      onchange="applyTerrain('metallic')">
             </span>
           </div>
+          </fieldset>
           <div class="edHint">テレインの高さは assets/terrains/&lt;名前&gt;.terrain
             に、位置と見た目はシーン（XML の &lt;terrain&gt;）に保存されます。
             形の欄（全幅〜位置）は確定したときに送られ、地形を作り直します

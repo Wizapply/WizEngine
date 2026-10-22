@@ -600,7 +600,7 @@ private:
     // 直せる）。「今のテレインか」の唯一の判定。
     bool isCurrentTerrain(const std::string& name) const;
     // name が、いま参照している読めないファイル（Unreadable の terrainUnreadableFile_）か
-    // （大文字・小文字を問わず一致）。改名・削除がその名前の追従と状態の変更に使う。
+    // （大文字・小文字を問わず一致）。改名がその名前の追従に使う。
     bool isUnreadableTerrainFile(const std::string& name) const;
     // a が今のテレインと同じものか（背番号が両方にあれば背番号、無ければ名前）。
     // Missing なら false（XML の適用で読み直す）。
@@ -632,7 +632,7 @@ private:
     // objectsMutex_ を持って呼ぶ。
     std::string terrainMissingText() const;
     // /scene のテレイン部分（hasTerrain / terrain / terrainDirty / terrainMissing /
-    // terrainFiles）。
+    // terrainOpen / terrainFiles）。
     // hierarchyJson（objectsMutex_ を持った HTTP スレッド）から呼ぶ。
     nlohmann::json terrainJson() const;
     // assets/terrains/ を走査し直す（警告は LOGW）。

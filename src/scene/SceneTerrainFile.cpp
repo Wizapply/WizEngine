@@ -275,6 +275,9 @@ nlohmann::json Scene::terrainJson() const {
     j["terrainDirty"] = terrainDirty();
     // Missing（ファイルが無い・読めない）なら説明の文、そうでなければ空。
     j["terrainMissing"] = terrainMissingText();
+    // 読めている今のテレインの名前（無ければ空。isCurrentTerrain と同じ意味 =
+    // ブラウザの「開いています」の判定はこれだけを見る）。
+    j["terrainOpen"] = isCurrentTerrain(terrain_.data) ? terrain_.data : std::string();
     nlohmann::json files = nlohmann::json::array();
     for (const wt::TerrainEntry& e : terrainLibrary_->entries()) files.push_back(toJson(e));
     j["terrainFiles"] = std::move(files);

@@ -88,6 +88,19 @@
     // しれない間）は、チェックの見た目に合わせる（古い値で一瞬戻さない）。
     const onEl = document.getElementById('edTerrainOn');
     props.hidden = !(onEl === document.activeElement ? onEl.checked : on);
+    // ファイルが無い・読めない（Missing）: サーバーの文を出し、欄をまとめて
+    // 無効にする（fieldset 1 つ。子の disabled 属性は触らない）。Missing に
+    // 変わる前に触った値の送信待ちも捨てる（サーバーは断り、残すと
+    // terrainUnsaved が誤って確認を出す）。
+    const missing = currentTerrain().missing;
+    if (missing) discardTerrain();
+    const note = document.getElementById('edTerrainMissing');
+    if (note) {
+      note.textContent = missing;
+      note.hidden = !missing;
+    }
+    const fields = document.getElementById('edTerrainFields');
+    if (fields) fields.disabled = !!missing;
     if (!t) return;
     // 送信待ちの欄は上書きしない（間引きの間にポーリングが来ても戻さない）。
     const set = (key, id, v) => { if (!(key in terrainPatch)) setField(id, v); };
@@ -112,11 +125,21 @@
     return String(a).toLowerCase() === String(b).toLowerCase();
   }
   // 今のテレインの名前（無ければ ''）と、保存していない変更があるか。
+  // missing はファイルが無い・読めないときのサーバーの文（空 = 正常）。
+  // そのとき name は XML に残っている名前のまま（地形は出ていない）。
   function currentTerrain() {
     const t = sceneData && sceneData.hasTerrain ? sceneData.terrain : null;
-    return { name: (t && t.data) || '', dirty: !!(t && sceneData.terrainDirty) };
+    return { name: (t && t.data) || '', dirty: !!(t && sceneData.terrainDirty),
+             missing: (sceneData && sceneData.terrainMissing) || '' };
   }
-  // 取り替えると失う変更があるか（サーバーの未保存 + ここで確定待ちの欄）。
+  // name のテレインが「開いている」か。判定はサーバーの terrainOpen
+  // （isCurrentTerrain と同じ意味 = 読めている今のテレインの名前）だけを見る。
+  // Missing は開いていない扱いなので、ファイルを戻してダブルクリックすれば
+  // 開き直せる。
+  function isOpenTerrain(name) {
+    const open = (sceneData && sceneData.terrainOpen) || '';
+    return !!open && sameTerrainName(name, open);
+  }  // 取り替えると失う変更があるか（サーバーの未保存 + ここで確定待ちの欄）。
   // テレインが無ければ失うものは無い（確定待ちの欄は黙って捨ててよい -
   // 新規は既定の大きさで作る仕様）。
   function terrainUnsaved() {
@@ -166,12 +189,14 @@
   // 一覧は /scene の terrainFiles（assets/terrains/*.terrain の見出し）。
   // 今のテレインは .sel、保存していない変更があれば名前に *。まだファイルの
   // 無い新規（保存前）は一覧に無いので、今のテレインのぶんを先頭に足す。
+  // Missing は足さない（ファイルが無い。読めないファイルは一覧にあれば出る）。
   // 単クリックは何もしない（開くのはダブルクリック、右クリックはメニュー）。
   function terrainTileEntries() {
     const files = (sceneData && sceneData.terrainFiles) || [];
     const cur = currentTerrain();
     const list = files.slice();
-    if (cur.name && !files.some((f) => sameTerrainName(f.name, cur.name))) {
+    if (isOpenTerrain(cur.name) &&
+        !files.some((f) => sameTerrainName(f.name, cur.name))) {
       const t = sceneData.terrain;
       list.unshift({ name: cur.name, resolution: t.resolution, size: t.size,
                      height: t.height });
@@ -182,13 +207,13 @@
     const e = terrainTileEntries();
     return e.list.map((f) => f.name + ':' + f.resolution + ':' + f.size + ':' +
                              f.height).join('|') +
-      '@' + e.cur.name + (e.cur.dirty ? '*' : '');
+      '@' + e.cur.name + (e.cur.dirty ? '*' : '') + (isOpenTerrain(e.cur.name) ? '' : '!');
   }
   function renderTerrainTiles() {
     const e = terrainTileEntries();
     let html = '';
     for (const f of e.list) {
-      const cur = !!e.cur.name && sameTerrainName(f.name, e.cur.name);
+      const cur = isOpenTerrain(f.name);
       const dirty = cur && e.cur.dirty;
       const title = '解像度 ' + f.resolution + ' ／ 全幅 ' + round2(f.size) +
         ' m ／ 高さ ' + round2(f.height) + ' m' + (dirty ? '（未保存）' : '') +
@@ -267,7 +292,10 @@
   // タイルの右クリック。メニューを出してから選ぶまでにポーリングで一覧が
   // 組み直されうるので、タイルは選んだ時点で名前から引き直す。
   function terrainMenuItems(name) {
-    const isCur = sameTerrainName(name, currentTerrain().name);
+    const isOpen = isOpenTerrain(name);
+    // シーンが参照している名前（Missing も含む = サーバーの refersToTerrain）。
+    const cur = currentTerrain();
+    const referred = !!cur.name && sameTerrainName(name, cur.name);
     const simulating = !!sceneData && sceneData.mode !== 'editor';
     const tileNow = () => Array.from(
       document.querySelectorAll('#assetList [data-terrain]'))
@@ -275,14 +303,14 @@
     return [
       { head: '⛰ ' + name },
       { label: '✎ 名前の変更', onClick: () => startTerrainRename(tileNow()) },
-      { label: '開く', hint: isCur ? '開いています' : 'ダブルクリック',
-        disabled: isCur, onClick: () => openTerrain(name) },
+      { label: '開く', hint: isOpen ? '開いています' : 'ダブルクリック',
+        disabled: isOpen, onClick: () => openTerrain(name) },
       { sep: true },
-      // 今のテレイン（保存前でファイルの無いタイルも）とシミュレート中は
-      // 消せない。最後の守りはサーバー（Scene::deleteTerrain）。
-      { label: '🗑 削除', danger: true, disabled: isCur || simulating,
+      // シーンが参照しているテレイン（保存前でファイルの無いタイル・Missing も）
+      // とシミュレート中は消せない。最後の守りはサーバー（Scene::deleteTerrain）。
+      { label: '🗑 削除', danger: true, disabled: referred || simulating,
         hint: simulating ? 'エディタモードでだけ削除できます'
-          : isCur ? '使っているテレインは削除できません' : '',
+          : referred ? 'シーンが使っているテレインは削除できません' : '',
         onClick: () => deleteTerrain(name) },
     ];
   }
@@ -290,8 +318,9 @@
   // 次のポーリングで消える。
   function deleteTerrain(name) {
     if (!confirm('テレイン「' + name + '」をごみ箱へ移しますか？\n' +
-                 'このテレインを使っているシーンは、開くと平らになります' +
-                 '（ローカルのドライブなら、ごみ箱から戻せます）')) {
+                 'このテレインを使っているシーンは、開くとテレインが表示されなく' +
+                 'なります（ファイルを戻せば元に戻ります。ローカルのドライブなら、' +
+                 'ごみ箱から戻せます）')) {
       return;
     }
     send('edit.terrain', { delete: name });
@@ -329,7 +358,7 @@
   // 開く（確認は confirmReplaceTerrain、最後の守りはサーバー）。
   function openTerrain(name) {
     if (!name || terrainRenameActive()) return;
-    if (sameTerrainName(name, currentTerrain().name)) return;  // 開いている
+    if (isOpenTerrain(name)) return;  // 開いている（Missing なら開き直す）
     const extra = confirmReplaceTerrain('「' + name + '」を開きます');
     if (!extra) return;
     discardTerrain();

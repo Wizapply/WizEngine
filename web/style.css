@@ -116,7 +116,7 @@
           box-sizing:border-box; display:flex; flex-wrap:wrap;
           gap:6px 22px; }
   #perf b { color:#e8e8e8; font-weight:600; }
-  #perf .warn { color:#ffb38a; }
+  #perf .warn, .edHint.warn { color:#ffb38a; }
 
   /* ---- Sidebar (Unity-ish docked panel) ---------------------------------- */
   /* The page's global button style is big and orange; everything inside the
@@ -499,7 +499,8 @@
   .axis.axY { background: #3f7a37; }
   .axis.axZ { background: #33599b; }
   .trCell .num { border-radius: 0 4px 4px 0; border-left: 0; padding: 3px 4px; }
-  .trCell .num:disabled { opacity: .45; }
+  .trCell .num:disabled, .edRow .num:disabled, .edRow .txt:disabled,
+  .edRow .col:disabled { opacity: .45; }
   .num, .txt {
     background: #212329; color: #dfe2e7; border: 1px solid #3a3d45;
     border-radius: 4px; font-size: 11.5px; padding: 3px 5px;
@@ -512,6 +513,11 @@
     border-radius: 4px; background: #212329;
   }
   .edHint { font-size: 11px; color: #7b7f88; line-height: 1.5; }
+  /* テレインの欄。Missing のときだけ disabled（中の入力とボタンがまとめて無効）。
+     薄くするのは部品ごとの :disabled の見た目（入力 .45・button:disabled）に
+     任せる（fieldset にも opacity を掛けると重なって一部だけ極端に薄くなる）。
+     色は #perf .warn と同じ（.edHint.warn はそちらの規則に並べてある）。 */
+  #edTerrainFields { border:0; padding:0; margin:0; min-width:0; }
   /* スポットの円錐（内/外）は 1 行に 2 欄。edRow .num の 55% 制限とは別枠。 */
   .edRow .coneNum { max-width: 26%; }
   /* エディタ選択（ライト / カメラ）。視聴中 (.sel) とは別の印。 */

@@ -134,9 +134,11 @@ void Scene::deleteTerrain(const std::string& name) {
         editor_.setStatus("テレインの削除はエディタモードでだけできます");
         return;
     }
-    // 今のテレインは消さない（消すと次の保存で同じ名前のファイルが書き戻る）。
-    if (isCurrentTerrain(name)) {
-        editor_.setStatus("使っているテレインは削除できません（別のテレインを開くか外してから）");
+    // シーンが参照しているテレインは消さない。読めているなら次の保存で同じ名前の
+    // ファイルが書き戻り、Missing / 読めないなら「ファイルを戻して開き直す」が
+    // できなくなる。
+    if (refersToTerrain(name)) {
+        editor_.setStatus("シーンが使っているテレインは削除できません（別のテレインを開くか外してから）");
         return;
     }
     const wt::TerrainRemoveResult r = terrainLibrary_->remove(name);
@@ -144,11 +146,6 @@ void Scene::deleteTerrain(const std::string& name) {
         case wt::TerrainRemoveStatus::Ok:
             LOGI("scene", "terrain '%s' moved to the trash", r.name.c_str());
             editor_.setStatus("テレイン " + r.name + " をごみ箱へ移しました");
-            if (isUnreadableTerrainFile(r.name)) {
-                // 参照中の読めないファイルを消した: 「読めません」から「見つかりません」へ。
-                publishTerrainField(terrain_, nullptr, TerrainHistory::Clear,
-                                    TerrainFileState::Missing);
-            }
             return;
         case wt::TerrainRemoveStatus::NotFound:
             editor_.setStatus("テレイン " + r.name + " が見つかりません");
