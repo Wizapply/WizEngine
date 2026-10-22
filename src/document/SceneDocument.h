@@ -41,6 +41,11 @@
 //     <asset>
 //       <mesh name="apple" file="apple2.glb" scale="1"/>
 //       <event name="pickup"> <node .../> <wire from to/> </event>
+//       <event name="follow_car" file="events/follow_car.xml"/>
+//                                    ... 共通イベント（イベントライブラリ）。中身は
+//                                        file（assets/ 相対）が持ち、ここは参照だけ。
+//                                        子要素を書いても無視（警告）。下の
+//                                        parseEventAssetXml / eventAssetToXmlText
 //       <formula name="tire_mf"> <node .../> <wire .../> </formula>
 //                                    ... 計算式アセット（vehicle/FormulaXml.h）。
 //                                        <tire formula="tire_mf"> が参照する
@@ -243,6 +248,24 @@ SceneDocument fromXml(const xml::Element& root,
 // テキストから。XML として壊れている場合だけ false（error に行番号付きの理由）。
 bool parseXml(const std::string& text, SceneDocument& out, std::string& error,
               std::vector<std::string>* warnings = nullptr);
+
+// ---- イベントライブラリのファイル（assets/events/<名前>.xml）----------------
+// 共通化したイベントアセット 1 個ぶん。中身はシーンの <asset> の <event> と
+// 同じ書式で、ルートが <event name="..."> になっただけ:
+//   <event name="follow_car">
+//     <node id="1" type="onUpdate" pos="40 60"/> ... <wire from="1" to="2"/>
+//   </event>
+// シーンの XML は <event name="follow_car" file="events/follow_car.xml"/> で
+// 参照する（中身はファイルが正。読込側の Scene がファイルを読んで入れる）。
+// ノードの対象番号（オブジェクト / ライト / ジョイント）はどのシーンで使うか
+// 分からないので読み込みで範囲を見ない - 共通化するスクリプトは対象を書かない
+// （-1 = 付けた相手 / トリガーが渡した物）のが前提。カメラはスロット番号なので
+// どのシーンでも同じ意味。
+std::string eventAssetToXmlText(const EventAssetDesc& asset);
+// 名前はルートの name 属性（正規化済み。空もありうる = 呼び手がファイル名で補う）。
+// file は空で返す。XML として壊れている場合だけ false。
+bool parseEventAssetXml(const std::string& text, EventAssetDesc& out, std::string& error,
+                        std::vector<std::string>* warnings = nullptr);
 
 // ---- 旧 JSON 文書（version 1〜3）--------------------------------------------
 // 既に保存してある assets/scenes/*.json を読むための取り込み口。書き出しは

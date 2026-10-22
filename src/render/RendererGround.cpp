@@ -21,6 +21,11 @@ namespace wizengine {
 void Renderer::removeGround() {
     // Filament の destroy は使用中の GPU 資源を安全に遅延破棄するので、
     // 前フレームが参照していても構わない。
+    // **テクスチャはここで壊さない**: 地面のマテリアルインスタンス
+    // （groundMatInstance_）に "checker" として付いたままなので、壊すと次の
+    // 描画で Filament が "Invalid texture still bound to MaterialInstance" で
+    // 止まる（地面を外したシーン = <ground enabled="false"> で起きた）。
+    // 差し替えは addGround が新しいテクスチャを付けてから古い方を壊す。
     if (!groundEntity_.isNull()) {
         scene_->remove(groundEntity_);
         engine_->destroy(groundEntity_);
@@ -29,11 +34,6 @@ void Renderer::removeGround() {
     }
     if (groundVb_) { engine_->destroy(groundVb_); groundVb_ = nullptr; }
     if (groundIb_) { engine_->destroy(groundIb_); groundIb_ = nullptr; }
-    // テクスチャはここでは壊さない。地面のマテリアルインスタンスが参照した
-    // ままで、外す口（unsetParameter）がこの版に無いため、壊すと次のフレームで
-    // "Invalid texture still bound to MaterialInstance" で止まる（地面を外した
-    // シーンで起きる）。差し替えは addGround が新しい方を渡してから、最後は
-    // デストラクタが壊す。
 }
 
 void Renderer::addGround(float halfSize, const filament::math::float3& color,
@@ -53,6 +53,8 @@ void Renderer::addGround(float halfSize, const filament::math::float3& color,
     // ---- Ground texture --------------------------------------------------
     // 画像（シーン文書の <ground texture>）。読めない・無いときは市松模様に
     // 落として警告する（RendererTextures.cpp の loadTextureRGBA）。
+    // 古いテクスチャは新しい方をマテリアルに付けてから壊す（付いたまま壊すと
+    // Filament が止まる。removeGround の注意と同じ）。
     filament::Texture* oldTexture = groundTexture_;
     groundTexture_ = loadTextureRGBA(*engine_, texturePath, "ground",
                                      TextureFallback::Checker);
@@ -63,8 +65,7 @@ void Renderer::addGround(float halfSize, const filament::math::float3& color,
         filament::TextureSampler::WrapMode::REPEAT);
     sampler.setAnisotropy(8.0f);
     groundMatInstance_->setParameter("checker", groundTexture_, sampler);
-    // 参照を新しい方へ移してから古い方を壊す（removeGround の注記）。
-    if (oldTexture) engine_->destroy(oldTexture);
+    if (oldTexture && oldTexture != groundTexture_) engine_->destroy(oldTexture);
 
     // Flat quad at y=0 facing +Y, sized to halfSize. Positions/UVs kept in
     // members (Filament references, not copies).

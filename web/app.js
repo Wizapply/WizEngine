@@ -2715,7 +2715,8 @@
     currentFormula();
     const key = files.join('|') + '@' + (sceneData.sceneFile || '') + '#' +
       meshes.map((m) => m.name).join('|') + '%' +
-      events.map((e) => e.name + ':' + (e.nodes || []).length).join('|') +
+      events.map((e) => e.name + ':' + (e.nodes || []).length + ':' + (e.file || '') +
+                        (e.dirty ? '*' : '')).join('|') + '!' + eventLibrary().join('|') +
       '&' + ndAsset + '$' +
       formulas.map((f) => f.name + ':' + (f.nodes || []).length).join('|') +
       '&' + ndFormula + ndKind + '^' +
@@ -2780,15 +2781,33 @@
     // そのアセットに切り替わり、**右クリックで作成・削除・付ける**
     // （data-event がその対象。名前はサーバー側で英数字と _ - に正規化済み
     // なので、そのまま属性へ埋めてよい）。
+    // 共通化したもの（file あり = イベントライブラリのファイル）は 🔗 と
+    // "shared"、ファイルへ書いていない変更があれば名前に *（シーンの保存で書く）。
     for (const e of events) {
       const cur = e.name === ndAsset;
+      const shared = !!e.file;
       html += '<div class="asItem' + (cur ? ' sel' : '') +
         '" data-event="' + e.name +
         '" title="クリック: ノードエディタで開く（' + (e.nodes || []).length +
-        ' ノード） ／ 右クリック: メニュー" onclick="openEventAsset(\'' +
+        ' ノード）' + (shared ? '\n共通（' + ndEsc(e.file) + '）' +
+                         (e.dirty ? '・未保存（シーンの保存で書きます）' : '') : '') +
+        ' ／ 右クリック: メニュー" onclick="openEventAsset(\'' +
         e.name + '\')">' +
-        '<span class="ico">⚡&#xFE0E;</span><span class="name">' + ndEsc(e.name) +
-        '</span><span class="kind">event</span></div>';
+        '<span class="ico">⚡&#xFE0E;' + (shared ? '<span class="asBadge">🔗</span>' : '') +
+        '</span><span class="name">' + ndEsc(e.name) + (e.dirty ? ' *' : '') +
+        '</span><span class="kind">' + (shared ? 'shared event' : 'event') + '</span></div>';
+    }
+    // イベントライブラリにあって、このシーンにはまだ無いもの（薄く出す）。
+    // クリックでシーンに読み込む（共通のまま = 参照）。
+    const inScene = new Set(events.map((e) => e.name));
+    for (const n of eventLibrary()) {
+      if (inScene.has(n)) continue;
+      html += '<div class="asItem lib" data-evlib="' + ndEsc(n) +
+        '" title="共通イベント（assets/events/' + ndEsc(n) + '.xml）\nクリック: ' +
+        'このシーンに読み込む ／ 右クリック: メニュー" ' +
+        'onclick="importEventAsset(this.dataset.evlib)">' +
+        '<span class="ico">⚡&#xFE0E;<span class="asBadge">🔗</span></span>' +
+        '<span class="name">' + ndEsc(n) + '</span><span class="kind">library</span></div>';
     }
     // 計算式アセット（🧮）。クリックでノードエディタが開き、右クリックで
     // 作成・削除・選択中の車両に付ける。
@@ -2846,7 +2865,20 @@
     const ftile = e.target.closest ? e.target.closest('[data-formula]') : null;
     const ptile = e.target.closest ? e.target.closest('[data-prefab]') : null;
     const ttile = e.target.closest ? e.target.closest('[data-terrain]') : null;
+    const ltile = e.target.closest ? e.target.closest('[data-evlib]') : null;
     const sel = mySelectedDesc();
+    if (ltile) {
+      const lname = ltile.dataset.evlib;
+      showContextMenu(e, [
+        { head: '🔗 ' + lname + '（共通イベント）' },
+        { label: 'このシーンに読み込む', onClick: () => importEventAsset(lname) },
+        { sep: true },
+        { label: '🗑 ライブラリから削除', danger: true,
+          hint: 'ごみ箱へ（使っている他のシーンでは読めなくなります）',
+          onClick: () => deleteLibraryEvent(lname) },
+      ]);
+      return;
+    }
     if (ttile) {
       showContextMenu(e, terrainMenuItems(ttile.dataset.terrain));
       return;
@@ -2892,7 +2924,9 @@
     }
     if (!tile) {
       showContextMenu(e, [
-        { label: '✨ 新しいイベント…', onClick: newEventAsset },
+        { label: '✨ 新しい共通イベント…', hint: 'ライブラリ（全シーンで使える）',
+          onClick: () => newEventAsset(true) },
+        { label: '✨ 新しいイベント（このシーン専用）…', onClick: () => newEventAsset(false) },
         { label: '🧮 新しい計算式…', onClick: newFormulaAsset },
         { label: '🧩 新しい（空の）プレハブ…', onClick: newPrefabAsset },
         { label: '⛰ 新しいテレイン…', onClick: newTerrain },
@@ -2900,9 +2934,16 @@
       return;
     }
     const name = tile.dataset.event;
+    const ea = eventAssets().find((x) => x.name === name);
+    const shared = !!(ea && ea.file);
     showContextMenu(e, [
-      { head: '⚡ ' + name },
+      { head: (shared ? '🔗 ' : '⚡ ') + name + (shared ? '（共通）' : '') },
       { label: 'ノードエディタで開く', onClick: () => openEventAsset(name) },
+      shared
+        ? { label: 'このシーン専用にする', hint: 'ライブラリのファイルは残ります',
+            onClick: () => send('edit.event.unshare', { name: name }) }
+        : { label: '🔗 共通化（ライブラリへ）', hint: '他のシーンでも使えるように',
+            onClick: () => shareEventAsset(name) },
       { sep: true },
       { label: '＋ シーン全体に付ける', hint: 'World',
         onClick: () => attachEvent(name, -1) },
@@ -2910,8 +2951,9 @@
         hint: sel ? ('#' + sel.index) : '未選択', disabled: !sel,
         onClick: () => attachEvent(name, 'sel') },
       { sep: true },
-      { label: '✨ 新しいイベント…', onClick: newEventAsset },
-      { label: '🗑 このイベントを削除', danger: true,
+      { label: '✨ 新しい共通イベント…', onClick: () => newEventAsset(true) },
+      { label: '🗑 このシーンから削除', danger: true,
+        hint: shared ? 'ライブラリのファイルは残ります' : '',
         onClick: () => removeEventAsset(name) },
     ]);
   });
@@ -3280,7 +3322,8 @@
       h += '<optgroup label="⚡ イベント">' + ev.map((a) =>
         '<option value="e:' + ndEsc(a.name) + '"' +
         (ndKind === 'event' && a.name === ndAsset ? ' selected' : '') + '>' +
-        ndEsc(a.name) + '</option>').join('') + '</optgroup>';
+        (a.file ? '🔗 ' : '') + ndEsc(a.name) + (a.dirty ? ' *' : '') +
+        '</option>').join('') + '</optgroup>';
     }
     if (fm.length) {
       h += '<optgroup label="🧮 計算式">' + fm.map((a) =>
@@ -3301,21 +3344,64 @@
     ndGraphKey = '';
     openNodeEditor();
   }
-  function newEventAsset() {
-    const name = prompt('新しいイベントアセットの名前（英数字と _ -）', 'event');
+  // shared = 共通イベント（イベントライブラリ assets/events/<名前>.xml に作る。
+  // 全シーンで使える）。false = このシーン専用（シーンの XML に埋め込む）。
+  // ノードエディタの見出しなど引数の無い呼び出しは共通で作る。
+  function newEventAsset(shared) {
+    const isShared = shared !== false;
+    const name = prompt((isShared ? '新しい共通イベント' : '新しいイベント（このシーン専用）') +
+                        'の名前（英数字と _ -）', 'event');
     if (name === null) return;
     const clean = cleanAssetName(name);
     if (!clean) return;
+    if (isShared && eventLibrary().includes(clean)) {
+      alert('ライブラリに「' + clean + '」があります。読み込むならアセットパネルの' +
+            'そのタイルをクリックしてください。');
+      return;
+    }
     ndAsset = clean;   // 作られたら次のポーリングでこれが選ばれる
     ndGraphKey = '';
-    send('edit.event.add', { name: clean });
+    send('edit.event.add', { name: clean, shared: isShared });
+  }
+  // イベントライブラリ（共通化したイベント）の一覧。
+  function eventLibrary() {
+    return (sceneData && sceneData.events && sceneData.events.library) || [];
+  }
+  // 共通化。ライブラリに同じ名前があれば上書きの確認（サーバーも確認無しは断る）。
+  function shareEventAsset(name) {
+    const msg = { name: name };
+    if (eventLibrary().includes(name)) {
+      if (!confirm('ライブラリに同じ名前のイベント「' + name + '」があります。\n' +
+                   'このシーンの中身で上書きしますか？（それを使っている他のシーンも' +
+                   '変わります）')) {
+        return;
+      }
+      msg.overwrite = true;
+    }
+    send('edit.event.share', msg);
+  }
+  function importEventAsset(name) {
+    if (!name) return;
+    ndAsset = name;   // 読み込まれたら次のポーリングでこれが選ばれる
+    ndGraphKey = '';
+    send('edit.event.import', { name: name });
+  }
+  function deleteLibraryEvent(name) {
+    if (!confirm('共通イベント「' + name + '」をごみ箱へ移しますか？\n' +
+                 'これを使っているシーンは、開くとこのイベントが空になります' +
+                 '（ファイルを戻せば元に戻ります）')) {
+      return;
+    }
+    send('edit.event.libdelete', { name: name });
   }
   // 名前を省くと今編集しているアセット。
   function removeEventAsset(name) {
     const target = name || (currentAsset() ? currentAsset().name : '');
     if (!target) return;
+    const ea = eventAssets().find((x) => x.name === target);
     if (!confirm('イベント「' + target +
-                 '」を削除します。付けてある先からも外れます。')) {
+                 '」をこのシーンから削除します。付けてある先からも外れます。' +
+                 (ea && ea.file ? '\n（共通イベントなのでライブラリのファイルは残ります）' : ''))) {
       return;
     }
     send('edit.event.remove', { name: target });
@@ -4130,7 +4216,7 @@
       const asset = currentAsset();
       showContextMenu(e, nodeMenuItems(p.x, p.y).concat([
         { sep: true },
-        { label: '✨ 新しいイベント…', onClick: newEventAsset },
+        { label: '✨ 新しい共通イベント…', onClick: () => newEventAsset(true) },
         asset && { label: '🗑 「' + asset.name + '」を削除', danger: true,
                    onClick: () => removeEventAsset(asset.name) },
       ]));

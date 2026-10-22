@@ -9,6 +9,9 @@
      上がる）。ハンドブレーキは掛けていないので、シミュレートを開始すると
      車はゆっくり前へ転がり出し、谷底あたりで行き来する。止めておくなら
      Space（ハンドブレーキ）、登るなら W。
+     走らせている間は Camera 1 が車の後ろを追う（共通イベント follow_car =
+     assets/events/follow_car.xml。vehicle.xml と同じ追従）。Camera 1 の
+     ページか、Scene タブの Cameras 一覧の目アイコンで見る。
      東には頂上が高さ約 8 m の丘があり、その西斜面（傾き約 8.5〜11.5°）に
      箱と球を置いてある - シミュレートで球は転がり落ち、摩擦の小さい箱は
      滑って谷で止まる（摩擦がシーン既定の箱は斜面に留まる）。
@@ -66,6 +69,10 @@
       <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
       <wire from="1" to="2"/>
     </event>
+    <!-- カメラ追従（Camera 1）: 共通イベント（イベントライブラリ）の
+         assets/events/follow_car.xml を参照する（vehicle.xml と同じ追従）。
+         下の車体に付けてある。 -->
+    <event name="follow_car" file="events/follow_car.xml"/>
     <!-- 計算式アセット（🧮）: タイヤの「スリップ → 力」。組み込みの Magic
          Formula + 摩擦楕円 + 上限 + 緩和長をそのままノードで組んだもの
          （vehicle_test - -dump-formula の出力）。<tire formula="tire_mf"/> で
@@ -195,8 +202,9 @@
     <light name="sky" type="sun" pos="0 25 0" euler="30 150 0"
            diffuse="0.80 0.87 1 1" intensity="20000" castshadow="false"/>
     <!-- cam0: 南西の高みから、手前の車と奥の丘・斜面の物を見下ろす全景。
-         cam1: 走り出す前の車を後ろ（やや左）から見る位置（固定カメラで、
-         車は追わない）。 -->
+         cam1: 車の追従用（イベント follow_car が車の後ろへ付ける）。ここの
+         姿勢は走らせる前と止めた後の視点（車をやや左後ろから見る）。編集は
+         cam0（Editor Camera）のまま。 -->
     <camera name="cam0" target="-8 4 -22" azimuth="-50" elevation="12" radius="55"/>
     <camera name="cam1" target="-25 3.5 -30" azimuth="-20" elevation="15" radius="11"/>
     <!-- 車（vehicle.xml と同じ車）。地表は (-25, -28) で 2.66 m、4 輪の
@@ -205,6 +213,7 @@
          ほど浮かせて置き、シミュレート開始で落として座らせる。 -->
     <body name="car" pos="-25 4.1 -28" euler="0 0 0">
       <geom type="box" size="0.7 0.25 2.1" mass="1400" rgba="0.85 0.2 0.15 1"/>
+      <event name="follow_car"/>
       <vehicle ticks="10" brake="2500" drag="0.7">
         <engine torque="300" idle="900" max="6500" inertia="0.25"/>
         <clutch torque="500" engage="1300" full="2200"/>

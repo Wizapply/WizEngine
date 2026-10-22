@@ -1201,7 +1201,36 @@ collide 部品の外接箱、当たり判定は collide 部品だけ）が実体
   ぶんずらす。**旧形式**（`<events>` の直下に `<node>` / `<wire>` を並べた文書、
   旧 JSON version 3 の nodes / wires）は "events" という名前のアセットに入れて
   ワールドへ付ける。イベントの節が 1 つも無い文書は既定構成（pickup）で開く。
-- **UI は /scene の `events`**（`{assets:[{name,nodes,wires}], world:[名前]}`。
+- **共通イベント（イベントライブラリ）**: イベントアセットはシーンごとに
+  埋め込む（このシーン専用）だけでなく、**`assets/events/<名前>.xml` に置いて
+  シーンをまたいで共用できる**（メッシュの `file` と同じ流儀）。シーンの XML は
+  `<asset>` に `<event name="follow_car" file="events/follow_car.xml"/>` と
+  参照だけを書き（`EventAssetDesc::file`。子要素を書いても無視して警告）、
+  ファイルは `<event name>` をルートにした同じ書式（`parseEventAssetXml` /
+  `eventAssetToXmlText`。番号の範囲はどのシーンで使うか分からないので
+  見ない = 共通化するスクリプトは target / other を -1 にしておくのが前提。
+  カメラはスロット番号なのでどのシーンでも同じ意味）。**文書層はファイルを
+  読まない** - `Scene::loadDocument` が `readSharedEvent` で中身を入れ（読め
+  なければ空のまま参照を残し、ステータスに件数）、**シーンの保存で変更のある
+  ものだけ** `saveSharedEvents` がファイルへ書く（XML より先。.terrain と同じ
+  流儀。変更の目印は `EditorState::EventAssetState::dirty` = ノード / ワイヤーの
+  編集で立つ。変更の無いものを書き戻さない = 他のシーンの編集を巻き戻さない）。
+  保存は文書の側（番号を詰めた後）の中身を書く。操作は edit.event.share
+  （今のシーンのイベントを共通化。ライブラリに同名があれば `overwrite` が
+  要る）/ unshare（このシーン専用に戻す。ファイルは残す）/ import（ライブラリ
+  から読み込む）/ libdelete（ライブラリのファイルをごみ箱へ。今のシーンが
+  参照しているものは断る）/ refresh（一覧の取り直し。ブラウザのタブに戻った
+  とき、テレインと一緒に送る）と、edit.event.add の `shared`（新規を共通で
+  作る = 空のファイルを書く）。一覧は `EditorState::eventLibrary()`（/scene の
+  `events.library`）。UI はアセットパネルの ⚡ タイルに 🔗（共通）と *（未保存）、
+  ライブラリにだけある物は破線の薄いタイル（クリックで読み込む）、右クリックに
+  共通化 / 専用化 / 読み込む / ライブラリから削除。新規は既定で共通（アセット
+  パネルの何もない所の右クリックで専用も選べる）。見本は
+  `assets/events/follow_car.xml`（vehicle.xml と terrain.xml が共用する車の
+  追従）。**注意**: XML の適用（📄 XML）は共通イベントをファイルから読み直す
+  ので、保存していない共通イベントの編集はそこで消える。
+- **UI は /scene の `events`**（`{assets:[{name,file,dirty,nodes,wires}],
+  world:[名前], library:[名前]}`。
   発火回数 fired 付き＝ノードの ⚡ バッジ。オブジェクトに付いているぶんは
   objects / selected の `events`）をポーリングで描く。アセットは**アセット
   パネルの ⚡ タイル**（クリックでノードエディタがそのアセットに切り替わる）と
