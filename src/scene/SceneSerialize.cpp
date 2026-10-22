@@ -179,6 +179,8 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         const auto fires = editor_.nodeFireCounts();
         for (const auto& a : editor_.eventAssets()) {
             nlohmann::json e = ed::toJson(a);
+            // 共通化したものに、ファイルへ書いていない変更があるか（タイルの *）。
+            e["dirty"] = !a.file.empty() && editor_.eventAssetDirty(a.name);
             for (auto& n : e["nodes"]) {
                 const auto it = fires.find({a.name, ed::jsonInt(n, "id", -1)});
                 if (it != fires.end()) n["fired"] = it->second;
@@ -188,6 +190,9 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         // シーン全体に付いているアセット（オブジェクトに付いているぶんは
         // それぞれの selected / objects 側に入る）。
         ev["world"] = editor_.worldEvents();
+        // イベントライブラリ（assets/events/*.xml の名前）。アセットパネルが
+        // 今のシーンに無いものを「読み込める」タイルとして出す。
+        ev["library"] = editor_.eventLibrary();
         j["events"] = ev;
     }
     // プレハブ（ASSETS パネルの 🧩 タイル）と、プレハブ編集モードの中身
@@ -407,6 +412,7 @@ ed::SceneDocument Scene::document() {
         for (const auto& assetIn : editor_.eventAssets()) {
             ed::EventAssetDesc asset;
             asset.name = assetIn.name;
+            asset.file = assetIn.file;  // 共通化したものは参照として書く
             std::set<int> kept;
             for (const auto& nIn : assetIn.nodes) {
                 ed::NodeDesc n = nIn;
@@ -585,9 +591,24 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     // 始めさせないため。
     if (doc.hasEvents) {
         std::vector<ed::EventAssetDesc> assets;
-        for (const auto& assetIn : doc.eventAssets) {
+        std::size_t sharedMissing = 0;
+        for (const auto& assetDoc : doc.eventAssets) {
+            // 共通化したイベント（file あり）は中身をイベントライブラリから入れる。
+            // 読めなくても参照は残す（中身は空 = 何もしない。ファイルを戻して
+            // 読み直せば元に戻る。保存しても空で上書きはしない - 変更の目印が
+            // 立たないため）。
+            ed::EventAssetDesc assetIn = assetDoc;
+            if (!assetIn.file.empty()) {
+                std::string reason;
+                if (!readSharedEvent(assetIn, reason)) {
+                    LOGW("scene", "shared event '%s': %s - it does nothing until the file "
+                                  "is back", assetIn.name.c_str(), reason.c_str());
+                    ++sharedMissing;
+                }
+            }
             ed::EventAssetDesc asset;
             asset.name = assetIn.name;
+            asset.file = assetIn.file;
             for (const auto& nIn : assetIn.nodes) {
                 ed::NodeDesc n = ed::clampNode(nIn);
                 const ed::NodeTargetKind tk = ed::nodeTargetKind(n.kind);
@@ -604,6 +625,11 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
             }
             asset.wires = assetIn.wires;
             assets.push_back(std::move(asset));
+        }
+        if (sharedMissing > 0) {
+            // ステータスの末尾に足す注意（テレインの注意と同じ口）。
+            terrainLoadCaveat_ += "（共通イベント " + std::to_string(sharedMissing) +
+                                  " 件のファイルが読めません - コンソール参照）";
         }
         editor_.setEventAssets(std::move(assets), doc.worldEvents);
         resetGraphRuntime();

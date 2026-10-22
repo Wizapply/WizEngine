@@ -154,6 +154,41 @@ bool EditorState::addEventAsset(const std::string& name) {
     return true;
 }
 
+bool EditorState::addEventAsset(wizengine::editor::EventAssetDesc desc) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (desc.name.empty() || findAsset(events_, desc.name) != nullptr) return false;
+    EventAssetState st;
+    for (const auto& n : desc.nodes) {
+        if (n.id >= st.nextNodeId) st.nextNodeId = n.id + 1;
+    }
+    st.desc = std::move(desc);
+    events_.push_back(std::move(st));
+    graphVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::setEventAssetFile(const std::string& name, const std::string& file) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    EventAssetState* a = findAsset(events_, name);
+    if (a == nullptr) return false;
+    a->desc.file = file;
+    a->dirty = false;
+    return true;
+}
+
+bool EditorState::eventAssetDirty(const std::string& name) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (const auto& a : events_) {
+        if (a.desc.name == name) return a.dirty;
+    }
+    return false;
+}
+
+void EditorState::clearEventAssetDirty(const std::string& name) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (EventAssetState* a = findAsset(events_, name)) a->dirty = false;
+}
+
 bool EditorState::removeEventAsset(const std::string& name) {
     std::lock_guard<std::mutex> lk(mutex_);
     const std::size_t before = events_.size();
@@ -208,6 +243,7 @@ int EditorState::addGraphNode(const std::string& asset,
     node.id = a->nextNodeId++;
     const int id = node.id;
     a->desc.nodes.push_back(std::move(node));
+    a->dirty = true;
     graphVersion_.fetch_add(1);
     return id;
 }
@@ -226,6 +262,7 @@ bool EditorState::updateGraphNode(const std::string& asset, int id,
         next.id = n.id;
         next.kind = n.kind;
         n = next;
+        a->dirty = true;
         graphVersion_.fetch_add(1);
         return true;
     }
@@ -250,6 +287,7 @@ bool EditorState::removeGraphNode(const std::string& asset, int id) {
                                    return w.from == id || w.to == id;
                                }),
                 wires.end());
+    a->dirty = true;
     graphVersion_.fetch_add(1);
     return true;
 }
@@ -273,6 +311,7 @@ bool EditorState::addGraphWire(const std::string& asset, int from, int to) {
         if (w.from == from && w.to == to) return false;  // 二重線は張らない
     }
     st->desc.wires.push_back({from, to});
+    st->dirty = true;
     graphVersion_.fetch_add(1);
     return true;
 }
@@ -289,6 +328,7 @@ bool EditorState::removeGraphWire(const std::string& asset, int from, int to) {
                                }),
                 wires.end());
     if (wires.size() == before) return false;
+    st->dirty = true;
     graphVersion_.fetch_add(1);
     return true;
 }
@@ -681,6 +721,42 @@ void EditorState::refreshSceneFiles() {
     found.erase(std::unique(found.begin(), found.end()), found.end());
     std::lock_guard<std::mutex> lk(mutex_);
     files_.swap(found);
+}
+
+std::vector<std::string> EditorState::eventLibrary() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return eventLibrary_;
+}
+
+void EditorState::refreshEventLibrary() {
+    std::vector<std::string> found;
+    std::error_code ec;
+    const std::filesystem::path dir(eventsDir());
+    if (std::filesystem::exists(dir, ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (ec) break;
+            if (!entry.is_regular_file(ec)) continue;
+            if (entry.path().extension().string() != ".xml") continue;
+            // 名前に使えない文字のファイル（手で置いた物）は一覧に出さない
+            // （参照名 = ファイル名の語幹、の約束が崩れるため）。
+            const std::string stem = entry.path().stem().string();
+            if (wizengine::editor::sanitizeEventName(stem) != stem) continue;
+            found.push_back(stem);
+        }
+    }
+    std::sort(found.begin(), found.end());
+    std::lock_guard<std::mutex> lk(mutex_);
+    eventLibrary_.swap(found);
+}
+
+std::string EditorState::eventsDir() {
+    return wizengine::assetPath("events");
+}
+
+std::string EditorState::eventLibraryFile(const std::string& name) {
+    const std::string safe = wizengine::editor::sanitizeEventName(name);
+    if (safe.empty()) return {};
+    return "events/" + safe + ".xml";
 }
 
 std::string EditorState::scenesDir() {

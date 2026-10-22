@@ -1084,11 +1084,14 @@ NodeDesc nodeFromXml(const xml::Element& e, Warn& warn) {
 // だけで一意ならよく、省略もできる（空き番号を振る）。対象番号のうち文書の
 // 中で完結して検証できるもの（範囲外の番号）はここで落とす - 読み込んだ後で
 // ずらしてからでは、どれが元から壊れていたのか分からなくなるため。
+// checkRanges = false はイベントライブラリのファイル（どのシーンで使うか
+// 分からない = 番号の範囲は読むシーンが決める）。
 EventAssetDesc eventAssetFromXml(const xml::Element& e,
                                  const std::vector<BodyDesc>& bodies,
                                  const std::vector<LightDesc>& lights,
                                  bool hasLights, std::size_t jointCount,
-                                 const std::string& label, Warn& warn) {
+                                 const std::string& label, Warn& warn,
+                                 bool checkRanges = true) {
     EventAssetDesc asset;
     warnUnknownChildren(e, {"node", "wire"}, label.c_str(), warn);
 
@@ -1104,25 +1107,27 @@ EventAssetDesc eventAssetFromXml(const xml::Element& e,
                        : std::string("<node>"));
 
         const NodeTargetKind tk = nodeTargetKind(nd.kind);
-        if (tk == NodeTargetKind::Object && nd.target >= 0 &&
+        // checkRanges = false（ライブラリのファイル）は範囲を見ない（下の id と
+        // ワイヤーの検査だけ）。
+        if (checkRanges && tk == NodeTargetKind::Object && nd.target >= 0 &&
             std::size_t(nd.target) >= bodies.size()) {
             warn(nodeLabel + " target=" + std::to_string(nd.target) +
                  " is out of range (objects) - cleared");
             nd.target = -1;
         }
-        if (tk == NodeTargetKind::Light && hasLights && nd.target >= 0 &&
+        if (checkRanges && tk == NodeTargetKind::Light && hasLights && nd.target >= 0 &&
             std::size_t(nd.target) >= lights.size()) {
             warn(nodeLabel + " target=" + std::to_string(nd.target) +
                  " is out of range (lights) - cleared");
             nd.target = -1;
         }
-        if (tk == NodeTargetKind::Joint && nd.target >= 0 &&
+        if (checkRanges && tk == NodeTargetKind::Joint && nd.target >= 0 &&
             std::size_t(nd.target) >= jointCount) {
             warn(nodeLabel + " target=" + std::to_string(nd.target) +
                  " is out of range (joints) - cleared");
             nd.target = -1;
         }
-        if (nodeOtherIsObject(nd.kind) && nd.other >= 0 &&
+        if (checkRanges && nodeOtherIsObject(nd.kind) && nd.other >= 0 &&
             std::size_t(nd.other) >= bodies.size()) {
             warn(nodeLabel + " other=" + std::to_string(nd.other) +
                  " is out of range (objects)");
@@ -1239,10 +1244,16 @@ xml::Element prefabElement(const PrefabDesc& d) {
     return e;
 }
 
-// イベントアセットを書き出す（<asset> の中）。
-xml::Element eventAssetElement(const EventAssetDesc& a) {
+// イベントアセットを書き出す（<asset> の中）。共通化したもの（file あり）は
+// 参照だけ（中身はイベントライブラリのファイルが持つ）。withContents = true は
+// ライブラリのファイルそのもの（eventAssetToXmlText）を書くとき。
+xml::Element eventAssetElement(const EventAssetDesc& a, bool withContents = false) {
     xml::Element e("event");
     e.set("name", a.name);
+    if (!a.file.empty() && !withContents) {
+        e.set("file", a.file);
+        return e;
+    }
     for (const auto& n : a.nodes) e.append(nodeElement(n));
     for (const auto& w : a.wires) {
         xml::Element wire("wire");
@@ -1722,6 +1733,26 @@ SceneDocument fromXml(const xml::Element& root,
                      "\"> duplicates an earlier one - ignored");
                 continue;
             }
+            // 共通化したイベント（file = イベントライブラリのファイル）。中身は
+            // 読込側（Scene）がファイルから入れる - 文書層はファイルを読まない。
+            if (e->has("file")) {
+                const std::string file = e->attr("file");
+                if (assetFileAllowed(file)) {
+                    if (!e->all("node").empty() || !e->all("wire").empty()) {
+                        warn("<asset>: <event name=\"" + name + "\" file=\"" + file +
+                             "\"> ignores its <node> / <wire> (the file holds them)");
+                    }
+                    EventAssetDesc a;
+                    a.name = name;
+                    a.file = file;
+                    doc.eventAssets.push_back(std::move(a));
+                    doc.hasEvents = true;
+                    continue;
+                }
+                warn("<asset>: <event name=\"" + name + "\" file=\"" + file +
+                     "\"> is not allowed (assets-relative paths only) - reading the "
+                     "nodes written here");
+            }
             EventAssetDesc a =
                 eventAssetFromXml(*e, doc.bodies, doc.lights, doc.hasLights,
                                   doc.joints.size(),
@@ -1799,6 +1830,31 @@ bool parseXml(const std::string& text, SceneDocument& out, std::string& error,
     xml::Element root;
     if (!xml::parse(text, root, error)) return false;
     out = fromXml(root, warnings);
+    return true;
+}
+
+// ---- イベントライブラリのファイル（assets/events/<名前>.xml）----------------
+std::string eventAssetToXmlText(const EventAssetDesc& asset) {
+    EventAssetDesc a = asset;
+    a.file.clear();  // ファイルの中は中身そのもの（自分を参照しない）
+    return xml::write(eventAssetElement(a, true));
+}
+
+bool parseEventAssetXml(const std::string& text, EventAssetDesc& out, std::string& error,
+                        std::vector<std::string>* warnings) {
+    xml::Element root;
+    if (!xml::parse(text, root, error)) return false;
+    Warn warn(warnings);
+    if (root.name() != "event") {
+        warn("event file: the root element is <" + root.name() +
+             ">, expected <event> - reading its <node> / <wire> anyway");
+    }
+    // 番号の範囲はどのシーンで使うかで決まるので見ない（読むシーンが見る）。
+    const std::vector<BodyDesc> noBodies;
+    const std::vector<LightDesc> noLights;
+    out = eventAssetFromXml(root, noBodies, noLights, false, 0, "<event>", warn, false);
+    out.name = sanitizeEventName(root.attr("name"));
+    out.file.clear();
     return true;
 }
 

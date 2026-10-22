@@ -391,6 +391,8 @@
     if (now - terrainRefreshAt < TERRAIN_REFRESH_GAP_MS) return;
     terrainRefreshAt = now;
     send('edit.terrain', { refresh: true });
+    // 共通イベント（assets/events/）の一覧も同じ時に取り直す。
+    send('edit.event.refresh', {});
   }
   window.addEventListener('focus', refreshTerrainFiles);
   document.addEventListener('visibilitychange', () => {

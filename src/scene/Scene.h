@@ -492,6 +492,23 @@ private:
     void resetEventsToDefaults();
     // そのアセットをオブジェクトから全部外す（アセットを消したとき）。
     void detachEventFromObjects(const std::string& name);
+    // ---- イベントライブラリ（共通化したイベント。SceneEvents.cpp）------------
+    // 中身は assets/events/<名前>.xml（EditorState::eventLibraryFile）が持ち、
+    // シーンの XML は <event name file/> で参照する。すべて PHYSICS thread。
+    // asset.file の中身を読んで asset の nodes / wires に入れる（名前と file は
+    // そのまま）。読めなければ false と英語の reason（中身は空のまま = 参照は
+    // 残すので、ファイルを戻して読み直せば元に戻る）。
+    bool readSharedEvent(wizengine::editor::EventAssetDesc& asset, std::string& reason);
+    // asset の中身を asset.file へ書く。
+    bool writeSharedEvent(const wizengine::editor::EventAssetDesc& asset, std::string& reason);
+    // 保存: 文書の共通化イベントのうち、ファイルへ書いていない変更があるもの
+    // だけを書く（変更の無いものは触らない = 他のシーンの編集を巻き戻さない）。
+    // written に書いた名前（空白区切り）。1 つでも書けなければ false。
+    bool saveSharedEvents(const wizengine::editor::SceneDocument& doc, std::string& written,
+                          std::string& reason);
+    // edit.event.share / unshare / import / libdelete / refresh と、
+    // event.add の shared。扱ったら true。
+    bool applySharedEventOp(const EditorState::Op& op);
     // 実行状態（タイマー・接触の記憶・発火カウント）と、アクションが加えた
     // 実行時の上書き（色・ライト・固定）を捨てて設計値へ戻す。
     // シミュレートの開始・停止・Reset で呼ぶ。

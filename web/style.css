@@ -647,6 +647,14 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .asItem .kind { display: block; font-size: 9.5px; color: #7b7f88; }
+  /* 共通イベント（イベントライブラリ）の印と、まだシーンに無いライブラリの
+     タイル（薄く出す。クリックで読み込む）。 */
+  .asItem .ico { position: relative; }
+  .asItem .asBadge {
+    position: absolute; right: 12px; bottom: -2px; font-size: 11px; line-height: 1;
+  }
+  .asItem.lib { opacity: 0.55; border-style: dashed; }
+  .asItem.lib:hover { opacity: 0.9; }
   /* テレインのタイルの名前の変更（.name と差し替える input）。 */
   .asItem .asRename {
     display: block; width: 100%; box-sizing: border-box; margin-top: 2px;

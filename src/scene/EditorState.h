@@ -123,7 +123,26 @@ public:
     // オブジェクト側の付け先を外すのは Scene の仕事）。名前は正規化済みの
     // ものを渡すこと（wizengine::editor::sanitizeEventName）。
     bool addEventAsset(const std::string& name);
+    // 中身ごと足す（イベントライブラリから読み込んだもの。file 付き）。
+    bool addEventAsset(wizengine::editor::EventAssetDesc desc);
     bool removeEventAsset(const std::string& name);
+    // ---- イベントの共通化（イベントライブラリ）-----------------------------
+    // file を付け替える（空 = このシーン専用に戻す）。変更の目印は下ろす
+    // （付けた瞬間にファイルを書く / 外したら次のシーン保存で XML に埋まる）。
+    bool setEventAssetFile(const std::string& name, const std::string& file);
+    // 共通化したイベントに、ファイルへ書いていない変更があるか（ノード /
+    // ワイヤーの編集で立ち、シーンの保存でファイルを書いたら下ろす）。
+    bool eventAssetDirty(const std::string& name) const;
+    void clearEventAssetDirty(const std::string& name);
+    // assets/events/ にあるイベントの一覧（拡張子を落とした名前。キャッシュ）。
+    // 共通化・読み込み・削除・保存と、ブラウザのタブに戻ったとき（refresh）に
+    // 取り直す。
+    std::vector<std::string> eventLibrary() const;
+    void refreshEventLibrary();
+    // assets/events（無ければ作らない。書くときに作る）。
+    static std::string eventsDir();
+    // ライブラリのファイル（assets/ 相対、"events/<名前>.xml"）。名前が不正なら空。
+    static std::string eventLibraryFile(const std::string& name);
     // シーン全体に付いているアセット名。
     std::vector<std::string> worldEvents() const;
     bool attachWorldEvent(const std::string& name);
@@ -286,8 +305,11 @@ private:
     struct EventAssetState {
         wizengine::editor::EventAssetDesc desc;
         int nextNodeId = 1;
+        // ファイル（desc.file）へ書いていない変更がある（共通化したものだけ意味を持つ）。
+        bool dirty = false;
     };
     std::vector<EventAssetState> events_;
+    std::vector<std::string> eventLibrary_;  // mutex_ の下
     std::vector<std::string> worldEvents_;
     // 計算式アセット（mutex_ の下）。
     struct FormulaAssetState {

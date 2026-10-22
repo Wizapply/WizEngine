@@ -12,21 +12,10 @@
       <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
       <wire from="1" to="2"/>
     </event>
-    <!-- カメラ追従（Camera 1 = target="1"）: 「毎フレーム」から 3 つのカメラの
-         アクションへ繋いだもの。注視点を車へ・車の後ろへ回る・距離と仰角。
-         車体に付けたアセットなので other="-1" = 付けた相手 = この車。要らない
-         項目はワイヤーを外せばマウス操作に戻る（例: 後ろへ回るを外すと、注視
-         点だけ車に付いて回り込みは自由）。止めると元の視点へ戻る。Camera 1 の
-         ページ（または Scene タブの目アイコン）で見る。 -->
-    <event name="follow_car">
-      <node id="1" type="onUpdate" pos="40 60"/>
-      <node id="2" type="cameraLookAt" pos="300 20" target="1" other="-1" height="0.8"/>
-      <node id="3" type="cameraBehind" pos="300 130" target="1" other="-1" smooth="0.35"/>
-      <node id="4" type="cameraOrbit" pos="300 250" target="1" distance="9" elevation="14"/>
-      <wire from="1" to="2"/>
-      <wire from="1" to="3"/>
-      <wire from="1" to="4"/>
-    </event>
+    <!-- カメラ追従（Camera 1）: 共通イベント（イベントライブラリ）の
+         assets/events/follow_car.xml を参照する（中身はそのファイル。terrain.xml
+         と共用）。下の車体に付けてある。 -->
+    <event name="follow_car" file="events/follow_car.xml"/>
     <!-- 計算式アセット（🧮）: タイヤの「スリップ → 力」。組み込みの Magic
          Formula + 摩擦楕円 + 上限 + 緩和長をそのままノードで組んだもの
          （vehicle_test - -dump-formula の出力）。<tire formula="tire_mf"/> で

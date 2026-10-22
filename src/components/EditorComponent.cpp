@@ -444,6 +444,31 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         EditorState::Op op;
         op.kind = what;
         op.args = {{"name", name}};
+        // event.add の shared = 共通化して作る（イベントライブラリへ）。
+        if (msg.contains("shared") && msg["shared"].is_boolean()) {
+            op.args["shared"] = msg["shared"].get<bool>();
+        }
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // イベントライブラリ（共通化したイベント。assets/events/<名前>.xml）:
+    // share = 今のシーンのイベントを共通化、unshare = このシーン専用に戻す、
+    // import = ライブラリから読み込む、libdelete = ライブラリのファイルを
+    // ごみ箱へ、refresh = 一覧の取り直し（ブラウザのタブに戻ったとき）。
+    if (what == "event.share" || what == "event.unshare" || what == "event.import" ||
+        what == "event.libdelete" || what == "event.refresh") {
+        EditorState::Op op;
+        op.kind = what;
+        if (what != "event.refresh") {
+            const std::string name = ed::sanitizeEventName(ed::jsonString(msg, "name", ""));
+            if (name.empty()) return true;
+            op.args["name"] = name;
+        }
+        if (msg.contains("overwrite") && msg["overwrite"].is_boolean()) {
+            op.args["overwrite"] = msg["overwrite"].get<bool>();
+        }
         op.camera = camIndex;
         state.push(std::move(op));
         return true;

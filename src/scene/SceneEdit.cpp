@@ -3,6 +3,8 @@
 // プレハブ部品の移動。ブラウザからの入口は EditorComponent → EditorState。
 #include "scene/SceneInternal.h"
 
+#include <filesystem>
+
 using namespace chrono;
 using namespace scene_detail;
 
@@ -854,13 +856,45 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     if (op.kind == "event.add") {
         const std::string name = a.value("name", "");
         if (name.empty()) return;
+        // shared = 共通化して作る（イベントライブラリへ空のファイルを書く）。
+        // ライブラリに同じ名前があれば作らない（読み込むならそのタイルから）。
+        const bool shared = a.contains("shared") && a["shared"].is_boolean() &&
+                            a["shared"].get<bool>();
+        const std::string file = shared ? EditorState::eventLibraryFile(name) : std::string();
+        if (shared) {
+            std::error_code ec;
+            if (std::filesystem::exists(wizengine::assetPath(file), ec)) {
+                editor_.setStatus("ライブラリに同じ名前のイベント " + name +
+                                  " があります（読み込むならアセットパネルのタイルから）");
+                return;
+            }
+        }
         if (!editor_.addEventAsset(name)) {
             editor_.setStatus("同じ名前のイベントがあります: " + name);
+            return;
+        }
+        if (shared) {
+            ed::EventAssetDesc asset;
+            asset.name = name;
+            asset.file = file;
+            std::string reason;
+            if (!writeSharedEvent(asset, reason)) {
+                // ファイルを書けなければこのシーン専用のまま作っておく。
+                LOGW("editor", "event add '%s': %s", name.c_str(), reason.c_str());
+                editor_.setStatus("イベントを作成: " + name +
+                                  "（ライブラリへ書けないのでこのシーン専用）");
+                return;
+            }
+            editor_.setEventAssetFile(name, file);
+            editor_.refreshEventLibrary();
+            editor_.setStatus("共通イベントを作成: " + name + "（" + file + "）");
             return;
         }
         editor_.setStatus("イベントを作成: " + name);
         return;
     }
+
+    if (applySharedEventOp(op)) return;
 
     if (op.kind == "event.remove") {
         const std::string name = a.value("name", "");
@@ -1546,12 +1580,24 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         }
         ed::SceneDocument doc = document();
         doc.model = name;  // <wizengine model="..."> に出る名前
+        // 共通化したイベントのうち変更のあるものをライブラリへ（テレインと同じく
+        // XML より先 = 書けなければ XML も書かない）。
+        std::string eventsWritten;
+        if (!saveSharedEvents(doc, eventsWritten, reason)) {
+            LOGW("editor", "save '%s': shared event not written: %s", name.c_str(),
+                 reason.c_str());
+            editor_.setStatus("保存できません（共通イベントのファイルを書けません）: " + reason);
+            return;
+        }
         if (EditorState::writeText(path, ed::toXmlText(doc), reason)) {
             editor_.setSceneFile(name);
             editor_.setStatus("保存しました: " + name + ".xml" +
                               (terrainWritten.empty()
                                    ? std::string()
-                                   : "（テレイン " + terrainWritten + " を書きました）"));
+                                   : "（テレイン " + terrainWritten + " を書きました）") +
+                              (eventsWritten.empty()
+                                   ? std::string()
+                                   : "（共通イベント " + eventsWritten + " を書きました）"));
         } else {
             editor_.setStatus("保存できません: " + reason);
         }

@@ -1021,6 +1021,12 @@ struct EventAssetDesc {
     std::string name;
     std::vector<NodeDesc> nodes;
     std::vector<WireDesc> wires;
+    // 共通化したイベント（イベントライブラリ）のファイル。assets/ からの相対
+    // パス（ふつうは "events/<名前>.xml"）。空 = このシーン専用（中身は
+    // シーンの XML に埋め込む）。共通化したものはシーンの XML には参照
+    // （<event name file/>）だけを書き、中身はそのファイルが持つ = 同じ
+    // ファイルを参照する全シーンで同じスクリプトになる。
+    std::string file;
 };
 
 // アセット名の正規化（英数字と _ - だけ・64 文字まで）。空になったら不正な
@@ -1603,6 +1609,7 @@ inline nlohmann::json toJson(const WireDesc& w) {
 inline nlohmann::json toJson(const EventAssetDesc& a) {
     nlohmann::json j;
     j["name"] = a.name;
+    j["file"] = a.file;  // 空 = このシーン専用
     j["nodes"] = nlohmann::json::array();
     for (const auto& n : a.nodes) j["nodes"].push_back(toJson(n));
     j["wires"] = nlohmann::json::array();

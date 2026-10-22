@@ -2,7 +2,10 @@
 // すべて PHYSICS スレッド。グラフ本体は EditorState、ここは実行するだけ。
 #include "scene/SceneInternal.h"
 
+#include "core/Trash.h"
+
 #include <chrono>
+#include <filesystem>
 
 using namespace chrono;
 using namespace scene_detail;
@@ -706,4 +709,202 @@ void Scene::pruneGraphForRemoved(ed::NodeTargetKind kind, int index) {
             }
         }
     }
+}
+
+// ---- イベントライブラリ（共通化したイベント）--------------------------------
+// 中身は assets/events/<名前>.xml。シーンの XML は <event name file/> の参照だけを
+// 書き、読込で中身をここから入れる（loadDocument）。編集は今のシーンの中で
+// 行い、シーンの保存で変更のあるものだけファイルへ書く（.terrain と同じ流儀）。
+// 同じファイルを参照する全シーンが同じスクリプトになる。
+
+bool Scene::readSharedEvent(ed::EventAssetDesc& asset, std::string& reason) {
+    asset.nodes.clear();
+    asset.wires.clear();
+    if (asset.file.empty() || !ed::assetFileAllowed(asset.file)) {
+        reason = "'" + asset.file + "' is not an assets-relative path";
+        return false;
+    }
+    std::string text;
+    if (!EditorState::readText(wizengine::assetPath(asset.file), text, reason)) return false;
+    ed::EventAssetDesc got;
+    std::string error;
+    std::vector<std::string> warnings;
+    if (!ed::parseEventAssetXml(text, got, error, &warnings)) {
+        reason = asset.file + ": " + error;
+        return false;
+    }
+    for (const auto& w : warnings) LOGW("scene", "event file '%s': %s", asset.file.c_str(), w.c_str());
+    if (!got.name.empty() && got.name != asset.name) {
+        // 参照名はシーンの側が正（付け先がこの名前で指している）。
+        LOGW("scene", "event file '%s' is named '%s' - using it as '%s'", asset.file.c_str(),
+             got.name.c_str(), asset.name.c_str());
+    }
+    asset.nodes = std::move(got.nodes);
+    asset.wires = std::move(got.wires);
+    return true;
+}
+
+bool Scene::writeSharedEvent(const ed::EventAssetDesc& asset, std::string& reason) {
+    if (asset.file.empty() || !ed::assetFileAllowed(asset.file)) {
+        reason = "'" + asset.file + "' is not an assets-relative path";
+        return false;
+    }
+    return EditorState::writeText(wizengine::assetPath(asset.file),
+                                  ed::eventAssetToXmlText(asset), reason);
+}
+
+bool Scene::saveSharedEvents(const ed::SceneDocument& doc, std::string& written,
+                             std::string& reason) {
+    written.clear();
+    bool any = false;
+    for (const auto& a : doc.eventAssets) {
+        if (a.file.empty() || !editor_.eventAssetDirty(a.name)) continue;
+        // 文書の側（保存で番号を詰めた後）の中身を書く = シーンの XML と同じ番号。
+        if (!writeSharedEvent(a, reason)) return false;
+        editor_.clearEventAssetDirty(a.name);
+        written += (written.empty() ? "" : " ") + a.name;
+        any = true;
+    }
+    if (any) editor_.refreshEventLibrary();
+    return true;
+}
+
+namespace {
+// 番号で対象を指すノード（オブジェクト / ライト / ジョイント）があるか。
+// 共通化すると、他のシーンでは同じ番号が別の物を指す。
+bool hasNumberedTargets(const ed::EventAssetDesc& a) {
+    for (const auto& n : a.nodes) {
+        const ed::NodeTargetKind tk = ed::nodeTargetKind(n.kind);
+        if ((tk == ed::NodeTargetKind::Object || tk == ed::NodeTargetKind::Light ||
+             tk == ed::NodeTargetKind::Joint) &&
+            n.target >= 0) {
+            return true;
+        }
+        if (ed::nodeOtherIsObject(n.kind) && n.other >= 0) return true;
+    }
+    return false;
+}
+// a.value(key) が true か（型違いは false）。
+bool argTrue(const nlohmann::json& a, const char* key) {
+    const auto it = a.find(key);
+    return it != a.end() && it->is_boolean() && it->get<bool>();
+}
+}  // namespace
+
+bool Scene::applySharedEventOp(const EditorState::Op& op) {
+    const nlohmann::json& a = op.args;
+    const std::string name = ed::sanitizeEventName(ed::jsonString(a, "name", ""));
+    const auto findAsset = [this](const std::string& n, ed::EventAssetDesc& out) {
+        for (const auto& e : editor_.eventAssets()) {
+            if (e.name == n) {
+                out = e;
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto libraryHas = [](const std::string& file) {
+        std::error_code ec;
+        return std::filesystem::exists(wizengine::assetPath(file), ec);
+    };
+
+    if (op.kind == "event.refresh") {
+        editor_.refreshEventLibrary();  // ブラウザのタブに戻ったとき。ステータスは変えない
+        return true;
+    }
+
+    // 共通化: 今のシーンのイベントをライブラリへ書き、以後は参照にする。
+    if (op.kind == "event.share") {
+        ed::EventAssetDesc asset;
+        if (name.empty() || !findAsset(name, asset)) return true;
+        if (!asset.file.empty()) {
+            editor_.setStatus("イベント " + name + " は共通化済みです");
+            return true;
+        }
+        asset.file = EditorState::eventLibraryFile(name);
+        // 同じ名前がライブラリにあれば、上書きの確認（overwrite）が付いたときだけ。
+        if (libraryHas(asset.file) && !argTrue(a, "overwrite")) {
+            editor_.setStatus("ライブラリに同じ名前のイベント " + name +
+                              " があります（もう一度選ぶと上書きを確認します）");
+            return true;
+        }
+        std::string reason;
+        if (!writeSharedEvent(asset, reason)) {
+            LOGW("scene", "event share '%s': %s", name.c_str(), reason.c_str());
+            editor_.setStatus("イベントを共通化できません（コンソール参照）");
+            return true;
+        }
+        editor_.setEventAssetFile(name, asset.file);
+        editor_.refreshEventLibrary();
+        editor_.setStatus("イベント " + name + " を共通化しました（" + asset.file + "）" +
+                          (hasNumberedTargets(asset)
+                               ? "。番号で対象を指すノードは、他のシーンでは別の物を指します"
+                               : std::string()));
+        return true;
+    }
+
+    // このシーン専用に戻す: 中身はそのまま、次の保存でシーンの XML に埋まる。
+    // ライブラリのファイルは消さない（他のシーンが使っているかもしれない）。
+    if (op.kind == "event.unshare") {
+        ed::EventAssetDesc asset;
+        if (name.empty() || !findAsset(name, asset) || asset.file.empty()) return true;
+        editor_.setEventAssetFile(name, "");
+        editor_.setStatus("イベント " + name +
+                          " をこのシーン専用にしました（保存でシーンに埋め込みます。"
+                          "ライブラリのファイルは残ります）");
+        return true;
+    }
+
+    // ライブラリのイベントを今のシーンへ読み込む（共通化したまま = 参照）。
+    if (op.kind == "event.import") {
+        if (name.empty()) return true;
+        ed::EventAssetDesc existing;
+        if (findAsset(name, existing)) {
+            editor_.setStatus("このシーンには既にイベント " + name + " があります");
+            return true;
+        }
+        ed::EventAssetDesc asset;
+        asset.name = name;
+        asset.file = EditorState::eventLibraryFile(name);
+        std::string reason;
+        if (!readSharedEvent(asset, reason)) {
+            LOGW("scene", "event import '%s': %s", name.c_str(), reason.c_str());
+            editor_.setStatus("イベント " + name + " を読み込めません（コンソール参照）");
+            editor_.refreshEventLibrary();
+            return true;
+        }
+        editor_.addEventAsset(std::move(asset));
+        editor_.setStatus("イベント " + name + " をライブラリから読み込みました（付けると動きます）");
+        return true;
+    }
+
+    // ライブラリのファイルをごみ箱へ。今のシーンが参照しているものは消さない
+    // （参照が宙に浮く）。他のシーンが使っているかは分からないので、それは
+    // 読込時の「読めません」で分かる（ファイルを戻せば直る）。
+    if (op.kind == "event.libdelete") {
+        if (editor_.mode() == ed::AppMode::Simulate) {
+            editor_.setStatus("ライブラリからの削除はエディタモードでだけできます");
+            return true;
+        }
+        const std::string file = EditorState::eventLibraryFile(name);
+        if (file.empty()) return true;
+        for (const auto& e : editor_.eventAssets()) {
+            if (e.file == file) {
+                editor_.setStatus("このシーンが使っているイベントは削除できません（専用にするか"
+                                  "外してから）");
+                return true;
+            }
+        }
+        std::string reason;
+        if (!wizengine::moveToTrash(std::filesystem::path(wizengine::assetPath(file)), reason)) {
+            LOGW("scene", "event library delete '%s': %s", name.c_str(), reason.c_str());
+            editor_.setStatus("イベント " + name + " をごみ箱へ移せません（コンソール参照）");
+        } else {
+            LOGI("scene", "event '%s' moved to the trash", name.c_str());
+            editor_.setStatus("ライブラリのイベント " + name + " をごみ箱へ移しました");
+        }
+        editor_.refreshEventLibrary();
+        return true;
+    }
+    return false;
 }

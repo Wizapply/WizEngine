@@ -401,6 +401,7 @@ void Scene::build() {
     }
     editor_.setMode(kStartMode);
     editor_.refreshSceneFiles();
+    editor_.refreshEventLibrary();
     // テレインの一覧（アセットパネルのタイル）。起動シーンが読めなかった・
     // テレインを持たないときも一覧は要るので、読込とは別に 1 回取る。
     refreshTerrainFiles();
