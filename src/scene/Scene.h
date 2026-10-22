@@ -512,7 +512,7 @@ private:
     // 同じく .terrain との関係（terrainFile_）: そのまま / 書くべき変更がある /
     // ファイルと一致している / ファイルが見つからない / ファイルが読めない
     // （壊れている・形が範囲外など）。Keep は引数専用（terrainFile_ には入らない）。
-    // Missing / Unreadable は field = nullptr と一緒に渡す（Unity の Missing と同じ:
+    // Missing / Unreadable は field = nullptr と一緒に渡す（Missing:
     // 文書上はテレインがあるが格子は無い = 描画も当たり判定もしない・編集できない・
     // 保存でファイルを作らない・XML には名前と背番号を残す）。
     enum class TerrainFileState { Keep, Dirty, Saved, Missing, Unreadable };
@@ -573,7 +573,7 @@ private:
     // 新形式の <terrain>（doc）を解決 → 読む → publish する（setTerrainFromDocument
     // から）。一覧を取り直してから desc.data / guid を assets/terrains/ で解決し、
     // 読めれば読んだ形（data / guid / size / resolution / height）で Saved として
-    // 出す。読めなければ Unity の Missing と同じ = 文書の desc をそのまま（XML の
+    // 出す。読めなければ Missing = 文書の desc をそのまま（XML の
     // data / guid を保つ）格子無しで出す:
     //   * ファイルが決まらない → Missing
     //   * ファイルはあるが使えない（readTerrainFile が断る）→ Unreadable

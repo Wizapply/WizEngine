@@ -635,17 +635,16 @@ struct EnvironmentDesc {
 };
 
 // ---- テレイン（シーン文書の <worldbody> の <terrain/>）-----------------------
-// Unity の Terrain に当たる起伏のある地面。シーンに 1 つで、節を書かない文書は
+// 起伏のある地面。シーンに 1 つで、節を書かない文書は
 // テレイン無し（SceneDocument::hasTerrain = false）。高さ格子そのものは
-// 文書に持たず、Unity の TerrainData と同じく 1 ファイル
+// 文書に持たず、1 ファイル
 // assets/terrains/<data>.terrain（src/terrain/TerrainFile）が持つ。文書が
 // 持つのはそのファイルの名前（data）と背番号（guid）・置き場所・表面だけ。
 // このヘッダは src/terrain を include しない（文書の型は Chrono / Filament /
 // 実装のどれにも依存しない）。
 //
 // **size は全幅**（1 辺の長さ）。<ground size> の半寸法（MuJoCo 流）とは
-// 違うので注意 - テレインは Unity の Terrain Width / Length と同じ数え方に
-// 合わせた。pos は X / Z が中心、**Y が最低点**（起伏は pos.y から
+// 違うので注意 - テレインは 1 辺の長さで数える。pos は X / Z が中心、**Y が最低点**（起伏は pos.y から
 // pos.y + height の間に収まる）。
 // 整数の属性の上限（JSON・XML の読み込みと clampTerrain が共通で使う）。
 constexpr int kTerrainMaxResolution = 1024;

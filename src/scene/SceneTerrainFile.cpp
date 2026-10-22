@@ -151,7 +151,7 @@ void Scene::loadTerrainField(const ed::TerrainDesc& doc) {
                       "the file is back",
              doc.data.c_str(), doc.guid.c_str());
     }
-    // Unity の Missing と同じ: 文書の名前と背番号をそのまま覚えて（次の保存の XML に
+    // Missing: 文書の名前と背番号をそのまま覚えて（次の保存の XML に
     // 残る = ファイルを戻せば元に戻る）、格子無しで出す。注意の文は publish の後に
     // 状態から作る（/scene の terrainMissing と同じ口 = 名前が食い違わない）。
     publishTerrainField(doc, nullptr, TerrainHistory::Clear, missing);

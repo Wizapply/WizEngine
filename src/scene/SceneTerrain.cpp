@@ -32,7 +32,7 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
     // 読むだけならロックは要らない（地面と同じ約束）。
     const bool had = hasTerrain_;
     const bool on = field != nullptr;
-    // 文書上はある・格子は無い（Unity の Missing）。描画・当たり判定は格子 null の
+    // 文書上はある・格子は無い（Missing）。描画・当たり判定は格子 null の
     // ときの処理のまま（外す）。Keep で格子無しが来たときは今の Missing を保つ
     // （黙って「テレイン無し」に落とさない）。
     const bool missing =

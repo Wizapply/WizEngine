@@ -57,7 +57,7 @@
 //       <ground size="10" visual="8" texture="textures/ground.png" tile="2"/>
 //       <terrain data="hills" guid="(32 桁の hex)" pos="0 0 0"
 //                texture="" tile="2" rgba="..." roughness="0.9" metallic="0"/>
-//                                    ... 起伏のある地面（Unity の Terrain。
+//                                    ... 起伏のある地面（
 //                                        EditorTypes.h の TerrainDesc）。
 //                                        高さ格子と size / resolution / height は
 //                                        assets/terrains/<data>.terrain が持つ
@@ -117,7 +117,7 @@
 //     語彙）。ground の size / visual は半分の広さ（物理の床と見える地面）、
 //     texture / hdr は assets/ 相対パス。節を書かない文書は既定値で開く。
 //   * <terrain> も worldbody 直下の単一要素（WizEngine の語彙）。中身
-//     （高さ格子・大きさ）は Unity の TerrainData と同じく別ファイル
+//     （高さ格子・大きさ）は別ファイル
 //     assets/terrains/<data>.terrain で、文書はその名前（data）と背番号
 //     （guid）・pos（X / Z が中心・Y が最低点）・表面だけを持つ。節を
 //     書かない文書はテレイン無し（hasTerrain = false）で、書き出しにも
