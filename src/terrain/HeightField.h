@@ -195,6 +195,12 @@ public:
     // （切り上げ）。resolution が割り切れないときは、最後の列 / 行のチャンクが
     // 一部だけ埋まる（buildChunkMesh 参照）。
     int chunksPerSide(int quadsPerChunk) const;
+    // セルの矩形 cells（TerrainEdit の rect と同じセル単位）を書き換えたとき、
+    // 作り直しが要るチャンクの矩形（チャンク単位、0〜chunksPerSide に切り詰め
+    // 済み）。頂点法線は隣のサンプルを見るので、書き換えた角のサンプルの ±1 を
+    // 含むチャンク（継ぎ目の頂点は両側のチャンクが持つ）を全部入れる。cells が
+    // 空・空の格子・quadsPerChunk < 1 なら空。HeightFieldOps.cpp。
+    GridRect chunksTouched(const GridRect& cells, int quadsPerChunk) const;
 
     // チャンク (cx, cz) のメッシュを out に書く（配列は作り直す）。
     // チャンクが格子の外にはみ出す部分（resolution が quadsPerChunk で
