@@ -2,7 +2,8 @@
 // （publishTerrainField）と形の変更（reshapeTerrain）、格子の書き換え（コピー
 // オンライトの editTerrainField = ノイズ生成・取り消し）、自前の接触（当たり判定）の
 // 張り直し、描画のチャンクへの同期。
-// 入口（ブラウザの edit.terrain・シーン文書・保存）は SceneTerrainEdit.cpp。
+// 入口はブラウザの edit.terrain が SceneTerrainEdit.cpp、シーン文書・保存が
+// SceneTerrainFile.cpp。
 // dirty の取り出し（ロックの枠組み）は applyToRenderer（Scene.cpp）が持つ。
 #include "scene/SceneInternal.h"
 

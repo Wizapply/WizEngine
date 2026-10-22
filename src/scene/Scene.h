@@ -48,8 +48,9 @@ struct TerrainResolution;
 // implementation is split by concern: Scene.cpp (build / step / render sync),
 // SceneEdit.cpp (editor ops), SceneEvents.cpp (grab + event graphs),
 // SceneSerialize.cpp (document + browser JSON), SceneTerrain.cpp (terrain
-// grid / collision / render sync) and SceneTerrainEdit.cpp (terrain ops and
-// .terrain file I/O); SceneInternal.h is shared.
+// grid / collision / render sync), SceneTerrainFile.cpp (terrain <-> document,
+// .terrain files and browser JSON) and SceneTerrainEdit.cpp (edit.terrain
+// ops); SceneInternal.h is shared.
 //
 // ---- 2つのモード ----------------------------------------------------------
 // エディタモードは物理を進めない。オブジェクトを置き、大きさや質量を決め、
@@ -544,7 +545,7 @@ private:
     // 最後の編集を 1 段取り消す（結果はステータス）。
     void undoTerrain();
 
-    // ---- テレインの出入り（SceneTerrainEdit.cpp、すべて PHYSICS thread）-------
+    // ---- テレインの出入り（SceneTerrainFile.cpp、すべて PHYSICS thread）-------
     // 文書の <terrain> から今のテレインを作る（loadDocument から）。
     // keepSameTerrain かつ同じテレイン（sameTerrainIdentity）なら格子を保って
     // pos と表面だけ取る、旧形式ならノイズで一度生成、新形式なら .terrain を
@@ -561,6 +562,18 @@ private:
     // 注意は terrainLoadCaveat_ に、理由（英語）は res.warnings に入れる。
     std::shared_ptr<const wizengine::terrain::HeightField> loadTerrainField(
         wizengine::editor::TerrainDesc& desc, wizengine::terrain::TerrainResolution& res);
+    // name のファイルを読み、使えるなら desc.position に置いた格子を返して、desc の
+    // data / guid / size / resolution / height を読んだ値で埋める（位置と表面は
+    // そのまま）。**使えないファイル**は null と英語の reason（desc は触らない）:
+    //   * 読めない（壊れている・形式が違う）
+    //   * 背番号が全部 0（背番号での解決と食い違う）
+    //   * 形が clampTerrain を通すと変わる（解像度 2048・size 5000 など。エディタの
+    //     範囲で丸めて使うと、保存で共有ファイルが黙って劣化する）
+    // 範囲の定義は clampTerrain の 1 か所で、ここは「通すと変わるか」を比べるだけ。
+    // loadTerrainField と openTerrain が使う。
+    std::shared_ptr<const wizengine::terrain::HeightField> readTerrainFile(
+        const std::string& name, wizengine::editor::TerrainDesc& desc,
+        std::string& reason) const;
     // name が今のテレインの名前か（テレインがあり、大文字・小文字を問わず一致）。
     // 未保存でファイルが無いテレインも含む。「今のテレインか」の唯一の判定。
     bool isCurrentTerrain(const std::string& name) const;
@@ -581,6 +594,19 @@ private:
     std::string publishNewTerrain(wizengine::editor::TerrainDesc desc,
                            std::shared_ptr<const wizengine::terrain::HeightField> field,
                            const std::string& base);
+    // 保存（"save" の document() の前）。テレインがあり、dirty かファイルが
+    // 無いときだけ書く。名前が無ければ sceneName から採る。書いた名前を
+    // written に（書かなければ空）。失敗なら false と英語の reason。
+    bool saveTerrainData(const std::string& sceneName, std::string& written,
+                         std::string& reason);
+    // /scene のテレイン部分（hasTerrain / terrain / terrainDirty / terrainFiles）。
+    // hierarchyJson（objectsMutex_ を持った HTTP スレッド）から呼ぶ。
+    nlohmann::json terrainJson() const;
+    // assets/terrains/ を走査し直す（警告は LOGW）。
+    void refreshTerrainFiles();
+
+    // ---- edit.terrain の受け口（SceneTerrainEdit.cpp、すべて PHYSICS thread）--
+    // 入口の applyTerrainOp / applyTerrainFileOp は「エディタの実装」の節。
     // 新規（平ら・既定の大きさ・今の位置と表面）。名前は base（空ならシーン名）から。
     void newTerrain(const std::string& base);
     // 名前のファイルに差し替える（名前は一覧の綴り）。一覧に無い・使えない
@@ -593,16 +619,6 @@ private:
     // ファイルを OS のごみ箱へ移す（TerrainLibrary::remove）。エディタモードだけ。
     // 今のテレイン（未保存でファイルが無くても）は消さない。
     void deleteTerrain(const std::string& name);
-    // 保存（"save" の document() の前）。テレインがあり、dirty かファイルが
-    // 無いときだけ書く。名前が無ければ sceneName から採る。書いた名前を
-    // written に（書かなければ空）。失敗なら false と英語の reason。
-    bool saveTerrainData(const std::string& sceneName, std::string& written,
-                         std::string& reason);
-    // /scene のテレイン部分（hasTerrain / terrain / terrainDirty / terrainFiles）。
-    // hierarchyJson（objectsMutex_ を持った HTTP スレッド）から呼ぶ。
-    nlohmann::json terrainJson() const;
-    // assets/terrains/ を走査し直す（警告は LOGW）。
-    void refreshTerrainFiles();
 
     // テレインの当たり判定（自前の接触。PhysicsWorld::setTerrain）を今の高さ
     // 格子で張り直す。テレインが無ければ接触を止めるだけ（ゴーストは
