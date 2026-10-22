@@ -12,6 +12,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/Guid.h"
+#include "core/Hex.h"
+#include "core/SafeName.h"
 #include "vehicle/VehicleTypes.h"
 
 // エディタモードが編集する「シーン文書」の型。
@@ -632,36 +635,52 @@ struct EnvironmentDesc {
 };
 
 // ---- テレイン（シーン文書の <worldbody> の <terrain/>）-----------------------
-// Unity の Terrain に当たる起伏のある地面。シーンに 1 つで、節を書かない文書は
-// テレイン無し（SceneDocument::hasTerrain = false）。高さはここに持たず、
-// パラメータ（ノイズの種・オクターブ等）から決定的に作る。実体の高さ格子は
-// src/terrain/HeightField（Scene が TerrainParams へ詰め替える）で、既定値は
-// その TerrainParams と揃えてある。このヘッダは src/terrain を include しない
-// （文書の型は Chrono / Filament / 実装のどれにも依存しない）。
+// 起伏のある地面。シーンに 1 つで、節を書かない文書は
+// テレイン無し（SceneDocument::hasTerrain = false）。高さ格子そのものは
+// 文書に持たず、1 ファイル
+// assets/terrains/<data>.terrain（src/terrain/TerrainFile）が持つ。文書が
+// 持つのはそのファイルの名前（data）と背番号（guid）・置き場所・表面だけ。
+// このヘッダは src/terrain を include しない（文書の型は Chrono / Filament /
+// 実装のどれにも依存しない）。
 //
 // **size は全幅**（1 辺の長さ）。<ground size> の半寸法（MuJoCo 流）とは
-// 違うので注意 - テレインは Unity の Terrain Width / Length と同じ数え方に
-// 合わせた。pos は X / Z が中心、**Y が最低点**（起伏は pos.y から
+// 違うので注意 - テレインは 1 辺の長さで数える。pos は X / Z が中心、**Y が最低点**（起伏は pos.y から
 // pos.y + height の間に収まる）。
 // 整数の属性の上限（JSON・XML の読み込みと clampTerrain が共通で使う）。
 constexpr int kTerrainMaxResolution = 1024;
+// 高さの上限の下限 (m)。0 にすると起伏が潰れて戻らず（比例伸縮の倍率が無限大）、
+// .terrain にも書けない（TerrainFile は正の高さだけを受ける）ので、0 より上に保つ。
+constexpr double kTerrainMinHeight = 0.1;
 constexpr int kTerrainMaxOctaves = 16;
 struct TerrainDesc {
+    // テレイン名（assets/terrains/<data>.terrain）と背番号（32 桁の小文字 hex、
+    // 空 = 無し）。どちらも XML の属性で、ブラウザの部分更新（terrainFromJson）
+    // では変えない（名前の変更・開くは専用の口）。
+    std::string data;
+    std::string guid;
+    Vec3d position{0.0, 0.0, 0.0};  // X / Z = 中心、Y = 最低点 (m)
+    // **実行時だけの値**（XML には書かない = .terrain ファイルだけが持つ）。
+    // JSON（/scene と edit.terrain）とブラウザの欄のために持つ。
     double size = 200.0;          // 1 辺の長さ (m)。全幅（半寸法ではない）
     int resolution = 256;         // 1 辺のセル（クアッド）数（1〜1024）
-    double height = 20.0;         // 起伏の高さ (m)。最低点〜最高点の差
-    Vec3d position{0.0, 0.0, 0.0};  // X / Z = 中心、Y = 最低点 (m)
-    std::uint32_t seed = 0;       // ノイズの種。同じ種なら同じ地形
-    int octaves = 5;              // fbm の重ね数。0 = 平ら
-    double gain = 0.5;            // オクターブごとの振幅の倍率
-    double lacunarity = 2.0;      // オクターブごとの周波数の倍率
-    double scale = 80.0;          // 最も大きなうねりの波長 (m)
+    double height = 20.0;         // 高さの上限 (m)。起伏は 0〜height
     // 表面。texture は assets/ 相対（空 = 単色 = rgba だけで塗る）。
     std::string texture;
     double tile = 2.0;            // テクスチャ 1 リピートが覆うメートル
     Color3 color{0.35f, 0.45f, 0.25f};  // 単色 / テクスチャに乗す色（リニア）
     double roughness = 0.9;       // 地面と同じつや消しが既定
     double metallic = 0.0;
+};
+
+// ノイズ生成の値（fbm）。テレインの形は持たず、「ノイズで生成」の道具と、
+// 旧形式の <terrain>（data 無し、seed などを属性に持つ文書）の互換読込が使う。
+// 既定値は src/terrain の TerrainParams と揃えてある（octaves 0 = 平ら）。
+struct TerrainNoiseParams {
+    std::uint32_t seed = 0;       // ノイズの種。同じ種なら同じ地形
+    int octaves = 5;              // fbm の重ね数。0 = 平ら
+    double gain = 0.5;            // オクターブごとの振幅の倍率
+    double lacunarity = 2.0;      // オクターブごとの周波数の倍率
+    double scale = 80.0;          // 最も大きなうねりの波長 (m)
 };
 
 // ---- 描画品質（シーン文書の <visual>）---------------------------------------
@@ -990,16 +1009,10 @@ struct EventAssetDesc {
 
 // アセット名の正規化（英数字と _ - だけ・64 文字まで）。空になったら不正な
 // 名前（呼び出し側で弾く）。シーン名（EditorState::sanitizeSceneName）と
-// 同じ規則だが、あちらはファイル名、こちらは文書内の参照名。
+// 同じ規則だが、あちらはファイル名、こちらは文書内の参照名。規則の本体は
+// core/SafeName.h。
 inline std::string sanitizeEventName(const std::string& name) {
-    std::string out;
-    for (const char c : name) {
-        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9') || c == '_' || c == '-';
-        if (ok) out.push_back(c);
-        if (out.size() >= 64) break;
-    }
-    return out;
+    return sanitizeSafeName(name);
 }
 
 // 付け先。オブジェクト番号か、ワールド（シーン全体）。ワールドに付けた
@@ -1155,6 +1168,13 @@ inline int jsonInt(const nlohmann::json& j, const char* key, int fallback) {
     return (it != j.end() && it->is_number()) ? int(it->get<double>())
                                               : fallback;
 }
+// 文字列版（型が違えば fallback。nlohmann の value() のように投げない）。
+inline std::string jsonString(const nlohmann::json& j, const char* key,
+                              const std::string& fallback) {
+    if (!j.is_object()) return fallback;
+    const auto it = j.find(key);
+    return (it != j.end() && it->is_string()) ? it->get<std::string>() : fallback;
+}
 // 文字列の配列（イベントアセット名の一覧）。文字列以外の要素は捨てる
 // - /input は誰でも叩けるので、型を信じない、の同じ流儀。
 inline std::vector<std::string> stringList(const nlohmann::json& j) {
@@ -1191,15 +1211,9 @@ inline std::string colorToHex(const Color3& c) {
 }
 inline Color3 colorFromHex(const std::string& hex, const Color3& fallback) {
     if (hex.size() != 7 || hex[0] != '#') return fallback;
-    auto nib = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        return -1;
-    };
     int v[6];
     for (int i = 0; i < 6; ++i) {
-        v[i] = nib(hex[std::size_t(i) + 1]);
+        v[i] = hexDigitValue(hex[std::size_t(i) + 1]);  // core/Hex.h
         if (v[i] < 0) return fallback;
     }
     Color3 c;
@@ -1830,19 +1844,17 @@ inline EnvironmentDesc environmentFromJson(const nlohmann::json& j,
     return e;
 }
 
-// テレイン。キーは XML の属性名と同じ（size = 全幅、pos = {x,y,z} で y は
-// 最低点）。色だけは地面と同じく "color"（"#rrggbb"）。
+// テレイン。キーは XML の属性名と同じ（pos = {x,y,z} で y は最低点）に、
+// 実行時だけの size（全幅）/ resolution / height を足したもの。色だけは
+// 地面と同じく "color"（"#rrggbb"）。
 inline nlohmann::json toJson(const TerrainDesc& t) {
     nlohmann::json j;
+    j["data"] = t.data;
+    j["guid"] = t.guid;
     j["size"] = t.size;
     j["resolution"] = t.resolution;
     j["height"] = t.height;
     j["pos"] = toJson(t.position);
-    j["seed"] = t.seed;
-    j["octaves"] = t.octaves;
-    j["gain"] = t.gain;
-    j["lacunarity"] = t.lacunarity;
-    j["scale"] = t.scale;
     j["texture"] = t.texture;
     j["tile"] = t.tile;
     j["color"] = colorToHex(t.color);
@@ -1863,6 +1875,8 @@ inline long long roundedInteger(double v, long long lo, long long hi,
 
 // 部分更新: 送られたキーだけ base から変える（edit.ground と同じ流儀）。
 // 型違いのキーは無視。範囲の丸めは呼び出し側が clampTerrain で掛ける。
+// data / guid は受けない（名前の変更・開くは別の口 = ここで書き換えると
+// 別のファイルを指してしまう）。
 inline TerrainDesc terrainFromJson(const nlohmann::json& j,
                                    const TerrainDesc& base) {
     TerrainDesc t = base;
@@ -1876,13 +1890,6 @@ inline TerrainDesc terrainFromJson(const nlohmann::json& j,
     if (const auto pit = j.find("pos"); pit != j.end()) {
         t.position = vec3FromJson(*pit, t.position);  // オブジェクト以外は無視
     }
-    t.seed = std::uint32_t(roundedInteger(jsonNumber(j, "seed", double(t.seed)),
-                                          0, 4294967295LL, t.seed));
-    t.octaves = int(roundedInteger(jsonNumber(j, "octaves", t.octaves), 0,
-                                   kTerrainMaxOctaves, t.octaves));
-    t.gain = jsonNumber(j, "gain", t.gain);
-    t.lacunarity = jsonNumber(j, "lacunarity", t.lacunarity);
-    t.scale = jsonNumber(j, "scale", t.scale);
     if (j.contains("texture") && j["texture"].is_string()) {
         // 空 = 単色。パスとして不正なもの（".." 等）は無視して現状維持。
         const std::string s = j["texture"];
@@ -2185,39 +2192,78 @@ inline EnvironmentDesc clampEnvironment(EnvironmentDesc e) {
     return e;
 }
 
-// テレインの常識的な範囲。NaN は既定値へ戻す（XML の strtod は "nan" も
-// 読むので、比較だけの丸めでは素通りしてしまう）。
+// テレインの丸めの部品（clampTerrain / clampTerrainNoise が共通で使う）。
+// NaN は fallback へ戻す（XML の strtod は "nan" も読むので、比較だけの
+// 丸めでは素通りしてしまう）。
+inline double clampTerrainNumber(double v, double lo, double hi, double fallback) {
+    if (!(v == v)) return fallback;
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// ノイズ生成の値の範囲: octaves は 0〜16（HeightField の安全弁と同じ）、
+// gain は 0〜1、lacunarity は 1〜4、scale は 0.1〜10000 m。
+inline TerrainNoiseParams clampTerrainNoise(TerrainNoiseParams n) {
+    const TerrainNoiseParams d;
+    n.octaves = n.octaves < 0 ? 0
+              : (n.octaves > kTerrainMaxOctaves ? kTerrainMaxOctaves : n.octaves);
+    n.gain = clampTerrainNumber(n.gain, 0.0, 1.0, d.gain);
+    n.lacunarity = clampTerrainNumber(n.lacunarity, 1.0, 4.0, d.lacunarity);
+    n.scale = clampTerrainNumber(n.scale, 0.1, 10000.0, d.scale);
+    return n;
+}
+
+// ノイズの値の読み取り（XML の旧形式の互換読込と JSON の「ノイズで生成」の
+// 共通部分）。get(キー, 既定値) が数値を返す口（読めなければ既定値）で、
+// 書いていないキーは base のまま。整数のキーは実数で読んでから範囲を決めて
+// 詰める（"1e20" を int へそのまま変換しない）。最後に clampTerrainNoise。
+template <class GetNumber>
+TerrainNoiseParams terrainNoiseFrom(GetNumber get, TerrainNoiseParams n) {
+    n.seed = std::uint32_t(roundedInteger(get("seed", double(n.seed)), 0,
+                                          4294967295LL, n.seed));
+    n.octaves = int(roundedInteger(get("octaves", double(n.octaves)), 0,
+                                   kTerrainMaxOctaves, n.octaves));
+    n.gain = get("gain", n.gain);
+    n.lacunarity = get("lacunarity", n.lacunarity);
+    n.scale = get("scale", n.scale);
+    return clampTerrainNoise(n);
+}
+
+// edit.terrain の generate（オブジェクト）。送られたキーだけ base から変える。
+// 型違いのキー・オブジェクトでない JSON は base のまま（投げない）。
+inline TerrainNoiseParams terrainNoiseFromJson(const nlohmann::json& j,
+                                               const TerrainNoiseParams& base) {
+    return terrainNoiseFrom(
+        [&j](const char* key, double fallback) { return jsonNumber(j, key, fallback); },
+        base);
+}
+
+// テレインの常識的な範囲。NaN は既定値へ戻す。
+//   * data（テレイン名）は isSafeName（core/SafeName.h、TerrainLibrary と同じ
+//     規則 = assets/terrains の直下の名前だけ）を通らなければ空 = 名前無し。
+//     guid は normalizedGuidHex（core/Guid.h。不正か全部 0 なら空）。
 //   * resolution は 1〜1024（(1024 + 1)^2 頂点 ≒ 105 万。描画の三角形が
 //     200 万を超えると作り直しが重い）。チャンク数の上限との整合は Scene が見る。
 //   * size は 1〜4000 m（描画距離 kFarPlane 2000 m の 2 倍まで）、height は
-//     0〜1000 m、pos は各軸 ±10000 m。
-//   * octaves は 0〜16（HeightField の安全弁と同じ）、gain は 0〜1、
-//     lacunarity は 1〜4、scale は 0.1〜10000 m。
+//     kTerrainMinHeight〜1000 m、pos は各軸 ±10000 m。
 //   * 表面は地面と同じ範囲（tile 0.1〜100 m、roughness 0.02〜1、metallic 0〜1）
 //     で、色は各成分 0〜1。
 inline TerrainDesc clampTerrain(TerrainDesc t) {
     const TerrainDesc d;
-    auto cl = [](double v, double lo, double hi, double fallback) {
-        if (!(v == v)) return fallback;
-        return v < lo ? lo : (v > hi ? hi : v);
-    };
+    const auto cl = clampTerrainNumber;
     auto clf = [](float v, float fallback) {
         if (!(v == v)) return fallback;
         return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
     };
+    if (!t.data.empty() && !isSafeName(t.data)) t.data.clear();
+    t.guid = normalizedGuidHex(t.guid);
     t.size = cl(t.size, 1.0, 4000.0, d.size);
     t.resolution = t.resolution < 1 ? 1
                  : (t.resolution > kTerrainMaxResolution ? kTerrainMaxResolution
                                                          : t.resolution);
-    t.height = cl(t.height, 0.0, 1000.0, d.height);
+    t.height = cl(t.height, kTerrainMinHeight, 1000.0, d.height);
     t.position.x = cl(t.position.x, -10000.0, 10000.0, d.position.x);
     t.position.y = cl(t.position.y, -10000.0, 10000.0, d.position.y);
     t.position.z = cl(t.position.z, -10000.0, 10000.0, d.position.z);
-    t.octaves = t.octaves < 0 ? 0
-              : (t.octaves > kTerrainMaxOctaves ? kTerrainMaxOctaves : t.octaves);
-    t.gain = cl(t.gain, 0.0, 1.0, d.gain);
-    t.lacunarity = cl(t.lacunarity, 1.0, 4.0, d.lacunarity);
-    t.scale = cl(t.scale, 0.1, 10000.0, d.scale);
     if (!t.texture.empty() && !assetFileAllowed(t.texture)) t.texture.clear();
     t.tile = cl(t.tile, 0.1, 100.0, d.tile);
     t.color.r = clf(t.color.r, d.color.r);

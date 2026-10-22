@@ -10,6 +10,9 @@ server reads it from at runtime (everything the program loads lives under
 - `style.css` — all styles
 - `app.js` — all logic (classic script at the end of `<body>`; top-level
   functions must stay global because the inline `onclick=` handlers use them)
+- `terrain.js` — the terrain section of the World panel and the terrain
+  tiles of the asset panel (loaded right after
+  `app.js` and uses its top-level helpers; same classic-script rules)
 
 - `favicon.ico` — browser tab icon. Optional; drop your own file here and
   rebuild so the `webui` copy step picks it up (the whole folder is copied,

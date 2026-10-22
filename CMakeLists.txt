@@ -316,6 +316,7 @@ set(WIZ_CORE_SOURCES
     src/core/CpuAffinity.cpp
     src/core/Log.cpp
     src/core/PortScan.cpp
+    src/core/Trash.cpp
     src/core/Versions.cpp)
 set(WIZ_PHYSICS_SOURCES
     src/physics/MeshCollision.cpp
@@ -349,6 +350,9 @@ set(WIZ_SCENE_SOURCES
     src/scene/SceneEdit.cpp
     src/scene/SceneEvents.cpp
     src/scene/SceneSerialize.cpp
+    src/scene/SceneTerrain.cpp
+    src/scene/SceneTerrainEdit.cpp
+    src/scene/SceneTerrainFile.cpp
     src/scene/SoftLattice.cpp)
 set(WIZ_COMPONENT_SOURCES
     src/components/EditorComponent.cpp
@@ -368,8 +372,12 @@ set(WIZ_VEHICLE_SOURCES
     src/vehicle/WheelController.cpp)
 set(WIZ_TERRAIN_SOURCES
     src/terrain/HeightField.cpp
+    src/terrain/HeightFieldOps.cpp
     src/terrain/TerrainContact.cpp
-    src/terrain/TerrainNoise.cpp)
+    src/terrain/TerrainFile.cpp
+    src/terrain/TerrainLibrary.cpp
+    src/terrain/TerrainNoise.cpp
+    src/terrain/TerrainUndo.cpp)
 
 add_executable(wizengine
     src/main.cpp
@@ -610,7 +618,8 @@ endif()
 if(WIN32)
     # Filament's GL loader (bluegl) calls into Windows OpenGL/GDI; ws2_32 for httplib.
     # shlwapi: utils::Path (pulled in by gltfio) calls PathIsRelative.
-    target_link_libraries(wizengine PRIVATE opengl32 gdi32 user32 ws2_32 shlwapi)
+    # shell32: SHFileOperationW (src/core/Trash.cpp, the recycle bin).
+    target_link_libraries(wizengine PRIVATE opengl32 gdi32 user32 ws2_32 shlwapi shell32)
 endif()
 
 # ---------------------------------------------------------------------------

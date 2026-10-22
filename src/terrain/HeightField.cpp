@@ -101,8 +101,28 @@ bool HeightField::contains(double x, double z) const {
     return valid() && x >= minX_ && x <= maxX() && z >= minZ_ && z <= maxZ();
 }
 
+void HeightField::setHole(int i, int j, bool hole) {
+    if (i < 0 || j < 0 || i >= resolution_ || j >= resolution_) return;
+    if (holes_.empty()) {
+        if (!hole) return;  // 穴が無いまま = 確保しない
+        holes_.assign(std::size_t(resolution_) * std::size_t(resolution_), uint8_t(0));
+    }
+    holes_[std::size_t(j) * std::size_t(resolution_) + std::size_t(i)] = hole ? 1 : 0;
+}
+
+bool HeightField::holeAt(int i, int j) const {
+    if (holes_.empty() || i < 0 || j < 0 || i >= resolution_ || j >= resolution_) return false;
+    return holes_[std::size_t(j) * std::size_t(resolution_) + std::size_t(i)] != 0;
+}
+
+bool HeightField::anyHoles() const {
+    return std::any_of(holes_.begin(), holes_.end(), [](uint8_t h) { return h != 0; });
+}
+
+void HeightField::clearHoles() { holes_.clear(); }
+
 bool HeightField::isSolidCell(int i, int j) const {
-    return i >= 0 && j >= 0 && i < resolution_ && j < resolution_;
+    return i >= 0 && j >= 0 && i < resolution_ && j < resolution_ && !holeAt(i, j);
 }
 
 bool HeightField::solidAt(double x, double z) const {

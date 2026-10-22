@@ -1252,20 +1252,15 @@ xml::Element eventAssetElement(const EventAssetDesc& a) {
 }
 
 // ---- テレイン（<worldbody> の <terrain/>）-----------------------------------
-// 書き出しと読み込みの対。<ground> と同じく全属性を書く（要素そのものが
-// テレインを持つ文書にしか出ないので、既定値の省略で差分を減らす意味が薄い。
-// 書いておけば手で値を変えるときに属性名を探さずに済む）。size は全幅。
+// 書き出しと読み込みの対。書くのは新形式だけ: data（テレイン名）・guid・pos・
+// 表面。size / resolution / height とノイズは .terrain ファイルが持つので
+// 書かない（2 か所に書くと食い違う）。表面は <ground> と同じく全属性を書く
+// （手で値を変えるときに属性名を探さずに済む）。guid は空なら書かない。
 xml::Element terrainElement(const TerrainDesc& t) {
     xml::Element e("terrain");
-    e.setNumber("size", t.size);
-    e.setInt("resolution", t.resolution);
-    e.setNumber("height", t.height);
+    e.set("data", t.data);
+    if (!t.guid.empty()) e.set("guid", t.guid);
     setVec3(e, "pos", t.position);
-    e.setInt("seed", static_cast<long long>(t.seed));
-    e.setInt("octaves", t.octaves);
-    e.setNumber("gain", t.gain);
-    e.setNumber("lacunarity", t.lacunarity);
-    e.setNumber("scale", t.scale);
     e.set("texture", t.texture);
     e.setNumber("tile", t.tile);
     setColor(e, "rgba", t.color);
@@ -1273,24 +1268,72 @@ xml::Element terrainElement(const TerrainDesc& t) {
     e.setNumber("metallic", t.metallic, 4);
     return e;
 }
-// 読み込みは全部既定値付き（無い属性・読めない値 = 既定値）。範囲外の値は
-// clampTerrain が丸める。黙って意味が変わるもの（不正な texture）だけ警告。
-TerrainDesc terrainFromXml(const xml::Element& e, Warn& warn) {
-    TerrainDesc t;
+
+// 旧形式（data の無い <terrain>）だけが持つ属性。
+constexpr const char* kTerrainLegacyAttrs[] = {"size",    "resolution", "height",
+                                               "seed",    "octaves",    "gain",
+                                               "lacunarity", "scale"};
+
+// 書いてある旧形式の属性（空白区切り、無ければ空）。旧形式の hasNoise と、
+// 新形式に混ざったときの警告の文の両方がこれを使う。
+std::string presentLegacyAttrs(const xml::Element& e) {
+    std::string present;
+    for (const char* k : kTerrainLegacyAttrs) {
+        if (e.has(k)) present += std::string(present.empty() ? "" : " ") + k;
+    }
+    return present;
+}
+
+// 旧形式の大きさ（t の実行時の値へ）とノイズ（戻り値）。読み込みは全部既定値
+// 付き。整数の属性は実数で読んでから範囲を決めて詰める（"5000" や "1e20" を
+// int へそのまま変換しない）。大きさの範囲の丸めは呼び出し側の clampTerrain。
+TerrainLegacyDesc terrainLegacyFromXml(const xml::Element& e, TerrainDesc& t) {
+    TerrainLegacyDesc l;
+    l.used = true;
+    l.hasNoise = !presentLegacyAttrs(e).empty();
     t.size = e.number("size", t.size);
-    // 整数の属性は実数で読んでから範囲を決めて詰める（"5000" や "1e20" を
-    // int へそのまま変換しない）。上限の丸めは clampTerrain と同じ値。
     t.resolution = int(roundedInteger(e.number("resolution", t.resolution), 1,
                                       kTerrainMaxResolution, t.resolution));
     t.height = e.number("height", t.height);
+    l.noise = terrainNoiseFrom(
+        [&e](const char* key, double fallback) { return e.number(key, fallback); }, l.noise);
+    return l;
+}
+
+// 読み込みは全部既定値付き（無い属性・読めない値 = 既定値）。範囲外の値は
+// clampTerrain が丸める。黙って意味が変わるもの（不正な data / guid /
+// texture、新形式に混ざった旧属性）だけ警告。
+// **新形式か旧形式かはここ 1 か所で決める**: 検査を通った data が空でなければ
+// 新形式、それ以外（data が無い・空・不正）は旧形式として大きさを t の実行時の
+// 値へ、ノイズを legacy へ読む（legacy.used = true。旧形式であること自体は警告しない =
+// 古い文書は黙って開く）。
+TerrainDesc terrainFromXml(const xml::Element& e, TerrainLegacyDesc& legacy,
+                           Warn& warn) {
+    TerrainDesc t;
+    legacy = TerrainLegacyDesc{};
+    t.data = e.attr("data");
+    if (!t.data.empty() && !isSafeName(t.data)) {
+        warn("<terrain> data=\"" + t.data +
+             "\" is not a valid terrain name (letters, digits, _ and - only) - "
+             "ignored");
+        t.data.clear();
+    }
+    if (!t.data.empty()) {
+        const std::string mixed = presentLegacyAttrs(e);
+        if (!mixed.empty()) {
+            warn("<terrain data=\"" + t.data + "\"> ignores " + mixed +
+                 " (the .terrain file holds the shape)");
+        }
+    } else {
+        legacy = terrainLegacyFromXml(e, t);
+    }
+    const std::string guid = e.attr("guid");
+    t.guid = normalizedGuidHex(guid);
+    if (!guid.empty() && t.guid.empty()) {
+        warn("<terrain> guid=\"" + guid +
+             "\" is not a valid guid (32 hex digits, not all zero) - ignored");
+    }
     t.position = getVec3(e, "pos", t.position);
-    t.seed = std::uint32_t(roundedInteger(e.number("seed", double(t.seed)), 0,
-                                          4294967295LL, t.seed));
-    t.octaves = int(roundedInteger(e.number("octaves", t.octaves), 0,
-                                   kTerrainMaxOctaves, t.octaves));
-    t.gain = e.number("gain", t.gain);
-    t.lacunarity = e.number("lacunarity", t.lacunarity);
-    t.scale = e.number("scale", t.scale);
     if (e.has("texture")) {
         const std::string tex = e.attr("texture");
         if (tex.empty() || assetFileAllowed(tex)) {
@@ -1570,7 +1613,7 @@ SceneDocument fromXml(const xml::Element& root,
         const auto terrains = world->all("terrain");
         if (!terrains.empty()) {
             doc.hasTerrain = true;
-            doc.terrain = terrainFromXml(*terrains[0], warn);
+            doc.terrain = terrainFromXml(*terrains[0], doc.terrainLegacy, warn);
             if (terrains.size() > 1) {
                 warn("multiple <terrain> elements - using the first");
             }

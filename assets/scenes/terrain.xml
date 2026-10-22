@@ -29,10 +29,11 @@
      地面へ落ちる。
 
      テレインは worldbody 直下の <terrain>（書式は src/document/SceneDocument.h
-     の冒頭）。size は**全幅**（<ground size> の半寸法とは違う）、pos の y は
-     最低点。地形は seed などから毎回同じ形に生成されるので、物の置き高さは
-     src/terrain/HeightField の heightAt でその地点の地表を計算し、少し上に
-     している（パラメータを変えたら置き高さも見直すこと）。
+     の冒頭）。高さの格子と大きさ（size = **全幅**。<ground size> の半寸法
+     とは違う）は data の名前の assets/terrains/terrain.terrain が持ち、
+     XML は名前・背番号（guid）・pos・表面だけを書く。pos の y は最低点。
+     物の置き高さは src/terrain/HeightField の heightAt でその地点の地表を
+     計算し、少し上にしている（地形を描き替えたら置き高さも見直すこと）。
      <ground> はテレインの外側の受け（y = 0 の平面）として残してある。
      テレインのあるシーンは物理が Core バックエンドになる（自前の接触は
      Multicore では未検証のため）。 -->
@@ -180,12 +181,12 @@
          わずかに下なので、谷底でちらつかない。 -->
     <ground size="150" visual="600" texture="textures/ground.png" tile="2"
             rgba="0.7 0.7 0.68 1"/>
-    <!-- 丘: 160 m 四方（中心は原点）・256 × 256 セル（1 セル 0.625 m）・
-         起伏 8 m。うねりの波長 70 m に細かいオクターブを弱く 3 枚重ねた
-         なだらかな地形で、傾きは最大でも約 15°（最高点は約 8 m）。
-         外周は側面の無い切り落とし（先頭のコメント参照）。 -->
-    <terrain size="160" resolution="256" height="8" pos="0 0.05 0" seed="1"
-             octaves="3" gain="0.35" lacunarity="2" scale="70"
+    <!-- 丘（assets/terrains/terrain.terrain）: 160 m 四方（中心は原点）・
+         128 × 128 セル（1 セル 1.25 m）・起伏 8 m。うねりの波長 70 m に
+         細かいオクターブを弱く 3 枚重ねたなだらかな地形で、傾きは最大でも
+         約 15°（最高点は約 8 m）。外周は側面の無い切り落とし（先頭の
+         コメント参照）。 -->
+    <terrain data="terrain" guid="87ca0a3b7da5c20dbd12e66a44e4393d" pos="0 0.05 0"
              texture="textures/ground.png" tile="4" rgba="0.55 0.68 0.42 1"
              roughness="0.9" metallic="0"/>
     <!-- 太陽（影あり、カスケード 3）と空からの補助光（影なし）。 -->
