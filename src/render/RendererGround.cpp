@@ -29,10 +29,11 @@ void Renderer::removeGround() {
     }
     if (groundVb_) { engine_->destroy(groundVb_); groundVb_ = nullptr; }
     if (groundIb_) { engine_->destroy(groundIb_); groundIb_ = nullptr; }
-    if (groundTexture_) {
-        engine_->destroy(groundTexture_);
-        groundTexture_ = nullptr;
-    }
+    // テクスチャはここでは壊さない。地面のマテリアルインスタンスが参照した
+    // ままで、外す口（unsetParameter）がこの版に無いため、壊すと次のフレームで
+    // "Invalid texture still bound to MaterialInstance" で止まる（地面を外した
+    // シーンで起きる）。差し替えは addGround が新しい方を渡してから、最後は
+    // デストラクタが壊す。
 }
 
 void Renderer::addGround(float halfSize, const filament::math::float3& color,
@@ -52,6 +53,7 @@ void Renderer::addGround(float halfSize, const filament::math::float3& color,
     // ---- Ground texture --------------------------------------------------
     // 画像（シーン文書の <ground texture>）。読めない・無いときは市松模様に
     // 落として警告する（RendererTextures.cpp の loadTextureRGBA）。
+    filament::Texture* oldTexture = groundTexture_;
     groundTexture_ = loadTextureRGBA(*engine_, texturePath, "ground",
                                      TextureFallback::Checker);
 
@@ -61,6 +63,8 @@ void Renderer::addGround(float halfSize, const filament::math::float3& color,
         filament::TextureSampler::WrapMode::REPEAT);
     sampler.setAnisotropy(8.0f);
     groundMatInstance_->setParameter("checker", groundTexture_, sampler);
+    // 参照を新しい方へ移してから古い方を壊す（removeGround の注記）。
+    if (oldTexture) engine_->destroy(oldTexture);
 
     // Flat quad at y=0 facing +Y, sized to halfSize. Positions/UVs kept in
     // members (Filament references, not copies).
