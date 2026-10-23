@@ -13,6 +13,9 @@ server reads it from at runtime (everything the program loads lives under
 - `terrain.js` — the terrain section of the World panel and the terrain
   tiles of the asset panel (loaded right after
   `app.js` and uses its top-level helpers; same classic-script rules)
+- `terrain-brush.js` — the terrain brush toolbar (`#terrainBar`) and the
+  brush pointer input over the video (loaded right after `terrain.js` and
+  uses the helpers of both; same classic-script rules)
 
 - `favicon.ico` — browser tab icon. Optional; drop your own file here and
   rebuild so the `webui` copy step picks it up (the whole folder is copied,

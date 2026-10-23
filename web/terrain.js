@@ -163,13 +163,8 @@
   };
   const TERRAIN_NOISE_STORE = 'terrain:noise';
   function generateTerrainNoise() {
-    const g = {};
-    for (const key in TERRAIN_NOISE_FIELDS) {
-      const v = num(TERRAIN_NOISE_FIELDS[key], NaN);
-      if (Number.isFinite(v)) g[key] = v;
-    }
-    try { localStorage.setItem(TERRAIN_NOISE_STORE, JSON.stringify(g)); }
-    catch (e) { /* プライベートモード等: 覚えないだけ */ }
+    const g = readFields(TERRAIN_NOISE_FIELDS);
+    storeJson(TERRAIN_NOISE_STORE, g);
     // 確定待ちの形（全幅など）も同じ 1 通で送る（サーバーが先に当ててから生成）。
     flushTerrain({ generate: g });
   }
@@ -180,14 +175,8 @@
     discardTerrain();
     send('edit.terrain', { undo: true });
   }
-  try {
-    const saved = JSON.parse(localStorage.getItem(TERRAIN_NOISE_STORE) || '{}');
-    for (const key in TERRAIN_NOISE_FIELDS) {
-      if (saved && Number.isFinite(saved[key])) {
-        setField(TERRAIN_NOISE_FIELDS[key], saved[key]);
-      }
-    }
-  } catch (e) { /* 読めなければ空 = 既定値のまま */ }
+  // 読めなければ空 = 既定値のまま。
+  restoreFields(TERRAIN_NOISE_STORE, TERRAIN_NOISE_FIELDS);
 
   // ---- テレインのタイル（アセットパネル）------------------------------------
   // 一覧は /scene の terrainFiles（assets/terrains/*.terrain の見出し）。

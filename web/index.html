@@ -1374,25 +1374,59 @@
     <video id="video" autoplay playsinline muted></video>
     <div id="loading"><div class="spin"></div><span>connecting…</span></div>
     <div id="hit"></div>
-    <!-- ギズモのツールバー（Unity のシーンビュー左上と同じ場所）。映像への
-         オーバーレイで、エディタモード中の Editor Camera ページにだけ出す
-         （表示切替は app.js の renderEditor()）。実体は Inspector にあった
-         モード切替と同じコマンドを送るだけ。 -->
-    <div id="gizmoBar" hidden>
-      <button id="gzMove" onclick="setGizmoMode('translate')"
-              title="移動 (W)">✥</button>
-      <button id="gzRot" onclick="setGizmoMode('rotate')"
-              title="回転 (E)">⟳</button>
-      <button id="gzScale" onclick="setGizmoMode('scale')"
-              title="拡縮 (R)">⤢</button>
-      <span class="gzSep"></span>
-      <button id="gzSpace" onclick="toggleGizmoSpace()"
-              title="ギズモの座標系を切り替え（World ⇄ Local）">🌐 World</button>
-      <span class="gzSep"></span>
-      <button id="gzSettings" onclick="toggleGizmoSettings()"
-              title="ギズモ設定（スナップ・刻み・グリッド）を Inspector に開く">⚙&#xFE0E;</button>
-      <button id="gzNodes" onclick="toggleNodeEditor()"
-              title="イベント設計（ノードエディタ）を開閉">⚡&#xFE0E;</button>
+    <!-- 映像左上のツールバーを縦に並べる入れ物（入れ物自体はクリックを
+         受けず、#hit へ通す）。 -->
+    <div id="viewBars">
+      <!-- ギズモのツールバー（映像の左上）。映像への
+           オーバーレイで、エディタモード中の Editor Camera ページにだけ出す
+           （表示切替は app.js の renderEditor()）。実体は Inspector にあった
+           モード切替と同じコマンドを送るだけ。 -->
+      <div id="gizmoBar" hidden>
+        <button id="gzMove" onclick="setGizmoMode('translate')"
+                title="移動 (W)">✥</button>
+        <button id="gzRot" onclick="setGizmoMode('rotate')"
+                title="回転 (E)">⟳</button>
+        <button id="gzScale" onclick="setGizmoMode('scale')"
+                title="拡縮 (R)">⤢</button>
+        <span class="gzSep"></span>
+        <button id="gzSpace" onclick="toggleGizmoSpace()"
+                title="ギズモの座標系を切り替え（World ⇄ Local）">🌐 World</button>
+        <span class="gzSep"></span>
+        <button id="gzSettings" onclick="toggleGizmoSettings()"
+                title="ギズモ設定（スナップ・刻み・グリッド）を Inspector に開く">⚙&#xFE0E;</button>
+        <button id="gzNodes" onclick="toggleNodeEditor()"
+                title="イベント設計（ノードエディタ）を開閉">⚡&#xFE0E;</button>
+      </div>
+      <!-- テレインの筆（ギズモのツールバーの下）。エディタモード中の Editor
+           Camera ページで、テレインを選んでいるときだけ出す（表示切替は
+           terrain-brush.js の renderTerrainBar()）。道具を選ぶと映像の左ドラッグが
+           筆になり、同じボタンをもう一度押すか Esc でやめる。道具の名前は
+           ボタンの data-tool が唯一の一覧（サーバーの brushToolFromName と同じ
+           綴り）。半径・強さの欄が空ならサーバーの既定値。 -->
+      <div id="terrainBar" hidden>
+        <button data-tool="raise" onclick="setBrushTool('raise')"
+                title="盛り上げる（押している間、強さ m/s で上がる）">▲</button>
+        <button data-tool="lower" onclick="setBrushTool('lower')"
+                title="掘り下げる（押している間、強さ m/s で下がる）">▼</button>
+        <button data-tool="flatten" onclick="setBrushTool('flatten')"
+                title="平らにする（押し始めた点の高さへ寄せる）">▬</button>
+        <button data-tool="smooth" onclick="setBrushTool('smooth')"
+                title="なだらかにする（周りの平均へ寄せる）">≈</button>
+        <button data-tool="hole" onclick="setBrushTool('hole')"
+                title="穴をあける">◯</button>
+        <button data-tool="unhole" onclick="setBrushTool('unhole')"
+                title="穴を埋める">●</button>
+        <span class="gzSep"></span>
+        <label title="筆の半径 (m)">半径
+          <input id="tbRadius" type="number" min="0.1" max="500" step="0.5"
+                 placeholder="既定" onchange="applyBrushValues()"></label>
+        <label title="筆の強さ（盛り上げ・掘り下げは m/s、平らに・なだらかには 1/s）">強さ
+          <input id="tbStrength" type="number" min="0" max="100" step="0.1"
+                 placeholder="既定" onchange="applyBrushValues()"></label>
+        <span class="gzSep"></span>
+        <button onclick="undoTerrain()"
+                title="直前の編集（1 ストローク）を取り消す">↶</button>
+      </div>
     </div>
     <!-- ノードエディタ（Node-RED 風のイベント設計）。Editor Camera のページ
          専用。画面中央の大きなウィンドウ（各辺 90%、.ndWin）として出し、
@@ -1538,5 +1572,6 @@
 </div>
 <script src="app.js"></script>
 <script src="terrain.js"></script>
+<script src="terrain-brush.js"></script>
 </body>
 </html>

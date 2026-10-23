@@ -68,7 +68,7 @@ void TerrainComponent::setRing(const Ring& ring) {
 
 void TerrainComponent::push(Pending::Kind kind, const wt::BrushStamp& stamp) {
     std::lock_guard<std::mutex> lk(pendingMutex_);
-    pending_.push_back(Pending{kind, stamp});
+    pending_.push_back(Pending{kind, stamp, seenEpoch_});
 }
 
 void TerrainComponent::resetStroke() {
@@ -80,15 +80,19 @@ void TerrainComponent::resetStroke() {
 bool TerrainComponent::onCommand(Scene& scene, std::size_t camIndex,
                                  const nlohmann::json& msg) {
     if (ed::jsonString(msg, "cmd", "") != "edit.terrain.brush") return false;
-    // 筆はシーンを書き換える = エディタモード × エディタカメラのページ専用
-    // （他の edit.* と同じ守り）。それ以外のぶんは消費して捨てる。エディタで
-    // ないときは線分のつなぎも下ろす（シミュレートを往復したあと、begin の無い
-    // move が古い始点・古い Flatten の目標で塗らないように）。他のカメラの
-    // ページからのものは、エディタカメラで進行中のストロークに触らない。
-    if (!scene.editor().isEditor()) {
+    // 前回の入力からモードが切り替わっていたら（筆の入力が来ないままの往復
+    // でも）、線分のつなぎと Flatten の目標を下ろす: begin の無い move が古い
+    // 始点・古い目標で塗らないように。世代はモードを見る前に読む（読んだ後に
+    // 切り替わっても、積んだぶんは古い世代として PHYSICS が捨てる）。
+    const std::uint64_t epoch = scene.editor().modeEpoch();
+    if (epoch != seenEpoch_) {
+        seenEpoch_ = epoch;
         resetStroke();
-        return true;
     }
+    // 筆はシーンを書き換える = エディタモード × エディタカメラのページ専用
+    // （他の edit.* と同じ守り）。それ以外のぶんは消費して捨てる。他のカメラの
+    // ページからのものは、エディタカメラで進行中のストロークに触らない。
+    if (!scene.editor().isEditor()) return true;
     if (camIndex != scene.editorCamera()) return true;
 
     const Clock::time_point now = Clock::now();
@@ -115,8 +119,11 @@ bool TerrainComponent::onCommand(Scene& scene, std::size_t camIndex,
     ring.seen = now;
     setRing(ring);
 
-    if (phase == "end") {
-        if (stroking_) push(Pending::Kind::End);
+    // end は離した点（x, y）を添えて来る: 前の点からそこまでを下の move と
+    // 同じスタンプにしてから閉じる（別の move で送ると end が先に届きうる）。
+    // 位置の無い（画面の外の）end は当たらないので閉じるだけ。
+    const bool ending = phase == "end";
+    if (ending && !stroking_) {
         resetStroke();
         return true;
     }
@@ -126,7 +133,7 @@ bool TerrainComponent::onCommand(Scene& scene, std::size_t camIndex,
         resetStroke();
         stroking_ = true;
         push(Pending::Kind::Begin);
-    } else if (phase != "move" || !stroking_) {
+    } else if (!ending && (phase != "move" || !stroking_)) {
         return true;  // hover（と begin の無い move）は輪だけ
     }
 
@@ -134,27 +141,31 @@ bool TerrainComponent::onCommand(Scene& scene, std::size_t camIndex,
     // （テレインの外を回り込んだ所まで線を引かない）。
     if (!h.hit) {
         havePrev_ = false;
-        return true;
+    } else {
+        // Flatten の目標 = このストロークで最初に当たった点の高さ（ローカル）。
+        if (!haveTarget_) {
+            haveTarget_ = true;
+            flattenTarget_ = h.height;
+        }
+        s.x1 = h.x;
+        s.z1 = h.z;
+        s.x0 = havePrev_ ? prevX_ : h.x;
+        s.z0 = havePrev_ ? prevZ_ : h.z;
+        // dt = 前の点からの時間。始点（begin・外れた後）は 0 = 高さの道具は書かず、
+        // 穴の道具だけがその場で効く。
+        s.dt = havePrev_ ? secondsBetween(prevTime_, now) : 0.0;
+        s.target = flattenTarget_;
+        // maxHeight は Scene::stampTerrain が今のテレインの値を入れる。
+        push(Pending::Kind::Stamp, wt::clampBrush(s));
+        havePrev_ = true;
+        prevX_ = h.x;
+        prevZ_ = h.z;
+        prevTime_ = now;
     }
-    // Flatten の目標 = このストロークで最初に当たった点の高さ（ローカル）。
-    if (!haveTarget_) {
-        haveTarget_ = true;
-        flattenTarget_ = h.height;
+    if (ending) {
+        push(Pending::Kind::End);
+        resetStroke();
     }
-    s.x1 = h.x;
-    s.z1 = h.z;
-    s.x0 = havePrev_ ? prevX_ : h.x;
-    s.z0 = havePrev_ ? prevZ_ : h.z;
-    // dt = 前の点からの時間。始点（begin・外れた後）は 0 = 高さの道具は書かず、
-    // 穴の道具だけがその場で効く。
-    s.dt = havePrev_ ? secondsBetween(prevTime_, now) : 0.0;
-    s.target = flattenTarget_;
-    // maxHeight は Scene::stampTerrain が今のテレインの値を入れる。
-    push(Pending::Kind::Stamp, wt::clampBrush(s));
-    havePrev_ = true;
-    prevX_ = h.x;
-    prevZ_ = h.z;
-    prevTime_ = now;
     return true;
 }
 
@@ -167,7 +178,8 @@ void TerrainComponent::onEditorStep(Scene& scene, double dt) {
         last = lastInput_;
     }
     // ストロークが開いているかの持ち主は Scene だけ（terrainStrokeActive）。
-    // 積まれたものは捨てずに順に当てる（物理が遅れても 1 回のクリックを失わない）。
+    // 今の世代の積まれたものは捨てずに順に当てる（物理が遅れても 1 回の
+    // クリックを失わない）。
     batch_.clear();
     const auto flush = [&]() {
         if (batch_.empty()) return;
@@ -178,7 +190,11 @@ void TerrainComponent::onEditorStep(Scene& scene, double dt) {
         scene.stampTerrain(batch_);
         batch_.clear();  // 容量は使い回す
     };
+    // 今の世代でないもの = モードが切り替わる前に積まれたものは捨てる
+    // （エディタ中に世代が変わるのは applyPendingEdits = このスレッドだけ）。
+    const std::uint64_t epoch = scene.editor().modeEpoch();
     for (const Pending& p : work_) {
+        if (p.epoch != epoch) continue;
         switch (p.kind) {
             case Pending::Kind::Begin:
                 flush();  // 前のストロークのぶんは前のストロークへ

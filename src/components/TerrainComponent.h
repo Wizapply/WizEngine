@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -19,8 +20,12 @@
 // ---- スレッド ---------------------------------------------------------------
 //   onCommand    : INPUT  … レイをテレインのローカルへ直し、輪の位置を書き、
 //                           begin / move のスタンプと begin / end の印を積む
+//                           （積んだときのモード切替の世代 EditorState::modeEpoch
+//                           を添える。世代が変わっていたら線分のつなぎも下ろす）
 //   onEditorStep : PHYSICS… 積んだものを取り出し、Scene のストローク API へ
-//                           （begin / stamp / end。入力が途絶えたら閉じる）
+//                           （begin / stamp / end。入力が途絶えたら閉じる）。
+//                           今の世代でないもの = モード切替の前に積まれたものは
+//                           捨てる（エディタへ戻ったときに勝手に当たらない）
 //   onRender     : RENDER … 輪を細線セット（gizmo::kLineSetBrushRing）へ
 //                           （入力が途絶えた・エディタでないなら消す）
 // スレッドをまたぐのは ring_ と pending_ だけで、どちらの mutex も末端の
@@ -54,11 +59,13 @@ private:
         enum class Kind { Begin, Stamp, End };
         Kind kind = Kind::Stamp;
         wizengine::terrain::BrushStamp stamp;
+        std::uint64_t epoch = 0;  // 積んだときの EditorState::modeEpoch
     };
 
     void setRing(const Ring& ring);
+    // 積む（世代は seenEpoch_ = この入力を受けたときに見た値）。
     void push(Pending::Kind kind, const wizengine::terrain::BrushStamp& stamp = {});
-    // ストロークの線分のつなぎを下ろす（INPUT）。
+    // ストロークの線分のつなぎと Flatten の目標を下ろす（INPUT）。
     void resetStroke();
 
     std::mutex ringMutex_;
@@ -70,7 +77,8 @@ private:
     Clock::time_point lastInput_{};
 
     // INPUT スレッドだけが使う（ストロークの線分のつなぎ）。
-    bool stroking_ = false;         // begin を受けて end をまだ受けていない
+    std::uint64_t seenEpoch_ = 0;   // 前回の入力で見たモード切替の世代
+    bool stroking_ = false;        // begin を受けて end をまだ受けていない
     bool havePrev_ = false;         // 前回の点がある（無ければ次の点は線分の始点）
     double prevX_ = 0.0, prevZ_ = 0.0;
     Clock::time_point prevTime_{};

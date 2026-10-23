@@ -160,6 +160,9 @@
     return { x: ((clientX - r.left) / r.width) * 2 - 1,
              y: 1 - ((clientY - r.top) / r.height) * 2 };
   }
+  // 「画面の外」の座標。サーバーは [-1, 1] の外を「何にも当たらない」として
+  // 扱うので、ギズモのハイライトや筆の輪を消す合図に使う。
+  const NDC_OFFSCREEN = { x: 9.0, y: 9.0 };
   function twoFingerState() {
     const [a, b] = [...touches.values()];
     return { dist: Math.hypot(a.x - b.x, a.y - b.y),
@@ -329,10 +332,7 @@
       return;
     }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
-    if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' ||
-               el.tagName === 'TEXTAREA')) {
-      return;
-    }
+    if (focusInField()) return;
     // ノードエディタは画面全体を覆うので、✕ のほかに Esc でも閉じられる
     // ようにしておく（モード不問 - シミュレート中も開けるため）。
     if (e.key === 'Escape' && nodeEdOpen) {
@@ -390,9 +390,7 @@
   let driveLast = null;            // 最後に送った値（アナログの差分判定用）
   function driveKey(e, down) {
     if (e.ctrlKey || e.altKey || e.metaKey) return;
-    const el = document.activeElement;
-    if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' ||
-               el.tagName === 'TEXTAREA')) return;
+    if (focusInField()) return;
     if (!owner || !sceneData || sceneData.mode === 'editor') return;
     if (nodeEdOpen || xmlEdOpen) return;
     const key = e.key === ' ' ? 'space' : e.key.toLowerCase();
@@ -560,7 +558,7 @@
     // 座標を 1 回送るだけでよい（専用のコマンドを増やすほどの話ではない）。
     if (hoverNdc) {
       hoverNdc = null;
-      send('hover', { x: 9.0, y: 9.0 });
+      send('hover', NDC_OFFSCREEN);
     }
   });
 
@@ -1570,6 +1568,41 @@
     const v = parseFloat(document.getElementById(id).value);
     return Number.isFinite(v) ? v : fallback;
   }
+  // フォームの欄（input / select / textarea）にフォーカスがあるか。キーの
+  // ショートカットは、欄に打っている間は効かせない。
+  function focusInField() {
+    const el = document.activeElement;
+    return !!el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' ||
+                    el.tagName === 'TEXTAREA');
+  }
+  // このブラウザの localStorage に JSON で覚える / 読む。プライベートモード
+  // 等で使えない・壊れた値のときは、覚えない / null（呼び手は既定のまま）。
+  function storeJson(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); }
+    catch (e) { /* 覚えないだけ */ }
+  }
+  function loadStoredJson(key) {
+    try { return JSON.parse(localStorage.getItem(key) || 'null'); }
+    catch (e) { return null; }
+  }
+  // 欄の表（キー → 欄の id）から、数の入っている欄だけを {キー: 値} に集める
+  // （空の欄のキーは入れない = 送ればサーバーの既定値）。
+  function readFields(map) {
+    const out = {};
+    for (const key in map) {
+      const v = num(map[key], NaN);
+      if (Number.isFinite(v)) out[key] = v;
+    }
+    return out;
+  }
+  // storeJson で覚えた {キー: 値} のうち、数のものだけを欄の表の欄へ戻す。
+  function restoreFields(storeKey, map) {
+    const saved = loadStoredJson(storeKey);
+    if (!saved) return;
+    for (const key in map) {
+      if (Number.isFinite(saved[key])) setField(map[key], saved[key]);
+    }
+  }
   const round2 = (v) => Math.round((v || 0) * 1000) / 1000;
   // アセット名（イベント・計算式・プレハブ・テレイン）の正規化。サーバーの
   // 名前の規則（core/SafeName.h: 英数字と _ -、kSafeNameMaxLength 文字）と同じ。
@@ -1616,17 +1649,28 @@
   // 選択中はカーソル位置を控えめな間隔で送ってサーバーに光らせてもらう。
   // ドラッグ中は drag が同じ情報を運ぶので送らない。ギズモはエディタカメラ
   // にしか出ないので、送るのもそのページだけ。
+  // hoverNdc は映像の上の最後のポインタ位置（映像の外・ウィンドウを離れた
+  // 間は null）で、テレインの筆（terrain-brush.js）も同じ値を読む。
+  const HOVER_MS = 70;
   let hoverNdc = null;
+  window.addEventListener('blur', () => { hoverNdc = null; });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) hoverNdc = null;  // 裏のタブで送り続けない
+  });
   setInterval(() => {
     if (!owner || grabbing || dragMode) return;
     if (!sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
+    // 筆の道具を選んでいる間はギズモを掴めないので光らせない
+    // （輪の hover は terrain-brush.js が同じ間隔で送る）。brushToolActive は
+    // 後ろに読む terrain-brush.js の関数（読めなかったときは無いものとして扱う）。
+    if (typeof brushToolActive === 'function' && brushToolActive()) return;
     // ギズモが出ている対象（オブジェクト / ライト / カメラ / 部品 / 地面 /
     // テレイン）があるときだけ。
     const hasTarget = sceneData.selected ||
         (sceneData.editorSel && sceneData.editorSel.kind !== 'none');
     if (!hasTarget || !hoverNdc) return;
     send('hover', hoverNdc);
-  }, 70);
+  }, HOVER_MS);
 
   // アセットパネルの mesh タイル（配列番号 → いまの一覧から名前を引く）。
   function addMeshAsset(i) {
@@ -2411,6 +2455,7 @@
     }
     // テレイン（secTerrain 節）。hasTerrain / terrain が無い古いサーバーでも落ちない。
     renderTerrainSection();
+    renderTerrainBar();  // 筆のツールバー（terrain-brush.js）
     // 描画設定（<visual>）。select も setField で入る（フォーカス中の欄は
     // 触らない、は入力欄と同じ扱い）。
     if (sceneData.render) {
@@ -3493,7 +3538,11 @@
     if (ctxEl && !ctxEl.contains(e.target)) hideContextMenu();
   }, true);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') hideContextMenu();
+    // 閉じたときは preventDefault（同じ Esc で他の物 = 筆の道具などを下ろさない）。
+    if (e.key === 'Escape' && ctxEl) {
+      e.preventDefault();
+      hideContextMenu();
+    }
   });
   window.addEventListener('blur', hideContextMenu);
 
@@ -4346,7 +4395,8 @@
       renderNodeEditor();
     } catch (e) { /* server busy or gone; try again next tick */ }
   }
-  // 後ろに読む terrain.js（renderEditor が使う）の実行を待ってから回し始める。
+  // 後ろに読む terrain.js / terrain-brush.js（renderEditor が使う）の実行を
+  // 待ってから回し始める。
   // DOMContentLoaded は body 末尾のスクリプトが全部走ったあとに来る。
   window.addEventListener('DOMContentLoaded', () => {
     setInterval(pollScene, 500);
