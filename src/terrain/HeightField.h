@@ -148,6 +148,11 @@ public:
     // 共有中の格子（shared_ptr<const>）には呼べない = コピーに対して呼ぶ。
     // HeightFieldOps.cpp。
     void scaleHeights(float k);
+    // 高さ（格子値）が maxHeight を超える所を maxHeight に切り詰める（下は
+    // そのまま、穴にも触れない）。高さの上限を形を保ったまま下げたときに使う。
+    // maxHeight が正の有限値でなければ何もしない（scaleHeights と同じ約束）。
+    // 共有中の格子には呼べない = コピーに対して呼ぶ。HeightFieldOps.cpp。
+    void clampHeights(float maxHeight);
 
     // 穴（セル単位）。穴のセルは描画で面積 0、接触を作らず、レイが抜ける
     // （どれも isSolidCell を通る）。範囲外の添字は setHole が無視し、

@@ -649,8 +649,10 @@ private:
     // height = 比例伸縮）。.terrain が持つ形（size / resolution / height）が
     // 変われば Undo を消してファイルの dirty を立てる。pos だけなら格子を置き
     // 直すだけ（Undo もファイルもそのまま）。形が同じなら表面だけ（テレインが
-    // 無ければ値を覚えるだけ）。
-    void reshapeTerrain(const wizengine::editor::TerrainDesc& next);
+    // 無ければ値を覚えるだけ）。keepShape なら height の変更は比例伸縮の
+    // 代わりに上限だけを変える（格子はそのまま、新しい上限を超える所は切る）。
+    // 1 回の操作の指示なので TerrainDesc には持たない。
+    void reshapeTerrain(const wizengine::editor::TerrainDesc& next, bool keepShape = false);
     // 格子の書き換えの唯一の口（コピーオンライト）: 今の格子をコピーして
     // mutate(コピー) を呼び、publishTerrainField で差し替える（Undo は残し、
     // ファイルの dirty を立て、描画は rect に触れたチャンクだけ作り直す）。

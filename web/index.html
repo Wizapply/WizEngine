@@ -892,9 +892,14 @@
         </div>
         <div class="edRow">
           <span>起伏の高さ (m)</span>
-          <input id="edTerrainHeight" class="num" type="number" step="1" min="0"
-                 max="1000" title="最低点〜最高点の差"
-                 onchange="applyTerrain('height')">
+          <span>
+            <input id="edTerrainHeight" class="num" type="number" step="1" min="0"
+                   max="1000" title="最低点〜最高点の差"
+                   onchange="applyTerrain('height')">
+            <!-- 高さを変える 1 回ぶんの指示（テレインには覚えない）。外すと比例伸縮。 -->
+            <label title="入れていると、高さを変えても地形の形はそのまま（上限だけを変え、下げたときに上限を超える所は切る）。外すと全体を比例して伸び縮みさせる">
+              <input id="edTerrainKeep" type="checkbox"> 形を保つ</label>
+          </span>
         </div>
         <div class="trRow" title="位置 (m)。X / Z = 中心、Y = 最低点（ギズモは中心の地表に出ます）">
           <span class="trName">位置</span>

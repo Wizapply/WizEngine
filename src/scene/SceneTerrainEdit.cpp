@@ -282,6 +282,7 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
         }
         // 同じ 1 通の部分更新（確定待ちだった形の欄）を先に当てる。値が今と同じ
         // なら reshapeTerrain は格子を作り直さない（キーの一覧で判定しない）。
+        // keepShape は渡さない: 直後のノイズが格子を全部上書きするので意味が無い。
         reshapeTerrain(patched());
         // 送られなかったキーは既定値（ノイズの値はテレインに覚えない）。
         generateTerrainNoise(ed::terrainNoiseFromJson(*it, ed::TerrainNoiseParams{}));
@@ -299,5 +300,6 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
     // 当たり判定はモードによらずその場で張り直す（publishTerrainField）。
     const ed::TerrainDesc next = patched();
     editor_.setStatus(terrainPatchStatus(hasTerrain_, terrain_.resolution, next.resolution));
-    reshapeTerrain(next);
+    // 高さの変更で形を保つか（Inspector の「形を保つ」。height と同じ 1 通で届く）。
+    reshapeTerrain(next, argIsTrue(a, "keepShape"));
 }

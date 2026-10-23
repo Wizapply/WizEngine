@@ -1,5 +1,5 @@
 // HeightField の「形を変えた写し」を作る操作（大きさ・位置の変更、解像度の
-// 変更、高さの比例伸縮）と、編集が描画に及ぶ範囲（chunksTouched）。
+// 変更、高さの比例伸縮と切り詰め）と、編集が描画に及ぶ範囲（chunksTouched）。
 // 宣言は HeightField.h。HeightField.cpp を問い合わせと
 // メッシュ化に絞っておくため、ファイルを分けてある。
 //
@@ -40,6 +40,12 @@ void HeightField::scaleHeights(float k) {
     // 0 や負で地形が潰れたり裏返ったりしないよう、正の有限値だけ受ける。
     if (!std::isfinite(k) || !(k > 0.0f)) return;
     for (float& h : heights_) h *= k;
+}
+
+void HeightField::clampHeights(float maxHeight) {
+    // scaleHeights と同じく、正の有限値だけ受ける（0 で全部を平らに潰さない）。
+    if (!std::isfinite(maxHeight) || !(maxHeight > 0.0f)) return;
+    for (float& h : heights_) h = std::min(h, maxHeight);
 }
 
 HeightField HeightField::withGeometry(float size, float centerX, float baseY,

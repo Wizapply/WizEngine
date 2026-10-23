@@ -24,6 +24,12 @@
     const patch = Object.assign(terrainPatch, extra || {});
     terrainPatch = {};
     if (Object.keys(patch).length === 0) return;
+    // 高さには「形を保つ」を同じ 1 通で付ける（送る時点のチェック。サーバーは
+    // テレインに覚えないので、高さを送らない通には付けない）。
+    if ('height' in patch) {
+      const keep = document.getElementById('edTerrainKeep');
+      patch.keepShape = !!(keep && keep.checked);
+    }
     send('edit.terrain', patch, keepalive);
   }
   // 送信待ちの形のキーを捨てる。シーンの読込・XML 適用・全消しの前に呼ぶ:

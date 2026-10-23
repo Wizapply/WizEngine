@@ -128,7 +128,7 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
     else rebuildTerrainBody();
 }
 
-void Scene::reshapeTerrain(const ed::TerrainDesc& next) {
+void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape) {
     const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
     const ed::TerrainDesc& now = terrain_;
     const bool sized = next.size != now.size;
@@ -145,16 +145,20 @@ void Scene::reshapeTerrain(const ed::TerrainDesc& next) {
         return;
     }
     // 形の変更は今の格子のコピーから作る（共有中の格子は書き換えない）。
-    // 大きさ → 再サンプル → 比例伸縮の順。
+    // 大きさ → 再サンプル → 比例伸縮（形を保つなら切り詰め）の順。
     const auto t0 = std::chrono::steady_clock::now();
     wizengine::terrain::HeightField grid =
         sized ? field->withGeometry(float(next.size), 0.0f, 0.0f, 0.0f) : *field;
     if (resampled) grid = grid.resampled(next.resolution);
     // 高さは [0, height] に保つ（.terrain の量子化の範囲）。height は
     // clampTerrain が kTerrainMinHeight 以上に保つので、倍率は有限。
-    if (scaled) grid.scaleHeights(float(next.height / now.height));
-    LOGI("scene", "terrain reshaped: %dx%d cells, %.0f m, %.0f m high in %.1f ms",
-         next.resolution, next.resolution, next.size, next.height, elapsedMs(t0));
+    // 形を保つときは格子の高さを変えず、新しい上限を超える所だけ切る
+    // （上げたときは何も変わらない）。どちらも .terrain の形の変更 = Undo は消える。
+    if (scaled && keepShape) grid.clampHeights(float(next.height));
+    else if (scaled) grid.scaleHeights(float(next.height / now.height));
+    LOGI("scene", "terrain reshaped: %dx%d cells, %.0f m, %.0f m high (%s) in %.1f ms",
+         next.resolution, next.resolution, next.size, next.height,
+         !scaled ? "height kept" : keepShape ? "clamped" : "scaled", elapsedMs(t0));
     publishTerrainField(
         next, std::make_shared<const wizengine::terrain::HeightField>(std::move(grid)),
         fileChanged ? TerrainHistory::Clear : TerrainHistory::Keep,
