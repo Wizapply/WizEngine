@@ -4,8 +4,12 @@
 // 格子の差し替えそのもの（ロック・dirty・Undo・当たり判定）は SceneTerrain.cpp の
 // publishTerrainField / reshapeTerrain に、ブラウザの edit.terrain の受け口は
 // SceneTerrainEdit.cpp に任せる。どのファイルかの判断は TerrainLibrary、1 ファイルの
-// 読み書きは TerrainFile（どちらも src/terrain）。
+// 読み書きは TerrainFile、ハイトマップの形式は Heightmap（どれも src/terrain）。
 #include "scene/SceneInternal.h"
+
+#include "render/ImageLoader.h"
+#include "terrain/Heightmap.h"
+#include "terrain/TerrainFile.h"
 
 #include <filesystem>
 #include <system_error>
@@ -43,6 +47,21 @@ std::string terrainMissingNote(bool unreadable, const std::string& label) {
     return "テレインのファイル " + label +
            " が見つかりません（assets/terrains/ に戻して開き直すか、"
            "別のテレインを開いてください）";
+}
+
+// ハイトマップの書き出し先（.terrain と同じ名前の隣で、拡張子が .png / .raw）。
+// 名前が空・不正なら空のパス。書き出しと /scene の heightmapFiles が同じ場所を見る。
+std::filesystem::path heightmapPath(const wt::TerrainLibrary& library, const std::string& name,
+                                    bool png) {
+    std::filesystem::path path = library.pathFor(name);
+    if (!path.empty()) path.replace_extension(png ? ".png" : ".raw");
+    return path;
+}
+
+// パスにファイルがあるか（空のパス・調べられないときは false = 投げない）。
+bool fileExists(const std::filesystem::path& path) {
+    std::error_code ec;
+    return !path.empty() && std::filesystem::exists(path, ec);
 }
 
 }  // namespace
@@ -229,30 +248,166 @@ std::string Scene::terrainLoadCaveat() {
 bool Scene::saveTerrainData(const std::string& sceneName, std::string& written,
                             std::string& reason) {
     written.clear();
-    const std::shared_ptr<const wt::HeightField> field = hasTerrain_ ? terrainField_ : nullptr;
+    const std::shared_ptr<const wt::HeightField> field = terrainField();
     if (!field) return true;
     // 名前・背番号の欠けている方だけをここで決める（XML に data="" を出さない。
     // 正しい背番号・名前は捨てない）。
     if (terrain_.data.empty() || terrain_.guid.empty()) {
         ed::TerrainDesc d = terrain_;
         fillTerrainIdentity(d, sceneName);
-        std::lock_guard<std::mutex> lk(objectsMutex_);
-        terrain_.data = d.data;
-        terrain_.guid = d.guid;
+        {
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            terrain_.data = d.data;
+            terrain_.guid = d.guid;
+        }
+        refreshHeightmapFiles();
     }
     wt::TerrainGuid guid;
     wt::guidFromHex(terrain_.guid, guid);
     // 変えたときだけ書く（共有しているファイルを、触っていないシーンの保存で
     // 書き換えない）。ファイルが無ければ必ず書く。
     const std::filesystem::path path = terrainLibrary_->pathFor(terrain_.data);
-    std::error_code ec;
-    if (!terrainDirty() && !path.empty() && std::filesystem::exists(path, ec)) return true;
+    if (!terrainDirty() && fileExists(path)) return true;
     if (!wt::writeFile(path, *field, float(terrain_.height), guid, reason)) return false;
     terrainFile_ = TerrainFileState::Saved;  // 保存の成功（publish の外で書く唯一の場所）
     refreshTerrainFiles();
     written = terrain_.data;
     LOGI("scene", "terrain '%s' written: %s", written.c_str(), path.u8string().c_str());
     return true;
+}
+
+// ---- ハイトマップ -------------------------------------------------------------
+
+void Scene::importTerrainHeightmap(const std::string& file, bool flipRows) {
+    const std::shared_ptr<const wt::HeightField> field = terrainField();
+    if (!field) {
+        editor_.setStatus("テレインがありません（ハイトマップを取り込めません）");
+        return;
+    }
+    if (!ed::assetFileAllowed(file)) {
+        editor_.setStatus("ハイトマップは assets/ からの相対パスで指定してください");
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::string path = wizengine::assetPath(file);
+    const std::filesystem::path fsPath = std::filesystem::u8path(path);
+    // どれを呼ぶかを拡張子で決める。形式の検査は terrain/Heightmap（decodeRaw16 /
+    // heightFieldFromSamples）。画像だけは、デコードの前に Scene が見出しで正方形と
+    // 上限を断る（確保を避けるため。上限の値は Heightmap の定数）。RAW は Heightmap の
+    // 最大バイト数を超えるファイルを読まない。
+    std::vector<uint16_t> samples;
+    int width = 0;
+    int rows = 0;
+    std::string reason;
+    bool read = false;
+    if (wt::sameTerrainName(fsPath.extension().u8string(), ".raw")) {
+        std::vector<uint8_t> bytes;
+        read = wt::readFileBytes(fsPath, wt::kMaxRaw16Bytes, bytes, reason) &&
+               wt::decodeRaw16(bytes.data(), bytes.size(), samples, width, reason);
+        rows = width;
+    } else if (!readImageSize(path, width, rows)) {
+        reason = path + ": " + imageFailureReason();
+    } else if (width != rows) {
+        // デコードの前に断る（正方形でない・大きすぎる画像で確保しない）。
+        reason = "non-square image (the heightmap must be square)";
+    } else if (width > wt::kMaxHeightmapSide) {
+        reason = "image too large (at most " + std::to_string(wt::kMaxHeightmapSide) +
+                 " pixels per side)";
+    } else {
+        read = loadImageGray16(path, samples, width, rows);
+        if (!read) reason = path + ": " + imageFailureReason();
+    }
+    wt::HeightField gen;
+    if (read) {
+        gen = wt::heightFieldFromSamples(samples, width, field->size(), float(terrain_.height),
+                                         field->resolution(), flipRows, reason);
+    }
+    if (!gen.valid()) {
+        LOGW("scene", "terrain heightmap import '%s' (%dx%d): %s", file.c_str(), width, rows,
+             reason.c_str());
+        editor_.setStatus("ハイトマップ " + file + " を取り込めません（コンソール参照）");
+        return;
+    }
+    samples = {};  // 4097² で 33 MB。差し替えの前に返す
+    // 今の格子へ高さだけ入れる（穴は保つ・取り消し 1 段・未保存の印）。
+    if (!replaceTerrainHeights(std::move(gen), "imported")) {
+        editor_.setStatus("ハイトマップを取り込めませんでした（コンソール参照）");
+        return;
+    }
+    const int res = field->resolution();
+    LOGI("scene", "terrain heightmap imported: %s (%dx%d samples%s) -> %dx%d cells in %.1f ms",
+         path.c_str(), width, rows, flipRows ? ", rows flipped" : "", res, res, elapsedMs(t0));
+    char status[256];
+    std::snprintf(status, sizeof(status),
+                  "（%d×%d → 解像度 %d、0〜%g m。穴はそのまま、取り消しできます）", width,
+                  rows, res, terrain_.height);
+    editor_.setStatus("ハイトマップ " + file + " を取り込みました" + status);
+}
+
+void Scene::exportTerrainHeightmap(const std::string& format, bool overwrite,
+                                   const std::string& expected) {
+    const bool png = format == "png";
+    if (!png && format != "raw") {
+        editor_.setStatus("書き出しの形式が正しくありません（export は \"raw\" か \"png\"）");
+        return;
+    }
+    const std::shared_ptr<const wt::HeightField> field = terrainField();
+    if (!field) {
+        editor_.setStatus("テレインがありません（ハイトマップを書き出せません）");
+        return;
+    }
+    // ブラウザが確かめたテレインと今のテレインが違う（確認と送信の間に開き替え・
+    // 改名された）なら、別のファイルを上書きしないよう断る。
+    if (!expected.empty() && !wt::sameTerrainName(expected, terrain_.data)) {
+        LOGW("scene", "terrain heightmap export refused: asked for '%s' but the current "
+                      "terrain is '%s'", expected.c_str(), terrain_.data.c_str());
+        editor_.setStatus("テレインが変わったので書き出しませんでした（もう一度選んでください）");
+        return;
+    }
+    // 書き先は .terrain と同じ名前の隣。名前がまだ無いテレインは
+    // ここで名前を決めない（決めるのは保存 = saveTerrainData）。
+    const std::filesystem::path path = heightmapPath(*terrainLibrary_, terrain_.data, png);
+    if (path.empty()) {
+        editor_.setStatus("テレインに名前が無いので書き出せません（先に保存してください）");
+        return;
+    }
+    // 見せるのは実際の場所（作業フォルダ基準の相対パスでは build/ の下だと分からない）。
+    std::error_code absEc;
+    const std::filesystem::path absolute = std::filesystem::absolute(path, absEc);
+    const std::string shown = (absEc ? path : absolute).generic_u8string();
+    // 既にあるファイル（取り込んだ元・同じ場所のテクスチャ）は、ブラウザが確認して
+    // overwrite を付けたときだけ置き換える。
+    if (!overwrite && fileExists(path)) {
+        LOGI("scene", "terrain heightmap export refused: %s already exists (no overwrite)",
+             shown.c_str());
+        editor_.setStatus("ハイトマップ " + shown + " はすでにあります（上書きの確認が要ります）");
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const int side = field->verticesPerSide();
+    const float height = float(terrain_.height);
+    std::vector<uint8_t> bytes;
+    if (png) bytes = wt::encodePng16Gray(wt::heightmapSamples(*field, height), side);
+    else wt::appendRaw16(*field, height, bytes);
+    std::string reason = "cannot encode the grid";
+    const bool ok = !bytes.empty() && wt::writeFileBytes(path, bytes, reason);
+    if (!ok) {
+        LOGW("scene", "terrain heightmap export to %s: %s", shown.c_str(), reason.c_str());
+        editor_.setStatus("ハイトマップを書き出せません: " + shown + "（コンソール参照）");
+        return;
+    }
+    LOGI("scene", "terrain heightmap exported: %s (%dx%d samples, %zu bytes) in %.1f ms",
+         shown.c_str(), side, side, bytes.size(), elapsedMs(t0));
+    refreshHeightmapFiles();  // 書き出し先ができた（/scene の heightmapFiles）
+    // 上限より高い格子値は 65535 に切られている（通常の操作では起きにくい）。境は
+    // 量子化の 1 段の半分の上（比例伸縮の丸めで 1ulp 超えた点は数えない）。
+    const std::size_t clipped = field->countAbove(wt::quantizeClipLevel(height));
+    const std::string clippedNote =
+        clipped > 0 ? "。" + std::to_string(clipped) + " 点が上限で切られました" : "";
+    char status[256];
+    std::snprintf(status, sizeof(status), "（%d² × 16 bit、0〜%g m%s%s）", side, terrain_.height,
+                  field->anyHoles() ? "。穴は書き出していません" : "", clippedNote.c_str());
+    editor_.setStatus("ハイトマップを " + shown + " に書き出しました" + status);
 }
 
 // ---- ブラウザ ---------------------------------------------------------------
@@ -280,10 +435,25 @@ nlohmann::json Scene::terrainJson() const {
     nlohmann::json files = nlohmann::json::array();
     for (const wt::TerrainEntry& e : terrainLibrary_->entries()) files.push_back(toJson(e));
     j["terrainFiles"] = std::move(files);
+    // 今のテレインの書き出し先にファイルがあるか（ブラウザが書き出しの前に上書きを
+    // 確かめる。exportTerrainHeightmap と同じ場所）。
+    j["heightmapFiles"] = {{"raw", heightmapFiles_.raw}, {"png", heightmapFiles_.png}};
     return j;
 }
 
 void Scene::refreshTerrainFiles() {
     for (const std::string& w : terrainLibrary_->refresh())
         LOGW("scene", "terrain files: %s", w.c_str());
+    // エクスプローラでハイトマップを足した・消したぶんも同じ時に拾う。
+    refreshHeightmapFiles();
+}
+
+void Scene::refreshHeightmapFiles() {
+    // ディスクはロックの外で見る（terrain_ を書くのはこのスレッドだけ = 読むのに
+    // ロック不要）。
+    HeightmapFilesFound found;
+    found.raw = fileExists(heightmapPath(*terrainLibrary_, terrain_.data, false));
+    found.png = fileExists(heightmapPath(*terrainLibrary_, terrain_.data, true));
+    std::lock_guard<std::mutex> lk(objectsMutex_);
+    heightmapFiles_ = found;
 }

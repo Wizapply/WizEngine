@@ -1,0 +1,23 @@
+// エディタ専用レイヤに出す半透明の面（筆のカーソルの円盤など）。色は頂点が
+// 持つ（rgba、リニア、0〜1）ので、1 つのメッシュの中で色と濃さを変えられる。
+// unlit なのは、作業の目安が影に入って見えなくならないため（line.mat と同じ理由）。
+//
+// blending : transparent は「乗算済みのアルファ」を前提にするので、頂点色の
+// rgb にアルファを掛けるのはこのシェーダの 1 か所だけで行う（呼び手は生の
+// rgba を渡す）。面は表裏どちらから見ても出したいので culling : none。
+material {
+    name : overlay,
+    shadingModel : unlit,
+    blending : transparent,
+    depthWrite : false,
+    culling : none,
+    requires : [ color ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        vec4 c = getColor();
+        material.baseColor = vec4(c.rgb * c.a, c.a);
+    }
+}

@@ -1,5 +1,6 @@
 // stb_image の実装をコンパイルする唯一の翻訳単位。画像を読むのは
-// RendererGround.cpp（地面のテクスチャ）と EnvironmentLoader.cpp（HDR）で、
+// RendererGround.cpp（地面のテクスチャ）と EnvironmentLoader.cpp（HDR）、
+// SceneTerrainFile.cpp（テレインのハイトマップ、loadImageGray16）で、
 // 大きな実装をそちらへ持ち込まないためにここだけに置く。
 #define STB_IMAGE_IMPLEMENTATION
 // STBI_ONLY_* is a whitelist: every decoder NOT listed is compiled out. HDR has
@@ -15,23 +16,77 @@
 #include "render/ImageLoader.h"
 #include "core/Log.h"
 
+#include <algorithm>
+#include <climits>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 
 namespace {
 
-std::vector<unsigned char> readFileBytes(const std::string& path) {
-    std::ifstream in(path, std::ios::binary | std::ios::ate);
+// stb に渡す前にファイルが読めなかった理由（stb の理由と同じくスレッドごと）。
+// 読めたら null に戻し、以後の理由は stb が持つ（imageFailureReason）。
+thread_local const char* tReadFailure = nullptr;
+
+// path（UTF-8）のファイルの先頭から maxBytes バイトまで（既定 = 丸ごと）を読む。
+// 読めなければ空。u8path で開くので、Windows でも日本語などを含むパスが開ける
+// （stb の fopen は開けない）。
+std::vector<unsigned char> readFileBytes(const std::string& path,
+                                         std::size_t maxBytes = SIZE_MAX) {
+    std::ifstream in(std::filesystem::u8path(path), std::ios::binary | std::ios::ate);
     if (!in) return {};
     const std::streamsize size = in.tellg();
+    if (size < 0) return {};
     in.seekg(0);
     // Braces, not parentheses: `bytes(std::size_t(size))` parses as a function
     // declaration (the most vexing parse) and compiles to nothing useful.
-    const std::size_t count = std::size_t(size);
+    const std::size_t count = std::min(std::size_t(size), maxBytes);
     std::vector<unsigned char> bytes(count, 0);
-    if (!in.read(reinterpret_cast<char*>(bytes.data()), size)) return {};
+    if (!in.read(reinterpret_cast<char*>(bytes.data()), std::streamsize(count))) return {};
     return bytes;
+}
+
+// 画像のファイル（先頭から maxBytes バイトまで）を stb のメモリ版
+// （stbi_*_from_memory）へ渡すために読む。loadImageRGBA / readImageSize /
+// loadImageGray16 が共用する。読めない・空・stb の長さ（int）に収まらないなら
+// false で、理由は imageFailureReason が返す。
+bool readImageBytes(const std::string& path, std::vector<unsigned char>& bytes,
+                    std::size_t maxBytes = SIZE_MAX) {
+    bytes = readFileBytes(path, maxBytes);
+    if (bytes.empty()) {
+        tReadFailure = "cannot open or read the file (or it is empty)";
+        return false;
+    }
+    if (bytes.size() > std::size_t(INT_MAX)) {
+        bytes = {};
+        tReadFailure = "file is too large to decode (over 2 GB)";
+        return false;
+    }
+    tReadFailure = nullptr;
+    return true;
+}
+
+// readImageSize が読む先頭の大きさ。PNG の見出しは先頭の数十バイトにある。JPEG は
+// 寸法の前に大きな付帯情報（最大 64 KB の区画）が並びうるので、先頭が JPEG の印
+// （FF D8）で寸法に届かなかったときだけ丸ごと読み直す（readImageSize）。
+constexpr std::size_t kImageHeadBytes = 64 * 1024;
+
+// stb が返した画素（components 成分）を out へ移して解放し、幅と高さを書く。
+// data が null か大きさが 0 なら false（出力は触らない。data は解放する）。
+template <typename T>
+bool takePixels(T* data, int w, int h, int components, std::vector<T>& out, int& outWidth,
+                int& outHeight) {
+    if (!data || w <= 0 || h <= 0) {
+        if (data) stbi_image_free(data);
+        return false;
+    }
+    out.assign(data, data + std::size_t(w) * std::size_t(h) * std::size_t(components));
+    stbi_image_free(data);
+    outWidth = w;
+    outHeight = h;
+    return true;
 }
 
 }  // namespace
@@ -88,6 +143,7 @@ std::string identifyImageFormat(const std::string& path) {
 }
 
 const char* imageFailureReason() {
+    if (tReadFailure) return tReadFailure;
     const char* r = stbi_failure_reason();
     return r ? r : "unknown format";
 }
@@ -95,6 +151,7 @@ const char* imageFailureReason() {
 bool loadImageHDR(const std::string& path, std::vector<float>& out, int& width,
                   int& height, int maxWidth) {
     int channels = 0;
+    tReadFailure = nullptr;  // ここはファイルを stb が開く（理由は stb のもの）
     // 3 components: Filament's equirect input wants RGB; alpha is meaningless
     // for an environment.
     float* data = stbi_loadf(path.c_str(), &width, &height, &channels, 3);
@@ -207,15 +264,45 @@ bool loadImageRGBA(const std::string& path, std::vector<uint8_t>& outPixels,
     int w = 0;
     int h = 0;
     int channels = 0;
+    std::vector<unsigned char> bytes;
+    if (!readImageBytes(path, bytes)) return false;
     // Force 4 channels so the caller always gets RGBA8.
-    stbi_uc* data = stbi_load(path.c_str(), &w, &h, &channels, 4);
-    if (!data || w <= 0 || h <= 0) {
-        if (data) stbi_image_free(data);
+    stbi_uc* data =
+        stbi_load_from_memory(bytes.data(), int(bytes.size()), &w, &h, &channels, 4);
+    return takePixels(data, w, h, 4, outPixels, outWidth, outHeight);
+}
+
+bool readImageSize(const std::string& path, int& width, int& height) {
+    int w = 0;
+    int h = 0;
+    int channels = 0;
+    std::vector<unsigned char> bytes;
+    if (!readImageBytes(path, bytes, kImageHeadBytes)) return false;
+    const auto info = [&]() {
+        return stbi_info_from_memory(bytes.data(), int(bytes.size()), &w, &h, &channels) &&
+               w > 0 && h > 0;
+    };
+    // 丸ごと読み直すのは、JPEG（先頭が FF D8）で、先頭 64 KB が大きな付帯情報で
+    // 埋まって寸法に届かなかったときだけ（画像でない大きなファイルを丸ごと読まない）。
+    const bool truncatedJpeg = bytes.size() == kImageHeadBytes && bytes[0] == 0xFF &&
+                               bytes[1] == 0xD8;
+    if (!info() && (!truncatedJpeg || !readImageBytes(path, bytes) || !info())) {
         return false;
     }
-    outPixels.assign(data, data + static_cast<std::size_t>(w) * h * 4);
-    stbi_image_free(data);
-    outWidth = w;
-    outHeight = h;
+    width = w;
+    height = h;
     return true;
+}
+
+bool loadImageGray16(const std::string& path, std::vector<uint16_t>& out, int& width,
+                     int& height) {
+    int w = 0;
+    int h = 0;
+    int channels = 0;
+    std::vector<unsigned char> bytes;
+    if (!readImageBytes(path, bytes)) return false;
+    // 1 成分を指定: stb が輝度へ直し、8 ビットの画像も 16 ビットへ引き伸ばす。
+    stbi_us* data =
+        stbi_load_16_from_memory(bytes.data(), int(bytes.size()), &w, &h, &channels, 1);
+    return takePixels(data, w, h, 1, out, width, height);
 }

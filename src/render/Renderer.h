@@ -355,7 +355,8 @@ public:
     // 無い。グリッドのように本数が多く「見えれば十分」な作業目安はこちら。
     // エディタ専用レイヤに乗るので、映るビューは太線バッチと同じ扱い。
     //
-    // addLineSet は起動時（Scene::build）。setLineSet は中身が変わったとき
+    // addLineSet は使う側が 1 回だけ呼ぶ（グリッドは起動時の Scene::build、
+    // 筆の輪は TerrainComponent の最初の onRender）。setLineSet は中身が変わったとき
     // だけ呼ぶ約束（グリッドなら間隔の変更時のみ）。本数が変わったら
     // レンダラブルごと作り直す - 実行中にプリミティブ数を変える API は版に
     // よって名前が違うので使わない。RENDER スレッド。
@@ -363,6 +364,23 @@ public:
     // points は 2 個で 1 本。空にすると非表示。
     void setLineSet(std::size_t id,
                     const std::vector<filament::math::float3>& points);
+
+    // ---- オーバーレイ（エディタ専用レイヤの半透明メッシュ）----------------
+    // 頂点色つき・unlit の三角形メッシュ。筆のカーソルの円盤用。映るビューは
+    // 細線セットと同じ（エディタ専用レイヤ）。setOverlayMesh は中身が
+    // 変わったときだけ呼ぶ約束（細線セットと同じ。Renderer は同一判定を
+    // しない）。頂点数・インデックス数が変わったらレンダラブルごと作り直す。
+    // RENDER スレッド。
+    std::size_t addOverlayMesh();
+    // colors は rgba（リニア、0〜1、乗算前の生の値）で positions と同じ数。
+    // indices は 3 個で 1 三角形。positions か indices が空なら非表示。
+    // 次の場合も非表示にして警告を 1 回だけ出す: 色と頂点の数が違う・
+    // 頂点が 65536 個を超える（16 ビットのインデックスで指せない）・
+    // indices の数が 3 の倍数でない・頂点数以上のインデックスがある。
+    void setOverlayMesh(std::size_t id,
+                        const std::vector<filament::math::float3>& positions,
+                        const std::vector<filament::math::float4>& colors,
+                        const std::vector<uint16_t>& indices);
 
     // ---- レイヤ ----------------------------------------------------------
     // ギズモのように「エディタカメラのビューにだけ」見せたい物のための
@@ -568,10 +586,28 @@ private:
     };
     std::vector<LineSet> lineSets_;
 
+    // オーバーレイのメッシュ。細線セットと同じく、バッファは今の数ぶんだけ
+    // 確保し、数が変わったら作り直す。
+    struct OverlayMesh {
+        utils::Entity entity;
+        filament::VertexBuffer* vb = nullptr;
+        filament::IndexBuffer* ib = nullptr;
+        filament::MaterialInstance* mi = nullptr;
+        std::size_t vertexCount = 0;  // 確保済みの頂点数（0 = 実体なし）
+        std::size_t indexCount = 0;
+        bool inScene = false;
+    };
+    std::vector<OverlayMesh> overlayMeshes_;
+    filament::Material* overlayMaterial_ = nullptr;
+    bool overlayWarned_ = false;  // 形の壊れたメッシュの警告を出したか（1 回だけ）
+    // overlay.filamat の読み込み（コンストラクタが 1 回だけ呼ぶ）。無い・空・壊れている場合は
+    // AssetError を投げる（loadLineMaterial と同じ扱い）。
+    void loadOverlayMaterial();
+
     filament::Material* lineMaterial_ = nullptr;
-    // line.filamat の読み込み（初回のみ）。無い・空・壊れている場合は
+    // line.filamat の読み込み（コンストラクタが 1 回だけ呼ぶ）。無い・空・壊れている場合は
     // AssetError を投げる（線が黙って消えるのではなく、原因を示して止める）。
-    void ensureLineMaterial();
+    void loadLineMaterial();
     LineEntity createLine(const filament::math::float3& color);
     void updateLine(LineEntity& line, const filament::math::float3& from,
                     const filament::math::float3& to, bool visible);

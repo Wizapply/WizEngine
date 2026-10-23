@@ -1,6 +1,8 @@
 #include "terrain/TerrainFile.h"
 
 #include "core/Guid.h"
+#include "terrain/ByteOrder.h"
+#include "terrain/Heightmap.h"
 
 #include <algorithm>
 #include <atomic>
@@ -27,27 +29,17 @@ constexpr uint8_t kSolidByte = 255;  // HOLE 節: 中身
 // 4096 の格子でも HGHT は約 34 MB。後の節（SPLT など）の余地を見て広めに。
 constexpr uintmax_t kMaxFileBytes = 1024ull * 1024ull * 1024ull;
 
-// ---- リトルエンディアンの読み書き ----
-void putU32(std::vector<uint8_t>& out, uint32_t v) {
-    for (int k = 0; k < 4; ++k) out.push_back(uint8_t(v >> (8 * k)));
-}
-void putU64(std::vector<uint8_t>& out, uint64_t v) {
-    for (int k = 0; k < 8; ++k) out.push_back(uint8_t(v >> (8 * k)));
-}
+using byteorder::getLE;
+using byteorder::putLE;
+
+// ---- float のリトルエンディアンの読み書き（整数は ByteOrder.h）----
 void putF32(std::vector<uint8_t>& out, float f) {
     uint32_t v = 0;
     std::memcpy(&v, &f, 4);
-    putU32(out, v);
-}
-uint32_t getU32(const uint8_t* p) {
-    return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) |
-           (uint32_t(p[3]) << 24);
-}
-uint64_t getU64(const uint8_t* p) {
-    return uint64_t(getU32(p)) | (uint64_t(getU32(p + 4)) << 32);
+    putLE<uint32_t>(out, v);
 }
 float getF32(const uint8_t* p) {
-    const uint32_t v = getU32(p);
+    const uint32_t v = getLE<uint32_t>(p);
     float f = 0.0f;
     std::memcpy(&f, &v, 4);
     return f;
@@ -62,8 +54,8 @@ void padTo8(std::vector<uint8_t>& out) { out.resize(alignUp8(out.size()), 0); }
 void beginSection(std::vector<uint8_t>& out, const char tag[4], uint32_t version,
                   uint64_t byteLength) {
     out.insert(out.end(), tag, tag + 4);
-    putU32(out, version);
-    putU64(out, byteLength);
+    putLE<uint32_t>(out, version);
+    putLE<uint64_t>(out, byteLength);
 }
 
 bool sameTag(const uint8_t* p, const char tag[4]) { return std::memcmp(p, tag, 4) == 0; }
@@ -95,13 +87,6 @@ TerrainGuid fallbackGuid() {
     return g;
 }
 
-uint16_t quantize(float h, float height) {
-    float t = h / height;
-    if (!(t >= 0.0f)) t = 0.0f;  // NaN も 0
-    if (t > 1.0f) t = 1.0f;
-    return uint16_t(std::lround(t * 65535.0f));
-}
-
 // 節の位置（payload の先頭と長さ）。
 struct SectionRef {
     const uint8_t* payload = nullptr;
@@ -119,8 +104,8 @@ bool scanSections(const uint8_t* data, std::size_t size, uint32_t count,
             return false;
         }
         const uint8_t* p = data + offset;
-        const uint32_t version = getU32(p + 4);
-        const uint64_t length = getU64(p + 8);
+        const uint32_t version = getLE<uint32_t>(p + 4);
+        const uint64_t length = getLE<uint64_t>(p + 8);
         const std::size_t start = offset + kSectionHeaderBytes;
         if (length > uint64_t(size - start)) {
             reason = "section '" + std::string(reinterpret_cast<const char*>(p), 4) +
@@ -189,12 +174,12 @@ bool readHeader(const uint8_t* data, std::size_t size, TerrainFileHeader& out,
         return false;
     }
     TerrainFileHeader h;
-    h.version = getU32(data + 4);
-    const uint32_t res = getU32(data + 8);
+    h.version = getLE<uint32_t>(data + 4);
+    const uint32_t res = getLE<uint32_t>(data + 8);
     h.size = getF32(data + 12);
     h.height = getF32(data + 16);
     std::memcpy(h.guid.bytes.data(), data + 20, 16);
-    h.sectionCount = getU32(data + 36);
+    h.sectionCount = getLE<uint32_t>(data + 36);
     if (h.version != kTerrainFileVersion) {
         reason = "unsupported terrain file version " + std::to_string(h.version);
         return false;
@@ -245,26 +230,24 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
     }
     const std::size_t res = std::size_t(field.resolution());
     const bool holes = field.anyHoles();
-    const std::vector<float>& samples = field.samples();
+    // HGHT の中身は RAW16 のハイトマップと同じ並び・同じ量子化（appendRaw16 が
+    // buf の末尾へ直接書く = 標本・バイトの中間の配列を作らない）。
+    const std::size_t heightBytes = field.samples().size() * 2;
 
     std::vector<uint8_t> buf;
-    buf.reserve(kTerrainHeaderBytes + 2 * kSectionHeaderBytes + samples.size() * 2 +
+    buf.reserve(kTerrainHeaderBytes + 2 * kSectionHeaderBytes + heightBytes +
                 (holes ? res * res : 0) + 16);
     buf.insert(buf.end(), kMagic, kMagic + 4);
-    putU32(buf, kTerrainFileVersion);
-    putU32(buf, uint32_t(res));
+    putLE<uint32_t>(buf, kTerrainFileVersion);
+    putLE<uint32_t>(buf, uint32_t(res));
     putF32(buf, field.size());
     putF32(buf, height);
     buf.insert(buf.end(), guid.bytes.begin(), guid.bytes.end());
-    putU32(buf, holes ? 2u : 1u);
-    for (int k = 0; k < 2; ++k) putU32(buf, 0);  // reserved（見出しを 48 バイトに）
+    putLE<uint32_t>(buf, holes ? 2u : 1u);
+    for (int k = 0; k < 2; ++k) putLE<uint32_t>(buf, 0);  // reserved（見出しを 48 バイトに）
 
-    beginSection(buf, kTagHeights, kHeightsVersion, uint64_t(samples.size()) * 2);
-    for (const float h : samples) {
-        const uint16_t q = quantize(h, height);
-        buf.push_back(uint8_t(q & 0xff));
-        buf.push_back(uint8_t(q >> 8));
-    }
+    beginSection(buf, kTagHeights, kHeightsVersion, uint64_t(heightBytes));
+    appendRaw16(field, height, buf);
     padTo8(buf);
 
     if (holes) {
@@ -306,17 +289,14 @@ bool decode(const uint8_t* data, std::size_t size, TerrainFileData& out,
         return false;
     }
 
+    // HGHT の中身は RAW16 のハイトマップと同じ。見出しの解像度の格子へ直接戻す
+    // （標本の配列を作らない。長さは上で確かめた）。
     HeightField field(header.resolution, header.size, 0.0f, 0.0f, 0.0f);
-    if (!field.valid()) {  // readHeader の検査で起きないはず（安全弁）
-        reason = "cannot build a height field from the header";
+    if (!decodeRaw16Into(heights.payload, std::size_t(heights.length), header.height, field,
+                         reason)) {
+        // readHeader と上の長さの検査で起きないはず（安全弁）。
+        reason = "corrupt HGHT section: " + reason;
         return false;
-    }
-    std::vector<float>& samples = field.samples();
-    const float scale = header.height / 65535.0f;
-    for (std::size_t k = 0; k < samples.size(); ++k) {
-        const uint16_t q =
-            uint16_t(heights.payload[2 * k] | (uint16_t(heights.payload[2 * k + 1]) << 8));
-        samples[k] = float(q) * scale;
     }
     if (holes.found) {
         for (std::size_t j = 0; j < res; ++j) {
@@ -331,11 +311,8 @@ bool decode(const uint8_t* data, std::size_t size, TerrainFileData& out,
     return true;
 }
 
-bool writeFile(const std::filesystem::path& path, const HeightField& field, float height,
-               const TerrainGuid& guid, std::string& reason) {
-    std::vector<uint8_t> bytes;
-    if (!encode(field, height, guid, bytes, reason)) return false;
-
+bool writeFileBytes(const std::filesystem::path& path, const std::vector<uint8_t>& bytes,
+                    std::string& reason) {
     std::error_code ec;
     const std::filesystem::path parent = path.parent_path();
     if (!parent.empty()) {
@@ -371,27 +348,16 @@ bool writeFile(const std::filesystem::path& path, const HeightField& field, floa
     return true;
 }
 
-bool readFile(const std::filesystem::path& path, TerrainFileData& out, std::string& reason) {
+bool readFileBytes(const std::filesystem::path& path, uintmax_t maxBytes,
+                   std::vector<uint8_t>& out, std::string& reason) {
     std::error_code ec;
     const uintmax_t fileSize = std::filesystem::file_size(path, ec);
     if (ec) {
         reason = "cannot open " + path.u8string() + ": " + ec.message();
         return false;
     }
-    if (fileSize > kMaxFileBytes) {
+    if (fileSize > maxBytes) {
         reason = path.u8string() + " is too large (" + std::to_string(fileSize) + " bytes)";
-        return false;
-    }
-    // 全体を読む前に見出しだけで確かめる（.terrain という名前の別物を丸ごと
-    // 読まない）。理由にはパスが付く。
-    TerrainFileHeader header;
-    if (!readHeader(path, header, reason)) return false;
-    const uintmax_t side = uintmax_t(header.resolution) + 1;
-    const uintmax_t minBytes = kTerrainHeaderBytes + kSectionHeaderBytes + side * side * 2;
-    if (fileSize < minBytes) {
-        reason = path.u8string() + " is too short for resolution " +
-                 std::to_string(header.resolution) + " (" + std::to_string(fileSize) +
-                 " bytes, need at least " + std::to_string(minBytes) + ")";
         return false;
     }
     std::ifstream in(path, std::ios::binary);
@@ -405,6 +371,36 @@ bool readFile(const std::filesystem::path& path, TerrainFileData& out, std::stri
         reason = "failed to read " + path.u8string();
         return false;
     }
+    out = std::move(bytes);
+    return true;
+}
+
+bool writeFile(const std::filesystem::path& path, const HeightField& field, float height,
+               const TerrainGuid& guid, std::string& reason) {
+    std::vector<uint8_t> bytes;
+    if (!encode(field, height, guid, bytes, reason)) return false;
+    return writeFileBytes(path, bytes, reason);
+}
+
+bool readFile(const std::filesystem::path& path, TerrainFileData& out, std::string& reason) {
+    // 全体を読む前に見出しだけで確かめる（.terrain という名前の別物を丸ごと
+    // 読まない）。理由にはパスが付く。
+    TerrainFileHeader header;
+    if (!readHeader(path, header, reason)) return false;
+    // 短すぎるファイルも読む前に（大きさだけで）断る。大きさが取れなければ
+    // readFileBytes が理由を付けて断る。
+    const uintmax_t side = uintmax_t(header.resolution) + 1;
+    const uintmax_t minBytes = kTerrainHeaderBytes + kSectionHeaderBytes + side * side * 2;
+    std::error_code ec;
+    const uintmax_t fileSize = std::filesystem::file_size(path, ec);
+    if (!ec && fileSize < minBytes) {
+        reason = path.u8string() + " is too short for resolution " +
+                 std::to_string(header.resolution) + " (" + std::to_string(fileSize) +
+                 " bytes, need at least " + std::to_string(minBytes) + ")";
+        return false;
+    }
+    std::vector<uint8_t> bytes;
+    if (!readFileBytes(path, kMaxFileBytes, bytes, reason)) return false;
     if (!decode(bytes.data(), bytes.size(), out, reason)) {
         reason = path.u8string() + ": " + reason;
         return false;

@@ -246,17 +246,24 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
 // 完全な型が見えるここで定義する。
 Scene::~Scene() = default;
 
+bool Scene::cameraRay(std::size_t cameraIndex, double ndcX, double ndcY,
+                      scenemath::Basis& basis, scenemath::Vec3& dir) const {
+    if (cameraIndex >= cameras_.size()) return false;
+    basis = scenemath::cameraBasis(*cameras_[cameraIndex]);
+    if (!basis.valid) return false;
+    dir = scenemath::rayThrough(basis, ndcX, ndcY, renderer_.verticalFovDegrees(),
+                                renderer_.aspect());
+    return true;
+}
+
 std::size_t Scene::pickBoxAt(double ndcX, double ndcY,
                              std::size_t cameraIndex) {
-    if (cameraIndex >= cameras_.size()) return BoxController::kNone;
-
     // Ray from the camera through the clicked point, intersected with every
     // object. Done here rather than through the collision engine so it behaves
     // the same on the Core and Multicore backends.
-    const auto basis = scenemath::cameraBasis(*cameras_[cameraIndex]);
-    if (!basis.valid) return BoxController::kNone;
-    const scenemath::Vec3 dir = scenemath::rayThrough(
-        basis, ndcX, ndcY, renderer_.verticalFovDegrees(), renderer_.aspect());
+    scenemath::Basis basis;
+    scenemath::Vec3 dir;
+    if (!cameraRay(cameraIndex, ndcX, ndcY, basis, dir)) return BoxController::kNone;
 
     // オブジェクトごとに形と大きさが違うので、姿勢は共有スナップショットから
     // 取る（HTTP/INPUT スレッドから物理世界を読まないため）。
@@ -667,6 +674,9 @@ void Scene::buildJoints() {
 
 void Scene::enterMode(ed::AppMode target) {
     if (target == editor_.mode()) return;
+    // 筆のストロークはエディタだけのもの。途中で切り替えたら、そこまでを
+    // 1 段として積み、当たり判定を張り直してから移る。
+    endTerrainStroke();
     // どちら向きの遷移でもイベントの実行状態は捨てる: 開始はまっさらから
     // （タイマー・発火カウントのリセット）、停止は実行時の上書き（色・
     // ライト・固定）を設計値へ戻すため。
@@ -1619,17 +1629,23 @@ void Scene::applyToRenderer() {
     // テレインも同じ扱い。全チャンクのメッシュ化（解像度 1024 で 16x16
     // チャンク）とテクスチャの読込はロックの外で。格子は dirty と同じロックの
     // 中で取り出す（publishTerrainField が同じロックの中で差し替えるので組が揃う）。
+    // 筆が触ったチャンクの矩形（terrainChunkDirty_）も同じロックで取り出して空に戻す。
     bool terrainMesh = false, terrainSurface = false, terrainOn = false;
+    wizengine::terrain::GridRect terrainChunks;
     ed::TerrainDesc terrainPending;
     std::shared_ptr<const wizengine::terrain::HeightField> terrainFieldPending;
-    if (terrainMeshDirty_ || terrainSurfaceDirty_) {
+    if (terrainMeshDirty_ || terrainSurfaceDirty_ || !terrainChunkDirty_.empty()) {
         terrainMesh = terrainMeshDirty_;
         terrainSurface = terrainSurfaceDirty_;
+        terrainChunks = terrainChunkDirty_;
         terrainMeshDirty_ = false;
         terrainSurfaceDirty_ = false;
+        terrainChunkDirty_ = wizengine::terrain::GridRect{};
         terrainOn = hasTerrain_;
         terrainPending = terrain_;
-        if (terrainMesh) terrainFieldPending = terrainField();  // 末端のロック
+        if (terrainMesh || !terrainChunks.empty()) {
+            terrainFieldPending = terrainField();  // 末端のロック
+        }
     }
     // 地面とテレインの置き場所（エンティティの変換だけ = 安いのでロックの中で）。
     // Renderer は値を覚えていて、後から作り直した地面・チャンクにも当てる。
@@ -1641,15 +1657,12 @@ void Scene::applyToRenderer() {
     if (terrainPoseDirty_) {
         terrainPoseDirty_ = false;
         BodyTransform pose;
-        {
-            std::lock_guard<std::mutex> fl(terrainFieldMutex_);  // 末端のロック
-            pose = terrainPose_;
-        }
+        copyTerrainFieldAndPose(pose);  // 末端のロック
         renderer_.setTerrainTransform(toFilament(pose));
     }
     lk.unlock();
-    if (terrainMesh || terrainSurface) {
-        syncTerrain(terrainMesh, terrainSurface, terrainOn, terrainPending,
+    if (terrainMesh || terrainSurface || !terrainChunks.empty()) {
+        syncTerrain(terrainMesh, terrainChunks, terrainSurface, terrainOn, terrainPending,
                     terrainFieldPending);
     }
     if (applyRender) {

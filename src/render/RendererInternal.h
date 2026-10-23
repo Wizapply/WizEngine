@@ -10,6 +10,7 @@
 //   RendererShapes.cpp    : 形状スロット・ソフト形状・色と材質・ハイライト
 //   RendererMeshes.cpp    : 立方体・球・円柱のメッシュ生成
 //   RendererLines.cpp     : 線（グラブ線・ジョイント線・太線バッチ・細線セット）
+//   RendererOverlays.cpp  : エディタ専用レイヤの頂点色つき半透明メッシュ
 //   RendererGround.cpp    : 地面
 //   RendererTerrain.cpp   : テレイン（チャンク分割の高さメッシュ）
 //   RendererTextures.cpp  : テクスチャ読込（地面とテレインで共用）
@@ -41,6 +42,7 @@
 #include <filament/View.h>
 #include <filament/Viewport.h>
 
+#include <backend/BufferDescriptor.h>
 #include <backend/PixelBufferDescriptor.h>
 #include <geometry/SurfaceOrientation.h>
 #include <utils/EntityManager.h>
@@ -105,6 +107,75 @@ filament::Texture* loadTextureRGBA(filament::Engine& engine,
                                    const std::string& texturePath,
                                    const char* label,
                                    TextureFallback fallback);
+
+// assets/ の .filamat を読んでマテリアルを作る。無い・空・壊れている場合は
+// AssetError を投げる（黙って描かないのではなく、原因を示して止める）。
+// what はエラー文の主語（"line material" など）。戻り値は呼び出し側が壊す。
+inline filament::Material* loadMaterialPackage(filament::Engine& engine,
+                                               const char* file,
+                                               const char* what) {
+    wizengine::requireFile(file, what);
+    const std::string path = wizengine::assetPath(file);
+    const auto pkg = readFile(path);
+    if (pkg.empty()) throw wizengine::AssetError(path, "is empty");
+    filament::Material* material = filament::Material::Builder()
+                                       .package(pkg.data(), pkg.size())
+                                       .build(engine);
+    if (!material) throw wizengine::AssetError(path, "is not a valid .filamat");
+    return material;
+}
+
+// 頂点・インデックスの転送用に count 個をヒープへ写した BufferDescriptor。
+// Filament は非同期にコピーするので、呼び出し元の配列は渡せない -
+// 写した領域は転送の完了コールバックで解放する。
+template <class T>
+filament::backend::BufferDescriptor copyToDescriptor(const T* data,
+                                                     std::size_t count) {
+    auto* copy = new T[count];
+    std::memcpy(copy, data, sizeof(T) * count);
+    return filament::backend::BufferDescriptor(
+        copy, sizeof(T) * count,
+        [](void* p, size_t, void*) { delete[] static_cast<T*>(p); });
+}
+
+// エディタ専用レイヤに乗るレンダラブルを 1 つ作る（カリングしない・影を
+// 落とさず受けない）。シーンへの追加は呼び出し側（見せるときだけ足す）。
+inline utils::Entity buildEditorRenderable(
+    filament::Engine& engine, filament::RenderableManager::PrimitiveType type,
+    filament::VertexBuffer* vb, filament::IndexBuffer* ib,
+    std::size_t indexCount, filament::MaterialInstance* mi) {
+    utils::Entity entity = utils::EntityManager::get().create();
+    filament::RenderableManager::Builder(1)
+        .boundingBox({{-1000.0f, -1000.0f, -1000.0f},
+                      {1000.0f, 1000.0f, 1000.0f}})  // never culled
+        .geometry(0, type, vb, ib, 0, indexCount)
+        .material(0, mi)
+        .culling(false)
+        .castShadows(false)
+        .receiveShadows(false)
+        .build(engine, entity);
+    auto& rm = engine.getRenderableManager();
+    rm.setLayerMask(rm.getInstance(entity), 0xFF,
+                    wizengine::Renderer::kLayerEditorOnly);
+    return entity;
+}
+
+// 自前のバッファを持つレンダラブルを壊す（シーンから外す → エンティティ →
+// 頂点 / インデックスバッファ）。壊した物は空に戻す。マテリアルインスタンスは
+// 作り直しをまたいで使い回すので、ここでは壊さない。
+inline void destroyRenderable(filament::Engine& engine, filament::Scene& scene,
+                              utils::Entity& entity, filament::VertexBuffer*& vb,
+                              filament::IndexBuffer*& ib, bool& inScene) {
+    if (inScene) scene.remove(entity);
+    inScene = false;
+    engine.destroy(entity);
+    utils::EntityManager::get().destroy(entity);
+    entity = {};
+    engine.destroy(vb);
+    vb = nullptr;
+    engine.destroy(ib);
+    ib = nullptr;
+}
 
 // エンティティの変換（無ければ変換の部品を作ってから当てる）。地面と
 // テレインのチャンクが使う。

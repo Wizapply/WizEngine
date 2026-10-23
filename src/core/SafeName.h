@@ -30,6 +30,9 @@ inline bool isSafeName(const std::string& name) {
     return !name.empty() && sanitizeSafeName(name) == name;
 }
 
+// 採番の接尾辞の区切り（base_2 の "_"）。firstFreeName が付け、stripNumberSuffix が外す。
+constexpr char kNumberSuffixSeparator = '_';
+
 // 空いている名前の採番の規則（唯一の定義）: base が空いていれば base、
 // ふさがっていれば base_2, base_3 … を順に taken(name) に聞いて最初の空き。
 // 候補が maxLength を超えるときは接尾辞が入るよう base 側を削る。上限
@@ -41,12 +44,23 @@ std::string firstFreeName(const std::string& base, std::size_t maxLength, Taken 
     const std::string first = base.substr(0, maxLength);
     if (!taken(first)) return first;
     for (int n = 2; n <= kMaxSuffix; ++n) {
-        const std::string suffix = "_" + std::to_string(n);
+        const std::string suffix = kNumberSuffixSeparator + std::to_string(n);
         if (suffix.size() > maxLength) break;
         const std::string candidate = base.substr(0, maxLength - suffix.size()) + suffix;
         if (!taken(candidate)) return candidate;
     }
     return {};
+}
+
+// firstFreeName が付ける形の接尾辞（末尾の区切り + 1 文字以上の数字だけ）を外した
+// 名前。その形でなければ name のまま（"a_"・"_2"・"a_2b" は外さない）。外して
+// よいか（元の名前が実在するか）は呼び手が決める。
+inline std::string stripNumberSuffix(const std::string& name) {
+    const std::size_t sep = name.rfind(kNumberSuffixSeparator);
+    if (sep == std::string::npos || sep == 0 || sep + 1 == name.size()) return name;
+    for (std::size_t k = sep + 1; k < name.size(); ++k)
+        if (name[k] < '0' || name[k] > '9') return name;
+    return name.substr(0, sep);
 }
 
 }  // namespace wizengine

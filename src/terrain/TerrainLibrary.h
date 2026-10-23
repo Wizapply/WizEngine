@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -88,6 +89,17 @@ struct TerrainRemoveResult {
     bool ok() const { return status == TerrainRemoveStatus::Ok; }
 };
 
+// 複製の結果。
+struct TerrainDuplicateResult {
+    std::string name;    // 新しい名前。失敗なら空
+    std::string source;  // 元の一覧の正式な綴り（一覧に無ければ頼まれた名前）
+    std::string reason;  // 英語。成功なら空
+    bool ok() const { return !name.empty(); }
+};
+
+// ファイルが無くても使用中として扱う名前か（uniqueName / duplicate の追加の条件）。
+using NameInUse = std::function<bool(const std::string&)>;
+
 // 所有者は Scene（refresh / rename / remove は物理スレッド）。entries() だけは他の
 // スレッド（HTTP）からも呼べる = キャッシュは mutex で守り、コピーを返す。
 class TerrainLibrary {
@@ -118,9 +130,20 @@ public:
     // 何も変えない。
     TerrainRemoveResult remove(const std::string& name);
 
+    // ファイル name.terrain の中身を新しい背番号で別のファイルに書き、一覧に
+    // 1 件足す。名前は uniqueName が採る空いている最初の番号。基にするのは name の
+    // 正式な綴りで、末尾の _数字 を外した名前（stripNumberSuffix）が一覧にあれば
+    // そちら（hill と hill_2 があれば hill_2 の複製は hill_3、hill_2 を消してあれば
+    // hill_5 の複製は hill_2。元の無い level_10 は level_10_2）。inUse は
+    // ファイルが無くても使用中の名前（呼び手の未保存のテレイン）。失敗したら
+    // 何も変えない。
+    TerrainDuplicateResult duplicate(const std::string& name,
+                                     const NameInUse& inUse = {});
+
     // base（正規化する。空なら "terrain"）が空いていればそれ、ふさがって
-    // いれば base_2, base_3 …。64 文字に収まるよう base 側を削る。
-    std::string uniqueName(const std::string& base) const;
+    // いれば base_2, base_3 …。64 文字に収まるよう base 側を削る。inUse が
+    // true を返す名前もふさがっている扱い。上限まで空かなければ空文字列。
+    std::string uniqueName(const std::string& base, const NameInUse& inUse = {}) const;
 
     // 名前のファイルのパス。name が正規化済みの名前でなければ空のパス。
     std::filesystem::path pathFor(const std::string& name) const;
@@ -137,6 +160,10 @@ private:
     // キャッシュの中の name の 1 件（綴りまで一致するもの、無ければ大文字・
     // 小文字を問わず最初の 1 件）。無ければ end()。mutex_ を持って呼ぶ。
     std::vector<TerrainEntry>::iterator findCached(const std::string& name);
+
+    // name の一覧の正式な綴り（findCached。一覧に無ければ otherwise）。
+    // mutex_ は自分で取る。
+    std::string cachedName(const std::string& name, const std::string& otherwise);
 
     std::filesystem::path dir_;
     mutable std::mutex mutex_;  // entries_ だけを守る（ファイル操作の間は持たない）

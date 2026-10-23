@@ -62,7 +62,7 @@ const std::vector<filament::math::float3>& batchColors();
 // 余裕がある。グリッドはポリゴンではなく細線セットで描くので入らない。
 inline constexpr std::size_t kMaxSegments = 256;
 
-// Y=0 グリッド用の細線セット。番号は Scene::build が gridColors() の順に
+// Y=0 グリッドの細線セット。番号は Scene::build が gridColors() の順に
 // Renderer::addLineSet した並びと一致する。
 inline constexpr std::size_t kGridSetGray = 0;  // 格子（灰）
 inline constexpr std::size_t kGridSetX = 1;     // 原点を通る X 軸（赤）

@@ -48,6 +48,15 @@ TerrainEdit captureRegion(const HeightField& field, const GridRect& rect);
 // 共有中の格子（shared_ptr<const>）には呼べない = コピーに対して呼ぶ。
 TerrainEdit applyEdit(HeightField& field, const TerrainEdit& edit);
 
+// 1 回の編集（筆のストローク）の「変更前」を、触った範囲が広がるたびに育てる。
+// before = 今回書き換える前の格子、acc = ここまでの記録（最初は空）、rect =
+// 今回書き換える範囲（セル単位）。返すのは acc.rect ∪ rect（切り詰め済み）の
+// 記録で、acc の矩形の中は acc の値（= ストロークの前の値）、外は before の値
+// （= まだ触っていなかった所 = 変更前）。範囲は関数の中で取るので、呼び手が
+// 狭く取り違えることはない。acc が別の格子の記録（resolution 違い・矩形と
+// 合わない）か before が空なら acc をそのまま返す。
+TerrainEdit growEdit(const HeightField& before, const TerrainEdit& acc, const GridRect& rect);
+
 constexpr std::size_t kUndoMaxEntries = 32;
 constexpr std::size_t kUndoMaxBytes = std::size_t(64) * 1024 * 1024;
 

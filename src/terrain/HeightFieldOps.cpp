@@ -1,5 +1,6 @@
 // HeightField の「形を変えた写し」を作る操作（大きさ・位置の変更、解像度の
-// 変更、高さの比例伸縮）。宣言は HeightField.h。HeightField.cpp を問い合わせと
+// 変更、高さの比例伸縮と切り詰め）と、編集が描画に及ぶ範囲（chunksTouched）。
+// 宣言は HeightField.h。HeightField.cpp を問い合わせと
 // メッシュ化に絞っておくため、ファイルを分けてある。
 //
 // 共有中の格子（Scene が持つ shared_ptr<const HeightField>）は書き換えない約束
@@ -39,6 +40,20 @@ void HeightField::scaleHeights(float k) {
     // 0 や負で地形が潰れたり裏返ったりしないよう、正の有限値だけ受ける。
     if (!std::isfinite(k) || !(k > 0.0f)) return;
     for (float& h : heights_) h *= k;
+}
+
+std::size_t HeightField::clampHeights(float maxHeight) {
+    // scaleHeights と同じく、正の有限値だけ受ける（0 で全部を平らに潰さない）。
+    if (!std::isfinite(maxHeight) || !(maxHeight > 0.0f)) return 0;
+    const std::size_t clipped = countAbove(maxHeight);
+    if (clipped == 0) return 0;
+    for (float& h : heights_) h = std::min(h, maxHeight);
+    return clipped;
+}
+
+std::size_t HeightField::countAbove(float maxHeight) const {
+    return std::size_t(std::count_if(heights_.begin(), heights_.end(),
+                                     [maxHeight](float h) { return h > maxHeight; }));
 }
 
 HeightField HeightField::withGeometry(float size, float centerX, float baseY,
@@ -96,6 +111,19 @@ HeightField HeightField::resampled(int resolution) const {
         if (any) out.holes_ = std::move(mask);  // 穴が残らなければ空のまま
     }
     return out;
+}
+
+GridRect HeightField::chunksTouched(const GridRect& cells, int quadsPerChunk) const {
+    const GridRect c = cells.clamped(resolution_);
+    if (!valid() || quadsPerChunk < 1 || c.empty()) return {};
+    const int q = quadsPerChunk;
+    // 書き換えうるサンプルは [i0, i1]、法線が変わる頂点はその ±1 = [i0 − 1, i1 + 1]。
+    // チャンク n は頂点 [n·q, n·q + q] を持つので、頂点 v を持つチャンクの最小は
+    // ceil(v / q) − 1 = (v − 1) / q（v ≥ 1。v ≤ 0 は 0）、最大は v / q。
+    auto lowChunk = [q](int v) { return v <= 0 ? 0 : (v - 1) / q; };
+    const GridRect v = c.expanded(1);  // 頂点の範囲（両端を含む）
+    const GridRect r{lowChunk(v.i0), lowChunk(v.j0), v.i1 / q + 1, v.j1 / q + 1};
+    return r.clamped(chunksPerSide(q));
 }
 
 }  // namespace terrain

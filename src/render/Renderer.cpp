@@ -94,6 +94,11 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
     terrainMatInstance_ = terrainMaterial_->createInstance();
     setTerrainSurface("", 1.0f, float4{1.0f, 1.0f, 1.0f, 1.0f}, 0.9f, 0.0f);
 
+    // 線と半透明の重ね描きの材質も起動時に読む（最初に使う時ではなく）=
+    // 欠けていれば、エディタで初めて線を出したときではなく起動時に止まる。
+    loadLineMaterial();
+    loadOverlayMaterial();
+
     // Direct lights are no longer created here: the scene owns them as
     // editable light descriptors (Scene::LightItem, saved in the scene
     // document) and adds them through addLight() via syncLights. Only the
@@ -265,7 +270,6 @@ Renderer::~Renderer() {
     scene_->setIndirectLight(nullptr);
     engine_->destroy(ibl_);
     if (iblTexture_) engine_->destroy(iblTexture_);
-    engine_->destroy(groundTexture_);
     engine_->destroy(matInstance_);
     for (auto& line : grabLines_) destroyLine(line);
     grabLines_.clear();
@@ -282,19 +286,28 @@ Renderer::~Renderer() {
     lineBatches_.clear();
     for (auto& set : lineSets_) {
         if (set.lineCount > 0) {
-            if (set.inScene) scene_->remove(set.entity);
-            engine_->destroy(set.entity);
-            EntityManager::get().destroy(set.entity);
-            engine_->destroy(set.vb);
-            engine_->destroy(set.ib);
+            destroyRenderable(*engine_, *scene_, set.entity, set.vb, set.ib,
+                              set.inScene);
         }
         if (set.mi) engine_->destroy(set.mi);
     }
     lineSets_.clear();
+    for (auto& mesh : overlayMeshes_) {
+        if (mesh.vertexCount > 0) {
+            destroyRenderable(*engine_, *scene_, mesh.entity, mesh.vb, mesh.ib,
+                              mesh.inScene);
+        }
+        if (mesh.mi) engine_->destroy(mesh.mi);
+    }
+    overlayMeshes_.clear();
+    if (overlayMaterial_) engine_->destroy(overlayMaterial_);
     if (lineMaterial_) engine_->destroy(lineMaterial_);
     for (auto* mi : highlightInstances_) engine_->destroy(mi);
     engine_->destroy(material_);
     engine_->destroy(groundMatInstance_);
+    // 地面のテクスチャはマテリアルインスタンスが参照しているので、その後で壊す
+    // （RendererGround.cpp の removeGround の注記）。
+    engine_->destroy(groundTexture_);
     engine_->destroy(groundMaterial_);
     engine_->destroy(vb_);
     engine_->destroy(groundVb_);

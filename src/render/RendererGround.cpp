@@ -25,7 +25,8 @@ void Renderer::removeGround() {
     // （groundMatInstance_）に "checker" として付いたままなので、壊すと次の
     // 描画で Filament が "Invalid texture still bound to MaterialInstance" で
     // 止まる（地面を外したシーン = <ground enabled="false"> で起きた）。
-    // 差し替えは addGround が新しいテクスチャを付けてから古い方を壊す。
+    // 差し替えは addGround が新しいテクスチャを付けてから古い方を壊し、
+    // 最後はデストラクタがマテリアルインスタンスの後で壊す。
     if (!groundEntity_.isNull()) {
         scene_->remove(groundEntity_);
         engine_->destroy(groundEntity_);
