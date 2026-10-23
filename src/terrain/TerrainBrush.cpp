@@ -26,12 +26,6 @@ bool usableStamp(const BrushStamp& s) {
            s.radius > 0.0 && s.maxHeight >= 0.0;
 }
 
-// 中心からの距離 d の重み（中心 1 → 半径 r 以上で 0、smoothstep で単調に減る）。
-double falloff(double d, double r) {
-    const double t = std::clamp(d / r, 0.0, 1.0);
-    return 1.0 - t * t * (3.0 - 2.0 * t);
-}
-
 // 当てる円 1 個（格子の座標）。内外は二乗距離で比べ、平方根は重みを出すときだけ。
 struct Disc {
     double cx, cz, r;
@@ -44,7 +38,7 @@ struct Disc {
     // 減衰の重み。半径の外は 0。
     double weight(double x, double z) const {
         const double d2 = distanceSq(x, z);
-        return d2 < r2 ? falloff(std::sqrt(d2), r) : 0.0;
+        return d2 < r2 ? brushFalloff(std::sqrt(d2), r) : 0.0;
     }
 };
 
@@ -170,6 +164,11 @@ bool applyDisc(HeightField& f, const BrushStamp& s, const Disc& disc, double dt,
 }
 
 }  // namespace
+
+double brushFalloff(double d, double r) {
+    const double t = std::clamp(d / r, 0.0, 1.0);
+    return 1.0 - t * t * (3.0 - 2.0 * t);
+}
 
 BrushTool brushToolFromName(const std::string& name, BrushTool fallback) {
     if (name == "raise") return BrushTool::Raise;

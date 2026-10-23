@@ -46,7 +46,6 @@ constexpr double kRingThickness = 0.024;
 // 当たり判定の太さ（NDC）。画面の高さの約 2%。細い線を狙わせすぎない。
 constexpr double kPickAxis = 0.035;
 constexpr double kPickBlob = 0.05;
-using gizmo::kRingSegments;  // 円の分割数（筆の輪と共通、GizmoComponent.h）
 
 // 軸の始まり（中心に近すぎると回転リングや一様ハンドルと取り合いになる）。
 constexpr double kShaftStart = 0.15;
@@ -213,8 +212,8 @@ void buildRotate(const Sink& out, const Frame& f, int active) {
         const Vec3& v = f.axis[(i + 2) % 3];
         const std::size_t b = batchFor(i, active, std::size_t(i));
         Vec3 prev = f.origin + u * r;
-        for (int s = 1; s <= kRingSegments; ++s) {
-            const double t = 2.0 * scenemath::kPi * double(s) / kRingSegments;
+        for (int s = 1; s <= scenemath::kCircleSegments; ++s) {
+            const double t = 2.0 * scenemath::kPi * double(s) / scenemath::kCircleSegments;
             const Vec3 p = f.origin + u * (r * std::cos(t)) + v * (r * std::sin(t));
             segment(out, b, prev, p);
             prev = p;
@@ -604,8 +603,8 @@ int hitTest(const Frame& f, const Projector& pr, ed::GizmoMode mode, double px,
             const Vec3& v = f.axis[(i + 2) % 3];
             Vec3 prev = f.origin + u * r;
             double closest = 1e9;
-            for (int s = 1; s <= kRingSegments; ++s) {
-                const double t = 2.0 * scenemath::kPi * double(s) / kRingSegments;
+            for (int s = 1; s <= scenemath::kCircleSegments; ++s) {
+                const double t = 2.0 * scenemath::kPi * double(s) / scenemath::kCircleSegments;
                 const Vec3 p =
                     f.origin + u * (r * std::cos(t)) + v * (r * std::sin(t));
                 closest = std::min(closest, segmentDistance(pr, prev, p, px, py));
@@ -738,7 +737,6 @@ const std::vector<filament::math::float3>& gridColors() {
         {0.42f, 0.45f, 0.52f},  // kGridSetGray: 控えめな灰（主役は物のほう）
         {0.95f, 0.03f, 0.04f},  // kGridSetX: 軸バッチと同じ赤
         {0.05f, 0.20f, 1.00f},  // kGridSetZ: 軸バッチと同じ青
-        {1.00f, 0.55f, 0.10f},  // kLineSetBrushRing: 橙（地表の緑・灰の上で目立つ）
     };
     return colors;
 }

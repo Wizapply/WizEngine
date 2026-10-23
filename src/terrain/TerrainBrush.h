@@ -59,6 +59,11 @@ struct BrushStamp {
     BrushTool tool = BrushTool::Raise;
 };
 
+// 筆の減衰: 中心からの距離 d の重み（中心 1 → 半径 r 以上で 0、smoothstep で
+// 単調に減る）。applyStamp の効き目と、カーソルの円盤の濃さ（TerrainComponent）
+// が同じ形になるよう公開している。r は正であること。
+double brushFalloff(double d, double r);
+
 // 半径 kBrushMinRadius〜kBrushMaxRadius、強さ 0〜kBrushMaxStrength、
 // dt 0〜kBrushMaxDt、maxHeight 0 以上に丸める。NaN は丸めずに残す
 // （stampRect / applyStamp が何もしない = 壊れた入力で格子を書き換えない）。
