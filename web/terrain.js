@@ -26,12 +26,6 @@
     const patch = Object.assign(terrainPatch, extra || {});
     terrainPatch = {};
     if (Object.keys(patch).length === 0) return undefined;
-    // 高さには「形を保つ」を同じ 1 通で付ける（送る時点のチェック。サーバーは
-    // テレインに覚えないので、高さを送らない通には付けない）。
-    if ('height' in patch) {
-      const keep = document.getElementById('edTerrainKeep');
-      patch.keepShape = !!(keep && keep.checked);
-    }
     return send('edit.terrain', patch, keepalive);
   }
   // 送信待ちの形のキーを捨てる。シーンの読込・XML 適用・全消しの前に呼ぶ:
@@ -79,6 +73,13 @@
     if (typeof value === 'number' && !Number.isFinite(value)) return;
     if (value === undefined) return;
     terrainPatch[key] = value;
+    // 高さには「形を保つ」を同じ 1 通で付ける。読むのは高さの欄を変えた時点の
+    // チェック（間引きの間に切り替えても、この変更の指示は変わらない）。サーバーは
+    // テレインに覚えないので、高さを送らない通には付けない。
+    if (key === 'height') {
+      const keep = pick('edTerrainKeep');
+      terrainPatch.keepShape = !!(keep && keep.checked);
+    }
     if (TERRAIN_SHAPE_KEYS.includes(key)) {
       if (terrainTimer) clearTimeout(terrainTimer);
       terrainTimer = setTimeout(() => flushTerrain(), TERRAIN_SHAPE_DELAY_MS);
@@ -205,8 +206,14 @@
     storeJson(TERRAIN_HEIGHTMAP_STORE, { file: file, flip: flip });
     sendAfterTerrainPatch({ import: { file: file, flip: flip } });
   }
+  // 書き出し先が既にあれば（/scene の heightmapFiles）上書きを確かめ、OK なら
+  // overwrite を付ける（サーバーは overwrite の無い上書きを断る）。確かめた
+  // テレインの名前も添える（その間に開き替え・改名されたらサーバーが断る）。
   function exportTerrainHeightmap(fmt) {
-    sendAfterTerrainPatch({ export: fmt });
+    const name = currentTerrain().name;
+    const exists = !!((sceneData && sceneData.heightmapFiles) || {})[fmt];
+    if (exists && !confirm(name + '.' + fmt + ' は既にあります。上書きしますか？')) return;
+    sendAfterTerrainPatch({ export: fmt, terrain: name, overwrite: exists });
   }
   (function restoreTerrainHeightmap() {
     const saved = loadStoredJson(TERRAIN_HEIGHTMAP_STORE);

@@ -103,8 +103,11 @@ void Scene::renameTerrain(const std::string& from, const std::string& to) {
     }
     // 今のテレインの参照（data）だけを新しい名前へ。格子はそのまま。
     auto retarget = [this](const std::string& name) {
-        std::lock_guard<std::mutex> lk(objectsMutex_);
-        terrain_.data = name;
+        {
+            std::lock_guard<std::mutex> lk(objectsMutex_);
+            terrain_.data = name;
+        }
+        refreshHeightmapFiles();
     };
     switch (r.status) {
         case wt::TerrainRenameStatus::Ok:
@@ -197,7 +200,7 @@ void Scene::duplicateTerrain(const std::string& name) {
 }
 
 // edit.terrain のうちファイルを扱う分岐（refresh / rename{from,to} / delete /
-// open / duplicate / new / import{file,flip} / export）。扱ったら true
+// open / duplicate / new / import{file,flip} / export(+overwrite, terrain)）。扱ったら true
 // （applyTerrainOp はそこで終わる）。
 // open・duplicate・new は、保存していない変更があれば discard:true が付いているときだけ
 // 取り替える（ブラウザの dirty 表示が古くても黙って捨てない）。
@@ -257,7 +260,8 @@ bool Scene::applyTerrainFileOp(const nlohmann::json& a) {
     }
     if (a.contains("export")) {
         if (!refuseWhileMissing(editor_, terrainMissing(), "書き出し"))
-            exportTerrainHeightmap(ed::jsonString(a, "export", ""));
+            exportTerrainHeightmap(ed::jsonString(a, "export", ""), argIsTrue(a, "overwrite"),
+                                   ed::jsonString(a, "terrain", ""));
         return true;
     }
     return false;
@@ -323,7 +327,8 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
     // 部分更新。テレインが無い間の値は位置と表面だけが次の新規に効く。
     // 当たり判定はモードによらずその場で張り直す（publishTerrainField）。
     const ed::TerrainDesc next = patched();
-    editor_.setStatus(terrainPatchStatus(hasTerrain_, terrain_.resolution, next.resolution));
     // 高さの変更で形を保つか（Inspector の「形を保つ」。height と同じ 1 通で届く）。
-    reshapeTerrain(next, argIsTrue(a, "keepShape"));
+    // ステータスは reshapeTerrain が出す（切った点の知らせを後ろに足すため）。
+    reshapeTerrain(next, argIsTrue(a, "keepShape"),
+                   terrainPatchStatus(hasTerrain_, terrain_.resolution, next.resolution));
 }

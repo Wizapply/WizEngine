@@ -112,14 +112,14 @@
     if (!owner) return Promise.resolve();
     const msg = Object.assign({ cmd: cmd }, args || {});
     const ctl = timeoutMs ? new AbortController() : null;
-    if (ctl) setTimeout(() => ctl.abort(), timeoutMs);
+    const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
     return fetch('input', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(msg),
       keepalive: !!keepalive,
       signal: ctl ? ctl.signal : undefined
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => clearTimeout(timer));
   }
   // ---- Input: one code path for mouse, touch and pen ---------------------
   // Pointer Events give the same handlers for every device, so the gestures
@@ -180,8 +180,8 @@
 
     if (e.pointerType === 'touch') {
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      // 筆の道具を選んでいる間の 1 本目は筆が塗る（terrain-brush.js）。
-      if (touches.size === 1 && !brushToolActive()) {
+      // 筆が取った指（terrain-brush.js の capture が先に印を付ける）は掴まない。
+      if (touches.size === 1 && brushPointerId !== e.pointerId) {
         // Try to grab whatever is under the finger. If the server reports no
         // selection, pointermove turns this into an orbit.
         grabIsTouch = true;
@@ -274,7 +274,8 @@
   }
   hitEl.addEventListener('pointerup', endPointer);
   hitEl.addEventListener('pointercancel', endPointer);
-  window.addEventListener('blur', () => endPointer(null));
+  // 離れている間の指の up は届かないので、指の一覧も空にする。
+  window.addEventListener('blur', () => { touches.clear(); endPointer(null); });
   window.addEventListener('keyup', (e) => {
     if (e.key === 'Control') endPointer(null);
   });

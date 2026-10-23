@@ -42,10 +42,18 @@ void HeightField::scaleHeights(float k) {
     for (float& h : heights_) h *= k;
 }
 
-void HeightField::clampHeights(float maxHeight) {
+std::size_t HeightField::clampHeights(float maxHeight) {
     // scaleHeights と同じく、正の有限値だけ受ける（0 で全部を平らに潰さない）。
-    if (!std::isfinite(maxHeight) || !(maxHeight > 0.0f)) return;
+    if (!std::isfinite(maxHeight) || !(maxHeight > 0.0f)) return 0;
+    const std::size_t clipped = countAbove(maxHeight);
+    if (clipped == 0) return 0;
     for (float& h : heights_) h = std::min(h, maxHeight);
+    return clipped;
+}
+
+std::size_t HeightField::countAbove(float maxHeight) const {
+    return std::size_t(std::count_if(heights_.begin(), heights_.end(),
+                                     [maxHeight](float h) { return h > maxHeight; }));
 }
 
 HeightField HeightField::withGeometry(float size, float centerX, float baseY,

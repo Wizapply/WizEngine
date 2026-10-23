@@ -65,10 +65,11 @@ LocalHit hitTerrain(Scene& scene, std::size_t camIndex, double ndcX, double ndcY
     double t = 0.0;
     wt::Vec3 normal = wt::Vec3::Zero();
     // 判定の戻り値は一度変数に受けてから使う（出力引数と同じ式に並べない規約）。
-    const bool hit = frame.raycast(*out.field, basis.eye, dir,
-                                   std::numeric_limits<double>::infinity(), t, normal);
+    // レイはもうローカルなので、格子に直接当てる（変換は上の 1 回だけ）。
+    const bool hit = out.field->raycast(out.eye, out.dir,
+                                        std::numeric_limits<double>::infinity(), t, normal);
     if (!hit) return out;
-    // 回転で長さは変わらない = ローカルのレイでも同じ t。当たった点は地表の上。
+    // 当たった点は地表の上。
     const wt::Vec3 local = out.eye + out.dir * t;
     out.hit = true;
     out.x = local.x();

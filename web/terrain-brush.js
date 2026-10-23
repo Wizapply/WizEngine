@@ -36,7 +36,9 @@
   // ギズモ）か、#terrainBar の button[data-tool] のどれか（ボタンの
   // data-tool がサーバーの terrain::brushToolFromName と同じ綴りの唯一の一覧）。
   let brushTool = 'none';
-  let brushPointerId = null;     // 押しているポインタ（押していなければ null）
+  // 押しているポインタ（押していなければ null）。筆が取った指かの唯一の印で、
+  // app.js のタッチの 1 本目もこれを見る（筆が取った指は掴まない）。
+  let brushPointerId = null;
   let brushMoveTimer = null;     // 押している間だけ回す move のタイマー
 
   // 筆が使える状態か: エディタモード × エディタカメラ × テレインを選択中 ×
@@ -149,8 +151,8 @@
   // ---- ポインタ --------------------------------------------------------------
   // #hit の capture 段階で受ける。マウス・ペンでは筆が受け持つ押下を app.js の
   // pick / drag / カメラ操作へ流さない（同じ要素の後の聞き手も止める）。
-  // タッチは app.js の指の一覧に入れるため流す（app.js は筆の間の 1 本目では
-  // 掴まない）。Ctrl 付きはいつもどおりカメラ操作、左ボタン以外も素通し。
+  // タッチは app.js の指の一覧に入れるため流す（app.js は brushPointerId の
+  // 指を掴まない）。Ctrl 付きはいつもどおりカメラ操作、左ボタン以外も素通し。
   // 位置は app.js の hoverNdc（1 か所）で、押している間はここでも書く
   // （タッチでは app.js が書かない）。
   // ndc = 離した点（pointerup だけが渡す）。サーバーは前の点からそこまでを

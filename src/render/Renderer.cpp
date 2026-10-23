@@ -94,6 +94,11 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
     terrainMatInstance_ = terrainMaterial_->createInstance();
     setTerrainSurface("", 1.0f, float4{1.0f, 1.0f, 1.0f, 1.0f}, 0.9f, 0.0f);
 
+    // 線と半透明の重ね描きの材質も起動時に読む（最初に使う時ではなく）=
+    // 欠けていれば、エディタで初めて線を出したときではなく起動時に止まる。
+    loadLineMaterial();
+    loadOverlayMaterial();
+
     // Direct lights are no longer created here: the scene owns them as
     // editable light descriptors (Scene::LightItem, saved in the scene
     // document) and adds them through addLight() via syncLights. Only the

@@ -230,11 +230,12 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
     }
     const std::size_t res = std::size_t(field.resolution());
     const bool holes = field.anyHoles();
-    // HGHT の中身は RAW16 のハイトマップと同じ並び・同じ量子化。
-    const std::vector<uint8_t> heights = encodeRaw16(heightmapSamples(field, height));
+    // HGHT の中身は RAW16 のハイトマップと同じ並び・同じ量子化（appendRaw16 が
+    // buf の末尾へ直接書く = 標本・バイトの中間の配列を作らない）。
+    const std::size_t heightBytes = field.samples().size() * 2;
 
     std::vector<uint8_t> buf;
-    buf.reserve(kTerrainHeaderBytes + 2 * kSectionHeaderBytes + heights.size() +
+    buf.reserve(kTerrainHeaderBytes + 2 * kSectionHeaderBytes + heightBytes +
                 (holes ? res * res : 0) + 16);
     buf.insert(buf.end(), kMagic, kMagic + 4);
     putLE<uint32_t>(buf, kTerrainFileVersion);
@@ -245,8 +246,8 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
     putLE<uint32_t>(buf, holes ? 2u : 1u);
     for (int k = 0; k < 2; ++k) putLE<uint32_t>(buf, 0);  // reserved（見出しを 48 バイトに）
 
-    beginSection(buf, kTagHeights, kHeightsVersion, uint64_t(heights.size()));
-    buf.insert(buf.end(), heights.begin(), heights.end());
+    beginSection(buf, kTagHeights, kHeightsVersion, uint64_t(heightBytes));
+    appendRaw16(field, height, buf);
     padTo8(buf);
 
     if (holes) {
@@ -288,19 +289,15 @@ bool decode(const uint8_t* data, std::size_t size, TerrainFileData& out,
         return false;
     }
 
-    // HGHT の中身は RAW16 のハイトマップと同じ（長さは上で確かめた = 見出しと
-    // 同じ解像度の格子になる）。
-    std::vector<uint16_t> quantized;
-    int sampleSide = 0;
-    if (!decodeRaw16(heights.payload, std::size_t(heights.length), quantized, sampleSide,
-                     reason)) {
+    // HGHT の中身は RAW16 のハイトマップと同じ。見出しの解像度の格子へ直接戻す
+    // （標本の配列を作らない。長さは上で確かめた）。
+    HeightField field(header.resolution, header.size, 0.0f, 0.0f, 0.0f);
+    if (!decodeRaw16Into(heights.payload, std::size_t(heights.length), header.height, field,
+                         reason)) {
+        // readHeader と上の長さの検査で起きないはず（安全弁）。
         reason = "corrupt HGHT section: " + reason;
         return false;
     }
-    HeightField field = heightFieldFromSamples(quantized, sampleSide, header.size,
-                                               header.height, header.resolution,
-                                               /*flipRows=*/false, reason);
-    if (!field.valid()) return false;  // readHeader の検査で起きないはず（安全弁）
     if (holes.found) {
         for (std::size_t j = 0; j < res; ++j) {
             for (std::size_t i = 0; i < res; ++i) {
@@ -390,16 +387,20 @@ bool readFile(const std::filesystem::path& path, TerrainFileData& out, std::stri
     // 読まない）。理由にはパスが付く。
     TerrainFileHeader header;
     if (!readHeader(path, header, reason)) return false;
-    std::vector<uint8_t> bytes;
-    if (!readFileBytes(path, kMaxFileBytes, bytes, reason)) return false;
+    // 短すぎるファイルも読む前に（大きさだけで）断る。大きさが取れなければ
+    // readFileBytes が理由を付けて断る。
     const uintmax_t side = uintmax_t(header.resolution) + 1;
     const uintmax_t minBytes = kTerrainHeaderBytes + kSectionHeaderBytes + side * side * 2;
-    if (bytes.size() < minBytes) {
+    std::error_code ec;
+    const uintmax_t fileSize = std::filesystem::file_size(path, ec);
+    if (!ec && fileSize < minBytes) {
         reason = path.u8string() + " is too short for resolution " +
-                 std::to_string(header.resolution) + " (" + std::to_string(bytes.size()) +
+                 std::to_string(header.resolution) + " (" + std::to_string(fileSize) +
                  " bytes, need at least " + std::to_string(minBytes) + ")";
         return false;
     }
+    std::vector<uint8_t> bytes;
+    if (!readFileBytes(path, kMaxFileBytes, bytes, reason)) return false;
     if (!decode(bytes.data(), bytes.size(), out, reason)) {
         reason = path.u8string() + ": " + reason;
         return false;

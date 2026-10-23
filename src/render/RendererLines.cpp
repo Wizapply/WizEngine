@@ -66,8 +66,7 @@ void buildTube(filament::math::float3* out, const filament::math::float3& a,
 
 namespace wizengine {
 
-void Renderer::ensureLineMaterial() {
-    if (lineMaterial_) return;
+void Renderer::loadLineMaterial() {
     lineMaterial_ =
         loadMaterialPackage(*engine_, "line.filamat", "line material");
 }
@@ -148,7 +147,6 @@ void Renderer::destroyLine(LineEntity& line) {
 
 void Renderer::configureGrabLines(
     const std::vector<filament::math::float3>& colors) {
-    ensureLineMaterial();
     for (const auto& c : colors) grabLines_.push_back(createLine(c));
 }
 
@@ -162,7 +160,6 @@ void Renderer::setGrabLine(std::size_t index,
 void Renderer::setJointLineCount(std::size_t count) {
     if (count == jointLines_.size()) return;
     if (count > jointLines_.size()) {
-        ensureLineMaterial();
         while (jointLines_.size() < count) {
             // 色は setJointLine で毎回入れ直すので、ここでは白で作る。
             jointLines_.push_back(createLine({1.0f, 1.0f, 1.0f}));
@@ -191,7 +188,6 @@ void Renderer::setJointLine(std::size_t index,
 void Renderer::configureLineBatches(
     const std::vector<filament::math::float3>& colors,
     std::size_t maxSegments) {
-    ensureLineMaterial();
     if (maxSegments == 0) return;
     lineBatchCapacity_ = maxSegments;
 
@@ -325,7 +321,6 @@ void Renderer::setLineBatch(std::size_t index,
 
 std::size_t Renderer::addLineSet(const filament::math::float3& color) {
     LineSet set;
-    ensureLineMaterial();
     set.mi = lineMaterial_->createInstance();
     set.mi->setParameter("baseColor", RgbaType::PREMULTIPLIED_LINEAR,
                          float4{color.x, color.y, color.z, 1.0f});

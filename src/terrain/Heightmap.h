@@ -38,14 +38,26 @@ constexpr uintmax_t kMaxRaw16Bytes =
 // （NaN は 0）。
 uint16_t quantizeHeight(float h, float height);
 float dequantizeHeight(uint16_t q, float height);
+// 量子化で上限（65535）に切られて高さが失われる境（height + 1 段の半分）。これより
+// 高い格子値だけが「上限で切られた」点（それ以下は切らなくても 65535 に丸まる =
+// 比例伸縮の丸めで上限を 1ulp 超えた点を数えない）。height は quantizeHeight と同じ約束。
+float quantizeClipLevel(float height);
 
 // RAW16（見出しの無い u16 リトルエンディアンの正方形）→ 標本。大きさが
 // 2·n² バイト（n = 2〜kMaxHeightmapSide）でなければ理由付きで false
 // （8 ビットや正方形でない画像はここで断る）。成功すれば samples と side を書く。
 bool decodeRaw16(const uint8_t* data, std::size_t size, std::vector<uint16_t>& samples,
                  int& side, std::string& reason);
-// 標本 → RAW16（u16 リトルエンディアン、標本の並びのまま）。
-std::vector<uint8_t> encodeRaw16(const std::vector<uint16_t>& samples);
+// RAW16 のバイト列 → 既にある格子（field）の格子値へ直接戻す（標本の配列を作らない）。
+// 大きさが格子の 2·(resolution + 1)² バイトでない・格子が空なら理由付きで false
+// （格子は触らない）。行は反転しない。height は quantizeHeight と同じ約束。
+// .terrain の HGHT 節の読み込みが使う。
+bool decodeRaw16Into(const uint8_t* data, std::size_t size, float height, HeightField& field,
+                     std::string& reason);
+// 格子 → RAW16（u16 リトルエンディアン、heightmapSamples と同じ並びと量子化）を
+// out の末尾へ書く（標本の配列を作らない）。height は quantizeHeight と同じ約束。
+// .terrain の HGHT 節と RAW の書き出しが使う。
+void appendRaw16(const HeightField& field, float height, std::vector<uint8_t>& out);
 
 // 標本 → PNG（16 ビットのグレースケール、1 辺 side の正方形、無圧縮）。
 // side が 2〜kMaxHeightmapSide の外・samples.size() が side² でないなら空を返す

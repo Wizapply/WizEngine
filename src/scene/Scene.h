@@ -652,7 +652,10 @@ private:
     // 無ければ値を覚えるだけ）。keepShape なら height の変更は比例伸縮の
     // 代わりに上限だけを変える（格子はそのまま、新しい上限を超える所は切る）。
     // 1 回の操作の指示なので TerrainDesc には持たない。
-    void reshapeTerrain(const wizengine::editor::TerrainDesc& next, bool keepShape = false);
+    // status が空でなければ、publish の前にそれをステータスに出す（切った点が
+    // あれば、その知らせを後ろに足す = 部分更新の文を消さない）。
+    void reshapeTerrain(const wizengine::editor::TerrainDesc& next, bool keepShape = false,
+                        const std::string& status = std::string());
     // 格子の書き換えの唯一の口（コピーオンライト）: 今の格子をコピーして
     // mutate(コピー) を呼び、publishTerrainField で差し替える（Undo は残し、
     // ファイルの dirty を立て、描画は rect に触れたチャンクだけ作り直す）。
@@ -746,19 +749,28 @@ private:
     // あるときだけ。
     void importTerrainHeightmap(const std::string& file, bool flipRows);
     // ハイトマップの書き出し。format = "raw" | "png"。書き先は
-    // assets/terrains/<名前>.raw|.png（上書き）。穴は書かない。結果はステータスに。
-    void exportTerrainHeightmap(const std::string& format);
+    // assets/terrains/<名前>.raw|.png。既にあれば overwrite のときだけ置き換える
+    // （でなければ断る）。expected が空でなく今のテレインの名前と違えば断る
+    // （ブラウザが確かめた後にテレインが変わった）。穴は書かない。結果は
+    // ステータスに（書き先は絶対パス）。
+    void exportTerrainHeightmap(const std::string& format, bool overwrite,
+                                const std::string& expected);
     // Missing の説明の文（日本語 1 文。Missing でなければ空）。読込の注意と /scene の
     // terrainMissing が同じ文になる唯一の口。Unreadable は terrainUnreadableFile_ の
     // 名前、Missing は文書の名前（無ければ背番号）で呼ぶ。PHYSICS スレッドか
     // objectsMutex_ を持って呼ぶ。
     std::string terrainMissingText() const;
     // /scene のテレイン部分（hasTerrain / terrain / terrainDirty / terrainMissing /
-    // terrainOpen / terrainFiles）。
+    // terrainOpen / terrainFiles / heightmapFiles）。
     // hierarchyJson（objectsMutex_ を持った HTTP スレッド）から呼ぶ。
     nlohmann::json terrainJson() const;
     // assets/terrains/ を走査し直す（警告は LOGW）。
     void refreshTerrainFiles();
+    // 今のテレインの名前でハイトマップの書き出し先を調べ直し、heightmapFiles_ に
+    // 覚える（PHYSICS スレッド、または物理スレッドを始める前の build()。build() は
+    // refreshTerrainFiles 経由）。名前が変わったとき（publishTerrainField・改名・
+    // 保存で名前を決めたとき）・書き出したとき・refreshTerrainFiles が呼ぶ。
+    void refreshHeightmapFiles();
 
     // ---- edit.terrain の受け口（SceneTerrainEdit.cpp、すべて PHYSICS thread）--
     // 入口の applyTerrainOp / applyTerrainFileOp は「エディタの実装」の節。
@@ -937,6 +949,15 @@ private:
     // （読めなかったとき）と renameTerrain（そのファイルの名前が変わったとき）。
     // 意味があるのは Unreadable の間だけ（terrainMissingText が読む）。
     std::string terrainUnreadableFile_;
+    // 今のテレインのハイトマップの書き出し先（.raw / .png）にファイルがあるか
+    // （/scene の heightmapFiles。ポーリングのたびにディスクを見ない）。書くのは
+    // refreshHeightmapFiles だけ（objectsMutex_ の下）で、呼ぶのは物理スレッドと、
+    // 物理スレッドを始める前の build()（refreshTerrainFiles 経由）。読むのは terrainJson。
+    struct HeightmapFilesFound {
+        bool raw = false;
+        bool png = false;
+    };
+    HeightmapFilesFound heightmapFiles_;
     // assets/terrains/ の窓口（一覧・解決・改名・採番）と編集の取り消しの記録。
     // どちらも Scene が持つ（コンストラクタで作る）。
     std::unique_ptr<wizengine::terrain::TerrainLibrary> terrainLibrary_;

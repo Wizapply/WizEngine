@@ -88,6 +88,24 @@ std::vector<uint8_t> zlibStored(const std::vector<uint8_t>& raw) {
     return out;
 }
 
+// RAW16（と .terrain の HGHT）の k 番目の標本（u16 リトルエンディアン）。
+// decodeRaw16 と decodeRaw16Into が共用する。
+uint16_t raw16At(const uint8_t* data, std::size_t k) { return getLE<uint16_t>(data + 2 * k); }
+
+// 1 辺 w の正方形の標本を格子値（dst、行優先）へ戻す。標本 k の値は at(k)。flipRows は
+// 行（Z）の向きを逆にして読む。heightFieldFromSamples（標本から）と decodeRaw16Into
+// （RAW16 のバイト列から）が共用する = 並びと量子化の決まりはここ 1 か所。
+template <class SampleAt>
+void fillDequantized(std::vector<float>& dst, std::size_t w, float height, bool flipRows,
+                     SampleAt at) {
+    for (std::size_t j = 0; j < w; ++j) {
+        const std::size_t src = flipRows ? (w - 1 - j) : j;
+        for (std::size_t i = 0; i < w; ++i) {
+            dst[j * w + i] = dequantizeHeight(at(src * w + i), height);
+        }
+    }
+}
+
 }  // namespace
 
 uint16_t quantizeHeight(float h, float height) {
@@ -98,6 +116,8 @@ uint16_t quantizeHeight(float h, float height) {
 }
 
 float dequantizeHeight(uint16_t q, float height) { return float(q) * (height / 65535.0f); }
+
+float quantizeClipLevel(float height) { return height + height / 65535.0f * 0.5f; }
 
 bool decodeRaw16(const uint8_t* data, std::size_t size, std::vector<uint16_t>& samples,
                  int& side, std::string& reason) {
@@ -112,18 +132,30 @@ bool decodeRaw16(const uint8_t* data, std::size_t size, std::vector<uint16_t>& s
     }
     std::vector<uint16_t> out(count);
     for (std::size_t k = 0; k < count; ++k) {
-        out[k] = getLE<uint16_t>(data + 2 * k);
+        out[k] = raw16At(data, k);
     }
     samples = std::move(out);
     side = int(n);
     return true;
 }
 
-std::vector<uint8_t> encodeRaw16(const std::vector<uint16_t>& samples) {
-    std::vector<uint8_t> out;
-    out.reserve(samples.size() * 2);
-    for (const uint16_t q : samples) putLE<uint16_t>(out, q);
-    return out;
+bool decodeRaw16Into(const uint8_t* data, std::size_t size, float height, HeightField& field,
+                     std::string& reason) {
+    const std::size_t w = std::size_t(field.verticesPerSide());
+    if (!field.valid() || !data || size != w * w * 2) {
+        reason = "RAW16 data is " + std::to_string(size) + " bytes; the grid needs " +
+                 std::to_string(w * w * 2);
+        return false;
+    }
+    fillDequantized(field.samples(), w, height, /*flipRows=*/false,
+                    [data](std::size_t k) { return raw16At(data, k); });
+    return true;
+}
+
+void appendRaw16(const HeightField& field, float height, std::vector<uint8_t>& out) {
+    const std::vector<float>& h = field.samples();
+    out.reserve(out.size() + h.size() * 2);
+    for (const float v : h) putLE<uint16_t>(out, quantizeHeight(v, height));
 }
 
 std::vector<uint8_t> encodePng16Gray(const std::vector<uint16_t>& samples, int side) {
@@ -150,9 +182,16 @@ std::vector<uint8_t> encodePng16Gray(const std::vector<uint16_t>& samples, int s
         for (std::size_t i = 0; i < w; ++i) putBE<uint16_t>(raw, samples[j * w + i]);
     }
 
-    std::vector<uint8_t> out(kPngSignature, kPngSignature + sizeof(kPngSignature));
+    const std::vector<uint8_t> idat = zlibStored(raw);
+    raw = {};  // 4097² で 33 MB。出力を確保する前に返す
+
+    // チャンク 1 個 = 長さ・種類・CRC の 12 バイト + 中身。3 個ぶんを先に確保する。
+    constexpr std::size_t kChunkOverhead = 12;
+    std::vector<uint8_t> out;
+    out.reserve(sizeof(kPngSignature) + 3 * kChunkOverhead + ihdr.size() + idat.size());
+    out.insert(out.end(), kPngSignature, kPngSignature + sizeof(kPngSignature));
     putChunk(out, "IHDR", ihdr);
-    putChunk(out, "IDAT", zlibStored(raw));
+    putChunk(out, "IDAT", idat);
     putChunk(out, "IEND", {});
     return out;
 }
@@ -187,14 +226,8 @@ HeightField heightFieldFromSamples(const std::vector<uint16_t>& samples, int sid
         reason = "size must be a positive finite number";
         return {};
     }
-    std::vector<float>& dst = field.samples();
-    const std::size_t w = std::size_t(side);
-    for (std::size_t j = 0; j < w; ++j) {
-        const std::size_t src = flipRows ? (w - 1 - j) : j;
-        for (std::size_t i = 0; i < w; ++i) {
-            dst[j * w + i] = dequantizeHeight(samples[src * w + i], height);
-        }
-    }
+    fillDequantized(field.samples(), std::size_t(side), height, flipRows,
+                    [&samples](std::size_t k) { return samples[k]; });
     // resampled は同じ解像度でも丸ごと写すので、違うときだけ呼ぶ（4096 で 67 MB）。
     if (resolution == side - 1) return field;
     return field.resampled(resolution);

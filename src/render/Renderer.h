@@ -600,14 +600,14 @@ private:
     std::vector<OverlayMesh> overlayMeshes_;
     filament::Material* overlayMaterial_ = nullptr;
     bool overlayWarned_ = false;  // 形の壊れたメッシュの警告を出したか（1 回だけ）
-    // overlay.filamat の読み込み（初回のみ）。無い・空・壊れている場合は
-    // AssetError を投げる（ensureLineMaterial と同じ扱い）。
-    void ensureOverlayMaterial();
+    // overlay.filamat の読み込み（コンストラクタが 1 回だけ呼ぶ）。無い・空・壊れている場合は
+    // AssetError を投げる（loadLineMaterial と同じ扱い）。
+    void loadOverlayMaterial();
 
     filament::Material* lineMaterial_ = nullptr;
-    // line.filamat の読み込み（初回のみ）。無い・空・壊れている場合は
+    // line.filamat の読み込み（コンストラクタが 1 回だけ呼ぶ）。無い・空・壊れている場合は
     // AssetError を投げる（線が黙って消えるのではなく、原因を示して止める）。
-    void ensureLineMaterial();
+    void loadLineMaterial();
     LineEntity createLine(const filament::math::float3& color);
     void updateLine(LineEntity& line, const filament::math::float3& from,
                     const filament::math::float3& to, bool visible);

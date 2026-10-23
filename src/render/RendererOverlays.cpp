@@ -27,15 +27,13 @@ const char* overlayMeshProblem(const std::vector<float3>& positions,
 
 }  // namespace
 
-void Renderer::ensureOverlayMaterial() {
-    if (overlayMaterial_) return;
+void Renderer::loadOverlayMaterial() {
     overlayMaterial_ =
         loadMaterialPackage(*engine_, "overlay.filamat", "overlay material");
 }
 
 std::size_t Renderer::addOverlayMesh() {
     OverlayMesh mesh;
-    ensureOverlayMaterial();
     // 色は頂点が持つので、インスタンスにパラメータは無い。
     mesh.mi = overlayMaterial_->createInstance();
     // エンティティとバッファは最初の setOverlayMesh で数が決まってから作る。

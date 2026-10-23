@@ -46,21 +46,6 @@ struct TerrainFrame {
     Vec3 toWorld(const Vec3& p) const { return rotation * p + origin; }
     Vec3 dirToLocal(const Vec3& d) const { return rotation.transpose() * d; }
     Vec3 dirToWorld(const Vec3& d) const { return rotation * d; }
-
-    // ワールドのレイと地表の交差（HeightField::raycast をローカルで）。距離 t は
-    // 回転で長さが変わらないのでそのまま、法線はワールドへ戻す。当たらなければ
-    // false で t / normal は触らない。
-    bool raycast(const HeightField& field, const Vec3& origin_, const Vec3& dir,
-                 double maxDist, double& t, Vec3& normal) const {
-        double hitT = 0.0;
-        Vec3 n = Vec3::Zero();
-        // 判定の戻り値は一度変数に受けてから使う（出力引数と同じ式に並べない規約）。
-        const bool hit = field.raycast(toLocal(origin_), dirToLocal(dir), maxDist, hitT, n);
-        if (!hit) return false;
-        t = hitT;
-        normal = dirToWorld(n);
-        return true;
-    }
 };
 
 }  // namespace terrain

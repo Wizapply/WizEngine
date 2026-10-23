@@ -71,6 +71,7 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
     // ここだけ（格子・メッシュは作り直さない）。
     const BodyTransform pose = placementPose(desc.position, desc.rotation);
     bool poseChanged = false;
+    const bool renamed = desc.data != terrain_.data;
     {
         // 格子の差し替えと dirty は同じロックの中で: 描画スレッドは dirty を
         // 見たのと同じロックの中で格子を取り出すので、「新しい dirty と古い
@@ -96,6 +97,8 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
         // 組を見ないよう、hasTerrain_ と同じロックの中で書く。
         settleTerrainFileState(file, on, missing);
     }
+    // 名前が変わったら書き出し先も変わる（ストロークごとにディスクを見ない）。
+    if (renamed) refreshHeightmapFiles();
     if (history == TerrainHistory::Clear) terrainUndo_->clear();
     // 外したテレインを選んだままにしない（Inspector に欄だけ残る）。
     if (!hasTerrain_ && editor_.selKind() == EditorState::SelKind::Terrain) {
@@ -128,7 +131,8 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
     else rebuildTerrainBody();
 }
 
-void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape) {
+void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
+                           const std::string& status) {
     const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
     const ed::TerrainDesc& now = terrain_;
     const bool sized = next.size != now.size;
@@ -141,6 +145,7 @@ void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape) {
     const bool fileChanged = sized || resampled || scaled;
     if (!field || !fileChanged) {
         // 形はそのまま（またはテレイン無し = 値だけ覚える）: 表面と置き場所だけ。
+        if (!status.empty()) editor_.setStatus(status);
         publishTerrainField(next, field, TerrainHistory::Keep, TerrainFileState::Keep);
         return;
     }
@@ -154,8 +159,19 @@ void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape) {
     // clampTerrain が kTerrainMinHeight 以上に保つので、倍率は有限。
     // 形を保つときは格子の高さを変えず、新しい上限を超える所だけ切る
     // （上げたときは何も変わらない）。どちらも .terrain の形の変更 = Undo は消える。
-    if (scaled && keepShape) grid.clampHeights(float(next.height));
+    std::size_t clipped = 0;
+    if (scaled && keepShape) clipped = grid.clampHeights(float(next.height));
     else if (scaled) grid.scaleHeights(float(next.height / now.height));
+    // 切った点があれば status の後ろに足して知らせる（ステータスは publish の前）。
+    // 全部の点が上限より上だった = 全体が上限の高さの板になった、は別の文で。
+    std::string note;
+    if (clipped > 0 && clipped == grid.samples().size()) {
+        note = "（形を保つ: すべての点が新しい上限より上だったため、全体が上限の高さの"
+               "平らな面になりました）";
+    } else if (clipped > 0) {
+        note = "（形を保つ: " + std::to_string(clipped) + " 点が新しい上限で切られました）";
+    }
+    if (!status.empty() || !note.empty()) editor_.setStatus(status + note);
     LOGI("scene", "terrain reshaped: %dx%d cells, %.0f m, %.0f m high (%s) in %.1f ms",
          next.resolution, next.resolution, next.size, next.height,
          !scaled ? "height kept" : keepShape ? "clamped" : "scaled", elapsedMs(t0));

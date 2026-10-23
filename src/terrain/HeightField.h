@@ -151,8 +151,12 @@ public:
     // 高さ（格子値）が maxHeight を超える所を maxHeight に切り詰める（下は
     // そのまま、穴にも触れない）。高さの上限を形を保ったまま下げたときに使う。
     // maxHeight が正の有限値でなければ何もしない（scaleHeights と同じ約束）。
+    // 戻り値は切った格子値の数（= countAbove(maxHeight)。何もしなければ 0）。
     // 共有中の格子には呼べない = コピーに対して呼ぶ。HeightFieldOps.cpp。
-    void clampHeights(float maxHeight);
+    std::size_t clampHeights(float maxHeight);
+    // maxHeight より高い格子値の数（数え方はここ 1 か所: clampHeights の戻り値と、
+    // ハイトマップの書き出しの知らせ = 境は Heightmap の quantizeClipLevel）。
+    std::size_t countAbove(float maxHeight) const;
 
     // 穴（セル単位）。穴のセルは描画で面積 0、接触を作らず、レイが抜ける
     // （どれも isSolidCell を通る）。範囲外の添字は setHole が無視し、
