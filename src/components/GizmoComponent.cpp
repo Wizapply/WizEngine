@@ -46,7 +46,7 @@ constexpr double kRingThickness = 0.024;
 // 当たり判定の太さ（NDC）。画面の高さの約 2%。細い線を狙わせすぎない。
 constexpr double kPickAxis = 0.035;
 constexpr double kPickBlob = 0.05;
-constexpr int kRingSegments = 48;
+using gizmo::kRingSegments;  // 円の分割数（筆の輪と共通、GizmoComponent.h）
 
 // 軸の始まり（中心に近すぎると回転リングや一様ハンドルと取り合いになる）。
 constexpr double kShaftStart = 0.15;
@@ -738,6 +738,7 @@ const std::vector<filament::math::float3>& gridColors() {
         {0.42f, 0.45f, 0.52f},  // kGridSetGray: 控えめな灰（主役は物のほう）
         {0.95f, 0.03f, 0.04f},  // kGridSetX: 軸バッチと同じ赤
         {0.05f, 0.20f, 1.00f},  // kGridSetZ: 軸バッチと同じ青
+        {1.00f, 0.55f, 0.10f},  // kLineSetBrushRing: 橙（地表の緑・灰の上で目立つ）
     };
     return colors;
 }
@@ -898,11 +899,9 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
         if (!t.valid) continue;
         const ed::GizmoMode mode = effectiveMode(t, g.mode);
 
-        const auto basis = scenemath::cameraBasis(scene.camera(c));
-        if (!basis.valid) continue;
-        const Vec3 dir = scenemath::rayThrough(
-            basis, cam.ndcX.load(), cam.ndcY.load(),
-            scene.renderer().verticalFovDegrees(), scene.renderer().aspect());
+        scenemath::Basis basis;
+        Vec3 dir;
+        if (!scene.cameraRay(c, cam.ndcX.load(), cam.ndcY.load(), basis, dir)) continue;
 
         // ドラッグ開始: 基準値を撮る。以後この値からの差分だけを見るので、
         // 適用結果が入力に混ざって暴走することがない。

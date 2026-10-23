@@ -360,6 +360,7 @@ set(WIZ_COMPONENT_SOURCES
     src/components/EditorComponent.cpp
     src/components/GizmoComponent.cpp
     src/components/PrefabComponent.cpp
+    src/components/TerrainComponent.cpp
     src/components/VehicleComponent.cpp)
 set(WIZ_VEHICLE_SOURCES
     src/vehicle/Formula.cpp

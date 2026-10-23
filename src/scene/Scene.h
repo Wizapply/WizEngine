@@ -20,6 +20,7 @@
 #include "document/EditorTypes.h"
 #include "scene/GameObject.h"
 #include "scene/SceneComponent.h"
+#include "scene/SceneMath.h"  // cameraRay の Basis / Vec3
 #include "document/SceneDocument.h"
 #include "physics/MeshCollision.h"  // CollisionTriangles
 #include "physics/PhysicsWorld.h"  // for BodyTransform
@@ -29,9 +30,7 @@ namespace wizengine {
 class Renderer;
 namespace terrain {
 class HeightField;
-struct GridRect;
 class TerrainLibrary;
-class TerrainUndoStack;
 struct TerrainResolution;
 struct TerrainFrame;
 struct BrushStamp;
@@ -230,17 +229,11 @@ public:
     // setTerrainFrame で姿勢のまま渡す）。スレッドの扱いは terrainField() と同じ。
     std::shared_ptr<const wizengine::terrain::HeightField> terrainField(
         wizengine::terrain::TerrainFrame* frame) const;
-    // レイと地表の交差（HeightField::raycast。車輪のレイ用）。テレインが無い・
-    // 当たらなければ false で、t / normal（normal は x, y, z の 3 要素）は
-    // 触らない。origin / dir / normal はワールド（フレームはここで掛ける）。
-    // スレッドの扱いは terrainField() と同じ。
-    bool terrainRaycast(const double origin[3], const double dir[3], double maxDist,
-                        double& t, double normal[3]) const;
     // テレインの当たり判定のボディ（rebuildTerrainBody）は自前の接触の相手の
     // ゴースト 1 個（PhysicsWorld::setTerrain が返す番号。GameObject ではない =
     // boxes_ に入らず、選択・掴み・イベントの対象にならない）。以下 2 つは
     // PHYSICS スレッド専用。当たり判定は edit.terrain のたびにその場で張り
-    // 直す（格子を渡し直すだけ）ので、高さ格子（terrainRaycast）と常に一致している
+    // 直す（格子を渡し直すだけ）ので、高さ格子（terrainField）と常に一致している
     // （筆のストローク中だけは終わるまで遅れる = endTerrainStroke が張る）。
     // id がテレインのボディ（ゴースト）か。接触の相手を「地面」と見なしたい側
     // （イベントの衝突・車両の診断）用。
@@ -260,18 +253,30 @@ public:
     // なら何もしない。ストローク中なら今のものを終えて（endTerrainStroke）から始める。
     void beginTerrainStroke();
     // 1 パスぶんのスタンプ（格子の座標 = ローカル）を当てる。ストロークの外
-    // （= エディタでない）・空なら何もしない。
-    void stampTerrain(const std::vector<wizengine::terrain::BrushStamp>& stamps);
+    // （= エディタでない）・空なら何もしない。各スタンプの maxHeight はここで
+    // 今のテレインの高さの上限にその場で書き換える（呼び手は入れなくてよい。
+    // 呼び手の配列を書き換えるのは、毎パスの確保を避けて容量を使い回すため）。
+    void stampTerrain(std::vector<wizengine::terrain::BrushStamp>& stamps);
     // 終える。格子が変わっていれば Undo に 1 段積み、LOGI に回数と時間を出す。
     // ストローク中に飛ばした当たり判定の張り直しがあれば張り直す。
     // ストロークの外なら何もしない。
     void endTerrainStroke();
+    // ストロークが開いているか（Scene が自分で閉じる - 他の編集・モード切替・
+    // 形の変更 - ことがあるので、スタンプを渡す側が確かめる）。
+    bool terrainStrokeActive() const { return terrainStroke_.active; }
 
     // Pick the object under a screen position, given in normalised device
     // coords (x, y in [-1, 1], y up), through the given camera. Selects it (or
     // clears that camera's selection on a miss) and returns the index or
     // BoxController::kNone. Called from the INPUT thread.
     std::size_t pickBoxAt(double ndcX, double ndcY, std::size_t cameraIndex);
+    // カメラ cameraIndex から画面の点（NDC、x, y は -1〜1、y が上）を通るレイ。
+    // basis = カメラの基底（レイの始点は basis.eye）、dir = 単位ベクトル。
+    // 番号が範囲外・カメラが退化（視点 = 注視点、真上 / 真下向き）なら false
+    // （そのとき basis / dir の中身は使わないこと）。選択・掴み・ギズモ・筆が同じレイを使うための 1 か所。
+    // pickBoxAt と同じくどのスレッドからでも呼べる。
+    bool cameraRay(std::size_t cameraIndex, double ndcX, double ndcY,
+                   scenemath::Basis& basis, scenemath::Vec3& dir) const;
 
     // ---- Component & object access (for SceneComponent / ObjectAction) ----
     void addComponent(std::unique_ptr<SceneComponent> component);
@@ -618,8 +623,9 @@ private:
     // ある・格子は無い」テレイン（hasTerrain_ は立てたまま、その状態を覚える）。
     // desc はそのまま覚える（丸めない = 呼び手が clampTerrain 済み）。
     // 格子が変わったら描画の dirty を立て、表面だけの変更は表面の dirty だけ。
-    // 最後に必ず syncBackend を呼ぶ（テレインは Core を要する）ので、読込では
-    // 他の中身を作り終えてから呼ぶこと。系を作り直した場合は、その中
+    // 最後に syncBackend を呼ぶ（テレインは Core を要する。全消しなど有無が
+    // 変わらない呼び手もこれで系を選び直す）ので、読込では他の中身を作り終えて
+    // から呼ぶこと。省くのは筆の 1 パス（brushPass）のときだけ。系を作り直した場合は、その中
     // （rebuildPhysicsWorld → rebuildTerrainBody）で当たり判定も組まれる。
     // そうでなければ、格子が変わったか当たり判定が無いときにその場で張り直す
     // （ゴーストに格子を渡し直すだけ）ので、戻ったときは必ず今の格子と一致している。
@@ -629,10 +635,13 @@ private:
     // changedCells = 書き換えたセルの矩形（TerrainEdit の rect と同じセル単位）。
     // 空なら格子全体の作り直し、空でなければ触ったチャンクだけ描画を作り直す
     // （同じ形の格子の書き換え = editTerrainField だけが渡す）。
+    // brushPass = 筆のストロークの 1 パス（editTerrainField が TerrainRecord::Stroke
+    // のときだけ true）。テレインの有無が変わらないので syncBackend を省く。
     void publishTerrainField(const wizengine::editor::TerrainDesc& desc,
                              std::shared_ptr<const wizengine::terrain::HeightField> field,
                              TerrainHistory history, TerrainFileState file,
-                             const wizengine::terrain::GridRect& changedCells = {});
+                             const wizengine::terrain::GridRect& changedCells = {},
+                             bool brushPass = false);
     // publishTerrainField の中（objectsMutex_ の下）: 渡された file と格子の有無
     // （on / missing）から terrainFile_ を決める。
     void settleTerrainFileState(TerrainFileState file, bool on, bool missing);

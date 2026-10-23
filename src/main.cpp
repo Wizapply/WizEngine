@@ -36,6 +36,7 @@
 #include "core/PortScan.h"
 #include "components/PhysicsControlComponent.h"
 #include "components/StreamControlComponent.h"
+#include "components/TerrainComponent.h"
 #include "components/VehicleComponent.h"
 #include "components/PrefabComponent.h"
 #include "physics/PhysicsTuning.h"
@@ -437,6 +438,9 @@ int run(int argc, char** argv) {
     tuning.envelope.store(scene.collisionEnvelope());
     tuning.recovery.store(scene.contactRecovery());
     scene.addComponent(std::make_unique<PhysicsControlComponent>(tuning));
+    // テレインの筆（edit.terrain.brush）とカーソルの輪。EditorComponent より
+    // 前に登録する: あちらは edit.* を全部受け止める（知らない種類も消費する）ため。
+    scene.addComponent(std::make_unique<TerrainComponent>());
     // エディタモードの操作（配置・ジョイント・シーンの保存/読込）。物理の
     // レート系だけは PhysicsTuning を共有するので、それを渡しておく。
     scene.addComponent(std::make_unique<EditorComponent>(tuning));

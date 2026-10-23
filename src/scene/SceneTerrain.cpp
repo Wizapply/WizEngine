@@ -46,7 +46,8 @@ void Scene::settleTerrainFileState(TerrainFileState file, bool on, bool missing)
 void Scene::publishTerrainField(const ed::TerrainDesc& desc,
                                 std::shared_ptr<const wizengine::terrain::HeightField> field,
                                 TerrainHistory history, TerrainFileState file,
-                                const wizengine::terrain::GridRect& changedCells) {
+                                const wizengine::terrain::GridRect& changedCells,
+                                bool brushPass) {
     // ストローク中に飛ばした張り直し（Clear はストロークを捨てるので先に読む）。
     const bool collisionPending = terrainStroke_.collisionStale;
     if (history == TerrainHistory::Clear) abortTerrainStroke();
@@ -108,7 +109,10 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
 
     // テレインの有無は系の種類を変えうる（kTerrainForcesCore）。作り直したら
     // テレインの当たり判定もそこで組み直し済みなので、二重に張らない。
-    if (syncBackend()) return;
+    // 省くのは筆の 1 パス（brushPass）だけ: 同じ形の格子の中身を書き換えるだけで
+    // テレインの有無は変わらず、1 パスごとにここを通る。それ以外は必ず判定する
+    // （全消しなど、テレインの有無が変わらなくてもこの判定で系を選び直す呼び手がいる）。
+    if (!brushPass && syncBackend()) return;
     // 張り直しはゴーストに格子を渡すだけ（高さ格子の生成より軽い）なので間引かない =
     // エディタ中の edit.terrain も即時に当たり判定へ映る。格子が同じでも、
     // テレインがあるのに当たり判定が無く、その理由が系の制約（Multicore =
@@ -181,7 +185,8 @@ bool Scene::editTerrainField(
     }
     publishTerrainField(terrain_,
                         std::make_shared<const wizengine::terrain::HeightField>(std::move(copy)),
-                        TerrainHistory::Keep, TerrainFileState::Dirty, rect);
+                        TerrainHistory::Keep, TerrainFileState::Dirty, rect,
+                        record == TerrainRecord::Stroke);
     return true;
 }
 
@@ -452,25 +457,4 @@ void Scene::rotateTerrain(double xDeg, double yDeg, double zDeg) {
     const ed::Vec3d up = liftedBy(next.rotation, centerHeight(terrainField()));
     next.position = {handle.x - up.x, handle.y - up.y, handle.z - up.z};
     reshapeTerrain(ed::clampTerrain(next));
-}
-
-bool Scene::terrainRaycast(const double origin[3], const double dir[3], double maxDist,
-                           double& t, double normal[3]) const {
-    // 格子は共有ポインタで受け取ってからロックの外で辿る（差し替えられても
-    // 手元の格子は生きている）。
-    wizengine::terrain::TerrainFrame frame;
-    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField(&frame);
-    if (!field) return false;
-    const wizengine::terrain::Vec3 o{origin[0], origin[1], origin[2]};
-    const wizengine::terrain::Vec3 d{dir[0], dir[1], dir[2]};
-    double hitT = 0.0;
-    wizengine::terrain::Vec3 n = wizengine::terrain::Vec3::Zero();
-    // 判定の戻り値は一度変数に受けてから使う（出力引数と同じ式に並べない規約）。
-    const bool hit = frame.raycast(*field, o, d, maxDist, hitT, n);
-    if (!hit) return false;
-    t = hitT;
-    normal[0] = n.x();
-    normal[1] = n.y();
-    normal[2] = n.z();
-    return true;
 }

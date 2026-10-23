@@ -16,21 +16,25 @@ void Scene::beginTerrainStroke() {
     // シミュレート中は塗らない（当たり判定の張り直しを end まで止めると、車輪の
     // レイ = 新しい格子と接触 = 古い格子が食い違う）。モードを見るのはここだけ:
     // ストロークはエディタでしか始まらず、enterMode が切り替える前に終える。
-    // 格子の無いテレイン（Missing）・テレイン無しは編集できない。
+    // 格子の無いテレイン（Missing）・テレイン無しは編集できない（terrainLoaded は
+    // 格子があるときだけ true）。
     if (!editor_.isEditor()) return;
-    if (!terrainLoaded() || !terrainField()) return;
+    if (!terrainLoaded()) return;
     terrainStroke_ = TerrainStroke{};
     terrainStroke_.active = true;
 }
 
-void Scene::stampTerrain(const std::vector<wizengine::terrain::BrushStamp>& stamps) {
+void Scene::stampTerrain(std::vector<wizengine::terrain::BrushStamp>& stamps) {
     if (!terrainStroke_.active || stamps.empty()) return;
     const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
     if (!field) return;
     const auto t0 = std::chrono::steady_clock::now();
     // このパスで書き換えうる範囲（全スタンプの和）。格子のコピーは 1 パスに 1 回。
+    // 高さの上限は今のテレインの値をここで入れる（呼び手に渡させない = 渡し忘れが無い。
+    // terrain_ を書くのはこのスレッドだけなのでロック不要）。
     wizengine::terrain::GridRect rect;
-    for (const wizengine::terrain::BrushStamp& s : stamps) {
+    for (wizengine::terrain::BrushStamp& s : stamps) {
+        s.maxHeight = terrain_.height;
         rect = rect.united(wizengine::terrain::stampRect(*field, s));
     }
     if (rect.empty()) return;  // 格子の外・壊れた値

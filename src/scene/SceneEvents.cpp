@@ -51,8 +51,10 @@ bool Scene::pointerGrab(std::size_t cameraIndex, PointerGrab& out) {
 
     // Camera basis and the point under the cursor, both from the shared Eigen
     // helpers so picking and dragging cannot drift apart.
-    const auto basis = scenemath::cameraBasis(*cameras_[cameraIndex]);
-    if (!basis.valid) return false;
+    // カーソルを通るレイも一緒に取る（下の平面との交差で使う）。
+    scenemath::Basis basis;
+    scenemath::Vec3 dir;
+    if (!cameraRay(cameraIndex, ndcX, ndcY, basis, dir)) return false;
 
     // Depth of the object when it was grabbed: the target rides on the plane
     // at that depth, so the object stays under the cursor without being
@@ -67,8 +69,6 @@ bool Scene::pointerGrab(std::size_t cameraIndex, PointerGrab& out) {
 
     // Ray through the cursor, hit against that plane. Absolute, so the target
     // is exactly under the cursor every step - no drift.
-    const scenemath::Vec3 dir = scenemath::rayThrough(
-        basis, ndcX, ndcY, renderer_.verticalFovDegrees(), renderer_.aspect());
     const double along = dir.dot(basis.forward);
     if (along <= 1e-6) return false;
     const scenemath::Vec3 target = basis.eye + dir * (depth.z / along);

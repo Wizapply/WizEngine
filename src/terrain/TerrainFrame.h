@@ -16,7 +16,7 @@
 // 差し替えるだけで、格子・描画のメッシュ・接触の早期棄却の値は作り直さない。
 //
 // 格子を問い合わせる側（接触 = PhysicsWorld、車輪のレイ = VehicleComponent、
-// Scene::terrainRaycast）は、問い合わせの前にワールド → ローカルへ直し、答えを
+// 筆のレイ = TerrainComponent）は、問い合わせの前にワールド → ローカルへ直し、答えを
 // ローカル → ワールドへ戻す。描画は Renderer::setTerrainTransform（エンティティの
 // 変換）で同じフレームを掛ける。HeightField と同じく Chrono も Filament も
 // シーン文書も知らない。

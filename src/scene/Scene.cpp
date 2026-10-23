@@ -246,17 +246,24 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
 // 完全な型が見えるここで定義する。
 Scene::~Scene() = default;
 
+bool Scene::cameraRay(std::size_t cameraIndex, double ndcX, double ndcY,
+                      scenemath::Basis& basis, scenemath::Vec3& dir) const {
+    if (cameraIndex >= cameras_.size()) return false;
+    basis = scenemath::cameraBasis(*cameras_[cameraIndex]);
+    if (!basis.valid) return false;
+    dir = scenemath::rayThrough(basis, ndcX, ndcY, renderer_.verticalFovDegrees(),
+                                renderer_.aspect());
+    return true;
+}
+
 std::size_t Scene::pickBoxAt(double ndcX, double ndcY,
                              std::size_t cameraIndex) {
-    if (cameraIndex >= cameras_.size()) return BoxController::kNone;
-
     // Ray from the camera through the clicked point, intersected with every
     // object. Done here rather than through the collision engine so it behaves
     // the same on the Core and Multicore backends.
-    const auto basis = scenemath::cameraBasis(*cameras_[cameraIndex]);
-    if (!basis.valid) return BoxController::kNone;
-    const scenemath::Vec3 dir = scenemath::rayThrough(
-        basis, ndcX, ndcY, renderer_.verticalFovDegrees(), renderer_.aspect());
+    scenemath::Basis basis;
+    scenemath::Vec3 dir;
+    if (!cameraRay(cameraIndex, ndcX, ndcY, basis, dir)) return BoxController::kNone;
 
     // オブジェクトごとに形と大きさが違うので、姿勢は共有スナップショットから
     // 取る（HTTP/INPUT スレッドから物理世界を読まないため）。

@@ -61,12 +61,15 @@ const std::vector<filament::math::float3>& batchColors();
 // 矢じりの円錐（24 面 ×3 軸）。アイコンは 1 個 20 前後 × 最大 6 個で
 // 余裕がある。グリッドはポリゴンではなく細線セットで描くので入らない。
 inline constexpr std::size_t kMaxSegments = 256;
+// 円（回転リング・テレインの筆の輪）を線分で描くときの分割数。
+inline constexpr int kRingSegments = 48;
 
-// Y=0 グリッド用の細線セット。番号は Scene::build が gridColors() の順に
-// Renderer::addLineSet した並びと一致する。
+// Y=0 グリッドとテレインの筆の輪の細線セット。番号は Scene::build が
+// gridColors() の順に Renderer::addLineSet した並びと一致する。
 inline constexpr std::size_t kGridSetGray = 0;  // 格子（灰）
 inline constexpr std::size_t kGridSetX = 1;     // 原点を通る X 軸（赤）
 inline constexpr std::size_t kGridSetZ = 2;     // 原点を通る Z 軸（青）
+inline constexpr std::size_t kLineSetBrushRing = 3;  // 筆のカーソルの輪（橙、TerrainComponent）
 const std::vector<filament::math::float3>& gridColors();
 
 }  // namespace gizmo
