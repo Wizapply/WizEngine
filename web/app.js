@@ -106,14 +106,19 @@
   }
 
   // keepalive: ページを離れる途中（pagehide）でも打ち切られずに届ける。
-  function send(cmd, args, keepalive) {
-    if (!owner) return;
+  // 戻り値は送信が終わる（失敗も含む）と解決する Promise（順に送りたい側が待つ）。
+  // timeoutMs: 指定すればその時間で打ち切って失敗として扱う（待つ側が止まらない）。
+  function send(cmd, args, keepalive, timeoutMs) {
+    if (!owner) return Promise.resolve();
     const msg = Object.assign({ cmd: cmd }, args || {});
-    fetch('input', {
+    const ctl = timeoutMs ? new AbortController() : null;
+    if (ctl) setTimeout(() => ctl.abort(), timeoutMs);
+    return fetch('input', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(msg),
-      keepalive: !!keepalive
+      keepalive: !!keepalive,
+      signal: ctl ? ctl.signal : undefined
     }).catch(() => {});
   }
   // ---- Input: one code path for mouse, touch and pen ---------------------
@@ -175,7 +180,8 @@
 
     if (e.pointerType === 'touch') {
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (touches.size === 1) {
+      // 筆の道具を選んでいる間の 1 本目は筆が塗る（terrain-brush.js）。
+      if (touches.size === 1 && !brushToolActive()) {
         // Try to grab whatever is under the finger. If the server reports no
         // selection, pointermove turns this into an orbit.
         grabIsTouch = true;
@@ -186,6 +192,8 @@
       } else if (touches.size === 2) {
         // Second finger: this is a camera gesture, not a grab.
         if (grabbing) { grabbing = false; send('release'); }
+        // 筆も終えて輪を消す（2 本指の間は筆を使わない）。
+        if (brushToolActive()) { endBrushStroke(); clearHover(); }
         dragMode = 'pan';
         const st = twoFingerState();
         pinchDist = st.dist;
@@ -352,6 +360,7 @@
     }
     if (!owner || !sceneData || sceneData.mode !== 'editor') return;
     if (!isEditorCam()) return;  // ギズモが出ないページで切り替えても意味がない
+    if (brushToolActive()) return;  // 筆の間はギズモを掴めない
     const key = e.key.toLowerCase();
     if (key === 'w') { e.preventDefault(); setGizmoMode('translate'); }
     else if (key === 'e') { e.preventDefault(); setGizmoMode('rotate'); }
@@ -554,13 +563,12 @@
   window.addEventListener('blur', () => cursorEl.classList.remove('cross'));
   stageEl.addEventListener('pointerleave', () => {
     if (!document.fullscreenElement) cursorEl.classList.remove('show');
-    // ビューから出たらギズモのハイライトも消す。どのハンドルにも当たらない
-    // 座標を 1 回送るだけでよい（専用のコマンドを増やすほどの話ではない）。
-    if (hoverNdc) {
-      hoverNdc = null;
-      send('hover', NDC_OFFSCREEN);
-    }
   });
+  // 映像（#hit）から出たら（その上のツールバーへ出たときも）ギズモの
+  // ハイライトか筆の輪を消す。どのハンドルにも当たらない座標を 1 回送るだけで
+  // よい（専用のコマンドを増やすほどの話ではない）。押している間はポインタを
+  // 捕まえているので来ない。
+  hitEl.addEventListener('pointerleave', () => { if (hoverNdc) clearHover(); });
 
   document.addEventListener('fullscreenchange', () => {
     cursorEl.classList.remove('show');  // reset when entering/leaving
@@ -1611,7 +1619,12 @@
     return String(s).replace(/[^A-Za-z0-9_-]/g, '').slice(0, ASSET_NAME_MAX);
   }
 
-  function setMode(mode) { send('mode', { mode: mode }); }
+  // モードが変わるなら筆はすぐ下ろす（次のポーリングで mode が変わるまで
+  // 映像のクリックを取らない）。いまのモードのボタンでは道具を外さない。
+  function setMode(mode) {
+    send('mode', { mode: mode });
+    if (sceneData && sceneData.mode !== mode) setBrushTool('none');
+  }
 
   // ---- ギズモ --------------------------------------------------------------
   // 見た目と当たり判定はサーバー側（3D の線として描かれる）。ここでやるのは
@@ -1657,13 +1670,18 @@
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) hoverNdc = null;  // 裏のタブで送り続けない
   });
+  // 位置を忘れて、ギズモのハイライトか筆の輪（筆を使っている間）を消す。
+  function clearHover() {
+    hoverNdc = null;
+    if (brushToolActive()) sendBrushHover();
+    else send('hover', NDC_OFFSCREEN);
+  }
   setInterval(() => {
     if (!owner || grabbing || dragMode) return;
     if (!sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
-    // 筆の道具を選んでいる間はギズモを掴めないので光らせない
-    // （輪の hover は terrain-brush.js が同じ間隔で送る）。brushToolActive は
-    // 後ろに読む terrain-brush.js の関数（読めなかったときは無いものとして扱う）。
-    if (typeof brushToolActive === 'function' && brushToolActive()) return;
+    // 筆の道具を選んでいる間はギズモを掴めないので光らせず、筆の輪を送る
+    // （terrain-brush.js）。
+    if (brushToolActive()) { if (hoverNdc) sendBrushHover(); return; }
     // ギズモが出ている対象（オブジェクト / ライト / カメラ / 部品 / 地面 /
     // テレイン）があるときだけ。
     const hasTarget = sceneData.selected ||
