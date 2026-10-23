@@ -68,14 +68,8 @@ namespace wizengine {
 
 void Renderer::ensureLineMaterial() {
     if (lineMaterial_) return;
-    wizengine::requireFile("line.filamat", "line material");
-    const auto pkg = readFile(assetPath("line.filamat"));
-    if (pkg.empty()) throw AssetError(assetPath("line.filamat"), "is empty");
     lineMaterial_ =
-        Material::Builder().package(pkg.data(), pkg.size()).build(*engine_);
-    if (!lineMaterial_) {
-        throw AssetError(assetPath("line.filamat"), "is not a valid .filamat");
-    }
+        loadMaterialPackage(*engine_, "line.filamat", "line material");
 }
 
 Renderer::LineEntity Renderer::createLine(const filament::math::float3& color) {
@@ -358,12 +352,8 @@ void Renderer::setLineSet(std::size_t id,
     // 確保するので、余りを埋める工夫（面積 0 の三角形）も要らない。
     if (lines != set.lineCount) {
         if (set.lineCount > 0) {
-            if (set.inScene) scene_->remove(set.entity);
-            engine_->destroy(set.entity);
-            EntityManager::get().destroy(set.entity);
-            engine_->destroy(set.vb);
-            engine_->destroy(set.ib);
-            set.inScene = false;
+            destroyRenderable(*engine_, *scene_, set.entity, set.vb, set.ib,
+                              set.inScene);
         }
         set.lineCount = lines;
         const std::size_t vertexCount = lines * 2;
@@ -390,29 +380,13 @@ void Renderer::setLineSet(std::size_t id,
                     delete[] static_cast<uint16_t*>(p);
                 }));
 
-        set.entity = EntityManager::get().create();
-        RenderableManager::Builder(1)
-            .boundingBox({{-1000.0f, -1000.0f, -1000.0f},
-                          {1000.0f, 1000.0f, 1000.0f}})  // never culled
-            .geometry(0, RenderableManager::PrimitiveType::LINES, set.vb,
-                      set.ib, 0, vertexCount)
-            .material(0, set.mi)
-            .culling(false)
-            .castShadows(false)
-            .receiveShadows(false)
-            .build(*engine_, set.entity);
-        auto& rm = engine_->getRenderableManager();
-        rm.setLayerMask(rm.getInstance(set.entity), 0xFF, kLayerEditorOnly);
+        set.entity = buildEditorRenderable(
+            *engine_, RenderableManager::PrimitiveType::LINES, set.vb, set.ib,
+            vertexCount, set.mi);
     }
 
-    const std::size_t vertexCount = lines * 2;
-    auto* verts = new float3[vertexCount];
-    std::memcpy(verts, points.data(), sizeof(float3) * vertexCount);
-    set.vb->setBufferAt(
-        *engine_, 0,
-        VertexBuffer::BufferDescriptor(
-            verts, sizeof(float3) * vertexCount,
-            [](void* p, size_t, void*) { delete[] static_cast<float3*>(p); }));
+    set.vb->setBufferAt(*engine_, 0,
+                        copyToDescriptor(points.data(), lines * 2));
 
     if (!set.inScene) {
         scene_->addEntity(set.entity);

@@ -281,15 +281,21 @@ Renderer::~Renderer() {
     lineBatches_.clear();
     for (auto& set : lineSets_) {
         if (set.lineCount > 0) {
-            if (set.inScene) scene_->remove(set.entity);
-            engine_->destroy(set.entity);
-            EntityManager::get().destroy(set.entity);
-            engine_->destroy(set.vb);
-            engine_->destroy(set.ib);
+            destroyRenderable(*engine_, *scene_, set.entity, set.vb, set.ib,
+                              set.inScene);
         }
         if (set.mi) engine_->destroy(set.mi);
     }
     lineSets_.clear();
+    for (auto& mesh : overlayMeshes_) {
+        if (mesh.vertexCount > 0) {
+            destroyRenderable(*engine_, *scene_, mesh.entity, mesh.vb, mesh.ib,
+                              mesh.inScene);
+        }
+        if (mesh.mi) engine_->destroy(mesh.mi);
+    }
+    overlayMeshes_.clear();
+    if (overlayMaterial_) engine_->destroy(overlayMaterial_);
     if (lineMaterial_) engine_->destroy(lineMaterial_);
     for (auto* mi : highlightInstances_) engine_->destroy(mi);
     engine_->destroy(material_);

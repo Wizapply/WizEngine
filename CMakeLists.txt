@@ -332,6 +332,7 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererShapes.cpp
     src/render/RendererMeshes.cpp
     src/render/RendererLines.cpp
+    src/render/RendererOverlays.cpp
     src/render/RendererGround.cpp
     src/render/RendererTerrain.cpp
     src/render/RendererTextures.cpp)
