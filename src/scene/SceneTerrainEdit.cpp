@@ -1,5 +1,6 @@
 // ブラウザの edit.terrain の受け口（PHYSICS スレッド）: 新規・開く・名前の変更・
-// 削除・複製・部分更新・生成・取り消しの操作に振り分ける。
+// 削除・複製・ハイトマップの取り込みと書き出し・部分更新・生成・取り消しの操作に
+// 振り分ける。
 // テレインと文書・.terrain・ブラウザの JSON との出入り（読込・名前と背番号・保存）は
 // SceneTerrainFile.cpp、格子の差し替えそのもの（ロック・dirty・Undo・当たり判定）は
 // SceneTerrain.cpp の publishTerrainField / reshapeTerrain に任せる。
@@ -34,6 +35,16 @@ bool argIsTrue(const nlohmann::json& a, const char* key) {
 bool refuseWhileSimulating(EditorState& editor, const char* what) {
     if (editor.mode() != ed::AppMode::Simulate) return false;
     editor.setStatus(std::string("テレインの") + what + "はエディタモードでだけできます");
+    return true;
+}
+
+// Missing（ファイルが無い・読めない = 格子が無い）なら断るステータス（「テレインの
+// ファイルが無いので<what>できません」）を出して true。applyTerrainOp の編集
+// （generate / undo / 部分更新）と、applyTerrainFileOp の import / export が使う。
+bool refuseWhileMissing(EditorState& editor, bool missing, const char* what) {
+    if (!missing) return false;
+    editor.setStatus(std::string("テレインのファイルが無いので") + what +
+                     "できません（別のテレインを開く・新しいテレインを作る・外す、のどれかで）");
     return true;
 }
 
@@ -186,7 +197,8 @@ void Scene::duplicateTerrain(const std::string& name) {
 }
 
 // edit.terrain のうちファイルを扱う分岐（refresh / rename{from,to} / delete /
-// open / duplicate / new）。扱ったら true（applyTerrainOp はそこで終わる）。
+// open / duplicate / new / import{file,flip} / export）。扱ったら true
+// （applyTerrainOp はそこで終わる）。
 // open・duplicate・new は、保存していない変更があれば discard:true が付いているときだけ
 // 取り替える（ブラウザの dirty 表示が古くても黙って捨てない）。
 bool Scene::applyTerrainFileOp(const nlohmann::json& a) {
@@ -233,12 +245,28 @@ bool Scene::applyTerrainFileOp(const nlohmann::json& a) {
         if (!keepUnsaved()) newTerrain(ed::jsonString(a, "new", ""));
         return true;
     }
+    // ハイトマップ。取り込みは高さの編集（ノイズで生成と同じく取り消しでき、モードに
+    // よらず受ける）、書き出しは今の格子を書くだけ。どちらも格子が要る。
+    if (const auto it = a.find("import"); it != a.end()) {
+        if (!it->is_object()) {
+            editor_.setStatus("取り込みの指定が正しくありません（import は {file, flip}）");
+        } else if (!refuseWhileMissing(editor_, terrainMissing(), "取り込み")) {
+            importTerrainHeightmap(ed::jsonString(*it, "file", ""), argIsTrue(*it, "flip"));
+        }
+        return true;
+    }
+    if (a.contains("export")) {
+        if (!refuseWhileMissing(editor_, terrainMissing(), "書き出し"))
+            exportTerrainHeightmap(ed::jsonString(a, "export", ""));
+        return true;
+    }
     return false;
 }
 
 // edit.terrain（PHYSICS スレッド）。applyEditorOp の "terrain" 分岐から呼ぶ。
 // ファイルの分岐（applyTerrainFileOp）と enabled(+name) のあとは、Missing
-// （ファイルが無い・読めない）なら断る（編集を拒む唯一の場所）。そのあとはキーで
+// （ファイルが無い・読めない）なら断る（refuseWhileMissing。ファイルの分岐の
+// import / export も同じ口で断る）。そのあとはキーで
 // 分岐: generate{seed,...}（同じメッセージの部分更新を先に当てる）/ undo /
 // それ以外は部分更新。モードによらず受ける（名前の変更もシミュレート中に受ける）。
 // delete と duplicate だけはエディタモードのみ（deleteTerrain / duplicate 分岐が断る）。
@@ -265,11 +293,7 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
         }
     }
     // Missing: 格子が無いので generate / undo / 部分更新は全部ここで止める。
-    if (terrainMissing()) {
-        editor_.setStatus("テレインのファイルが無いので編集できません（別のテレインを開く・"
-                          "新しいテレインを作る・外す、のどれかで）");
-        return;
-    }
+    if (refuseWhileMissing(editor_, terrainMissing(), "編集")) return;
     // 送られてきたキーだけ上書きした形（edit.ground と同じ部分更新）。
     const auto patched = [this, &a]() {
         return ed::clampTerrain(ed::terrainFromJson(a, terrain_));

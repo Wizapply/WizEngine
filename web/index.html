@@ -962,6 +962,31 @@
                   title="テレインの直前の編集（ノイズで生成など）を取り消す"
                   >↶ 取り消し</button>
         </div>
+        <!-- ハイトマップ（16 ビットの高さ画像）。取り込みは今の全幅・解像度・
+             起伏の高さに合わせて高さだけを差し替える（穴は保たれ、取り消しで
+             戻せる）。書き出しは assets/terrains/<名前>.raw / .png に上書き
+             （穴は書かない）。ファイル名はこのブラウザに記憶。 -->
+        <div class="edRow">
+          <span>ハイトマップ</span>
+          <span>
+            <input id="edTerrainHmFile" class="txt" type="text"
+                   placeholder="terrains/hill.png"
+                   title="assets/ からの相対パス。.raw = 16 ビットのリトルエンディアン（正方形）、それ以外は画像（PNG など。8 ビットも可、正方形のみ）。白 = 起伏の高さ、黒 = 最低点">
+            <label title="画像の上下を逆にして読む（上が +Z の向きで作られた画像のとき）">
+              <input id="edTerrainHmFlip" type="checkbox"> 上下反転</label>
+          </span>
+        </div>
+        <div class="edRow btnRow">
+          <button onclick="importTerrainHeightmap()"
+                  title="上のファイルの高さを今のテレインに取り込む（取り消しで戻せる）"
+                  >📥 取り込み</button>
+          <button onclick="exportTerrainHeightmap('raw')"
+                  title="assets/terrains/&lt;名前&gt;.raw に書き出す（16 ビット、上書き）"
+                  >📤 RAW</button>
+          <button onclick="exportTerrainHeightmap('png')"
+                  title="assets/terrains/&lt;名前&gt;.png に書き出す（16 ビットのグレースケール、上書き）"
+                  >📤 PNG</button>
+        </div>
         <div class="edRow">
           <span>テクスチャ</span>
           <input id="edTerrainTex" class="txt" type="text"

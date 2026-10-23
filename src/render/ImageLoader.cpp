@@ -1,5 +1,6 @@
 // stb_image の実装をコンパイルする唯一の翻訳単位。画像を読むのは
-// RendererGround.cpp（地面のテクスチャ）と EnvironmentLoader.cpp（HDR）で、
+// RendererGround.cpp（地面のテクスチャ）と EnvironmentLoader.cpp（HDR）、
+// SceneTerrainFile.cpp（テレインのハイトマップ、loadImageGray16）で、
 // 大きな実装をそちらへ持ち込まないためにここだけに置く。
 #define STB_IMAGE_IMPLEMENTATION
 // STBI_ONLY_* is a whitelist: every decoder NOT listed is compiled out. HDR has
@@ -32,6 +33,22 @@ std::vector<unsigned char> readFileBytes(const std::string& path) {
     std::vector<unsigned char> bytes(count, 0);
     if (!in.read(reinterpret_cast<char*>(bytes.data()), size)) return {};
     return bytes;
+}
+
+// stb が返した画素（components 成分）を out へ移して解放し、幅と高さを書く。
+// data が null か大きさが 0 なら false（出力は触らない。data は解放する）。
+template <typename T>
+bool takePixels(T* data, int w, int h, int components, std::vector<T>& out, int& outWidth,
+                int& outHeight) {
+    if (!data || w <= 0 || h <= 0) {
+        if (data) stbi_image_free(data);
+        return false;
+    }
+    out.assign(data, data + std::size_t(w) * std::size_t(h) * std::size_t(components));
+    stbi_image_free(data);
+    outWidth = w;
+    outHeight = h;
+    return true;
 }
 
 }  // namespace
@@ -209,13 +226,25 @@ bool loadImageRGBA(const std::string& path, std::vector<uint8_t>& outPixels,
     int channels = 0;
     // Force 4 channels so the caller always gets RGBA8.
     stbi_uc* data = stbi_load(path.c_str(), &w, &h, &channels, 4);
-    if (!data || w <= 0 || h <= 0) {
-        if (data) stbi_image_free(data);
-        return false;
-    }
-    outPixels.assign(data, data + static_cast<std::size_t>(w) * h * 4);
-    stbi_image_free(data);
-    outWidth = w;
-    outHeight = h;
+    return takePixels(data, w, h, 4, outPixels, outWidth, outHeight);
+}
+
+bool readImageSize(const std::string& path, int& width, int& height) {
+    int w = 0;
+    int h = 0;
+    int channels = 0;
+    if (!stbi_info(path.c_str(), &w, &h, &channels) || w <= 0 || h <= 0) return false;
+    width = w;
+    height = h;
     return true;
+}
+
+bool loadImageGray16(const std::string& path, std::vector<uint16_t>& out, int& width,
+                     int& height) {
+    int w = 0;
+    int h = 0;
+    int channels = 0;
+    // 1 成分を指定: stb が輝度へ直し、8 ビットの画像も 16 ビットへ引き伸ばす。
+    stbi_us* data = stbi_load_16(path.c_str(), &w, &h, &channels, 1);
+    return takePixels(data, w, h, 1, out, width, height);
 }

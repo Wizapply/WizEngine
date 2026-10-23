@@ -421,8 +421,8 @@ private:
     // ファイルの分岐（applyTerrainFileOp）のあと、generate / undo / enabled(+name) /
     // 部分更新。
     void applyTerrainOp(const EditorState::Op& op);
-    // edit.terrain のファイルを扱う分岐（refresh / rename / delete / open / new）。
-    // 扱ったら true。
+    // edit.terrain のファイルを扱う分岐（refresh / rename / delete / open /
+    // duplicate / new / import / export）。扱ったら true。
     bool applyTerrainFileOp(const nlohmann::json& a);
     // 設計値からオブジェクトを1個作る。番号を返す。
     std::size_t createObject(const wizengine::editor::BodyDesc& desc);
@@ -737,6 +737,17 @@ private:
     // false と英語の reason。
     bool saveTerrainData(const std::string& sceneName, std::string& written,
                          std::string& reason);
+    // ハイトマップ（16 ビットの高さ画像）の取り込み。file は assets/ からの相対
+    // パス（.raw = RAW16、それ以外は画像 = loadImageGray16）。今の全幅・高さ・
+    // 解像度に合わせて高さだけを差し替える（replaceTerrainHeights = 穴は保ち、
+    // 取り消し 1 段、未保存の印が付く）。flipRows は行（Z）の向きを逆にして読む。
+    // 形式の検査は terrain/Heightmap。画像だけは、デコードの前に見出しで正方形と
+    // 上限を断る（上限の値は Heightmap の定数）。結果はステータスに出す。格子の
+    // あるときだけ。
+    void importTerrainHeightmap(const std::string& file, bool flipRows);
+    // ハイトマップの書き出し。format = "raw" | "png"。書き先は
+    // assets/terrains/<名前>.raw|.png（上書き）。穴は書かない。結果はステータスに。
+    void exportTerrainHeightmap(const std::string& format);
     // Missing の説明の文（日本語 1 文。Missing でなければ空）。読込の注意と /scene の
     // terrainMissing が同じ文になる唯一の口。Unreadable は terrainUnreadableFile_ の
     // 名前、Missing は文書の名前（無ければ背番号）で呼ぶ。PHYSICS スレッドか

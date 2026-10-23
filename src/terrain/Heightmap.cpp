@@ -104,9 +104,9 @@ bool decodeRaw16(const uint8_t* data, std::size_t size, std::vector<uint16_t>& s
     const std::size_t count = size / 2;
     const std::size_t n = std::size_t(std::llround(std::sqrt(double(count))));
     if (!data || size % 2 != 0 || n * n != count || n < 2 ||
-        n > std::size_t(kMaxResolution) + 1) {
+        n > std::size_t(kMaxHeightmapSide)) {
         reason = "RAW heightmap must be a square of 16-bit little-endian samples (2 * n * n "
-                 "bytes, n = 2-" + std::to_string(kMaxResolution + 1) + "); got " +
+                 "bytes, n = 2-" + std::to_string(kMaxHeightmapSide) + "); got " +
                  std::to_string(size) + " bytes (8-bit RAW is not supported)";
         return false;
     }
@@ -127,7 +127,7 @@ std::vector<uint8_t> encodeRaw16(const std::vector<uint16_t>& samples) {
 }
 
 std::vector<uint8_t> encodePng16Gray(const std::vector<uint16_t>& samples, int side) {
-    if (side < 2 || side > kMaxResolution + 1 ||
+    if (side < 2 || side > kMaxHeightmapSide ||
         samples.size() != std::size_t(side) * std::size_t(side)) {
         return {};
     }
@@ -167,10 +167,10 @@ std::vector<uint16_t> heightmapSamples(const HeightField& field, float height) {
 HeightField heightFieldFromSamples(const std::vector<uint16_t>& samples, int side,
                                    float size, float height, int resolution,
                                    bool flipRows, std::string& reason) {
-    if (side < 2 || side > kMaxResolution + 1 ||
+    if (side < 2 || side > kMaxHeightmapSide ||
         samples.size() != std::size_t(side) * std::size_t(side)) {
         reason = "heightmap samples must be a square of 2-" +
-                 std::to_string(kMaxResolution + 1) + " per side";
+                 std::to_string(kMaxHeightmapSide) + " per side";
         return {};
     }
     if (!std::isfinite(height) || !(height > 0.0f)) {

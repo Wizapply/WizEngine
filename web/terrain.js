@@ -18,19 +18,21 @@
   let terrainPatch = {};
   let terrainTimer = null;
   // 送信待ちを送る。extra は同じ 1 通に足すキー（ノイズで生成の generate =
-  // サーバーが部分更新を先に当てる。2 通に分けると届く順番が入れ替わりうる）。
+  // サーバーが部分更新を先に当てる。2 通に分けると届く順番が入れ替わりうる。
+  // 応答を待ってから次を送れば順番は保たれる = import / export はこちら）。
+  // 送ったときはその Promise（送るものが無ければ undefined）。
   function flushTerrain(extra, keepalive) {
     if (terrainTimer) { clearTimeout(terrainTimer); terrainTimer = null; }
     const patch = Object.assign(terrainPatch, extra || {});
     terrainPatch = {};
-    if (Object.keys(patch).length === 0) return;
+    if (Object.keys(patch).length === 0) return undefined;
     // 高さには「形を保つ」を同じ 1 通で付ける（送る時点のチェック。サーバーは
     // テレインに覚えないので、高さを送らない通には付けない）。
     if ('height' in patch) {
       const keep = document.getElementById('edTerrainKeep');
       patch.keepShape = !!(keep && keep.checked);
     }
-    send('edit.terrain', patch, keepalive);
+    return send('edit.terrain', patch, keepalive);
   }
   // 送信待ちの形のキーを捨てる。シーンの読込・XML 適用・全消しの前に呼ぶ:
   // 残すと、前のシーンで触った値が新しく読んだシーンのテレインに後から当たる。
@@ -183,6 +185,37 @@
   }
   // 読めなければ空 = 既定値のまま。
   restoreFields(TERRAIN_NOISE_STORE, TERRAIN_NOISE_FIELDS);
+
+  // ---- ハイトマップの取り込みと書き出し（secTerrain 節）----------------------
+  // サーバーの import / export は部分更新を当てない（ファイルの分岐で終わる）ので、
+  // 確定待ちの形（全幅など）は先に 1 通で送り、届いてから次を送る（取り込みは
+  // その形に合わせ、書き出しはその格子を書く）。ファイル名と上下反転は
+  // このブラウザに記憶する。
+  const TERRAIN_HEIGHTMAP_STORE = 'terrain:heightmap';
+  function sendAfterTerrainPatch(args) {
+    Promise.resolve(flushTerrain()).then(() => send('edit.terrain', args));
+  }
+  function importTerrainHeightmap() {
+    const fileEl = document.getElementById('edTerrainHmFile');
+    const flipEl = document.getElementById('edTerrainHmFlip');
+    const file = fileEl.value.trim();
+    const flip = !!flipEl.checked;
+    // 空なら覚えも送りもしない（覚えていたパスを空で上書きしない）。
+    if (!file) { fileEl.focus(); return; }
+    storeJson(TERRAIN_HEIGHTMAP_STORE, { file: file, flip: flip });
+    sendAfterTerrainPatch({ import: { file: file, flip: flip } });
+  }
+  function exportTerrainHeightmap(fmt) {
+    sendAfterTerrainPatch({ export: fmt });
+  }
+  (function restoreTerrainHeightmap() {
+    const saved = loadStoredJson(TERRAIN_HEIGHTMAP_STORE);
+    if (!saved) return;
+    const fileEl = document.getElementById('edTerrainHmFile');
+    const flipEl = document.getElementById('edTerrainHmFlip');
+    if (fileEl && typeof saved.file === 'string') fileEl.value = saved.file;
+    if (flipEl) flipEl.checked = saved.flip === true;
+  })();
 
   // ---- テレインのタイル（アセットパネル）------------------------------------
   // 一覧は /scene の terrainFiles（assets/terrains/*.terrain の見出し）。
