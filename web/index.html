@@ -892,9 +892,14 @@
         </div>
         <div class="edRow">
           <span>起伏の高さ (m)</span>
-          <input id="edTerrainHeight" class="num" type="number" step="1" min="0"
-                 max="1000" title="最低点〜最高点の差"
-                 onchange="applyTerrain('height')">
+          <span>
+            <input id="edTerrainHeight" class="num" type="number" step="1" min="0"
+                   max="1000" title="最低点〜最高点の差"
+                   onchange="applyTerrain('height')">
+            <!-- 高さを変える 1 回ぶんの指示（テレインには覚えない）。外すと比例伸縮。 -->
+            <label title="入れていると、高さを変えても地形の形はそのまま（上限だけを変え、下げたときに上限を超える所は切る）。外すと全体を比例して伸び縮みさせる">
+              <input id="edTerrainKeep" type="checkbox"> 形を保つ</label>
+          </span>
         </div>
         <div class="trRow" title="位置 (m)。X / Z = 中心、Y = 最低点（ギズモは中心の地表に出ます）">
           <span class="trName">位置</span>
@@ -956,6 +961,31 @@
           <button onclick="undoTerrain()"
                   title="テレインの直前の編集（ノイズで生成など）を取り消す"
                   >↶ 取り消し</button>
+        </div>
+        <!-- ハイトマップ（16 ビットの高さ画像）。取り込みは今の全幅・解像度・
+             起伏の高さに合わせて高さだけを差し替える（穴は保たれ、取り消しで
+             戻せる）。書き出しは assets/terrains/<名前>.raw / .png に上書き
+             （穴は書かない）。ファイル名はこのブラウザに記憶。 -->
+        <div class="edRow">
+          <span>ハイトマップ</span>
+          <span>
+            <input id="edTerrainHmFile" class="txt" type="text"
+                   placeholder="terrains/hill.png"
+                   title="assets/ からの相対パス。.raw = 16 ビットのリトルエンディアン（正方形）、それ以外は画像（PNG など。8 ビットも可、正方形のみ）。白 = 起伏の高さ、黒 = 最低点">
+            <label title="画像の上下を逆にして読む（上が +Z の向きで作られた画像のとき）">
+              <input id="edTerrainHmFlip" type="checkbox"> 上下反転</label>
+          </span>
+        </div>
+        <div class="edRow btnRow">
+          <button onclick="importTerrainHeightmap()"
+                  title="上のファイルの高さを今のテレインに取り込む（取り消しで戻せる）"
+                  >📥 取り込み</button>
+          <button onclick="exportTerrainHeightmap('raw')"
+                  title="assets/terrains/&lt;名前&gt;.raw に書き出す（16 ビット、上書き）"
+                  >📤 RAW</button>
+          <button onclick="exportTerrainHeightmap('png')"
+                  title="assets/terrains/&lt;名前&gt;.png に書き出す（16 ビットのグレースケール、上書き）"
+                  >📤 PNG</button>
         </div>
         <div class="edRow">
           <span>テクスチャ</span>
@@ -1374,25 +1404,59 @@
     <video id="video" autoplay playsinline muted></video>
     <div id="loading"><div class="spin"></div><span>connecting…</span></div>
     <div id="hit"></div>
-    <!-- ギズモのツールバー（Unity のシーンビュー左上と同じ場所）。映像への
-         オーバーレイで、エディタモード中の Editor Camera ページにだけ出す
-         （表示切替は app.js の renderEditor()）。実体は Inspector にあった
-         モード切替と同じコマンドを送るだけ。 -->
-    <div id="gizmoBar" hidden>
-      <button id="gzMove" onclick="setGizmoMode('translate')"
-              title="移動 (W)">✥</button>
-      <button id="gzRot" onclick="setGizmoMode('rotate')"
-              title="回転 (E)">⟳</button>
-      <button id="gzScale" onclick="setGizmoMode('scale')"
-              title="拡縮 (R)">⤢</button>
-      <span class="gzSep"></span>
-      <button id="gzSpace" onclick="toggleGizmoSpace()"
-              title="ギズモの座標系を切り替え（World ⇄ Local）">🌐 World</button>
-      <span class="gzSep"></span>
-      <button id="gzSettings" onclick="toggleGizmoSettings()"
-              title="ギズモ設定（スナップ・刻み・グリッド）を Inspector に開く">⚙&#xFE0E;</button>
-      <button id="gzNodes" onclick="toggleNodeEditor()"
-              title="イベント設計（ノードエディタ）を開閉">⚡&#xFE0E;</button>
+    <!-- 映像左上のツールバーを縦に並べる入れ物（入れ物自体はクリックを
+         受けず、#hit へ通す）。 -->
+    <div id="viewBars">
+      <!-- ギズモのツールバー（映像の左上）。映像への
+           オーバーレイで、エディタモード中の Editor Camera ページにだけ出す
+           （表示切替は app.js の renderEditor()）。実体は Inspector にあった
+           モード切替と同じコマンドを送るだけ。 -->
+      <div id="gizmoBar" hidden>
+        <button id="gzMove" onclick="setGizmoMode('translate')"
+                title="移動 (W)">✥</button>
+        <button id="gzRot" onclick="setGizmoMode('rotate')"
+                title="回転 (E)">⟳</button>
+        <button id="gzScale" onclick="setGizmoMode('scale')"
+                title="拡縮 (R)">⤢</button>
+        <span class="gzSep"></span>
+        <button id="gzSpace" onclick="toggleGizmoSpace()"
+                title="ギズモの座標系を切り替え（World ⇄ Local）">🌐 World</button>
+        <span class="gzSep"></span>
+        <button id="gzSettings" onclick="toggleGizmoSettings()"
+                title="ギズモ設定（スナップ・刻み・グリッド）を Inspector に開く">⚙&#xFE0E;</button>
+        <button id="gzNodes" onclick="toggleNodeEditor()"
+                title="イベント設計（ノードエディタ）を開閉">⚡&#xFE0E;</button>
+      </div>
+      <!-- テレインの筆（ギズモのツールバーの下）。エディタモード中の Editor
+           Camera ページで、テレインを選んでいるときだけ出す（表示切替は
+           terrain-brush.js の renderTerrainBar()）。道具を選ぶと映像の左ドラッグが
+           筆になり、同じボタンをもう一度押すか Esc でやめる。道具の名前は
+           ボタンの data-tool が唯一の一覧（サーバーの brushToolFromName と同じ
+           綴り）。半径・強さの欄が空ならサーバーの既定値。 -->
+      <div id="terrainBar" hidden>
+        <button data-tool="raise" onclick="setBrushTool('raise')"
+                title="盛り上げる（押している間、強さ m/s で上がる）">▲</button>
+        <button data-tool="lower" onclick="setBrushTool('lower')"
+                title="掘り下げる（押している間、強さ m/s で下がる）">▼</button>
+        <button data-tool="flatten" onclick="setBrushTool('flatten')"
+                title="平らにする（押し始めた点の高さへ寄せる）">▬</button>
+        <button data-tool="smooth" onclick="setBrushTool('smooth')"
+                title="なだらかにする（周りの平均へ寄せる）">≈</button>
+        <button data-tool="hole" onclick="setBrushTool('hole')"
+                title="穴をあける">◯</button>
+        <button data-tool="unhole" onclick="setBrushTool('unhole')"
+                title="穴を埋める">●</button>
+        <span class="gzSep"></span>
+        <label title="筆の半径 (m)">半径
+          <input id="tbRadius" type="number" min="0.1" max="500" step="0.5"
+                 placeholder="既定" onchange="applyBrushValues()"></label>
+        <label title="筆の強さ（盛り上げ・掘り下げは m/s、平らに・なだらかには 1/s）">強さ
+          <input id="tbStrength" type="number" min="0" max="100" step="0.1"
+                 placeholder="既定" onchange="applyBrushValues()"></label>
+        <span class="gzSep"></span>
+        <button onclick="undoTerrain()"
+                title="直前の編集（1 ストローク）を取り消す">↶</button>
+      </div>
     </div>
     <!-- ノードエディタ（Node-RED 風のイベント設計）。Editor Camera のページ
          専用。画面中央の大きなウィンドウ（各辺 90%、.ndWin）として出し、
@@ -1538,5 +1602,6 @@
 </div>
 <script src="app.js"></script>
 <script src="terrain.js"></script>
+<script src="terrain-brush.js"></script>
 </body>
 </html>

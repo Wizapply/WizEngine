@@ -34,6 +34,7 @@
 #include <cstddef>
 
 #include "core/AssetError.h"
+#include "core/Clock.h"
 #include "components/GizmoComponent.h"
 #include "physics/ModelImport.h"
 #include "physics/PhysicsWorld.h"
@@ -266,12 +267,8 @@ inline scenemath::Vec3 orbitVector(double azimuthRad, double elevationRad) {
 }
 
 // ---- 計時（重い作業のログ用）-----------------------------------------------
-// from から今までのミリ秒。テレインの生成・メッシュ化の所要時間を出すのに使う。
-inline double elapsedMs(std::chrono::steady_clock::time_point from) {
-    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
-                                                     from)
-        .count();
-}
+// テレインの生成・メッシュ化の所要時間を出すのに使う（定義は core/Clock.h）。
+using wizengine::elapsedMs;
 
 // ---- 地面とテレインの置き場所 -----------------------------------------------
 // 位置 + オイラー角（度）→ 姿勢（四元数は SceneMath の 1 か所の定義）。

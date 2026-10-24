@@ -46,7 +46,6 @@ constexpr double kRingThickness = 0.024;
 // 当たり判定の太さ（NDC）。画面の高さの約 2%。細い線を狙わせすぎない。
 constexpr double kPickAxis = 0.035;
 constexpr double kPickBlob = 0.05;
-constexpr int kRingSegments = 48;
 
 // 軸の始まり（中心に近すぎると回転リングや一様ハンドルと取り合いになる）。
 constexpr double kShaftStart = 0.15;
@@ -213,8 +212,8 @@ void buildRotate(const Sink& out, const Frame& f, int active) {
         const Vec3& v = f.axis[(i + 2) % 3];
         const std::size_t b = batchFor(i, active, std::size_t(i));
         Vec3 prev = f.origin + u * r;
-        for (int s = 1; s <= kRingSegments; ++s) {
-            const double t = 2.0 * scenemath::kPi * double(s) / kRingSegments;
+        for (int s = 1; s <= scenemath::kCircleSegments; ++s) {
+            const double t = 2.0 * scenemath::kPi * double(s) / scenemath::kCircleSegments;
             const Vec3 p = f.origin + u * (r * std::cos(t)) + v * (r * std::sin(t));
             segment(out, b, prev, p);
             prev = p;
@@ -604,8 +603,8 @@ int hitTest(const Frame& f, const Projector& pr, ed::GizmoMode mode, double px,
             const Vec3& v = f.axis[(i + 2) % 3];
             Vec3 prev = f.origin + u * r;
             double closest = 1e9;
-            for (int s = 1; s <= kRingSegments; ++s) {
-                const double t = 2.0 * scenemath::kPi * double(s) / kRingSegments;
+            for (int s = 1; s <= scenemath::kCircleSegments; ++s) {
+                const double t = 2.0 * scenemath::kPi * double(s) / scenemath::kCircleSegments;
                 const Vec3 p =
                     f.origin + u * (r * std::cos(t)) + v * (r * std::sin(t));
                 closest = std::min(closest, segmentDistance(pr, prev, p, px, py));
@@ -898,11 +897,9 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
         if (!t.valid) continue;
         const ed::GizmoMode mode = effectiveMode(t, g.mode);
 
-        const auto basis = scenemath::cameraBasis(scene.camera(c));
-        if (!basis.valid) continue;
-        const Vec3 dir = scenemath::rayThrough(
-            basis, cam.ndcX.load(), cam.ndcY.load(),
-            scene.renderer().verticalFovDegrees(), scene.renderer().aspect());
+        scenemath::Basis basis;
+        Vec3 dir;
+        if (!scene.cameraRay(c, cam.ndcX.load(), cam.ndcY.load(), basis, dir)) continue;
 
         // ドラッグ開始: 基準値を撮る。以後この値からの差分だけを見るので、
         // 適用結果が入力に混ざって暴走することがない。

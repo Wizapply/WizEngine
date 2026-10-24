@@ -46,8 +46,18 @@ public:
     // ---- モード ---------------------------------------------------------
     wizengine::editor::AppMode mode() const { return mode_.load(); }
     bool isEditor() const { return mode_.load() == wizengine::editor::AppMode::Editor; }
-    // 物理スレッドが遷移を終えてから確定させる。
-    void setMode(wizengine::editor::AppMode m) { mode_.store(m); }
+    // 物理スレッドが遷移を終えてから確定させる。値が実際に変わるときだけ
+    // modeEpoch を 1 進める。世代を先に進めてからモードを書く: 逆だと、間に
+    // 読んだ側が「古い世代 + 新しいモード」を見て、新しいモードの入力に古い
+    // 世代を付けてしまう（書くのは物理スレッドだけなので、比べてから書いてよい）。
+    void setMode(wizengine::editor::AppMode m) {
+        if (mode_.load() == m) return;
+        modeEpoch_.fetch_add(1);
+        mode_.store(m);
+    }
+    // モード切替の世代（切り替わるたびに進む）。モードを跨いだ入力を見分ける
+    // ため（例: 筆の入力は積んだときの世代と違えば捨てる）。誰が読んでもよい。
+    std::uint64_t modeEpoch() const { return modeEpoch_.load(); }
     // 切替要求（INPUT スレッド）。実際の切替は物理スレッドが行う。
     void requestMode(wizengine::editor::AppMode m) {
         request_.store(m == wizengine::editor::AppMode::Editor ? 1 : 2);
@@ -290,6 +300,7 @@ public:
 
 private:
     std::atomic<wizengine::editor::AppMode> mode_{wizengine::editor::AppMode::Simulate};
+    std::atomic<std::uint64_t> modeEpoch_{0};
     std::atomic<int> request_{0};  // 0=なし 1=Editor 2=Simulate
 
     std::atomic<int> selKind_{0};    // SelKind

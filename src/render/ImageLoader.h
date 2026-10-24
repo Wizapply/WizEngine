@@ -32,3 +32,19 @@ bool loadImageHDR(const std::string& path, std::vector<float>& out, int& width,
 
 bool loadImageRGBA(const std::string& path, std::vector<uint8_t>& outPixels,
                    int& outWidth, int& outHeight);
+
+// 画像の幅と高さを見出しだけから読む（画素はデコードしない。ファイルは先頭の
+// 64 KB だけ読み、それで寸法に届かない JPEG だけ丸ごと読み直す）。大きな画像や
+// 形の合わない画像を、画素の確保の前に断るため。
+// 読めなければ false で出力は触らない（理由は imageFailureReason()）。
+// loadImageRGBA / readImageSize / loadImageGray16 の path は UTF-8 で、日本語などを
+// 含むパスも開ける（ファイルを u8path で読んでから stb のメモリ版へ渡す）。
+bool readImageSize(const std::string& path, int& width, int& height);
+
+// 画像を 16 ビットのグレースケール（1 画素 1 標本、行優先で上の行から）として
+// 読む。テレインのハイトマップの取り込み用。8 ビットの画像は 16 ビットに
+// 引き伸ばし（× 257）、色付きの画像は輝度に直して読む（どちらも stb_image）。
+// 失敗すれば false で出力は触らない（理由は imageFailureReason()）。大きさの
+// 上限は見ないので、呼び手が先に readImageSize で確かめる。
+bool loadImageGray16(const std::string& path, std::vector<uint16_t>& out, int& width,
+                     int& height);

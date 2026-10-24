@@ -332,6 +332,7 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererShapes.cpp
     src/render/RendererMeshes.cpp
     src/render/RendererLines.cpp
+    src/render/RendererOverlays.cpp
     src/render/RendererGround.cpp
     src/render/RendererTerrain.cpp
     src/render/RendererTextures.cpp)
@@ -353,11 +354,14 @@ set(WIZ_SCENE_SOURCES
     src/scene/SceneTerrain.cpp
     src/scene/SceneTerrainEdit.cpp
     src/scene/SceneTerrainFile.cpp
+    src/scene/SceneTerrainRender.cpp
+    src/scene/SceneTerrainSculpt.cpp
     src/scene/SoftLattice.cpp)
 set(WIZ_COMPONENT_SOURCES
     src/components/EditorComponent.cpp
     src/components/GizmoComponent.cpp
     src/components/PrefabComponent.cpp
+    src/components/TerrainComponent.cpp
     src/components/VehicleComponent.cpp)
 set(WIZ_VEHICLE_SOURCES
     src/vehicle/Formula.cpp
@@ -373,6 +377,8 @@ set(WIZ_VEHICLE_SOURCES
 set(WIZ_TERRAIN_SOURCES
     src/terrain/HeightField.cpp
     src/terrain/HeightFieldOps.cpp
+    src/terrain/Heightmap.cpp
+    src/terrain/TerrainBrush.cpp
     src/terrain/TerrainContact.cpp
     src/terrain/TerrainFile.cpp
     src/terrain/TerrainLibrary.cpp

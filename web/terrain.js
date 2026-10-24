@@ -18,13 +18,15 @@
   let terrainPatch = {};
   let terrainTimer = null;
   // 送信待ちを送る。extra は同じ 1 通に足すキー（ノイズで生成の generate =
-  // サーバーが部分更新を先に当てる。2 通に分けると届く順番が入れ替わりうる）。
+  // サーバーが部分更新を先に当てる。2 通に分けると届く順番が入れ替わりうる。
+  // 応答を待ってから次を送れば順番は保たれる = import / export はこちら）。
+  // 送ったときはその Promise（送るものが無ければ undefined）。
   function flushTerrain(extra, keepalive) {
     if (terrainTimer) { clearTimeout(terrainTimer); terrainTimer = null; }
     const patch = Object.assign(terrainPatch, extra || {});
     terrainPatch = {};
-    if (Object.keys(patch).length === 0) return;
-    send('edit.terrain', patch, keepalive);
+    if (Object.keys(patch).length === 0) return undefined;
+    return send('edit.terrain', patch, keepalive);
   }
   // 送信待ちの形のキーを捨てる。シーンの読込・XML 適用・全消しの前に呼ぶ:
   // 残すと、前のシーンで触った値が新しく読んだシーンのテレインに後から当たる。
@@ -71,6 +73,13 @@
     if (typeof value === 'number' && !Number.isFinite(value)) return;
     if (value === undefined) return;
     terrainPatch[key] = value;
+    // 高さには「形を保つ」を同じ 1 通で付ける。読むのは高さの欄を変えた時点の
+    // チェック（間引きの間に切り替えても、この変更の指示は変わらない）。サーバーは
+    // テレインに覚えないので、高さを送らない通には付けない。
+    if (key === 'height') {
+      const keep = pick('edTerrainKeep');
+      terrainPatch.keepShape = !!(keep && keep.checked);
+    }
     if (TERRAIN_SHAPE_KEYS.includes(key)) {
       if (terrainTimer) clearTimeout(terrainTimer);
       terrainTimer = setTimeout(() => flushTerrain(), TERRAIN_SHAPE_DELAY_MS);
@@ -163,13 +172,8 @@
   };
   const TERRAIN_NOISE_STORE = 'terrain:noise';
   function generateTerrainNoise() {
-    const g = {};
-    for (const key in TERRAIN_NOISE_FIELDS) {
-      const v = num(TERRAIN_NOISE_FIELDS[key], NaN);
-      if (Number.isFinite(v)) g[key] = v;
-    }
-    try { localStorage.setItem(TERRAIN_NOISE_STORE, JSON.stringify(g)); }
-    catch (e) { /* プライベートモード等: 覚えないだけ */ }
+    const g = readFields(TERRAIN_NOISE_FIELDS);
+    storeJson(TERRAIN_NOISE_STORE, g);
     // 確定待ちの形（全幅など）も同じ 1 通で送る（サーバーが先に当ててから生成）。
     flushTerrain({ generate: g });
   }
@@ -180,14 +184,45 @@
     discardTerrain();
     send('edit.terrain', { undo: true });
   }
-  try {
-    const saved = JSON.parse(localStorage.getItem(TERRAIN_NOISE_STORE) || '{}');
-    for (const key in TERRAIN_NOISE_FIELDS) {
-      if (saved && Number.isFinite(saved[key])) {
-        setField(TERRAIN_NOISE_FIELDS[key], saved[key]);
-      }
-    }
-  } catch (e) { /* 読めなければ空 = 既定値のまま */ }
+  // 読めなければ空 = 既定値のまま。
+  restoreFields(TERRAIN_NOISE_STORE, TERRAIN_NOISE_FIELDS);
+
+  // ---- ハイトマップの取り込みと書き出し（secTerrain 節）----------------------
+  // サーバーの import / export は部分更新を当てない（ファイルの分岐で終わる）ので、
+  // 確定待ちの形（全幅など）は先に 1 通で送り、届いてから次を送る（取り込みは
+  // その形に合わせ、書き出しはその格子を書く）。ファイル名と上下反転は
+  // このブラウザに記憶する。
+  const TERRAIN_HEIGHTMAP_STORE = 'terrain:heightmap';
+  function sendAfterTerrainPatch(args) {
+    Promise.resolve(flushTerrain()).then(() => send('edit.terrain', args));
+  }
+  function importTerrainHeightmap() {
+    const fileEl = document.getElementById('edTerrainHmFile');
+    const flipEl = document.getElementById('edTerrainHmFlip');
+    const file = fileEl.value.trim();
+    const flip = !!flipEl.checked;
+    // 空なら覚えも送りもしない（覚えていたパスを空で上書きしない）。
+    if (!file) { fileEl.focus(); return; }
+    storeJson(TERRAIN_HEIGHTMAP_STORE, { file: file, flip: flip });
+    sendAfterTerrainPatch({ import: { file: file, flip: flip } });
+  }
+  // 書き出し先が既にあれば（/scene の heightmapFiles）上書きを確かめ、OK なら
+  // overwrite を付ける（サーバーは overwrite の無い上書きを断る）。確かめた
+  // テレインの名前も添える（その間に開き替え・改名されたらサーバーが断る）。
+  function exportTerrainHeightmap(fmt) {
+    const name = currentTerrain().name;
+    const exists = !!((sceneData && sceneData.heightmapFiles) || {})[fmt];
+    if (exists && !confirm(name + '.' + fmt + ' は既にあります。上書きしますか？')) return;
+    sendAfterTerrainPatch({ export: fmt, terrain: name, overwrite: exists });
+  }
+  (function restoreTerrainHeightmap() {
+    const saved = loadStoredJson(TERRAIN_HEIGHTMAP_STORE);
+    if (!saved) return;
+    const fileEl = document.getElementById('edTerrainHmFile');
+    const flipEl = document.getElementById('edTerrainHmFlip');
+    if (fileEl && typeof saved.file === 'string') fileEl.value = saved.file;
+    if (flipEl) flipEl.checked = saved.flip === true;
+  })();
 
   // ---- テレインのタイル（アセットパネル）------------------------------------
   // 一覧は /scene の terrainFiles（assets/terrains/*.terrain の見出し）。
@@ -195,12 +230,18 @@
   // 無い新規（保存前）は一覧に無いので、今のテレインのぶんを先頭に足す。
   // Missing は足さない（ファイルが無い。読めないファイルは一覧にあれば出る）。
   // 単クリックは何もしない（開くのはダブルクリック、右クリックはメニュー）。
+  function terrainFileList() {
+    return (sceneData && sceneData.terrainFiles) || [];
+  }
+  // name の .terrain ファイルが一覧にあるか（保存前の新規のタイルは無い）。
+  function hasTerrainFile(name) {
+    return terrainFileList().some((f) => sameTerrainName(f.name, name));
+  }
   function terrainTileEntries() {
-    const files = (sceneData && sceneData.terrainFiles) || [];
+    const files = terrainFileList();
     const cur = currentTerrain();
     const list = files.slice();
-    if (isOpenTerrain(cur.name) &&
-        !files.some((f) => sameTerrainName(f.name, cur.name))) {
+    if (isOpenTerrain(cur.name) && !hasTerrainFile(cur.name)) {
       const t = sceneData.terrain;
       list.unshift({ name: cur.name, resolution: t.resolution, size: t.size,
                      height: t.height });
@@ -301,6 +342,7 @@
     const cur = currentTerrain();
     const referred = !!cur.name && sameTerrainName(name, cur.name);
     const simulating = !!sceneData && sceneData.mode !== 'editor';
+    const hasFile = hasTerrainFile(name);
     const tileNow = () => Array.from(
       document.querySelectorAll('#assetList [data-terrain]'))
       .find((el) => el.dataset.terrain === name);
@@ -309,6 +351,13 @@
       { label: '✎ 名前の変更', onClick: () => startTerrainRename(tileNow()) },
       { label: '開く', hint: isOpen ? '開いています' : 'ダブルクリック',
         disabled: isOpen, onClick: () => openTerrain(name) },
+      // 複製はファイルから作る（保存前の新規のタイルにはファイルが無い）。シミュレート
+      // 中は削除と同じく受けない。最後の守りはサーバー（Scene::duplicateTerrain と
+      // TerrainLibrary::duplicate）。
+      { label: '⧉ 複製', disabled: simulating || !hasFile,
+        hint: simulating ? 'エディタモードでだけ複製できます'
+          : !hasFile ? '保存してから複製できます' : '',
+        onClick: () => duplicateTerrain(name) },
       { sep: true },
       // シーンが参照しているテレイン（保存前でファイルの無いタイル・Missing も）
       // とシミュレート中は消せない。最後の守りはサーバー（Scene::deleteTerrain）。
@@ -377,6 +426,15 @@
     if (!extra) return;
     discardTerrain();
     send('edit.terrain', Object.assign({ open: name }, extra));
+  }
+  // 複製して開く（新しい名前 _2 などと背番号はサーバーが決める。確認は
+  // confirmReplaceTerrain、最後の守りはサーバー）。
+  function duplicateTerrain(name) {
+    if (!name || terrainRenameActive()) return;
+    const extra = confirmReplaceTerrain('「' + name + '」を複製して開きます');
+    if (!extra) return;
+    discardTerrain();
+    send('edit.terrain', Object.assign({ duplicate: name }, extra));
   }
 
   // ---- 一覧の取り直し --------------------------------------------------------

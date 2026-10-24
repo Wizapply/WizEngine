@@ -22,6 +22,9 @@ inline constexpr double kPi = EIGEN_PI;
 inline constexpr double kPi = 3.14159265358979323846;
 #endif
 
+// 円を線分で描くときの分割数（ギズモの回転リングとテレインの筆の輪・円盤）。
+inline constexpr int kCircleSegments = 48;
+
 inline constexpr double radians(double degrees) {
     return degrees * kPi / 180.0;
 }

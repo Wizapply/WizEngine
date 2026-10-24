@@ -25,6 +25,7 @@
 //     バイト。次の節までは 0 で 8 バイト境界まで埋める）
 //     HGHT（必須、版 1）: u16 × (res+1)²。値 = round(clamp(h / height, 0, 1) × 65535)。
 //          並びは行 = +Z、行内 = +X（HeightField::samples() と同じ行優先）。
+//          中身は RAW16 のハイトマップと同じ（量子化と変換は Heightmap.h）。
 //     HOLE（版 1）: u8 × res²。0 = 穴、255 = 中身（メモリ上の HeightField とは
 //          逆向き）。穴が 1 つも無ければ書かない。読むときは 0 だけを穴とみなす。
 //     未知の tag は読み飛ばす（後の段階で SPLT / TREE / GRAS を足す）。
@@ -99,6 +100,16 @@ bool writeFile(const std::filesystem::path& path, const HeightField& field,
                float height, const TerrainGuid& guid, std::string& reason);
 bool readFile(const std::filesystem::path& path, TerrainFileData& out,
               std::string& reason);
+
+// ファイルのバイト列の読み書き（.terrain・ハイトマップの RAW / PNG が共用）。
+// readFileBytes は maxBytes を超えるファイルを読まずに断る（壊れた・別の
+// 大きなファイルを丸ごと読まない安全弁）。writeFileBytes は一時ファイルに
+// 書いてから置き換え（途中で失敗しても元のファイルは壊れない）、親フォルダが
+// 無ければ作る。reason にはパスが付く。
+bool readFileBytes(const std::filesystem::path& path, uintmax_t maxBytes,
+                   std::vector<uint8_t>& out, std::string& reason);
+bool writeFileBytes(const std::filesystem::path& path, const std::vector<uint8_t>& bytes,
+                    std::string& reason);
 
 }  // namespace terrain
 }  // namespace wizengine

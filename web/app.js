@@ -106,15 +106,20 @@
   }
 
   // keepalive: ページを離れる途中（pagehide）でも打ち切られずに届ける。
-  function send(cmd, args, keepalive) {
-    if (!owner) return;
+  // 戻り値は送信が終わる（失敗も含む）と解決する Promise（順に送りたい側が待つ）。
+  // timeoutMs: 指定すればその時間で打ち切って失敗として扱う（待つ側が止まらない）。
+  function send(cmd, args, keepalive, timeoutMs) {
+    if (!owner) return Promise.resolve();
     const msg = Object.assign({ cmd: cmd }, args || {});
-    fetch('input', {
+    const ctl = timeoutMs ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
+    return fetch('input', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(msg),
-      keepalive: !!keepalive
-    }).catch(() => {});
+      keepalive: !!keepalive,
+      signal: ctl ? ctl.signal : undefined
+    }).catch(() => {}).finally(() => clearTimeout(timer));
   }
   // ---- Input: one code path for mouse, touch and pen ---------------------
   // Pointer Events give the same handlers for every device, so the gestures
@@ -160,6 +165,9 @@
     return { x: ((clientX - r.left) / r.width) * 2 - 1,
              y: 1 - ((clientY - r.top) / r.height) * 2 };
   }
+  // 「画面の外」の座標。サーバーは [-1, 1] の外を「何にも当たらない」として
+  // 扱うので、ギズモのハイライトや筆の輪を消す合図に使う。
+  const NDC_OFFSCREEN = { x: 9.0, y: 9.0 };
   function twoFingerState() {
     const [a, b] = [...touches.values()];
     return { dist: Math.hypot(a.x - b.x, a.y - b.y),
@@ -172,7 +180,8 @@
 
     if (e.pointerType === 'touch') {
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (touches.size === 1) {
+      // 筆が取った指（terrain-brush.js の capture が先に印を付ける）は掴まない。
+      if (touches.size === 1 && brushPointerId !== e.pointerId) {
         // Try to grab whatever is under the finger. If the server reports no
         // selection, pointermove turns this into an orbit.
         grabIsTouch = true;
@@ -183,6 +192,8 @@
       } else if (touches.size === 2) {
         // Second finger: this is a camera gesture, not a grab.
         if (grabbing) { grabbing = false; send('release'); }
+        // 筆も終えて輪を消す（2 本指の間は筆を使わない）。
+        if (brushToolActive()) { endBrushStroke(); clearHover(); }
         dragMode = 'pan';
         const st = twoFingerState();
         pinchDist = st.dist;
@@ -263,7 +274,8 @@
   }
   hitEl.addEventListener('pointerup', endPointer);
   hitEl.addEventListener('pointercancel', endPointer);
-  window.addEventListener('blur', () => endPointer(null));
+  // 離れている間の指の up は届かないので、指の一覧も空にする。
+  window.addEventListener('blur', () => { touches.clear(); endPointer(null); });
   window.addEventListener('keyup', (e) => {
     if (e.key === 'Control') endPointer(null);
   });
@@ -329,10 +341,7 @@
       return;
     }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
-    if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' ||
-               el.tagName === 'TEXTAREA')) {
-      return;
-    }
+    if (focusInField()) return;
     // ノードエディタは画面全体を覆うので、✕ のほかに Esc でも閉じられる
     // ようにしておく（モード不問 - シミュレート中も開けるため）。
     if (e.key === 'Escape' && nodeEdOpen) {
@@ -352,6 +361,7 @@
     }
     if (!owner || !sceneData || sceneData.mode !== 'editor') return;
     if (!isEditorCam()) return;  // ギズモが出ないページで切り替えても意味がない
+    if (brushToolActive()) return;  // 筆の間はギズモを掴めない
     const key = e.key.toLowerCase();
     if (key === 'w') { e.preventDefault(); setGizmoMode('translate'); }
     else if (key === 'e') { e.preventDefault(); setGizmoMode('rotate'); }
@@ -390,9 +400,7 @@
   let driveLast = null;            // 最後に送った値（アナログの差分判定用）
   function driveKey(e, down) {
     if (e.ctrlKey || e.altKey || e.metaKey) return;
-    const el = document.activeElement;
-    if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' ||
-               el.tagName === 'TEXTAREA')) return;
+    if (focusInField()) return;
     if (!owner || !sceneData || sceneData.mode === 'editor') return;
     if (nodeEdOpen || xmlEdOpen) return;
     const key = e.key === ' ' ? 'space' : e.key.toLowerCase();
@@ -556,13 +564,12 @@
   window.addEventListener('blur', () => cursorEl.classList.remove('cross'));
   stageEl.addEventListener('pointerleave', () => {
     if (!document.fullscreenElement) cursorEl.classList.remove('show');
-    // ビューから出たらギズモのハイライトも消す。どのハンドルにも当たらない
-    // 座標を 1 回送るだけでよい（専用のコマンドを増やすほどの話ではない）。
-    if (hoverNdc) {
-      hoverNdc = null;
-      send('hover', { x: 9.0, y: 9.0 });
-    }
   });
+  // 映像（#hit）から出たら（その上のツールバーへ出たときも）ギズモの
+  // ハイライトか筆の輪を消す。どのハンドルにも当たらない座標を 1 回送るだけで
+  // よい（専用のコマンドを増やすほどの話ではない）。押している間はポインタを
+  // 捕まえているので来ない。
+  hitEl.addEventListener('pointerleave', () => { if (hoverNdc) clearHover(); });
 
   document.addEventListener('fullscreenchange', () => {
     cursorEl.classList.remove('show');  // reset when entering/leaving
@@ -1570,6 +1577,41 @@
     const v = parseFloat(document.getElementById(id).value);
     return Number.isFinite(v) ? v : fallback;
   }
+  // フォームの欄（input / select / textarea）にフォーカスがあるか。キーの
+  // ショートカットは、欄に打っている間は効かせない。
+  function focusInField() {
+    const el = document.activeElement;
+    return !!el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' ||
+                    el.tagName === 'TEXTAREA');
+  }
+  // このブラウザの localStorage に JSON で覚える / 読む。プライベートモード
+  // 等で使えない・壊れた値のときは、覚えない / null（呼び手は既定のまま）。
+  function storeJson(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); }
+    catch (e) { /* 覚えないだけ */ }
+  }
+  function loadStoredJson(key) {
+    try { return JSON.parse(localStorage.getItem(key) || 'null'); }
+    catch (e) { return null; }
+  }
+  // 欄の表（キー → 欄の id）から、数の入っている欄だけを {キー: 値} に集める
+  // （空の欄のキーは入れない = 送ればサーバーの既定値）。
+  function readFields(map) {
+    const out = {};
+    for (const key in map) {
+      const v = num(map[key], NaN);
+      if (Number.isFinite(v)) out[key] = v;
+    }
+    return out;
+  }
+  // storeJson で覚えた {キー: 値} のうち、数のものだけを欄の表の欄へ戻す。
+  function restoreFields(storeKey, map) {
+    const saved = loadStoredJson(storeKey);
+    if (!saved) return;
+    for (const key in map) {
+      if (Number.isFinite(saved[key])) setField(map[key], saved[key]);
+    }
+  }
   const round2 = (v) => Math.round((v || 0) * 1000) / 1000;
   // アセット名（イベント・計算式・プレハブ・テレイン）の正規化。サーバーの
   // 名前の規則（core/SafeName.h: 英数字と _ -、kSafeNameMaxLength 文字）と同じ。
@@ -1578,7 +1620,12 @@
     return String(s).replace(/[^A-Za-z0-9_-]/g, '').slice(0, ASSET_NAME_MAX);
   }
 
-  function setMode(mode) { send('mode', { mode: mode }); }
+  // モードが変わるなら筆はすぐ下ろす（次のポーリングで mode が変わるまで
+  // 映像のクリックを取らない）。いまのモードのボタンでは道具を外さない。
+  function setMode(mode) {
+    send('mode', { mode: mode });
+    if (sceneData && sceneData.mode !== mode) setBrushTool('none');
+  }
 
   // ---- ギズモ --------------------------------------------------------------
   // 見た目と当たり判定はサーバー側（3D の線として描かれる）。ここでやるのは
@@ -1616,17 +1663,33 @@
   // 選択中はカーソル位置を控えめな間隔で送ってサーバーに光らせてもらう。
   // ドラッグ中は drag が同じ情報を運ぶので送らない。ギズモはエディタカメラ
   // にしか出ないので、送るのもそのページだけ。
+  // hoverNdc は映像の上の最後のポインタ位置（映像の外・ウィンドウを離れた
+  // 間は null）で、テレインの筆（terrain-brush.js）も同じ値を読む。
+  const HOVER_MS = 70;
   let hoverNdc = null;
+  window.addEventListener('blur', () => { hoverNdc = null; });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) hoverNdc = null;  // 裏のタブで送り続けない
+  });
+  // 位置を忘れて、ギズモのハイライトか筆の輪（筆を使っている間）を消す。
+  function clearHover() {
+    hoverNdc = null;
+    if (brushToolActive()) sendBrushHover();
+    else send('hover', NDC_OFFSCREEN);
+  }
   setInterval(() => {
     if (!owner || grabbing || dragMode) return;
     if (!sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
+    // 筆の道具を選んでいる間はギズモを掴めないので光らせず、筆の輪を送る
+    // （terrain-brush.js）。
+    if (brushToolActive()) { if (hoverNdc) sendBrushHover(); return; }
     // ギズモが出ている対象（オブジェクト / ライト / カメラ / 部品 / 地面 /
     // テレイン）があるときだけ。
     const hasTarget = sceneData.selected ||
         (sceneData.editorSel && sceneData.editorSel.kind !== 'none');
     if (!hasTarget || !hoverNdc) return;
     send('hover', hoverNdc);
-  }, 70);
+  }, HOVER_MS);
 
   // アセットパネルの mesh タイル（配列番号 → いまの一覧から名前を引く）。
   function addMeshAsset(i) {
@@ -2411,6 +2474,7 @@
     }
     // テレイン（secTerrain 節）。hasTerrain / terrain が無い古いサーバーでも落ちない。
     renderTerrainSection();
+    renderTerrainBar();  // 筆のツールバー（terrain-brush.js）
     // 描画設定（<visual>）。select も setField で入る（フォーカス中の欄は
     // 触らない、は入力欄と同じ扱い）。
     if (sceneData.render) {
@@ -3493,7 +3557,11 @@
     if (ctxEl && !ctxEl.contains(e.target)) hideContextMenu();
   }, true);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') hideContextMenu();
+    // 閉じたときは preventDefault（同じ Esc で他の物 = 筆の道具などを下ろさない）。
+    if (e.key === 'Escape' && ctxEl) {
+      e.preventDefault();
+      hideContextMenu();
+    }
   });
   window.addEventListener('blur', hideContextMenu);
 
@@ -4346,7 +4414,8 @@
       renderNodeEditor();
     } catch (e) { /* server busy or gone; try again next tick */ }
   }
-  // 後ろに読む terrain.js（renderEditor が使う）の実行を待ってから回し始める。
+  // 後ろに読む terrain.js / terrain-brush.js（renderEditor が使う）の実行を
+  // 待ってから回し始める。
   // DOMContentLoaded は body 末尾のスクリプトが全部走ったあとに来る。
   window.addEventListener('DOMContentLoaded', () => {
     setInterval(pollScene, 500);

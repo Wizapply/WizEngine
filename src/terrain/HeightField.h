@@ -148,6 +148,15 @@ public:
     // 共有中の格子（shared_ptr<const>）には呼べない = コピーに対して呼ぶ。
     // HeightFieldOps.cpp。
     void scaleHeights(float k);
+    // 高さ（格子値）が maxHeight を超える所を maxHeight に切り詰める（下は
+    // そのまま、穴にも触れない）。高さの上限を形を保ったまま下げたときに使う。
+    // maxHeight が正の有限値でなければ何もしない（scaleHeights と同じ約束）。
+    // 戻り値は切った格子値の数（= countAbove(maxHeight)。何もしなければ 0）。
+    // 共有中の格子には呼べない = コピーに対して呼ぶ。HeightFieldOps.cpp。
+    std::size_t clampHeights(float maxHeight);
+    // maxHeight より高い格子値の数（数え方はここ 1 か所: clampHeights の戻り値と、
+    // ハイトマップの書き出しの知らせ = 境は Heightmap の quantizeClipLevel）。
+    std::size_t countAbove(float maxHeight) const;
 
     // 穴（セル単位）。穴のセルは描画で面積 0、接触を作らず、レイが抜ける
     // （どれも isSolidCell を通る）。範囲外の添字は setHole が無視し、
@@ -195,6 +204,12 @@ public:
     // （切り上げ）。resolution が割り切れないときは、最後の列 / 行のチャンクが
     // 一部だけ埋まる（buildChunkMesh 参照）。
     int chunksPerSide(int quadsPerChunk) const;
+    // セルの矩形 cells（TerrainEdit の rect と同じセル単位）を書き換えたとき、
+    // 作り直しが要るチャンクの矩形（チャンク単位、0〜chunksPerSide に切り詰め
+    // 済み）。頂点法線は隣のサンプルを見るので、書き換えた角のサンプルの ±1 を
+    // 含むチャンク（継ぎ目の頂点は両側のチャンクが持つ）を全部入れる。cells が
+    // 空・空の格子・quadsPerChunk < 1 なら空。HeightFieldOps.cpp。
+    GridRect chunksTouched(const GridRect& cells, int quadsPerChunk) const;
 
     // チャンク (cx, cz) のメッシュを out に書く（配列は作り直す）。
     // チャンクが格子の外にはみ出す部分（resolution が quadsPerChunk で
