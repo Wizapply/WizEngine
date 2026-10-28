@@ -150,6 +150,7 @@ void HeightField::splatAt(int i, int j, uint8_t out[kSplatChannels]) const {
 
 bool HeightField::setSplatWeights(int i, int j, const float w[kSplatChannels]) {
     if (i < 0 || j < 0 || i >= resolution_ || j >= resolution_) return false;
+    if (holeAt(i, j)) return false;  // 穴のセルは塗らない（ヘッダの約束）
     // 負・NaN・無限大は 0（無限大を残すと合計が無限大になり比が出せない）。
     double v[kSplatChannels];
     double sum = 0.0;

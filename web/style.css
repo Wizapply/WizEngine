@@ -106,6 +106,14 @@
   #terrainBar label { display:flex; align-items:center; gap:4px;
                       font-size:11.5px; color:#c9ced6; margin:0 2px; }
   #terrainBar input { width:56px; margin:0; padding:2px 4px; }
+  #terrainBar select { margin:0; padding:2px 4px; max-width:none; }
+  /* テクスチャの無い層（選べるが灰色）。選択欄そのものも、選んでいる層が
+     そうなら灰色にする。 */
+  #terrainBar select.noTex, #terrainBar option.noTex { color:#7d828c; }
+  #terrainBar select option:not(.noTex) { color:#dfe2e7; }
+  /* 🖌 で塗れない・テクスチャが無いときの知らせ（層の選択の隣）。 */
+  #tbLayerNote { font-size:11.5px; color:#f0c060; margin:0 2px; }
+  #tbLayerNote[hidden] { display:none; }
   #error { display:none; width:100%; aspect-ratio:16/9;
            border-radius:8px; background:#2a1c1c; border:1px solid #7a3b3b;
            box-sizing:border-box; padding:24px; text-align:center;

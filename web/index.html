@@ -1457,11 +1457,21 @@
                 title="穴をあける">◯</button>
         <button data-tool="unhole" onclick="setBrushTool('unhole')"
                 title="穴を埋める">●</button>
+        <button data-tool="paint" onclick="setBrushTool('paint')"
+                title="塗る（押している間、右の選択の層が強さ 1/s で濃くなる）">🖌</button>
+        <button data-tool="erase" onclick="setBrushTool('erase')"
+                title="消す（押している間、塗った層が強さ 1/s で薄くなり下地に戻る）">🧽</button>
+        <!-- 🖌 で塗る層（下地より後ろの層。下地は 🧽 が受け持つ）。選択肢と title は
+             テレインの層（/scene の terrain.layers）から terrain-brush.js が作る。
+             値は 0 始まりの層の番号。テクスチャの無い層は灰色。隣の #tbLayerNote は
+             🖌 で塗れない・テクスチャが無いときの知らせ。 -->
+        <select id="tbLayer" class="strSel" onchange="applyBrushLayer()"></select>
+        <span id="tbLayerNote" hidden></span>
         <span class="gzSep"></span>
         <label title="筆の半径 (m)">半径
           <input id="tbRadius" type="number" min="0.1" max="500" step="0.5"
                  placeholder="既定" onchange="applyBrushValues()"></label>
-        <label title="筆の強さ（盛り上げ・掘り下げは m/s、平らに・なだらかには 1/s）">強さ
+        <label title="筆の強さ（盛り上げ・掘り下げは m/s、平らに・なだらか・塗るは 1/s）">強さ
           <input id="tbStrength" type="number" min="0" max="100" step="0.1"
                  placeholder="既定" onchange="applyBrushValues()"></label>
         <span class="gzSep"></span>

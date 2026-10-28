@@ -32,10 +32,16 @@ void Scene::stampTerrain(std::vector<wizengine::terrain::BrushStamp>& stamps) {
     // このパスで書き換えうる範囲（全スタンプの和）。格子のコピーは 1 パスに 1 回。
     // 高さの上限は今のテレインの値をここで入れる（呼び手に渡させない = 渡し忘れが無い。
     // terrain_ を書くのはこのスレッドだけなのでロック不要）。
+    // 何を書き換えるか: 塗り・消し（brushPaintsWeights）は重みだけ、他の道具は
+    // 高さ・穴。1 パスに両方が混ざれば Both（描画のスプラットとチャンク、
+    // 当たり判定の張り直し）。
     wizengine::terrain::GridRect rect;
+    unsigned parts = 0;
     for (wizengine::terrain::BrushStamp& s : stamps) {
         s.maxHeight = terrain_.height;
         rect = rect.united(wizengine::terrain::stampRect(*field, s));
+        parts |= unsigned(wizengine::terrain::brushPaintsWeights(s.tool) ? TerrainChanged::Paint
+                                                                          : TerrainChanged::Shape);
     }
     if (rect.empty()) return;  // 格子の外・壊れた値
     const bool changed = editTerrainField(
@@ -48,7 +54,7 @@ void Scene::stampTerrain(std::vector<wizengine::terrain::BrushStamp>& stamps) {
             }
             return any;
         },
-        TerrainRecord::Stroke, TerrainChanged::Shape);
+        TerrainRecord::Stroke, TerrainChanged(parts));
     // 計測は格子を実際に書き換えたパスだけ（回数・スタンプ数・時間を揃える）。
     if (!changed) return;
     ++terrainStroke_.passes;

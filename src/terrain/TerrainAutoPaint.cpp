@@ -104,7 +104,8 @@ bool applyAutoPaint(HeightField& field, const AutoPaintRules& rules) {
             const double len = n.norm();
             const double ny = len > 0.0 ? std::clamp(n.y() / len, -1.0, 1.0) : 1.0;
             const double slope = std::acos(ny) * kDegPerRad;
-            const double height = field.heightAt(x0 + 0.5 * cell, z0 + 0.5 * cell) - baseY;
+            const double height =
+                field.heightAt(field.cellCenterX(i), field.cellCenterZ(j)) - baseY;
             for (int k = 0; k < kSplatChannels; ++k) {
                 const AutoPaintBand& b = rules.layer[std::size_t(k)];
                 if (!b.enabled) {
@@ -117,7 +118,8 @@ bool applyAutoPaint(HeightField& field, const AutoPaintRules& rules) {
                                              hLo, hHi);
                 w[k] = float(fs * fh);
             }
-            // 正規化・量子化（合計 255、全部 0 なら層 0）は setSplatWeights だけが持つ。
+            // 正規化・量子化（合計 255、全部 0 なら層 0）と穴のセルを飛ばすのは
+            // setSplatWeights だけ。
             if (field.setSplatWeights(i, j, w)) changed = true;
         }
     }

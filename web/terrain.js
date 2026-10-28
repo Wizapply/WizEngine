@@ -102,6 +102,9 @@
   // terrain.layers の数（= 層の数。HTML には持たない）で、1 つのテンプレートから作る。
   // 作るのは初回と数が変わったときだけで、欄にフォーカスがある間は作り直さない
   // （打っている途中の値を消さない）。Missing の無効化は外側の fieldset が新しい行にも効く。
+  // 層の表示名（i = 0 始まりの層の番号、表示は 1 始まり）。層の欄・自動塗りの
+  // 行・筆の層の選択（terrain-brush.js）が同じ名前を出すための 1 か所。
+  function terrainLayerLabel(i) { return '層 ' + (i + 1); }
   const TERRAIN_LAYER_TIP = '層はこのテレインの .terrain に保存され、どのシーンでも同じ';
   const TERRAIN_TILE_TIP = 'タイル 4 m 以上が配信に優しい';
   function buildTerrainLayerRows(count) {
@@ -112,7 +115,7 @@
     if (head) head.title = TERRAIN_LAYER_TIP + '。' + TERRAIN_TILE_TIP;
     box.textContent = '';
     for (let i = 0; i < count; i++) {
-      const name = '層 ' + (i + 1);
+      const name = terrainLayerLabel(i);
       const row = document.createElement('div');
       row.className = 'edRow';
       const label = document.createElement('span');
@@ -281,7 +284,7 @@
     const savedLayers = Array.isArray(saved.layers) ? saved.layers : [];
     box.textContent = '';
     layers.forEach((d, i) => {
-      const name = '層 ' + (i + 1);
+      const name = terrainLayerLabel(i);
       const row = document.createElement('div');
       row.className = 'autoRow';
       const label = document.createElement('label');

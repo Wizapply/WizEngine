@@ -49,8 +49,14 @@ constexpr int kMaxChunkQuads = 256;
 // 塗り分けの層の数（スプラットの 1 テクセルのチャンネル数 = RGBA）。層の数を
 // 持つのはここ 1 か所（.terrain の SPLT / LAYR・Undo・描画が全部これを見る）。
 constexpr int kSplatChannels = 4;
-// スプラットの既定のテクセル = 層 0 だけ（重みの合計は常に 255）。
+// 下地の層（何も塗っていないマスの層）。消しゴムはこの層を塗る道具で、塗る筆は
+// この層を塗れない（TerrainBrush）。
+inline constexpr int kBaseSplatLayer = 0;
+// スプラットの既定のテクセル = 下地の層（kBaseSplatLayer）だけ（重みの合計は常に 255）。
 inline constexpr std::array<uint8_t, kSplatChannels> kDefaultSplatTexel{255, 0, 0, 0};
+static_assert(kBaseSplatLayer >= 0 && kBaseSplatLayer < kSplatChannels &&
+                  kDefaultSplatTexel[kBaseSplatLayer] == 255,
+              "the default texel must be the base layer only");
 
 // 生成パラメータ。シーン文書の <terrain> の属性に 1 対 1 で対応する素の値
 // （文書側の型 editor::TerrainDesc はこれを知らない。Scene が詰め替える）。
@@ -144,6 +150,10 @@ public:
     double maxX() const { return double(minX_) + double(resolution_) * double(cell_); }
     double maxZ() const { return double(minZ_) + double(resolution_) * double(cell_); }
     float baseY() const { return baseY_; }
+    // セル (i, j) の中心の座標（穴・重みはセル単位。筆の当たりと自動塗りの
+    // 高さが同じ点を見るよう、セルの中心の式はここ 1 か所）。
+    double cellCenterX(int i) const { return double(minX_) + (double(i) + 0.5) * double(cell_); }
+    double cellCenterZ(int j) const { return double(minZ_) + (double(j) + 0.5) * double(cell_); }
 
     // 格子値（baseY からの相対高さ）。範囲外の添字は端へ丸める。
     float sample(int i, int j) const;
@@ -188,8 +198,10 @@ public:
     // セル (i, j) の重みを w（層ごとの相対値）にする。負・NaN は 0、合計が 0 なら
     // 層 0 だけ。合計 255 に量子化する（最大剰余法 = 丸めの残りを端数の大きい
     // 層から 1 ずつ配る。同じ端数なら番号の小さい層）。**重みの正規化と量子化は
-    // ここ 1 か所**（筆・自動塗りはこれを呼ぶ）。値が変わったら（必要なら配列を
-    // 確保して）書いて true、同じ・範囲外なら false。
+    // ここ 1 か所**（筆・自動塗りはこれを呼ぶ）。重みの 1 目盛り = uint8 の 1
+    // （合計 255 目盛り）。**穴のセルには書かない**（塗るのは見える面だけ。筆も
+    // 自動塗りも穴を飛ばす規則はここ 1 か所）。値が変わったら（必要なら配列を
+    // 確保して）書いて true、同じ・範囲外・穴なら false。
     bool setSplatWeights(int i, int j, const float w[kSplatChannels]);
     // セルの矩形 cells（0〜resolution の中であること）の重みを out へ写す。
     // 並びは行優先（1 行 (i1 - i0) セル × kSplatChannels バイト）で、out は

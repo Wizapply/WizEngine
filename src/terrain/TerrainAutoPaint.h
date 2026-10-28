@@ -49,7 +49,7 @@ AutoPaintRules defaultAutoPaintRules();
 // 上限を超えていれば入れ替える（min ≤ max）。
 AutoPaintRules clampAutoPaintRules(AutoPaintRules rules);
 
-// 全セルの重みを rules で書き直す（穴のセルも塗る）。傾きはセルの 2 三角形の
+// 全セルの重みを rules で書き直す（穴のセルは塗らない = setSplatWeights が飛ばす）。傾きはセルの 2 三角形の
 // 面法線（HeightField::normalAt）の平均、高さはセルの中心の heightAt − baseY。
 // 値の取りうる範囲（傾き 0〜90°、高さは格子の最低〜最高）に対して:
 //   * 帯の端が範囲の端か外にあれば、その側はぼかさない（縁の外に値が無いのに
