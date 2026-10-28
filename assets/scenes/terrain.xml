@@ -34,7 +34,8 @@
      テレインは worldbody 直下の <terrain>（書式は src/document/SceneDocument.h
      の冒頭）。高さの格子と大きさ（size = **全幅**。<ground size> の半寸法
      とは違う）は data の名前の assets/terrains/terrain.terrain が持ち、
-     XML は名前・背番号（guid）・pos・表面だけを書く。pos の y は最低点。
+     XML は名前・背番号（guid）・pos・表面（色と材質）だけを書く。塗り分けの
+     層（テクスチャとタイル）も .terrain が持つ。pos の y は最低点。
      物の置き高さは src/terrain/HeightField の heightAt でその地点の地表を
      計算し、少し上にしている（地形を描き替えたら置き高さも見直すこと）。
      地面は <ground enabled="false"> で外してある（見える地面も物理の床も
@@ -192,10 +193,10 @@
          128 × 128 セル（1 セル 1.25 m）・起伏 8 m。うねりの波長 70 m に
          細かいオクターブを弱く 3 枚重ねたなだらかな地形で、傾きは最大でも
          約 15°（最高点は約 8 m）。外周は側面の無い切り落とし（先頭の
-         コメント参照）。 -->
+         コメント参照）。塗り分けの層（層 1 = textures/ground.png、タイル 4 m）も
+         .terrain が持つ。 -->
     <terrain data="terrain" guid="87ca0a3b7da5c20dbd12e66a44e4393d" pos="0 0.05 0"
-             texture="textures/ground.png" tile="4" rgba="0.55 0.68 0.42 1"
-             roughness="0.9" metallic="0"/>
+             rgba="0.55 0.68 0.42 1" roughness="0.9" metallic="0"/>
     <!-- 太陽（影あり、カスケード 3）と空からの補助光（影なし）。 -->
     <light name="sun" type="sun" pos="0 30 0" euler="50 -35 0"
            diffuse="1 0.97 0.92 1" intensity="100000" castshadow="true"/>
