@@ -28,7 +28,15 @@
 //          中身は RAW16 のハイトマップと同じ（量子化と変換は Heightmap.h）。
 //     HOLE（版 1）: u8 × res²。0 = 穴、255 = 中身（メモリ上の HeightField とは
 //          逆向き）。穴が 1 つも無ければ書かない。読むときは 0 だけを穴とみなす。
-//     未知の tag は読み飛ばす（後の段階で SPLT / TREE / GRAS を足す）。
+//     SPLT（版 1）: u8 × res² × kSplatChannels。セルごとの層の重み（合計 255）。
+//          並びは行 = +Z、行内 = +X。塗っていなければ（HeightField::hasSplat が
+//          false）書かない。無ければ全セル層 0。
+//     LAYR（版 1）: 層の定義。u32 count のあと、層ごとに u32 recordBytes /
+//          u16 pathLen + UTF-8 のパス（assets/ 相対）/ f32 tile (m)。読むのは
+//          先頭の min(count, kSplatChannels) 層で、残りの層とレコードの後ろの
+//          知らない欄は recordBytes で飛ばす（後で欄を末尾へ足しても古い版が
+//          読める）。全部の層が既定なら書かない。無ければ全層既定。
+//     未知の tag は読み飛ばす（後の段階で TREE / GRAS を足す）。
 //
 // 位置（中心・baseY）はファイルに入れない（シーンの XML が持つ）。decode が
 // 返す格子は**原点中心・baseY 0**で、呼び手が HeightField::withGeometry で
@@ -68,11 +76,27 @@ struct TerrainFileHeader {
     uint32_t sectionCount = 0;
 };
 
+// 塗り分けの層 1 つの定義（.terrain の LAYR 節）。値の検査（パスの関所・
+// tile の範囲）は呼び手（Scene）の担当で、ここは素の値を運ぶだけ。
+struct TerrainLayer {
+    std::string texture;  // assets/ 相対のパス。空 = テクスチャ無し
+    float tile = 2.0f;    // テクスチャ 1 枚の幅 (m)
+
+    bool operator==(const TerrainLayer& o) const {
+        return texture == o.texture && tile == o.tile;
+    }
+    bool operator!=(const TerrainLayer& o) const { return !(*this == o); }
+};
+using TerrainLayers = std::array<TerrainLayer, kSplatChannels>;
+// LAYR のパスの長さの上限（バイト）。超える層は書かず、読みは壊れた節とみなす。
+constexpr std::size_t kMaxLayerPathBytes = 1024;
+
 // decode / readFile の結果。field は原点中心・baseY 0（上の注意）。
 struct TerrainFileData {
     HeightField field;
     float height = 0.0f;  // 高さの上限 (m)
     TerrainGuid guid;
+    TerrainLayers layers;  // LAYR が無ければ全層既定
 };
 
 // 失敗の理由（reason）はすべて英語（コンソールのログへ流れるため）。
@@ -84,11 +108,14 @@ bool readHeader(const uint8_t* data, std::size_t size, TerrainFileHeader& out,
 bool readHeader(const std::filesystem::path& path, TerrainFileHeader& out,
                 std::string& reason);
 
-// 格子 → バイト列。field が空・height が正の有限値でなければ false。
+// 格子 → バイト列。field が空・height が正の有限値でない・層のパスが
+// kMaxLayerPathBytes を超えるなら false。
 // 高さは [0, height] の外の値を端に丸めて量子化して保存する（呼び手が範囲内に
-// 保つ前提。範囲外の値は読み戻すと端の値になる）。
+// 保つ前提。範囲外の値は読み戻すと端の値になる）。layers は LAYR 節に書く
+// （省略 = 全層既定 = 書かない）。
 bool encode(const HeightField& field, float height, const TerrainGuid& guid,
-            std::vector<uint8_t>& out, std::string& reason);
+            std::vector<uint8_t>& out, std::string& reason,
+            const TerrainLayers& layers = TerrainLayers{});
 // バイト列 → 格子。壊れた入力は理由付きで false（落ちない・見出しの数だけを
 // 信じて大きな確保をしない）。
 bool decode(const uint8_t* data, std::size_t size, TerrainFileData& out,
@@ -96,8 +123,10 @@ bool decode(const uint8_t* data, std::size_t size, TerrainFileData& out,
 
 // ファイルへ書く。同じフォルダの一時ファイルに書いてから置き換えるので、
 // 途中で失敗しても元のファイルは壊れない。親フォルダが無ければ作る。
+// layers は encode と同じ（省略 = 全層既定）。
 bool writeFile(const std::filesystem::path& path, const HeightField& field,
-               float height, const TerrainGuid& guid, std::string& reason);
+               float height, const TerrainGuid& guid, std::string& reason,
+               const TerrainLayers& layers = TerrainLayers{});
 bool readFile(const std::filesystem::path& path, TerrainFileData& out,
               std::string& reason);
 

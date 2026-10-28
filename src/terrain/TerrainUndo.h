@@ -20,8 +20,11 @@ namespace terrain {
 // 書き換えた矩形とその範囲の値。
 //
 // 単位の約束: rect は**セル単位**（[i0, i1) x [j0, j1)、0〜resolution に
-// 切り詰めたもの）の 1 つだけを持ち、高さと穴の両方をそこから導く。
+// 切り詰めたもの）の 1 つだけを持ち、高さ・穴・重みをそこから導く。
 //   * 穴 = rect のセルそのもの（(i1 - i0) x (j1 - j0) 個）。
+//   * 重み = 穴と同じセル。1 セル kSplatChannels バイト（並びは
+//     HeightField::copySplat と同じ）。塗っていない格子でも必ず記録する
+//     （最初の塗りも取り消せるように）。
 //   * 高さ = rect のセルの角の格子点（[i0, i1] x [j0, j1] = 1 辺 +1 個）。
 // サンプル 1 つを書き換えると周りの最大 4 セルの見た目が変わり、セルの角は
 // 必ずそのセルの範囲の格子点に入るので、「セルの矩形 1 つ」で両方が漏れなく
@@ -33,6 +36,7 @@ struct TerrainEdit {
     GridRect rect;                 // セル単位。空 = 何もしない編集
     std::vector<float> heights;    // 行優先、1 行 (i1 - i0 + 1) 個
     std::vector<uint8_t> holes;    // 行優先、1 行 (i1 - i0) 個。1 = 穴
+    std::vector<uint8_t> splat;    // 行優先、1 行 (i1 - i0) × kSplatChannels 個
 
     bool empty() const { return rect.empty(); }
     // 記録に使っているおおよそのメモリ（バイト）。上限の判定に使う。

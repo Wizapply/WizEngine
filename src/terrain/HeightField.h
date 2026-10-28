@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -44,6 +46,11 @@ constexpr int kMaxResolution = 4096;
 // （Renderer::kMaxTerrainQuads）と同じ値に保つこと（両方を見る Scene が
 // static_assert で照合する）。
 constexpr int kMaxChunkQuads = 256;
+// 塗り分けの層の数（スプラットの 1 テクセルのチャンネル数 = RGBA）。層の数を
+// 持つのはここ 1 か所（.terrain の SPLT / LAYR・Undo・描画が全部これを見る）。
+constexpr int kSplatChannels = 4;
+// スプラットの既定のテクセル = 層 0 だけ（重みの合計は常に 255）。
+inline constexpr std::array<uint8_t, kSplatChannels> kDefaultSplatTexel{255, 0, 0, 0};
 
 // 生成パラメータ。シーン文書の <terrain> の属性に 1 対 1 で対応する素の値
 // （文書側の型 editor::TerrainDesc はこれを知らない。Scene が詰め替える）。
@@ -108,6 +115,11 @@ struct GridRect {
                          std::min(j1, count)};
         return r.empty() ? GridRect{} : r;
     }
+    // 空でなく、[0, count) x [0, count) に収まっているか（切り詰めずに判定する。
+    // 矩形の並びをそのまま読み書きする所 = 編集の記録・重みの写しが使う）。
+    bool inside(int count) const {
+        return !empty() && i0 >= 0 && j0 >= 0 && i1 <= count && j1 <= count;
+    }
 };
 
 class HeightField {
@@ -166,7 +178,31 @@ public:
     bool anyHoles() const;   // 穴が 1 つでもあるか（全セルを走査する）
     void clearHoles();       // 穴を全部埋める
 
-    // 格子値（高さ・穴）を保ったまま、大きさと位置だけを変えた新しい格子。
+    // 塗り分けの重み（スプラット。セル単位、1 セル kSplatChannels 個の u8 で
+    // 合計は常に 255）。穴と同じく最初に既定以外を書くまで配列を持たない。
+    // 範囲外の添字は splatAt が既定、書き込みは何もしない。
+    // 配列を持っているか（全部既定の配列のこともある - 穴を全部埋めた後と同じ）。
+    bool hasSplat() const { return !splat_.empty(); }
+    // セル (i, j) の重み。配列が無い・範囲外は kDefaultSplatTexel。
+    void splatAt(int i, int j, uint8_t out[kSplatChannels]) const;
+    // セル (i, j) の重みを w（層ごとの相対値）にする。負・NaN は 0、合計が 0 なら
+    // 層 0 だけ。合計 255 に量子化する（最大剰余法 = 丸めの残りを端数の大きい
+    // 層から 1 ずつ配る。同じ端数なら番号の小さい層）。**重みの正規化と量子化は
+    // ここ 1 か所**（筆・自動塗りはこれを呼ぶ）。値が変わったら（必要なら配列を
+    // 確保して）書いて true、同じ・範囲外なら false。
+    bool setSplatWeights(int i, int j, const float w[kSplatChannels]);
+    // セルの矩形 cells（0〜resolution の中であること）の重みを out へ写す。
+    // 並びは行優先（1 行 (i1 - i0) セル × kSplatChannels バイト）で、out は
+    // (i1 - i0) × (j1 - j0) × kSplatChannels バイトの大きさを呼び手が用意する。
+    // 配列が無ければ既定のテクセルで埋める。矩形が空・範囲外・空の格子なら
+    // 何も書かず false。
+    bool copySplat(const GridRect& cells, uint8_t* out) const;
+    // copySplat と同じ並びの rgba（count バイト）を cells へ書く。count が矩形と
+    // 合わない・矩形が空か範囲外なら何もせず false。配列が無く、書く値が全部
+    // 既定なら確保しない（塗っていないテレインに配列を持たせない）。
+    bool pasteSplat(const GridRect& cells, const uint8_t* rgba, std::size_t count);
+
+    // 格子値（高さ・穴・重み）を保ったまま、大きさと位置だけを変えた新しい格子。
     // 引数の条件はコンストラクタと同じ（満たさなければ空）。HeightFieldOps.cpp。
     HeightField withGeometry(float size, float centerX, float baseY, float centerZ) const;
     // 大きさと位置を保ったまま、1 辺のセル数を resolution にした新しい格子。
@@ -174,6 +210,7 @@ public:
     // 所では元の値そのもの）。縮小は格子点で拾うので、細い起伏は失われうる。
     // 穴は、縮小なら新しいセルと重なる元のセルが 1 つでも穴なら穴（OR = 穴が
     // 消えない）、拡大なら新しいセルの中心を含む元のセル（最近傍）。
+    // 重みは縮小・拡大とも新しいセルの中心を含む元のセル（最近傍）。
     // resolution が 1〜kMaxResolution の外・空の格子なら空。HeightFieldOps.cpp。
     HeightField resampled(int resolution) const;
 
@@ -256,6 +293,11 @@ private:
     void cellLocal(double x, double z, int i, int j, double& u, double& w) const;
     // 頂点 (i, j) のワールド座標（添字は範囲内であること）。
     Vec3 vertexWorld(int i, int j) const;
+    // 重みの配列を全セル既定のテクセルで確保する（setSplatWeights / pasteSplat が
+    // 最初の書き込みで呼ぶ）。
+    void allocateSplat();
+    // セル (i, j) の重みが splat_ の何バイト目から始まるか（並びは splat_ の注記）。
+    std::size_t splatOffset(int i, int j) const;
 
     int resolution_ = 0;
     float size_ = 0.0f;
@@ -270,6 +312,10 @@ private:
     // 大半で、1024 なら 1 MB を持たずに済む）。保存形式（.terrain の HOLE は
     // 0 = 穴）とは別。
     std::vector<uint8_t> holes_;
+    // 塗り分けの重み（セルごとに kSplatChannels 個、行優先: 番号 =
+    // (j * resolution + i) * kSplatChannels）。**空なら全セルが既定**
+    // （kDefaultSplatTexel）: holes_ と同じく最初に塗るまで確保しない。
+    std::vector<uint8_t> splat_;
 };
 
 // パラメータから高さ格子を作る（TerrainNoise.cpp、stb_perlin の fbm）。
