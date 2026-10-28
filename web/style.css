@@ -540,6 +540,14 @@
   /* テレインの塗り分けの層は 1 行にパスとタイルの 2 欄。 */
   .edRow .layerTex { max-width: 50%; }
   .edRow .layerTile { max-width: 20%; }
+  /* テレインの自動塗りの行: 有効のチェック + 層の名前 と、傾き・高さの下〜上の 4 欄。 */
+  .autoRow {
+    display: grid; grid-template-columns: 56px repeat(4, 1fr);
+    gap: 4px; align-items: center; font-size: 11px; color: #b8bcc4;
+  }
+  .autoRow label { white-space: nowrap; }
+  .autoRow .num { padding: 3px 4px; }
+  .autoRow .num:disabled { opacity: .45; }
   /* エディタ選択（ライト / カメラ）。視聴中 (.sel) とは別の印。 */
   .item.edsel { outline: 1px solid #4a70ad; background: #232b3a; }
   /* カメラ行の ✎（エディタ選択）と 🗑（選択中のみ）。行クリック（ページ

@@ -354,6 +354,7 @@ set(WIZ_SCENE_SOURCES
     src/scene/SceneTerrain.cpp
     src/scene/SceneTerrainEdit.cpp
     src/scene/SceneTerrainFile.cpp
+    src/scene/SceneTerrainPaint.cpp
     src/scene/SceneTerrainRender.cpp
     src/scene/SceneTerrainSculpt.cpp
     src/scene/SoftLattice.cpp)
@@ -378,6 +379,7 @@ set(WIZ_TERRAIN_SOURCES
     src/terrain/HeightField.cpp
     src/terrain/HeightFieldOps.cpp
     src/terrain/Heightmap.cpp
+    src/terrain/TerrainAutoPaint.cpp
     src/terrain/TerrainBrush.cpp
     src/terrain/TerrainContact.cpp
     src/terrain/TerrainFile.cpp

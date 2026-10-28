@@ -182,6 +182,8 @@
       setField('edTerrainLayerTex' + i, l.texture || '');
       setField('edTerrainLayerTile' + i, round2(l.tile));
     });
+    // 自動塗りの行（層の数と既定の帯はサーバーの値。欄の値はこのブラウザが持つ）。
+    buildTerrainAutoPaintRows(t.autoPaintDefaults);
     if (t.color) set('color', 'edTerrainColor', t.color);
     set('roughness', 'edTerrainRough', round2(t.roughness));
     set('metallic', 'edTerrainMetal', round2(t.metallic));
@@ -242,6 +244,88 @@
   }
   // 読めなければ空 = 既定値のまま。
   restoreFields(TERRAIN_NOISE_STORE, TERRAIN_NOISE_FIELDS);
+
+  // ---- 自動塗り（secTerrain 節）---------------------------------------------
+  // ノイズで生成と同じく、値は送るときだけ使い（テレインには覚えない）、この
+  // ブラウザの localStorage に覚える。既定の帯はここに持たない: 行の数・薄い
+  // 数字（placeholder）・チェックの初期値は、サーバーの terrain.autoPaintDefaults
+  // から取る。空の欄のキーは送らない = サーバーの既定の帯。
+  // 層ごとの欄（キー → id の頭。id は頭 + 層の番号）。
+  const TERRAIN_AUTOPAINT_FIELDS = {
+    slopeMin: 'edTerrainAutoSlopeMin', slopeMax: 'edTerrainAutoSlopeMax',
+    heightMin: 'edTerrainAutoHeightMin', heightMax: 'edTerrainAutoHeightMax'
+  };
+  const TERRAIN_AUTOPAINT_SOFT = { softness: 'edTerrainAutoSoft' };
+  const TERRAIN_AUTOPAINT_STORE = 'terrain:autopaint';
+  // 層 i の欄の表（readFields / fillFields に渡す形）。
+  function autoPaintRowFields(i) {
+    const map = {};
+    for (const key in TERRAIN_AUTOPAINT_FIELDS) map[key] = TERRAIN_AUTOPAINT_FIELDS[key] + i;
+    return map;
+  }
+  // 層の行（index.html の #edTerrainAutoRows の中身）を既定の帯 defaults
+  // （{softness, layers:[...]}）の層の数だけ作る。作るのは初回と数が変わったとき
+  // だけで、欄にフォーカスがある間は作り直さない（層の行と同じ）。欄の値は覚えた
+  // もの、チェックは覚えたもの（無ければ既定）。
+  const TERRAIN_AUTOPAINT_TIP = {
+    slopeMin: '傾きの下限（度、0 = 水平）', slopeMax: '傾きの上限（度、90 = 垂直）',
+    heightMin: '高さの下限（テレインの位置 Y からの m）',
+    heightMax: '高さの上限（テレインの位置 Y からの m）'
+  };
+  function buildTerrainAutoPaintRows(defaults) {
+    const box = document.getElementById('edTerrainAutoRows');
+    const layers = (defaults && defaults.layers) || [];
+    if (!box || box.childElementCount === layers.length) return;
+    if (box.contains(document.activeElement)) return;
+    const saved = loadStoredJson(TERRAIN_AUTOPAINT_STORE) || {};
+    const savedLayers = Array.isArray(saved.layers) ? saved.layers : [];
+    box.textContent = '';
+    layers.forEach((d, i) => {
+      const name = '層 ' + (i + 1);
+      const row = document.createElement('div');
+      row.className = 'autoRow';
+      const label = document.createElement('label');
+      label.title = name + ' を塗るか（外すと、この層は自動塗りで使わない）';
+      const on = document.createElement('input');
+      on.type = 'checkbox';
+      on.id = 'edTerrainAutoOn' + i;
+      const s = savedLayers[i] || {};
+      on.checked = typeof s.enabled === 'boolean' ? s.enabled : !!d.enabled;
+      label.append(on, ' ' + name);
+      row.appendChild(label);
+      const map = autoPaintRowFields(i);
+      for (const key in map) {
+        const input = document.createElement('input');
+        input.id = map[key];
+        input.className = 'num';
+        input.type = 'number';
+        input.step = key.startsWith('slope') ? '5' : '1';
+        // 範囲（min / max）は持たない: サーバーが丸める（1 か所）。
+        input.placeholder = Number.isFinite(d[key]) ? String(round2(d[key])) : '';
+        input.title = name + ' の' + TERRAIN_AUTOPAINT_TIP[key] + '。空 = 薄い数字（既定）';
+        row.appendChild(input);
+      }
+      box.appendChild(row);
+      fillFields(s, map);
+    });
+    const soft = document.getElementById(TERRAIN_AUTOPAINT_SOFT.softness);
+    if (soft && defaults && Number.isFinite(defaults.softness))
+      soft.placeholder = String(round2(defaults.softness));
+  }
+  function autoPaintTerrain() {
+    const rules = readFields(TERRAIN_AUTOPAINT_SOFT);
+    const count = document.getElementById('edTerrainAutoRows').childElementCount;
+    rules.layers = [];
+    for (let i = 0; i < count; i++) {
+      const band = readFields(autoPaintRowFields(i));
+      band.enabled = !!document.getElementById('edTerrainAutoOn' + i).checked;
+      rules.layers.push(band);
+    }
+    storeJson(TERRAIN_AUTOPAINT_STORE, rules);
+    // 確定待ちの形（全幅など）も同じ 1 通で送る（サーバーが先に当ててから塗る）。
+    flushTerrain({ autopaint: rules });
+  }
+  restoreFields(TERRAIN_AUTOPAINT_STORE, TERRAIN_AUTOPAINT_SOFT);
 
   // ---- ハイトマップの取り込みと書き出し（secTerrain 節）----------------------
   // サーバーの import / export は部分更新を当てない（ファイルの分岐で終わる）ので、

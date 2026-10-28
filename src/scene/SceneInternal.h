@@ -11,6 +11,7 @@
 //   SceneTerrain.cpp    : テレインの実体（格子・当たり判定・描画）の同期
 //   SceneTerrainEdit.cpp: ブラウザの edit.terrain の受け口と操作
 //   SceneTerrainFile.cpp: テレインと文書・.terrain・ブラウザの JSON との出入り
+//   SceneTerrainPaint.cpp: 塗り分けの道具（自動塗り）
 
 #include "scene/Scene.h"
 #include "scene/SceneConfig.h"
@@ -44,6 +45,7 @@
 #include "scene/RenderBridge.h"
 #include "scene/PrefabFrame.h"
 #include "terrain/HeightField.h"
+#include "terrain/TerrainAutoPaint.h"
 #include "terrain/TerrainFile.h"
 #include "terrain/TerrainFrame.h"
 #include "terrain/TerrainLibrary.h"
@@ -346,6 +348,17 @@ inline wizengine::terrain::TerrainLayer layerPatchFromJson(
     l.tile = float(ed::jsonNumber(j, "tile", l.tile));
     return l;
 }
+
+// ---- 自動塗りの規則（SceneTerrainPaint.cpp）-----------------------------------
+// 規則の JSON の唯一の定義: {softness, layers:[{enabled, slopeMin, slopeMax,
+// heightMin, heightMax}, ...]}（層の数ぶん、順は層の番号。傾きは度、高さは
+// テレインの置き場所の高さ = 格子の基準 baseY からの m。最低点ではない）。/scene の terrain.autoPaintDefaults（terrainJson）と
+// edit.terrain の autopaint（autoPaintTerrain）が使う。
+nlohmann::json autoPaintRulesToJson(const wizengine::terrain::AutoPaintRules& rules);
+// 送られたキーだけ base から変え、clampAutoPaintRules を通して返す。型違いの
+// キー・配列でない layers・余分な要素は無視（投げない）。
+wizengine::terrain::AutoPaintRules autoPaintRulesFromJson(
+    const nlohmann::json& j, const wizengine::terrain::AutoPaintRules& base);
 
 // d を書き換える: 形（size / resolution / height）を新規テレインの既定値
 // （ed::TerrainDesc{}）へ戻し、その大きさの平らな格子（原点基準）を返す。

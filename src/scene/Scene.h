@@ -53,8 +53,9 @@ struct BrushStamp;
 // SceneSerialize.cpp (document + browser JSON), SceneTerrain.cpp (terrain
 // grid / collision), SceneTerrainRender.cpp (terrain render sync),
 // SceneTerrainSculpt.cpp (brush strokes), SceneTerrainFile.cpp (terrain <->
-// document, .terrain files and browser JSON) and SceneTerrainEdit.cpp
-// (edit.terrain ops); SceneInternal.h is shared.
+// document, .terrain files and browser JSON), SceneTerrainEdit.cpp
+// (edit.terrain ops) and SceneTerrainPaint.cpp (auto paint); SceneInternal.h
+// is shared.
 //
 // ---- 2つのモード ----------------------------------------------------------
 // エディタモードは物理を進めない。オブジェクトを置き、大きさや質量を決め、
@@ -695,6 +696,10 @@ private:
     bool replaceTerrainHeights(wizengine::terrain::HeightField&& gen, const char* what);
     // 今の格子の高さをノイズで作り直す（形・穴はそのまま。Undo は 1 段）。
     void generateTerrainNoise(const wizengine::editor::TerrainNoiseParams& n);
+    // 自動塗り（SceneTerrainPaint.cpp）: 今の格子の全セルの塗り分けの重みを、
+    // 傾きと高さの帯（edit.terrain の autopaint。送られなかったキーは既定の帯）で
+    // 書き直す（高さ・穴はそのまま。Undo は 1 段、ファイルの dirty を立てる）。
+    void autoPaintTerrain(const nlohmann::json& rules);
     // 最後の編集を 1 段取り消す（結果はステータス）。
     void undoTerrain();
 

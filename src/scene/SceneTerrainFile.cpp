@@ -462,6 +462,8 @@ nlohmann::json Scene::terrainJson() const {
     j["terrain"] = ed::toJson(terrain_);
     // 塗り分けの層（.terrain が持つ = 文書の値ではないので Scene が足す）。
     j["terrain"]["layers"] = layersToJson(terrainLayers_);
+    // 自動塗りの既定の帯（ブラウザは既定を持たず、空欄の初期値にこれを使う）。
+    j["terrain"]["autoPaintDefaults"] = autoPaintRulesToJson(wt::defaultAutoPaintRules());
     j["terrainDirty"] = terrainDirty();
     // Missing（ファイルが無い・読めない）なら説明の文、そうでなければ空。
     j["terrainMissing"] = terrainMissingText();

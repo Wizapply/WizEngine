@@ -992,6 +992,24 @@
              terrain.js の renderTerrainSection が作る（ツールチップもそこ）。 -->
         <div id="edTerrainLayersHead" class="edLabel">塗り分けの層（テクスチャ / タイル m）</div>
         <div id="edTerrainLayers"></div>
+        <!-- 自動塗り（傾きと高さの帯で全体の塗りを作り直す。取り消しは 1 段）。
+             行は層の数だけ terrain.js が作る。欄の値はボタンを押したときにだけ
+             送る（テレインには覚えず、このブラウザに記憶。空 = サーバーの既定の
+             帯 = 欄の薄い数字）。 -->
+        <div id="edTerrainAutoHead" class="edLabel"
+             title="傾きは度（0 = 水平、90 = 垂直）、高さはテレインの位置の高さ（位置 Y）からの m（筆で盛り上げたり削ったりしても、この基準は動きません）。どの帯にも入らない所は層 1"
+             >自動塗り（傾き ° 下〜上 / 高さ m 下〜上）</div>
+        <div id="edTerrainAutoRows"></div>
+        <div class="edRow">
+          <span>縁のぼかし</span>
+          <input id="edTerrainAutoSoft" class="num" type="number" step="0.05" min="0"
+                 max="1" title="帯の縁をなめらかにつなぐ幅（0 = くっきり、1 = 帯の幅いっぱい）">
+        </div>
+        <div class="edRow btnRow">
+          <button onclick="autoPaintTerrain()"
+                  title="上の帯でテレイン全体の塗り分けを作り直す（高さは変えない。取り消しで戻せる）"
+                  >🎨 傾きと高さで塗り分け</button>
+        </div>
         <div class="edRow">
           <span>色</span>
           <input id="edTerrainColor" class="col" type="color"
