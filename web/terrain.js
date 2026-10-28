@@ -37,13 +37,26 @@
   // ページを離れるときは送信待ちを捨てずに送る（触った値が黙って消えない
   // ように）。通常の fetch は離脱で打ち切られうるので keepalive を付ける。
   window.addEventListener('pagehide', () => flushTerrain(null, true));
-  function applyTerrain(key) {
+  // key = 送るキー。'layer' のときだけ index = 層の番号（0 から）で、その層の
+  // テクスチャとタイルを layer{index, texture, tile} の 1 通ですぐ送る。
+  function applyTerrain(key, index) {
     const t = (sceneData && sceneData.terrain) || {};
     const pick = (id) => document.getElementById(id);
     // 欄が空・数でないときは今の値（無ければ送らない）。
     const n = (id, cur) => num(id, cur);
     let value;
     switch (key) {
+      case 'layer': {
+        // 層は部分更新のキーに混ぜない（サーバーは layer の 1 通を層だけの操作として
+        // 扱う）。溜まっている形のキーは先に別の 1 通で送る（層とは独立）。
+        const cur = (t.layers || [])[index] || {};
+        const tex = pick('edTerrainLayerTex' + index);
+        const tile = n('edTerrainLayerTile' + index, cur.tile);
+        if (!tex || !Number.isFinite(tile)) return;
+        flushTerrain();
+        send('edit.terrain', { layer: { index, texture: tex.value.trim(), tile } });
+        return;
+      }
       case 'size': value = n('edTerrainSize', t.size); break;
       case 'resolution': value = Math.round(n('edTerrainRes', t.resolution)); break;
       case 'height': value = n('edTerrainHeight', t.height); break;
@@ -63,8 +76,6 @@
             !Number.isFinite(value.z)) return;
         break;
       }
-      case 'texture': value = pick('edTerrainTex').value.trim(); break;
-      case 'tile': value = n('edTerrainTile', t.tile); break;
       case 'color': value = pick('edTerrainColor').value; break;
       case 'roughness': value = n('edTerrainRough', t.roughness); break;
       case 'metallic': value = n('edTerrainMetal', t.metallic); break;
@@ -85,6 +96,46 @@
       terrainTimer = setTimeout(() => flushTerrain(), TERRAIN_SHAPE_DELAY_MS);
     } else {
       flushTerrain();
+    }
+  }
+  // 塗り分けの層の行（index.html の #edTerrainLayers の中身）。行の数はサーバーの
+  // terrain.layers の数（= 層の数。HTML には持たない）で、1 つのテンプレートから作る。
+  // 作るのは初回と数が変わったときだけで、欄にフォーカスがある間は作り直さない
+  // （打っている途中の値を消さない）。Missing の無効化は外側の fieldset が新しい行にも効く。
+  const TERRAIN_LAYER_TIP = '層はこのテレインの .terrain に保存され、どのシーンでも同じ';
+  const TERRAIN_TILE_TIP = 'タイル 4 m 以上が配信に優しい';
+  function buildTerrainLayerRows(count) {
+    const box = document.getElementById('edTerrainLayers');
+    if (!box || box.childElementCount === count) return;
+    if (box.contains(document.activeElement)) return;
+    const head = document.getElementById('edTerrainLayersHead');
+    if (head) head.title = TERRAIN_LAYER_TIP + '。' + TERRAIN_TILE_TIP;
+    box.textContent = '';
+    for (let i = 0; i < count; i++) {
+      const name = '層 ' + (i + 1);
+      const row = document.createElement('div');
+      row.className = 'edRow';
+      const label = document.createElement('span');
+      label.textContent = name;
+      label.title = name + '。' + TERRAIN_LAYER_TIP;
+      const tex = document.createElement('input');
+      tex.id = 'edTerrainLayerTex' + i;
+      tex.className = 'txt layerTex';
+      tex.type = 'text';
+      tex.placeholder = 'textures/ground.png';
+      tex.title = name + ' のテクスチャ（assets/ からの相対パス。空 = 単色）。' +
+        TERRAIN_LAYER_TIP;
+      tex.onchange = () => applyTerrain('layer', i);
+      // 範囲（min / max）は持たない: タイルの範囲はサーバーが丸める（1 か所）。
+      const tile = document.createElement('input');
+      tile.id = 'edTerrainLayerTile' + i;
+      tile.className = 'num layerTile';
+      tile.type = 'number';
+      tile.step = '0.5';
+      tile.title = name + ' のタイル（テクスチャ 1 リピートのメートル）。' + TERRAIN_TILE_TIP;
+      tile.onchange = () => applyTerrain('layer', i);
+      row.append(label, tex, tile);
+      box.appendChild(row);
     }
   }
   // 節の出し入れは renderEditor（選択が terrain のときだけ）。ここは中身。
@@ -124,8 +175,13 @@
     set('rot', 'edTerrainRX', round2(r.x));
     set('rot', 'edTerrainRY', round2(r.y));
     set('rot', 'edTerrainRZ', round2(r.z));
-    set('texture', 'edTerrainTex', t.texture || '');
-    set('tile', 'edTerrainTile', round2(t.tile));
+    // 塗り分けの層（.terrain の LAYR。サーバーの terrain.layers の順 = 層の番号）。
+    const layers = t.layers || [];
+    buildTerrainLayerRows(layers.length);
+    layers.forEach((l, i) => {
+      setField('edTerrainLayerTex' + i, l.texture || '');
+      setField('edTerrainLayerTile' + i, round2(l.tile));
+    });
     if (t.color) set('color', 'edTerrainColor', t.color);
     set('roughness', 'edTerrainRough', round2(t.roughness));
     set('metallic', 'edTerrainMetal', round2(t.metallic));

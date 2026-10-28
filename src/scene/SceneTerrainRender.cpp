@@ -49,6 +49,7 @@ int Scene::uploadTerrainChunks(const wizengine::terrain::HeightField& field,
 
 void Scene::syncTerrain(bool rebuildMesh, const wizengine::terrain::GridRect& chunks,
                         bool updateSurface, bool enabled, const ed::TerrainDesc& desc,
+                        const wizengine::terrain::TerrainLayers& layers,
                         const std::shared_ptr<const wizengine::terrain::HeightField>& field) {
     const bool meshChanged = rebuildMesh || !chunks.empty();
     if (!enabled || (meshChanged && (!field || !field->valid()))) {
@@ -88,9 +89,10 @@ void Scene::syncTerrain(bool rebuildMesh, const wizengine::terrain::GridRect& ch
     // フレームは上で return しており、そのとき消えた表面の dirty は次の
     // 作り直しがここで埋め合わせる（材質が既定の白のまま残らない）。
     // テクスチャはパスが同じなら Renderer が読み直さないので、入れ直しは安い。
+    // 層 0 だけを今の 1 枚の材質へ渡すつなぎ（層の合成は描画の配列化で入る）。
     if (updateSurface || full) {
         renderer_.setTerrainSurface(
-            desc.texture, float(desc.tile),
+            layers[0].texture, layers[0].tile,
             filament::math::float4{desc.color.r, desc.color.g, desc.color.b, 1.0f},
             float(desc.roughness), float(desc.metallic));
     }

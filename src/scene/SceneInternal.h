@@ -44,6 +44,7 @@
 #include "scene/RenderBridge.h"
 #include "scene/PrefabFrame.h"
 #include "terrain/HeightField.h"
+#include "terrain/TerrainFile.h"
 #include "terrain/TerrainFrame.h"
 #include "terrain/TerrainLibrary.h"
 #include "terrain/TerrainUndo.h"
@@ -301,6 +302,49 @@ inline wizengine::terrain::TerrainParams toTerrainParams(const ed::TerrainDesc& 
     p.lacunarity = float(n.lacunarity);
     p.scale = float(n.scale);
     return p;
+}
+
+// ---- 塗り分けの層（.terrain の LAYR）-----------------------------------------
+// 層の値の検査と JSON の唯一の定義（型は terrain::TerrainLayer 1 つ。文書の型には
+// 写さない）。ファイルの読込（readTerrainFile）・ブラウザの変更（editTerrainLayer）・
+// 旧属性の取り込み（adoptLegacySurface）が同じ検査を通る。
+
+// 層の値を常識的な範囲へ: テクスチャは assets/ 相対のパスだけ（".." や絶対パスは
+// 空にして LOGW。where = どこから来た値か、英語）、tile は地面と同じ範囲
+// （ed::kSurfaceTileMin〜Max。NaN・無限は既定値へ倒してから丸める - std::clamp は
+// NaN を素通しするため）。
+inline void sanitizeTerrainLayers(wizengine::terrain::TerrainLayers& layers,
+                                  const char* where) {
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        wizengine::terrain::TerrainLayer& l = layers[i];
+        if (!l.texture.empty() && !ed::assetFileAllowed(l.texture)) {
+            LOGW("scene", "terrain layer %zu (%s): texture '%s' is not allowed "
+                          "(assets-relative paths only) - cleared",
+                 i, where, l.texture.c_str());
+            l.texture.clear();
+        }
+        if (!std::isfinite(l.tile)) l.tile = wizengine::terrain::TerrainLayer{}.tile;
+        l.tile = std::clamp(l.tile, float(ed::kSurfaceTileMin), float(ed::kSurfaceTileMax));
+    }
+}
+
+// /scene の terrain.layers: [{texture, tile}, ...]（層の数ぶん、順は層の番号）。
+inline nlohmann::json layersToJson(const wizengine::terrain::TerrainLayers& layers) {
+    nlohmann::json a = nlohmann::json::array();
+    for (const wizengine::terrain::TerrainLayer& l : layers)
+        a.push_back(nlohmann::json{{"texture", l.texture}, {"tile", l.tile}});
+    return a;
+}
+
+// edit.terrain の layer の部分更新: 送られたキー（texture / tile）だけ base から変える。
+// 型違いのキーは無視。検査は呼び手が sanitizeTerrainLayers で掛ける。
+inline wizengine::terrain::TerrainLayer layerPatchFromJson(
+    const nlohmann::json& j, const wizengine::terrain::TerrainLayer& base) {
+    wizengine::terrain::TerrainLayer l = base;
+    if (const auto it = j.find("texture"); it != j.end() && it->is_string())
+        l.texture = it->get<std::string>();
+    l.tile = float(ed::jsonNumber(j, "tile", l.tile));
+    return l;
 }
 
 // d を書き換える: 形（size / resolution / height）を新規テレインの既定値

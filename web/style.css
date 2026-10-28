@@ -537,6 +537,9 @@
   #edTerrainFields { border:0; padding:0; margin:0; min-width:0; }
   /* スポットの円錐（内/外）は 1 行に 2 欄。edRow .num の 55% 制限とは別枠。 */
   .edRow .coneNum { max-width: 26%; }
+  /* テレインの塗り分けの層は 1 行にパスとタイルの 2 欄。 */
+  .edRow .layerTex { max-width: 50%; }
+  .edRow .layerTile { max-width: 20%; }
   /* エディタ選択（ライト / カメラ）。視聴中 (.sel) とは別の印。 */
   .item.edsel { outline: 1px solid #4a70ad; background: #232b3a; }
   /* カメラ行の ✎（エディタ選択）と 🗑（選択中のみ）。行クリック（ページ

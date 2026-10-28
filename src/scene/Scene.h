@@ -24,6 +24,7 @@
 #include "document/SceneDocument.h"
 #include "physics/MeshCollision.h"  // CollisionTriangles
 #include "physics/PhysicsWorld.h"  // for BodyTransform
+#include "terrain/TerrainFile.h"     // TerrainLayers（層の定義を値で持つ）
 #include "terrain/TerrainUndo.h"     // TerrainEdit / GridRect（ストロークの状態が値で持つ）
 
 namespace wizengine {
@@ -637,11 +638,17 @@ private:
     // （同じ形の格子の書き換え = editTerrainField だけが渡す）。
     // brushPass = 筆のストロークの 1 パス（editTerrainField が TerrainRecord::Stroke
     // のときだけ true）。テレインの有無が変わらないので syncBackend を省く。
+    // layers = 塗り分けの層（.terrain の LAYR。呼び手が sanitizeTerrainLayers 済み）。
+    // **terrainLayers_ を書くのはここだけ**: 渡されればそれ（読込・開く・層の変更・
+    // 旧属性の取り込み）。null なら、格子が無くなるか別のテレイン（名前か背番号が
+    // 変わる）になるときは既定へ戻し、それ以外は今のまま。変われば描画の層の
+    // dirty を立てる。
     void publishTerrainField(const wizengine::editor::TerrainDesc& desc,
                              std::shared_ptr<const wizengine::terrain::HeightField> field,
                              TerrainHistory history, TerrainFileState file,
                              const wizengine::terrain::GridRect& changedCells = {},
-                             bool brushPass = false);
+                             bool brushPass = false,
+                             const wizengine::terrain::TerrainLayers* layers = nullptr);
     // publishTerrainField の中（objectsMutex_ の下）: 渡された file と格子の有無
     // （on / missing）から terrainFile_ を決める。
     void settleTerrainFileState(TerrainFileState file, bool on, bool missing);
@@ -696,7 +703,8 @@ private:
     void loadTerrainField(const wizengine::editor::TerrainDesc& doc);
     // name のファイルを読み、使えるなら desc.position に置いた格子を返して、desc の
     // data / guid / size / resolution / height を読んだ値で埋める（位置と表面は
-    // そのまま）。**使えないファイル**は null と英語の reason（desc は触らない）:
+    // そのまま）。layers にはファイルの層（sanitizeTerrainLayers 済み）を入れる。
+    // **使えないファイル**は null と英語の reason（desc と layers は触らない）:
     //   * 読めない（壊れている・形式が違う）
     //   * 背番号が全部 0（背番号での解決と食い違う）
     //   * 形が clampTerrain を通すと変わる（解像度 2048・size 5000 など。エディタの
@@ -705,7 +713,14 @@ private:
     // loadTerrainField と openTerrain が使う。
     std::shared_ptr<const wizengine::terrain::HeightField> readTerrainFile(
         const std::string& name, wizengine::editor::TerrainDesc& desc,
-        std::string& reason) const;
+        wizengine::terrain::TerrainLayers& layers, std::string& reason) const;
+    // 旧属性 <terrain texture tile>（legacy）を層 0 へ取り込む唯一の口
+    // （setTerrainFromDocument の全経路が読込の後に呼ぶ）。読めているテレインで、
+    // 旧属性にテクスチャがあり、層 0 のテクスチャが空のときだけ取り込んで
+    // ファイルの dirty を立てる（次の保存で .terrain に移り XML から消える）。
+    // 層 0 が既にあればファイルが勝つ（LOGI）。Missing は取り込めない（保存で
+    // 属性が落ちる。受け入れ済み）。注意の文は terrainLoadCaveat_ の後ろに足す。
+    void adoptLegacySurface(const wizengine::editor::TerrainLegacyDesc& legacy);
     // 文書のテレインが name を参照しているか（テレインがあり、大文字・小文字を
     // 問わず一致）。Missing（格子が無い）も含む。「参照している名前か」の唯一の判定。
     bool refersToTerrain(const std::string& name) const;
@@ -729,7 +744,7 @@ private:
     void fillTerrainIdentity(wizengine::editor::TerrainDesc& desc,
                              const std::string& base) const;
     // 名前と背番号を新しく決めて（fillTerrainIdentity）、ファイルの dirty を立てて
-    // 出す（Undo は消す）。
+    // 出す（Undo は消す）。新しいファイルなので層は全部既定に戻す。
     // 付けた名前を返す。
     std::string publishNewTerrain(wizengine::editor::TerrainDesc desc,
                            std::shared_ptr<const wizengine::terrain::HeightField> field,
@@ -776,6 +791,11 @@ private:
     // 入口の applyTerrainOp / applyTerrainFileOp は「エディタの実装」の節。
     // 新規（平ら・既定の大きさ・今の位置と表面）。名前は base（空ならシーン名）から。
     void newTerrain(const std::string& base);
+    // 塗り分けの層 index（0〜kSplatChannels-1）を patch（{texture?, tile?}、送られた
+    // キーだけ）で変える。sanitizeTerrainLayers を通し、変われば publish（ファイルの
+    // dirty。Undo の対象にはしない）。結果はステータス。格子のあるテレインだけ
+    // （Missing は呼び手が断る）。
+    void editTerrainLayer(int index, const nlohmann::json& patch);
     // 名前のファイルに差し替える（名前は一覧の綴り）。一覧に無い・使えない
     // （読込と同じ判定）なら何も変えない。
     void openTerrain(const std::string& name);
@@ -829,10 +849,11 @@ private:
     // rebuildMesh: チャンクを全部作り直す（enabled = false なら外す）。
     // chunks: 作り直すチャンクの矩形（チャンク単位、空 = 無し）。まだ組んで
     // いない（terrainRenderBuilt_ でない）なら全部の作り直しに倒す。
-    // updateSurface: 材質だけ入れ直す。
+    // updateSurface: 材質（色・材質と層）だけ入れ直す。
     void syncTerrain(bool rebuildMesh, const wizengine::terrain::GridRect& chunks,
                      bool updateSurface, bool enabled,
                      const wizengine::editor::TerrainDesc& desc,
+                     const wizengine::terrain::TerrainLayers& layers,
                      const std::shared_ptr<const wizengine::terrain::HeightField>& field);
     // field の chunkRect（チャンク単位）のチャンクをメッシュにして送る（全体 =
     // 全チャンクの矩形）。作れなかった・送れなかったチャンクの数を返す。
@@ -894,7 +915,11 @@ private:
     wizengine::editor::TerrainDesc terrain_;
     bool hasTerrain_ = false;
     bool terrainMeshDirty_ = false;     // 形が変わった = チャンクを作り直す
-    bool terrainSurfaceDirty_ = false;  // 表面（テクスチャ・色・材質）だけ
+    bool terrainSurfaceDirty_ = false;  // 表面（色・材質）だけ
+    // 塗り分けの層（.terrain の LAYR）。terrain_ と同じく objectsMutex_ の下で、
+    // 代入は publishTerrainField の中だけ（物理スレッドは読むのにロック不要）。
+    wizengine::terrain::TerrainLayers terrainLayers_;
+    bool terrainLayersDirty_ = false;   // 層が変わった = 描画の層を入れ直す
     // 格子の一部だけ書き換えた = このチャンクの矩形（チャンク単位）だけ作り
     // 直す。溜まった分は united で広げる。空 = 無し。
     wizengine::terrain::GridRect terrainChunkDirty_;

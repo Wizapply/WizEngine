@@ -1633,16 +1633,21 @@ void Scene::applyToRenderer() {
     bool terrainMesh = false, terrainSurface = false, terrainOn = false;
     wizengine::terrain::GridRect terrainChunks;
     ed::TerrainDesc terrainPending;
+    wizengine::terrain::TerrainLayers terrainLayersPending;
     std::shared_ptr<const wizengine::terrain::HeightField> terrainFieldPending;
-    if (terrainMeshDirty_ || terrainSurfaceDirty_ || !terrainChunkDirty_.empty()) {
+    if (terrainMeshDirty_ || terrainSurfaceDirty_ || terrainLayersDirty_ ||
+        !terrainChunkDirty_.empty()) {
         terrainMesh = terrainMeshDirty_;
-        terrainSurface = terrainSurfaceDirty_;
+        // 層の変更は表面の入れ直しと同じ口（層ごとの読み直しは Renderer の担当）。
+        terrainSurface = terrainSurfaceDirty_ || terrainLayersDirty_;
         terrainChunks = terrainChunkDirty_;
         terrainMeshDirty_ = false;
         terrainSurfaceDirty_ = false;
+        terrainLayersDirty_ = false;
         terrainChunkDirty_ = wizengine::terrain::GridRect{};
         terrainOn = hasTerrain_;
         terrainPending = terrain_;
+        terrainLayersPending = terrainLayers_;
         if (terrainMesh || !terrainChunks.empty()) {
             terrainFieldPending = terrainField();  // 末端のロック
         }
@@ -1663,7 +1668,7 @@ void Scene::applyToRenderer() {
     lk.unlock();
     if (terrainMesh || terrainSurface || !terrainChunks.empty()) {
         syncTerrain(terrainMesh, terrainChunks, terrainSurface, terrainOn, terrainPending,
-                    terrainFieldPending);
+                    terrainLayersPending, terrainFieldPending);
     }
     if (applyRender) {
         renderer_.setRenderSettings(wizengine::toRendererSettings(renderPending));

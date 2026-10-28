@@ -987,23 +987,16 @@
                   title="assets/terrains/&lt;名前&gt;.png に書き出す（16 ビットのグレースケール、上書き）"
                   >📤 PNG</button>
         </div>
+        <!-- 塗り分けの層（テクスチャとタイル）。値はシーンの XML ではなく
+             .terrain が持つ（どのシーンで開いても同じ）。行は層の数だけ
+             terrain.js の renderTerrainSection が作る（ツールチップもそこ）。 -->
+        <div id="edTerrainLayersHead" class="edLabel">塗り分けの層（テクスチャ / タイル m）</div>
+        <div id="edTerrainLayers"></div>
         <div class="edRow">
-          <span>テクスチャ</span>
-          <input id="edTerrainTex" class="txt" type="text"
-                 placeholder="textures/ground.png"
-                 title="assets/ からの相対パス。空 = 単色"
-                 onchange="applyTerrain('texture')">
-        </div>
-        <div class="edRow">
-          <span>タイル (m) / 色</span>
-          <span>
-            <input id="edTerrainTile" class="num" type="number" step="0.5"
-                   min="0.1" max="100" title="テクスチャ 1 リピートのメートル"
-                   onchange="applyTerrain('tile')">
-            <input id="edTerrainColor" class="col" type="color"
-                   title="単色 / テクスチャに乗せる色"
-                   onchange="applyTerrain('color')">
-          </span>
+          <span>色</span>
+          <input id="edTerrainColor" class="col" type="color"
+                 title="単色 / テクスチャに乗せる色（全層に共通）"
+                 onchange="applyTerrain('color')">
         </div>
         <div class="edRow">
           <span>粗さ / 金属</span>

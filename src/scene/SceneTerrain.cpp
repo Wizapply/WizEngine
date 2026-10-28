@@ -16,10 +16,9 @@ using namespace scene_detail;
 
 namespace {
 
-// 表面（描画の材質だけ）が同じか。
+// 表面（描画の材質だけ。層は terrainLayers_ で別に見る）が同じか。
 bool sameTerrainSurface(const ed::TerrainDesc& a, const ed::TerrainDesc& b) {
-    return a.texture == b.texture && a.tile == b.tile && a.color.r == b.color.r &&
-           a.color.g == b.color.g && a.color.b == b.color.b &&
+    return a.color.r == b.color.r && a.color.g == b.color.g && a.color.b == b.color.b &&
            a.roughness == b.roughness && a.metallic == b.metallic;
 }
 
@@ -47,7 +46,8 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
                                 std::shared_ptr<const wizengine::terrain::HeightField> field,
                                 TerrainHistory history, TerrainFileState file,
                                 const wizengine::terrain::GridRect& changedCells,
-                                bool brushPass) {
+                                bool brushPass,
+                                const wizengine::terrain::TerrainLayers* layers) {
     // ストローク中に飛ばした張り直し（Clear はストロークを捨てるので先に読む）。
     const bool collisionPending = terrainStroke_.collisionStale;
     if (history == TerrainHistory::Clear) abortTerrainStroke();
@@ -72,6 +72,14 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
     const BodyTransform pose = placementPose(desc.position, desc.rotation);
     bool poseChanged = false;
     const bool renamed = desc.data != terrain_.data;
+    // 塗り分けの層の規則（ここだけ）: 渡されればそれ。渡されず、格子が無くなる
+    // （外す・全消し・Missing）か別のテレイン（名前か背番号が変わる = 新規・旧形式の
+    // 生成）になるなら既定へ戻す（層は .terrain が持つので前のテレインのものを残さない）。
+    // それ以外（同じテレインの形・表面・位置・格子の書き換え）は今のまま。
+    static const wizengine::terrain::TerrainLayers kDefaultLayers{};
+    const bool sameFile = on && !renamed && desc.guid == terrain_.guid;
+    const wizengine::terrain::TerrainLayers* nextLayers =
+        layers ? layers : (sameFile ? nullptr : &kDefaultLayers);
     {
         // 格子の差し替えと dirty は同じロックの中で: 描画スレッドは dirty を
         // 見たのと同じロックの中で格子を取り出すので、「新しい dirty と古い
@@ -93,6 +101,10 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
             }
         }
         if (surfaceChanged) terrainSurfaceDirty_ = true;
+        if (nextLayers && *nextLayers != terrainLayers_) {
+            terrainLayers_ = *nextLayers;
+            terrainLayersDirty_ = true;
+        }
         // ファイルとの関係（外したら Saved）。/scene が「有無と Missing」の食い違った
         // 組を見ないよう、hasTerrain_ と同じロックの中で書く。
         settleTerrainFileState(file, on, missing);

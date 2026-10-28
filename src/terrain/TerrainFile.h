@@ -112,10 +112,10 @@ bool readHeader(const std::filesystem::path& path, TerrainFileHeader& out,
 // kMaxLayerPathBytes を超えるなら false。
 // 高さは [0, height] の外の値を端に丸めて量子化して保存する（呼び手が範囲内に
 // 保つ前提。範囲外の値は読み戻すと端の値になる）。layers は LAYR 節に書く
-// （省略 = 全層既定 = 書かない）。
+// （全層既定 = 書かない）。層を渡し忘れて黙って消さないよう、既定引数は持たない。
 bool encode(const HeightField& field, float height, const TerrainGuid& guid,
             std::vector<uint8_t>& out, std::string& reason,
-            const TerrainLayers& layers = TerrainLayers{});
+            const TerrainLayers& layers);
 // バイト列 → 格子。壊れた入力は理由付きで false（落ちない・見出しの数だけを
 // 信じて大きな確保をしない）。
 bool decode(const uint8_t* data, std::size_t size, TerrainFileData& out,
@@ -123,10 +123,10 @@ bool decode(const uint8_t* data, std::size_t size, TerrainFileData& out,
 
 // ファイルへ書く。同じフォルダの一時ファイルに書いてから置き換えるので、
 // 途中で失敗しても元のファイルは壊れない。親フォルダが無ければ作る。
-// layers は encode と同じ（省略 = 全層既定）。
+// layers は encode と同じ（既定引数は持たない）。
 bool writeFile(const std::filesystem::path& path, const HeightField& field,
                float height, const TerrainGuid& guid, std::string& reason,
-               const TerrainLayers& layers = TerrainLayers{});
+               const TerrainLayers& layers);
 bool readFile(const std::filesystem::path& path, TerrainFileData& out,
               std::string& reason);
 
