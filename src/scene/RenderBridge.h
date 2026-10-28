@@ -13,6 +13,7 @@
 
 #include "document/EditorTypes.h"
 #include "render/Renderer.h"
+#include "terrain/TerrainFile.h"  // TerrainLayers
 
 namespace wizengine {
 
@@ -65,6 +66,22 @@ inline RenderSettings toRendererSettings(const editor::RenderDesc& d) {
     r.saturation = float(d.saturation);
     r.temperature = float(d.temperature);
     r.tint = float(d.tint);
+    return r;
+}
+
+// テレインの表面。文書の <terrain> の色・材質 + .terrain の層（LAYR）->
+// setTerrainSurface の値。層の数は terrain::kSplatChannels と
+// TerrainSurface::kLayers が同じ（SceneTerrainRender.cpp の static_assert）。
+inline TerrainSurface toTerrainSurface(const editor::TerrainDesc& desc,
+                                       const terrain::TerrainLayers& layers) {
+    TerrainSurface r;
+    for (int i = 0; i < TerrainSurface::kLayers; ++i) {
+        r.layers[i].texture = layers[std::size_t(i)].texture;
+        r.layers[i].tileMeters = layers[std::size_t(i)].tile;
+    }
+    r.color = filament::math::float4{desc.color.r, desc.color.g, desc.color.b, 1.0f};
+    r.roughness = float(desc.roughness);
+    r.metallic = float(desc.metallic);
     return r;
 }
 

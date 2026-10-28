@@ -154,6 +154,26 @@ struct TerrainChunkMesh {
     std::vector<uint32_t> indices;
 };
 
+// テレインの表面（setTerrainSurface に渡す）。層は塗り分けの重み（スプラット、
+// setTerrainSplat）の RGBA の順で、各層がテクスチャ 1 枚とそのタイルの幅を持つ。
+// 色・粗さ・金属はテレイン全体で 1 つ（色は全層に掛かる）。
+//   texture    … assets/ 相対のパス（空 = 白 1 色 = color がそのまま色）
+//   tileMeters … テクスチャ 1 枚の幅 (m)
+//   color      … リニア rgba（a は使わない = 不透明）
+struct TerrainSurface {
+    // 層の数。terrain::kSplatChannels と同じ値に保つこと（Renderer は src/terrain
+    // の型を公開 API に出さないので、両方を見る Scene が static_assert で照合する）。
+    static constexpr int kLayers = 4;
+    struct Layer {
+        std::string texture;
+        float tileMeters = 2.0f;
+    };
+    Layer layers[kLayers];
+    filament::math::float4 color{1.0f, 1.0f, 1.0f, 1.0f};
+    float roughness = 0.9f;
+    float metallic = 0.0f;
+};
+
 inline bool operator==(const BatchShape& x, const BatchShape& y) {
     auto same = [](const filament::math::float3& p,
                    const filament::math::float3& q) {
@@ -262,13 +282,23 @@ public:
     // バウンディングボックスも頂点から作り直す。配列の長さが合わなければ
     // 警告して何もしない（false）。
     bool setTerrainChunk(int cx, int cz, const TerrainChunkMesh& mesh);
-    // 表面の材質。texturePath は assets/ 相対（空 = 単色。読めなければ警告して
-    // 単色）。テクスチャは前回とパスが違うときだけ読み直す。tileMeters は
-    // テクスチャ 1 回ぶんのメートル数、color はリニア rgba（a は使わない =
-    // 不透明）。
-    void setTerrainSurface(const std::string& texturePath, float tileMeters,
-                           const filament::math::float4& color, float roughness,
-                           float metallic);
+    // 表面の材質（層のテクスチャとタイル・色・粗さ・金属）。層のテクスチャは
+    // 前回とパスが違う層だけ読み直す（読めなければ警告して白 1 色）。どの層も
+    // kTerrainLayerTexSize 四方へ揃えて（縦横比が違えば引き伸ばす）テクスチャ
+    // 配列の 1 枚に入れる。色やタイルだけの変更は画像を読まない。
+    void setTerrainSurface(const TerrainSurface& surface);
+    // 層のテクスチャ配列の 1 辺（全層この大きさに揃える。ミップ込みで 1 層
+    // 約 5.6 MB）。
+    static constexpr int kTerrainLayerTexSize = 1024;
+    // 塗り分けの重み（スプラット: resolution × resolution のテクセル、1 テクセル
+    // RGBA8 = 層 0〜3 の重み。テクセル (i, j) がセル (i, j) に対応）の矩形
+    // (x0, z0, w, h) を rgba（行優先、1 行 w × 4 バイト、行 = +Z）で書き換える。
+    // sizeMeters はテレインの全幅（UV のメートル → テクセルの換算）。今の
+    // テクスチャと解像度が違う・未作成なら、既定のテクセル（層 0 だけ）で
+    // 作り直してから矩形を書く（矩形が全体なら既定で埋めずにそのまま入れる）。
+    // 矩形が範囲外・空なら警告して何もしない（false）。
+    bool setTerrainSplat(int resolution, float sizeMeters, int x0, int z0, int w,
+                         int h, const uint8_t* rgba);
     // テレインを外す（無ければ何もしない）。材質の設定は覚えたまま。
     void removeTerrain();
     // テレインの置き場所（格子のローカル → ワールド。チャンクの頂点は原点
@@ -647,10 +677,22 @@ private:
     int terrainQuads_ = 0;  // 1 チャンクの 1 辺のクアッド数
     filament::Material* terrainMaterial_ = nullptr;
     filament::MaterialInstance* terrainMatInstance_ = nullptr;
-    filament::Texture* terrainTexture_ = nullptr;
-    // 今のテクスチャを読んだパス（同じなら読み直さない）。初回は必ず読む。
-    std::string terrainTexturePath_;
-    bool terrainTextureLoaded_ = false;
+    // 層のテクスチャ配列（kTerrainLayerTexSize 四方 × kLayers 層、sRGB）。
+    // 作るのはコンストラクタの 1 回だけ（全層を白で埋める）で、以後は層ごとに
+    // 中身を入れ替える。terrainLayerPaths_ = その層に今入っている画像のパス
+    // （同じなら読み直さない。初期の白は空文字列と同じ = 「テクスチャ無し」）。
+    filament::Texture* terrainLayerTextures_ = nullptr;
+    std::string terrainLayerPaths_[TerrainSurface::kLayers];
+    // 塗り分けの重み（resolution 四方、リニア RGBA8、ミップ無し）。コンストラクタで
+    // 1×1 の既定（層 0 だけ）を作り、setTerrainSplat が解像度に合わせて作り直す。
+    filament::Texture* terrainSplat_ = nullptr;
+    int terrainSplatRes_ = 0;
+    // コンストラクタから: 層の配列（白）と 1×1 の既定のスプラットを作って
+    // マテリアルへ付ける（RendererTerrain.cpp）。
+    void createTerrainTextures();
+    // 解像度 resolution の既定のスプラットを作って付け替える（fill = 既定の
+    // テクセルで埋める。直後に全体を書くなら省く）。
+    void recreateTerrainSplat(int resolution, bool fill);
 
     // Kept alive for the vertex buffers (Filament references, not copies).
     filament::math::quatf cubeTangents_[24];

@@ -48,7 +48,7 @@ void Scene::stampTerrain(std::vector<wizengine::terrain::BrushStamp>& stamps) {
             }
             return any;
         },
-        TerrainRecord::Stroke);
+        TerrainRecord::Stroke, TerrainChanged::Shape);
     // 計測は格子を実際に書き換えたパスだけ（回数・スタンプ数・時間を揃える）。
     if (!changed) return;
     ++terrainStroke_.passes;

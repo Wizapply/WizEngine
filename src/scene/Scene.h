@@ -604,6 +604,13 @@ private:
     // editTerrainField の記録の仕方: 記録しない（取り消しそのもの）/ この書き換えを
     // Undo に 1 段積む / 筆のストロークの「変更前」に足す（end で 1 段積む）。
     enum class TerrainRecord { None, Undo, Stroke };
+    // 格子の書き換えで何が変わったか（ビットの組）: Shape = 高さ・穴（メッシュと
+    // 当たり判定）、Paint = 塗り分けの重み（描画のスプラットだけ）。
+    // editTerrainField が publishTerrainField へ渡す。
+    enum class TerrainChanged : unsigned { Shape = 1, Paint = 2, Both = 3 };
+    static bool terrainChangeHas(TerrainChanged changed, TerrainChanged part) {
+        return (unsigned(changed) & unsigned(part)) != 0;
+    }
     // 以下 3 つは hasTerrain_ と同じく、PHYSICS スレッドか objectsMutex_ を持って呼ぶ。
     // 今のテレインに .terrain へ書いていない変更があるか（保存で書く目印）。
     bool terrainDirty() const { return terrainFile_ == TerrainFileState::Dirty; }
@@ -643,12 +650,17 @@ private:
     // 旧属性の取り込み）。null なら、格子が無くなるか別のテレイン（名前か背番号が
     // 変わる）になるときは既定へ戻し、それ以外は今のまま。変われば描画の層の
     // dirty を立てる。
+    // changed = changedCells で何を書き換えたか（editTerrainField だけが渡す）:
+    // Shape なら描画のチャンクを作り直して当たり判定を張り直し、Paint なら描画の
+    // スプラットの矩形だけ送り直す。changedCells が空（格子の丸ごとの差し替え）は
+    // どちらも全体。
     void publishTerrainField(const wizengine::editor::TerrainDesc& desc,
                              std::shared_ptr<const wizengine::terrain::HeightField> field,
                              TerrainHistory history, TerrainFileState file,
                              const wizengine::terrain::GridRect& changedCells = {},
                              bool brushPass = false,
-                             const wizengine::terrain::TerrainLayers* layers = nullptr);
+                             const wizengine::terrain::TerrainLayers* layers = nullptr,
+                             TerrainChanged changed = TerrainChanged::Both);
     // publishTerrainField の中（objectsMutex_ の下）: 渡された file と格子の有無
     // （on / missing）から terrainFile_ を決める。
     void settleTerrainFileState(TerrainFileState file, bool on, bool missing);
@@ -671,10 +683,12 @@ private:
     // ストロークの「変更前」に足す（growEdit）。Stroke 以外は、筆のストローク中
     // なら先にそれを終える（記録の順序を崩さない）。mutate が false を返したら
     // 何も出さない（記録も積まない）。テレインが無ければ何もせず false。
+    // changed = mutate が書き換えるもの（高さ・穴 = Shape、重み = Paint、両方 =
+    // Both）。描画と当たり判定の作り直しをそれに絞る。
     bool editTerrainField(
         const wizengine::terrain::GridRect& rect,
         const std::function<bool(wizengine::terrain::HeightField&)>& mutate,
-        TerrainRecord record);
+        TerrainRecord record, TerrainChanged changed);
     // 生成した高さ（gen の格子値）を今の格子へ入れる（穴・形は今のまま。Undo は
     // 1 段、ファイルの dirty を立てる）。形が今の格子と食い違えば入れずに false
     // （what = 何の格子か、英語の LOGW に出す。例 "generated"）。
@@ -849,8 +863,12 @@ private:
     // rebuildMesh: チャンクを全部作り直す（enabled = false なら外す）。
     // chunks: 作り直すチャンクの矩形（チャンク単位、空 = 無し）。まだ組んで
     // いない（terrainRenderBuilt_ でない）なら全部の作り直しに倒す。
-    // updateSurface: 材質（色・材質と層）だけ入れ直す。
+    // splatCells: 塗り分けの重みを送り直すセルの矩形（セル単位、空 = 無し。
+    // 全部の作り直しのときは見ずに全体を送る）。
+    // updateSurface: 表面（色・材質と層のテクスチャ・タイル）を入れ直す。層の
+    // テクスチャはパスが変わった層だけ Renderer が読み直す。
     void syncTerrain(bool rebuildMesh, const wizengine::terrain::GridRect& chunks,
+                     const wizengine::terrain::GridRect& splatCells,
                      bool updateSurface, bool enabled,
                      const wizengine::editor::TerrainDesc& desc,
                      const wizengine::terrain::TerrainLayers& layers,
@@ -859,6 +877,10 @@ private:
     // 全チャンクの矩形）。作れなかった・送れなかったチャンクの数を返す。
     int uploadTerrainChunks(const wizengine::terrain::HeightField& field,
                             const wizengine::terrain::GridRect& chunkRect);
+    // field の重みのセルの矩形 cells を Renderer のスプラットへ送る（copySplat →
+    // setTerrainSplat）。全体で重みが無ければ 1×1 の既定だけ送る。失敗は false。
+    bool uploadTerrainSplat(const wizengine::terrain::HeightField& field,
+                            const wizengine::terrain::GridRect& cells);
 
     PhysicsWorld& physics_;
     wizengine::Renderer& renderer_;
@@ -923,6 +945,9 @@ private:
     // 格子の一部だけ書き換えた = このチャンクの矩形（チャンク単位）だけ作り
     // 直す。溜まった分は united で広げる。空 = 無し。
     wizengine::terrain::GridRect terrainChunkDirty_;
+    // 塗り分けの重みだけ書き換えた = このセルの矩形（セル単位）のスプラットだけ
+    // 送り直す。溜まった分は united で広げる。空 = 無し。
+    wizengine::terrain::GridRect terrainSplatDirty_;
     // RENDER スレッド専用: Renderer にテレインを組んである（addTerrain 済み）か。
     bool terrainRenderBuilt_ = false;
     // 筆のストローク（PHYSICS スレッド専用）。
