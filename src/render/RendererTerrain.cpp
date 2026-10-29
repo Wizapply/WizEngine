@@ -16,6 +16,16 @@ using utils::Entity;
 using utils::EntityManager;
 using namespace render_detail;
 
+namespace {
+
+// 接線の W（従法線の向き）。terrain.mat は層の画像を tuv.y = 1 - uv.y で引くので
+// 画像の上 = ローカルの +Z。法線マップ（緑が画像の上を向く向き）の緑 = +Z が
+// 従法線になり、接線 +X・従法線 +Z・法線 +Y は左手系 = W は負。
+// 目視で凹凸が逆（出っ張りが凹みに見える）なら +1 にする。
+constexpr float kTerrainTangentSign = -1.0f;
+
+}  // namespace
+
 namespace wizengine {
 
 bool Renderer::addTerrain(int chunksX, int chunksZ, int quadsPerChunk) {
@@ -164,16 +174,25 @@ bool Renderer::setTerrainChunk(int cx, int cz, const TerrainChunkMesh& mesh) {
             pos, sizeof(float3) * n,
             [](void* p, size_t, void*) { delete[] static_cast<float3*>(p); }));
 
-    // 法線 → 接空間の四元数（lit マテリアルは TANGENTS で法線を受ける）。
+    // 法線 + 接線 → 接空間の四元数（lit マテリアルは TANGENTS で法線を受ける。
+    // 層の法線マップはこの接空間で読む）。接線は法線に直交するローカル +X 寄りの
+    // 向き = (n.y, -n.x, 0) を正規化したもの（平らなら +X）。n.x = n.y = 0（法線が
+    // ±Z を向く面）だけは決まらないので +X に倒す（+X は ±Z の法線と直交する）。
     std::vector<float3> nrm(n);
+    std::vector<float4> tng(n);
     for (std::size_t i = 0; i < n; ++i) {
         nrm[i] = float3{mesh.normals[i * 3], mesh.normals[i * 3 + 1],
                         mesh.normals[i * 3 + 2]};
+        const float3 t{nrm[i].y, -nrm[i].x, 0.0f};
+        const float len = length(t);
+        tng[i] = float4{len < 1e-6f ? float3{1.0f, 0.0f, 0.0f} : t / len,
+                        kTerrainTangentSign};
     }
     auto* tan = new quatf[n];
     auto* orient = filament::geometry::SurfaceOrientation::Builder()
                        .vertexCount(n)
                        .normals(nrm.data())
+                       .tangents(tng.data())
                        .build();
     orient->getQuats(tan, n);
     delete orient;

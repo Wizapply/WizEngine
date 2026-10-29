@@ -250,6 +250,8 @@ Renderer::~Renderer() {
     if (terrainMatInstance_) engine_->destroy(terrainMatInstance_);
     if (terrainMaterial_) engine_->destroy(terrainMaterial_);
     if (terrainLayerTextures_) engine_->destroy(terrainLayerTextures_);
+    if (terrainNormalTextures_) engine_->destroy(terrainNormalTextures_);
+    if (terrainMaskTextures_) engine_->destroy(terrainMaskTextures_);
     if (terrainSplat_) engine_->destroy(terrainSplat_);
     // removeLight と同じ後始末。空席（null）は飛ばす。
     for (auto e : lightEntities_) {
