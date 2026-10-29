@@ -80,7 +80,8 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
 
     // テレインの材質（形は addTerrain まで作らない）。地面と同じく起動時に
     // 読む = 欠けていればビルドの問題として起動時に止まる。パラメータは .mat
-    // に既定値が書けないので、ここで白・艶消し・単色テクスチャを入れておく。
+    // に既定値が書けないので、ここで白の層の配列・既定のスプラット・白・艶消しを
+    // 入れておく。
     wizengine::requireFile("terrain.filamat", "terrain material");
     const auto tpkg = readFile(assetPath("terrain.filamat"));
     if (tpkg.empty()) {
@@ -92,7 +93,8 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
         throw AssetError(assetPath("terrain.filamat"), "is not a valid .filamat");
     }
     terrainMatInstance_ = terrainMaterial_->createInstance();
-    setTerrainSurface("", 1.0f, float4{1.0f, 1.0f, 1.0f, 1.0f}, 0.9f, 0.0f);
+    createTerrainTextures();
+    setTerrainSurface(TerrainSurface{});
 
     // 線と半透明の重ね描きの材質も起動時に読む（最初に使う時ではなく）=
     // 欠けていれば、エディタで初めて線を出したときではなく起動時に止まる。
@@ -247,7 +249,8 @@ Renderer::~Renderer() {
     removeTerrain();
     if (terrainMatInstance_) engine_->destroy(terrainMatInstance_);
     if (terrainMaterial_) engine_->destroy(terrainMaterial_);
-    if (terrainTexture_) engine_->destroy(terrainTexture_);
+    if (terrainLayerTextures_) engine_->destroy(terrainLayerTextures_);
+    if (terrainSplat_) engine_->destroy(terrainSplat_);
     // removeLight と同じ後始末。空席（null）は飛ばす。
     for (auto e : lightEntities_) {
         if (e.isNull()) continue;

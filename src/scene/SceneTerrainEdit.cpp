@@ -1,6 +1,6 @@
 // ブラウザの edit.terrain の受け口（PHYSICS スレッド）: 新規・開く・名前の変更・
-// 削除・複製・ハイトマップの取り込みと書き出し・部分更新・生成・取り消しの操作に
-// 振り分ける。
+// 削除・複製・ハイトマップの取り込みと書き出し・部分更新・塗り分けの層・生成・
+// 自動塗り・取り消しの操作に振り分ける。
 // テレインと文書・.terrain・ブラウザの JSON との出入り（読込・名前と背番号・保存）は
 // SceneTerrainFile.cpp、格子の差し替えそのもの（ロック・dirty・Undo・当たり判定）は
 // SceneTerrain.cpp の publishTerrainField / reshapeTerrain に任せる。
@@ -14,13 +14,10 @@ namespace wt = wizengine::terrain;
 
 namespace {
 
-// 部分更新のステータスの文（applyTerrainOp）。
-const char* terrainPatchStatus(bool hasTerrain, int oldResolution, int newResolution) {
-    if (!hasTerrain) return "テレインの設定を更新（無効のまま）";
-    // 再サンプル（HeightField::resampled）の性質を一言。
-    if (newResolution != oldResolution)
-        return "テレインを更新（解像度を下げると細い起伏は消え、穴は少し太ります）";
-    return "テレインを更新";
+// 部分更新のステータスの文（applyTerrainOp）。形の変更の知らせ（再サンプル・
+// 切った点）は reshapeTerrain が後ろに足す。
+const char* terrainPatchStatus(bool hasTerrain) {
+    return hasTerrain ? "テレインを更新" : "テレインの設定を更新（無効のまま）";
 }
 
 // args の key が true か（型違い・無しは false = 投げない）。
@@ -71,8 +68,9 @@ void Scene::openTerrain(const std::string& name) {
     refreshTerrainFiles();
     const std::string file = terrainLibrary_->resolve(name, wt::TerrainGuid{}).file;
     ed::TerrainDesc desc = terrain_;  // 位置と表面は今のもの
+    wt::TerrainLayers layers;         // 層は開くファイルのもの
     std::string reason = "terrain '" + name + "' is not in the list";
-    auto field = file.empty() ? nullptr : readTerrainFile(file, desc, reason);
+    auto field = file.empty() ? nullptr : readTerrainFile(file, desc, layers, reason);
     if (!field) {
         LOGW("scene", "terrain: cannot open '%s': %s", name.c_str(), reason.c_str());
         editor_.setStatus("テレイン " + name + " を開けません（コンソール参照）");
@@ -80,7 +78,7 @@ void Scene::openTerrain(const std::string& name) {
     }
     editor_.setStatus("テレイン " + desc.data + " を開きました");
     publishTerrainField(desc, std::move(field), TerrainHistory::Clear,
-                        TerrainFileState::Saved);
+                        TerrainFileState::Saved, {}, false, &layers);
     selectSceneItem(EditorState::SelKind::Terrain);
 }
 
@@ -150,6 +148,35 @@ void Scene::renameTerrain(const std::string& from, const std::string& to) {
     }
     LOGW("scene", "terrain rename '%s' -> '%s': %s", from.c_str(), to.c_str(),
          r.reason.c_str());
+}
+
+// ---- 塗り分けの層 -------------------------------------------------------------
+
+void Scene::editTerrainLayer(int index, const nlohmann::json& patch) {
+    const std::shared_ptr<const wt::HeightField> field = terrainField();
+    if (!field) {
+        editor_.setStatus("テレインがありません（層を変えられません）");
+        return;
+    }
+    const std::string label = terrainLayerLabel(std::size_t(index));
+    wt::TerrainLayers layers = terrainLayers_;
+    layers[std::size_t(index)] = layerPatchFromJson(patch, layers[std::size_t(index)]);
+    // 検査で消されたパスは適用しない（黙ってテクスチャ無しにしない）。
+    const std::string asked = layers[std::size_t(index)].texture;
+    sanitizeTerrainLayers(layers, "browser");
+    if (layers[std::size_t(index)].texture != asked) {
+        editor_.setStatus(label + " のテクスチャは assets/ からの相対パス（" +
+                          std::to_string(wt::kMaxLayerPathBytes) + " バイトまで）で指定してください");
+        return;
+    }
+    if (layers == terrainLayers_) {
+        editor_.setStatus(label + " は変わっていません");
+        return;
+    }
+    // 層は Undo の対象にしない（格子の記録ではない）。ステータスは publish の前。
+    editor_.setStatus(label + " を更新（保存すると .terrain に書きます）");
+    publishTerrainField(terrain_, field, TerrainHistory::Keep, TerrainFileState::Dirty, {},
+                        false, &layers);
 }
 
 // ---- 削除 ---------------------------------------------------------------------
@@ -271,7 +298,8 @@ bool Scene::applyTerrainFileOp(const nlohmann::json& a) {
 // ファイルの分岐（applyTerrainFileOp）と enabled(+name) のあとは、Missing
 // （ファイルが無い・読めない）なら断る（refuseWhileMissing。ファイルの分岐の
 // import / export も同じ口で断る）。そのあとはキーで
-// 分岐: generate{seed,...}（同じメッセージの部分更新を先に当てる）/ undo /
+// 分岐: layer{index,...}（塗り分けの層）/ generate{seed,...}・autopaint{...}
+// （どちらも同じメッセージの部分更新を先に当てる）/ undo /
 // それ以外は部分更新。モードによらず受ける（名前の変更もシミュレート中に受ける）。
 // delete と duplicate だけはエディタモードのみ（deleteTerrain / duplicate 分岐が断る）。
 void Scene::applyTerrainOp(const EditorState::Op& op) {
@@ -296,13 +324,25 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
             return;
         }
     }
-    // Missing: 格子が無いので generate / undo / 部分更新は全部ここで止める。
+    // Missing: 格子が無いので generate / autopaint / undo / 部分更新は全部ここで止める。
     if (refuseWhileMissing(editor_, terrainMissing(), "編集")) return;
     // 送られてきたキーだけ上書きした形（edit.ground と同じ部分更新）。
     const auto patched = [this, &a]() {
         return ed::clampTerrain(ed::terrainFromJson(a, terrain_));
     };
-    // generate / undo は形がおかしくても部分更新へ落とさない（成功に見せない）。
+    // 塗り分けの層: layer{index, texture?, tile?}。部分更新へは落とさない。
+    if (const auto it = a.find("layer"); it != a.end()) {
+        const double index = it->is_object() ? ed::jsonNumber(*it, "index", -1.0) : -1.0;
+        if (!(index >= 0.0 && index < double(wt::kSplatChannels) &&
+              index == std::floor(index))) {
+            editor_.setStatus(
+                "層の指定が正しくありません（layer は {index, texture, tile}、index は層の番号）");
+            return;
+        }
+        editTerrainLayer(int(index), *it);
+        return;
+    }
+    // generate / autopaint / undo は形がおかしくても部分更新へ落とさない（成功に見せない）。
     if (const auto it = a.find("generate"); it != a.end()) {
         if (!it->is_object()) {
             editor_.setStatus("ノイズの指定が正しくありません（generate はオブジェクト）");
@@ -314,6 +354,19 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
         reshapeTerrain(patched());
         // 送られなかったキーは既定値（ノイズの値はテレインに覚えない）。
         generateTerrainNoise(ed::terrainNoiseFromJson(*it, ed::TerrainNoiseParams{}));
+        return;
+    }
+    // 自動塗り（傾きと高さの帯）。generate と同じく、同じ 1 通の部分更新を先に当てる
+    // （確定待ちだった形で塗る）。塗りは高さを書き換えないので、generate と違い
+    // 「形を保つ」（keepShape）も部分更新と同じく渡す。送られなかったキーは既定の帯。
+    if (const auto it = a.find("autopaint"); it != a.end()) {
+        if (!it->is_object()) {
+            editor_.setStatus("塗り分けの指定が正しくありません（autopaint はオブジェクト）");
+            return;
+        }
+        // 形の変更の知らせ（再サンプル・切った点）は塗りの結果の文の後ろに残す。
+        const std::string notes = reshapeTerrain(patched(), argIsTrue(a, "keepShape"));
+        autoPaintTerrain(*it, notes);
         return;
     }
     if (const auto it = a.find("undo"); it != a.end()) {
@@ -330,5 +383,5 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
     // 高さの変更で形を保つか（Inspector の「形を保つ」。height と同じ 1 通で届く）。
     // ステータスは reshapeTerrain が出す（切った点の知らせを後ろに足すため）。
     reshapeTerrain(next, argIsTrue(a, "keepShape"),
-                   terrainPatchStatus(hasTerrain_, terrain_.resolution, next.resolution));
+                   terrainPatchStatus(hasTerrain_));
 }

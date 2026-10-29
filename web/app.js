@@ -1606,7 +1606,10 @@
   }
   // storeJson で覚えた {キー: 値} のうち、数のものだけを欄の表の欄へ戻す。
   function restoreFields(storeKey, map) {
-    const saved = loadStoredJson(storeKey);
+    fillFields(loadStoredJson(storeKey), map);
+  }
+  // {キー: 値}（null 可）のうち、数のものだけを欄の表の欄へ入れる（readFields の逆）。
+  function fillFields(saved, map) {
     if (!saved) return;
     for (const key in map) {
       if (Number.isFinite(saved[key])) setField(map[key], saved[key]);

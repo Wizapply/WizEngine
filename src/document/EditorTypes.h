@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -608,6 +609,11 @@ struct LightDesc {
 // どちらもシーンの一部（文書の <worldbody> の <ground/> と <environment/>）。
 // 節を書かない文書はこの既定値で開く（ライト・カメラと同じ扱い）。
 
+// 地面とテレインの層が共通で使う、テクスチャのタイル（1 リピートが覆う m）の
+// 範囲。地面は clampGround、テレインの層は Scene の sanitizeTerrainLayers が使う。
+constexpr double kSurfaceTileMin = 0.1;
+constexpr double kSurfaceTileMax = 100.0;
+
 // 地面。物理の床（当たり判定の箱）と見える地面（テクスチャ付きの板）は
 // 半分の広さを別々に持つ - 作業の目安になる床は見えている範囲より広く
 // 効いていてほしいため。texture は assets/ からの相対パス（空 = 市松模様）。
@@ -680,9 +686,8 @@ struct TerrainDesc {
     double size = 200.0;          // 1 辺の長さ (m)。全幅（半寸法ではない）
     int resolution = 256;         // 1 辺のセル（クアッド）数（1〜1024）
     double height = 20.0;         // 高さの上限 (m)。起伏は 0〜height
-    // 表面。texture は assets/ 相対（空 = 単色 = rgba だけで塗る）。
-    std::string texture;
-    double tile = 2.0;            // テクスチャ 1 リピートが覆うメートル
+    // 表面。塗り分けの層（テクスチャとタイル）は .terrain ファイルが持つので
+    // ここには無い（Scene の terrainLayers_）。色と材質は全層に共通。
     Color3 color{0.35f, 0.45f, 0.25f};  // 単色 / テクスチャに乗す色（リニア）
     double roughness = 0.9;       // 地面と同じつや消しが既定
     double metallic = 0.0;
@@ -1184,11 +1189,18 @@ inline double jsonNumber(const nlohmann::json& j, const char* key,
     const auto it = j.find(key);
     return (it != j.end() && it->is_number()) ? it->get<double>() : fallback;
 }
+// int に入らない値（NaN・無限・範囲外）も fallback（double から int への変換は
+// 範囲外で未定義）。小数は 0 の向きへ切り捨てる。
 inline int jsonInt(const nlohmann::json& j, const char* key, int fallback) {
     if (!j.is_object()) return fallback;
     const auto it = j.find(key);
-    return (it != j.end() && it->is_number()) ? int(it->get<double>())
-                                              : fallback;
+    if (it == j.end() || !it->is_number()) return fallback;
+    const double v = it->get<double>();
+    // NaN はどの比較も偽 = fallback。
+    if (!(v > double(std::numeric_limits<int>::min()) - 1.0 &&
+          v < double(std::numeric_limits<int>::max()) + 1.0))
+        return fallback;
+    return int(v);
 }
 // 文字列版（型が違えば fallback。nlohmann の value() のように投げない）。
 inline std::string jsonString(const nlohmann::json& j, const char* key,
@@ -1891,8 +1903,6 @@ inline nlohmann::json toJson(const TerrainDesc& t) {
     j["height"] = t.height;
     j["pos"] = toJson(t.position);
     j["rot"] = toJson(t.rotation);
-    j["texture"] = t.texture;
-    j["tile"] = t.tile;
     j["color"] = colorToHex(t.color);
     j["roughness"] = t.roughness;
     j["metallic"] = t.metallic;
@@ -1929,12 +1939,6 @@ inline TerrainDesc terrainFromJson(const nlohmann::json& j,
     if (const auto rit = j.find("rot"); rit != j.end()) {
         t.rotation = vec3FromJson(*rit, t.rotation);
     }
-    if (j.contains("texture") && j["texture"].is_string()) {
-        // 空 = 単色。パスとして不正なもの（".." 等）は無視して現状維持。
-        const std::string s = j["texture"];
-        if (s.empty() || assetFileAllowed(s)) t.texture = s;
-    }
-    t.tile = jsonNumber(j, "tile", t.tile);
     if (j.contains("color") && j["color"].is_string()) {
         t.color = colorFromHex(j["color"], t.color);
     }
@@ -2234,7 +2238,7 @@ inline GroundDesc clampGround(GroundDesc g) {
     g.rotation = clampAngles(g.rotation);
     g.half = cl(g.half, 1.0, 1000.0);
     g.visualHalf = cl(g.visualHalf, 1.0, 1000.0);
-    g.tile = cl(g.tile, 0.1, 100.0);
+    g.tile = cl(g.tile, kSurfaceTileMin, kSurfaceTileMax);
     g.roughness = cl(g.roughness, 0.02, 1.0);
     g.metallic = cl(g.metallic, 0.0, 1.0);
     return g;
@@ -2298,8 +2302,10 @@ inline TerrainNoiseParams terrainNoiseFromJson(const nlohmann::json& j,
 //     200 万を超えると作り直しが重い）。チャンク数の上限との整合は Scene が見る。
 //   * size は 1〜4000 m（描画距離 kFarPlane 2000 m の 2 倍まで）、height は
 //     kTerrainMinHeight〜1000 m、pos は各軸 ±10000 m。
-//   * 表面は地面と同じ範囲（tile 0.1〜100 m、roughness 0.02〜1、metallic 0〜1）
-//     で、色は各成分 0〜1。
+//   * 表面は地面と同じ範囲（roughness 0.02〜1、metallic 0〜1）で、色は各成分
+//     0〜1。層のテクスチャとタイルは .terrain が持つので、Scene の
+//     sanitizeTerrainLayers が検査する（タイルの範囲は地面と同じ
+//     kSurfaceTileMin〜kSurfaceTileMax）。
 inline TerrainDesc clampTerrain(TerrainDesc t) {
     const TerrainDesc d;
     const auto cl = clampTerrainNumber;
@@ -2318,8 +2324,6 @@ inline TerrainDesc clampTerrain(TerrainDesc t) {
     t.position.y = cl(t.position.y, -10000.0, 10000.0, d.position.y);
     t.position.z = cl(t.position.z, -10000.0, 10000.0, d.position.z);
     t.rotation = clampAngles(t.rotation);
-    if (!t.texture.empty() && !assetFileAllowed(t.texture)) t.texture.clear();
-    t.tile = cl(t.tile, 0.1, 100.0, d.tile);
     t.color.r = clf(t.color.r, d.color.r);
     t.color.g = clf(t.color.g, d.color.g);
     t.color.b = clf(t.color.b, d.color.b);

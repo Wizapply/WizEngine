@@ -16,10 +16,9 @@ using namespace scene_detail;
 
 namespace {
 
-// 表面（描画の材質だけ）が同じか。
+// 表面（描画の材質だけ。層は terrainLayers_ で別に見る）が同じか。
 bool sameTerrainSurface(const ed::TerrainDesc& a, const ed::TerrainDesc& b) {
-    return a.texture == b.texture && a.tile == b.tile && a.color.r == b.color.r &&
-           a.color.g == b.color.g && a.color.b == b.color.b &&
+    return a.color.r == b.color.r && a.color.g == b.color.g && a.color.b == b.color.b &&
            a.roughness == b.roughness && a.metallic == b.metallic;
 }
 
@@ -47,7 +46,9 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
                                 std::shared_ptr<const wizengine::terrain::HeightField> field,
                                 TerrainHistory history, TerrainFileState file,
                                 const wizengine::terrain::GridRect& changedCells,
-                                bool brushPass) {
+                                bool brushPass,
+                                const wizengine::terrain::TerrainLayers* layers,
+                                TerrainChanged changed) {
     // ストローク中に飛ばした張り直し（Clear はストロークを捨てるので先に読む）。
     const bool collisionPending = terrainStroke_.collisionStale;
     if (history == TerrainHistory::Clear) abortTerrainStroke();
@@ -62,16 +63,27 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
                 (file == TerrainFileState::Keep && terrainMissing()));
     const bool fieldChanged = field != terrainField_;
     const bool surfaceChanged = on && (!had || !sameTerrainSurface(desc, terrain_));
-    // 一部だけの書き換えなら、描画は触ったチャンクだけ（空 = 全部作り直す）。
+    // 一部だけの書き換えなら、描画は触ったところだけ: 形（Shape）は触ったチャンク、
+    // 重み（Paint）はそのセルのスプラット。changedCells が空 = 全部作り直す。
+    const bool partial = fieldChanged && on && !changedCells.empty();
+    const bool shapeChanged = terrainChangeHas(changed, TerrainChanged::Shape);
+    const bool paintChanged = terrainChangeHas(changed, TerrainChanged::Paint);
     const wizengine::terrain::GridRect chunks =
-        (fieldChanged && on && !changedCells.empty())
-            ? field->chunksTouched(changedCells, kTerrainChunkQuads)
-            : wizengine::terrain::GridRect{};
+        (partial && shapeChanged) ? field->chunksTouched(changedCells, kTerrainChunkQuads)
+                                  : wizengine::terrain::GridRect{};
     // テレインのフレーム（置き場所 + 回転）。格子は原点基準なので、動かす・回すは
     // ここだけ（格子・メッシュは作り直さない）。
     const BodyTransform pose = placementPose(desc.position, desc.rotation);
     bool poseChanged = false;
     const bool renamed = desc.data != terrain_.data;
+    // 塗り分けの層の規則（ここだけ）: 渡されればそれ。渡されず、格子が無くなる
+    // （外す・全消し・Missing）か別のテレイン（名前か背番号が変わる = 新規・旧形式の
+    // 生成）になるなら既定へ戻す（層は .terrain が持つので前のテレインのものを残さない）。
+    // それ以外（同じテレインの形・表面・位置・格子の書き換え）は今のまま。
+    static const wizengine::terrain::TerrainLayers kDefaultLayers{};
+    const bool sameFile = on && !renamed && desc.guid == terrain_.guid;
+    const wizengine::terrain::TerrainLayers* nextLayers =
+        layers ? layers : (sameFile ? nullptr : &kDefaultLayers);
     {
         // 格子の差し替えと dirty は同じロックの中で: 描画スレッドは dirty を
         // 見たのと同じロックの中で格子を取り出すので、「新しい dirty と古い
@@ -83,8 +95,13 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
             std::lock_guard<std::mutex> fl(terrainFieldMutex_);
             if (fieldChanged) {
                 terrainField_ = std::move(field);
-                if (chunks.empty()) terrainMeshDirty_ = true;  // 無しなら描画側が外す
-                else terrainChunkDirty_ = terrainChunkDirty_.united(chunks);
+                if (!partial) {
+                    terrainMeshDirty_ = true;  // 全体（スプラットも）。無しなら描画側が外す
+                } else {
+                    if (shapeChanged) terrainChunkDirty_ = terrainChunkDirty_.united(chunks);
+                    if (paintChanged)
+                        terrainSplatDirty_ = terrainSplatDirty_.united(changedCells);
+                }
             }
             if (!samePose(pose, terrainPose_)) {
                 terrainPose_ = pose;
@@ -93,6 +110,10 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
             }
         }
         if (surfaceChanged) terrainSurfaceDirty_ = true;
+        if (nextLayers && *nextLayers != terrainLayers_) {
+            terrainLayers_ = *nextLayers;
+            terrainLayersDirty_ = true;
+        }
         // ファイルとの関係（外したら Saved）。/scene が「有無と Missing」の食い違った
         // 組を見ないよう、hasTerrain_ と同じロックの中で書く。
         settleTerrainFileState(file, on, missing);
@@ -126,13 +147,15 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
     // 筆のストローク中は張らずに印だけ立てる（endTerrainStroke が 1 回張る）。
     const bool retryFailed =
         on && terrainPhysId_ == PhysicsWorld::kInvalidId && !terrainBackendWarned_;
-    if (!(fieldChanged || retryFailed || collisionPending)) return;
+    // 重みだけの書き換え（Paint）は当たり判定に関わらないので張り直さない。
+    const bool collisionChanged = fieldChanged && (!partial || shapeChanged);
+    if (!(collisionChanged || retryFailed || collisionPending)) return;
     if (terrainStroke_.active) terrainStroke_.collisionStale = true;
     else rebuildTerrainBody();
 }
 
-void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
-                           const std::string& status) {
+std::string Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
+                                  const std::string& status) {
     const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
     const ed::TerrainDesc& now = terrain_;
     const bool sized = next.size != now.size;
@@ -147,7 +170,7 @@ void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
         // 形はそのまま（またはテレイン無し = 値だけ覚える）: 表面と置き場所だけ。
         if (!status.empty()) editor_.setStatus(status);
         publishTerrainField(next, field, TerrainHistory::Keep, TerrainFileState::Keep);
-        return;
+        return std::string();
     }
     // 形の変更は今の格子のコピーから作る（共有中の格子は書き換えない）。
     // 大きさ → 再サンプル → 比例伸縮（形を保つなら切り詰め）の順。
@@ -162,14 +185,16 @@ void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
     std::size_t clipped = 0;
     if (scaled && keepShape) clipped = grid.clampHeights(float(next.height));
     else if (scaled) grid.scaleHeights(float(next.height / now.height));
-    // 切った点があれば status の後ろに足して知らせる（ステータスは publish の前）。
-    // 全部の点が上限より上だった = 全体が上限の高さの板になった、は別の文で。
+    // 形の変更の知らせを status の後ろに足す（ステータスは publish の前）:
+    // 再サンプルしたなら HeightField::resampled の性質を一言、切った点があればその数
+    // （全部の点が上限より上だった = 全体が上限の高さの板になった、は別の文で）。
     std::string note;
+    if (resampled) note = "（解像度を下げると細い起伏は消え、穴は少し太ります）";
     if (clipped > 0 && clipped == grid.samples().size()) {
-        note = "（形を保つ: すべての点が新しい上限より上だったため、全体が上限の高さの"
-               "平らな面になりました）";
+        note += "（形を保つ: すべての点が新しい上限より上だったため、全体が上限の高さの"
+                "平らな面になりました）";
     } else if (clipped > 0) {
-        note = "（形を保つ: " + std::to_string(clipped) + " 点が新しい上限で切られました）";
+        note += "（形を保つ: " + std::to_string(clipped) + " 点が新しい上限で切られました）";
     }
     if (!status.empty() || !note.empty()) editor_.setStatus(status + note);
     LOGI("scene", "terrain reshaped: %dx%d cells, %.0f m, %.0f m high (%s) in %.1f ms",
@@ -179,12 +204,13 @@ void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
         next, std::make_shared<const wizengine::terrain::HeightField>(std::move(grid)),
         fileChanged ? TerrainHistory::Clear : TerrainHistory::Keep,
         fileChanged ? TerrainFileState::Dirty : TerrainFileState::Keep);
+    return note;
 }
 
 bool Scene::editTerrainField(
     const wizengine::terrain::GridRect& rect,
     const std::function<bool(wizengine::terrain::HeightField&)>& mutate,
-    TerrainRecord record) {
+    TerrainRecord record, TerrainChanged changed) {
     // 筆以外の書き換え（取り消し・生成）はストロークを先に終える: ストロークの
     // 記録の後ろに積む / ストロークごと取り消す、の順序にする。
     if (record != TerrainRecord::Stroke) endTerrainStroke();
@@ -206,7 +232,7 @@ bool Scene::editTerrainField(
     publishTerrainField(terrain_,
                         std::make_shared<const wizengine::terrain::HeightField>(std::move(copy)),
                         TerrainHistory::Keep, TerrainFileState::Dirty, rect,
-                        record == TerrainRecord::Stroke);
+                        record == TerrainRecord::Stroke, nullptr, changed);
     return true;
 }
 
@@ -222,7 +248,7 @@ bool Scene::replaceTerrainHeights(wizengine::terrain::HeightField&& gen, const c
             f.samples() = std::move(gen.samples());  // gen はここで使い終わり
             return true;
         },
-        TerrainRecord::Undo);
+        TerrainRecord::Undo, TerrainChanged::Shape);
     if (!ok) {
         LOGW("scene", "terrain: the %s grid does not match the current grid - not applied",
              what);
@@ -268,7 +294,8 @@ void Scene::undoTerrain() {
         [&edit](wizengine::terrain::HeightField& f) {
             return !wizengine::terrain::applyEdit(f, edit).empty();
         },
-        TerrainRecord::None);
+        // 記録は高さ・穴・重みを組で戻すので、描画も当たり判定も両方。
+        TerrainRecord::None, TerrainChanged::Both);
     // ステータスは結果が分かってから 1 回だけ。
     if (!ok) {
         LOGW("scene", "terrain: an undo record (resolution %d) does not fit the current grid "

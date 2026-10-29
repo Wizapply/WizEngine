@@ -37,13 +37,76 @@
   // ページを離れるときは送信待ちを捨てずに送る（触った値が黙って消えない
   // ように）。通常の fetch は離脱で打ち切られうるので keepalive を付ける。
   window.addEventListener('pagehide', () => flushTerrain(null, true));
-  function applyTerrain(key) {
+  // 層の欄で送った値（キーは欄の id、値は {value, until}）。サーバーの値が
+  // 送った値になるまで（届かなければ TERRAIN_LAYER_HOLD_MS まで）、ポーリングで
+  // 欄を上書きしない（適用は物理スレッドなので、送った直後の /scene はまだ古い）。
+  // 丸められた・断られたときは期限で手放し、サーバーの値に戻る。
+  const TERRAIN_LAYER_HOLD_MS = 3000;
+  // 守りはテレインごと: 別のテレインを開いた・新規にした（data か guid が
+  // 変わった）ら捨てる（前のテレインへ送った値で新しいテレインの欄を止めない）。
+  let terrainLayerSent = {};
+  let terrainLayerSentFor = '';
+  // 今のテレインの見分け（data と guid）。層の欄の守りと筆の層の選択肢
+  // （terrain-brush.js）が「テレインが差し替わったか」をこれで見る。
+  function terrainIdentity() {
+    const t = (sceneData && sceneData.terrain) || {};
+    return (t.data || '') + '|' + (t.guid || '');
+  }
+  // 守りを今のテレインのものにする（見分けが変わっていたら空にする）。読む前・
+  // 書く前に必ず通す（判定はここ 1 か所）。
+  function syncTerrainLayerSent() {
+    const who = terrainIdentity();
+    if (who !== terrainLayerSentFor) {
+      terrainLayerSent = {};
+      terrainLayerSentFor = who;
+    }
+  }
+  // 層の欄 id にサーバーの値 v を入れる（送信待ちの間は触らない）。
+  function setLayerField(id, v) {
+    syncTerrainLayerSent();
+    const sent = terrainLayerSent[id];
+    if (sent) {
+      if (sent.value !== v && Date.now() < sent.until) return;
+      delete terrainLayerSent[id];
+    }
+    setField(id, v);
+  }
+  // key = 送るキー。'layer' のときだけ index = 層の番号（0 から）、field =
+  // 変えた欄（'texture' / 'tile'）で、その 1 つだけを layer{index, <field>} の
+  // 1 通ですぐ送る（触っていない欄の値は送らない = 丸めた表示の値や古い値で
+  // 上書きしない）。
+  function applyTerrain(key, index, field) {
     const t = (sceneData && sceneData.terrain) || {};
     const pick = (id) => document.getElementById(id);
     // 欄が空・数でないときは今の値（無ければ送らない）。
     const n = (id, cur) => num(id, cur);
     let value;
     switch (key) {
+      case 'layer': {
+        // 層は部分更新のキーに混ぜない（サーバーは layer の 1 通を層だけの操作として
+        // 扱う）。溜まっている形のキーは先に別の 1 通で送る（層とは独立）。
+        const layer = { index };
+        let id, shown;
+        if (field === 'texture') {
+          id = 'edTerrainLayerTex' + index;
+          const tex = pick(id);
+          if (!tex) return;
+          layer.texture = shown = tex.value.trim();
+        } else if (field === 'tile') {
+          id = 'edTerrainLayerTile' + index;
+          const tile = n(id, NaN);
+          if (!Number.isFinite(tile)) return;  // 空・数でない = 送らない（ポーリングが戻す）
+          layer.tile = tile;
+          shown = round2(tile);
+        } else {
+          return;
+        }
+        syncTerrainLayerSent();
+        terrainLayerSent[id] = { value: shown, until: Date.now() + TERRAIN_LAYER_HOLD_MS };
+        flushTerrain();
+        send('edit.terrain', { layer });
+        return;
+      }
       case 'size': value = n('edTerrainSize', t.size); break;
       case 'resolution': value = Math.round(n('edTerrainRes', t.resolution)); break;
       case 'height': value = n('edTerrainHeight', t.height); break;
@@ -63,8 +126,6 @@
             !Number.isFinite(value.z)) return;
         break;
       }
-      case 'texture': value = pick('edTerrainTex').value.trim(); break;
-      case 'tile': value = n('edTerrainTile', t.tile); break;
       case 'color': value = pick('edTerrainColor').value; break;
       case 'roughness': value = n('edTerrainRough', t.roughness); break;
       case 'metallic': value = n('edTerrainMetal', t.metallic); break;
@@ -85,6 +146,59 @@
       terrainTimer = setTimeout(() => flushTerrain(), TERRAIN_SHAPE_DELAY_MS);
     } else {
       flushTerrain();
+    }
+  }
+  // 塗り分けの層の行（index.html の #edTerrainLayers の中身）。行の数はサーバーの
+  // terrain.layers の数（= 層の数。HTML には持たない）で、1 つのテンプレートから作る。
+  // 作るのは初回と数が変わったときだけで、欄にフォーカスがある間は作り直さない
+  // （打っている途中の値を消さない）。Missing の無効化は外側の fieldset が新しい行にも効く。
+  // 層の表示名（i = 0 始まりの層の番号）。名前の付け方はサーバーが持つ
+  // （/scene の terrain.layers[i].label = ステータスの文と同じ名前）。層の欄・
+  // 自動塗りの行・筆の層の選択（terrain-brush.js）はここを通す。
+  function terrainLayerLabel(i) {
+    const l = ((sceneData && sceneData.terrain && sceneData.terrain.layers) || [])[i];
+    return (l && l.label) || '';
+  }
+  // テレインの道具の既定（テレインごとに変わらない値。/scene のトップレベルの
+  // terrainTools = {baseLayer, autoPaintDefaults}。無ければ空）。
+  function terrainTools() {
+    return (sceneData && sceneData.terrainTools) || {};
+  }
+  function terrainAutoPaintDefaults() { return terrainTools().autoPaintDefaults; }
+  const TERRAIN_LAYER_TIP = '層はこのテレインの .terrain に保存され、どのシーンでも同じ';
+  const TERRAIN_TILE_TIP = 'タイル 4 m 以上が配信に優しい';
+  function buildTerrainLayerRows(count) {
+    const box = document.getElementById('edTerrainLayers');
+    if (!box || box.childElementCount === count) return;
+    if (box.contains(document.activeElement)) return;
+    const head = document.getElementById('edTerrainLayersHead');
+    if (head) head.title = TERRAIN_LAYER_TIP + '。' + TERRAIN_TILE_TIP;
+    box.textContent = '';
+    for (let i = 0; i < count; i++) {
+      const name = terrainLayerLabel(i);
+      const row = document.createElement('div');
+      row.className = 'edRow';
+      const label = document.createElement('span');
+      label.textContent = name;
+      label.title = name + '。' + TERRAIN_LAYER_TIP;
+      const tex = document.createElement('input');
+      tex.id = 'edTerrainLayerTex' + i;
+      tex.className = 'txt layerTex';
+      tex.type = 'text';
+      tex.placeholder = 'textures/ground.png';
+      tex.title = name + ' のテクスチャ（assets/ からの相対パス。空 = 単色）。' +
+        TERRAIN_LAYER_TIP;
+      tex.onchange = () => applyTerrain('layer', i, 'texture');
+      // 範囲（min / max）は持たない: タイルの範囲はサーバーが丸める（1 か所）。
+      const tile = document.createElement('input');
+      tile.id = 'edTerrainLayerTile' + i;
+      tile.className = 'num layerTile';
+      tile.type = 'number';
+      tile.step = '0.5';
+      tile.title = name + ' のタイル（テクスチャ 1 リピートのメートル）。' + TERRAIN_TILE_TIP;
+      tile.onchange = () => applyTerrain('layer', i, 'tile');
+      row.append(label, tex, tile);
+      box.appendChild(row);
     }
   }
   // 節の出し入れは renderEditor（選択が terrain のときだけ）。ここは中身。
@@ -124,8 +238,15 @@
     set('rot', 'edTerrainRX', round2(r.x));
     set('rot', 'edTerrainRY', round2(r.y));
     set('rot', 'edTerrainRZ', round2(r.z));
-    set('texture', 'edTerrainTex', t.texture || '');
-    set('tile', 'edTerrainTile', round2(t.tile));
+    // 塗り分けの層（.terrain の LAYR。サーバーの terrain.layers の順 = 層の番号）。
+    const layers = t.layers || [];
+    buildTerrainLayerRows(layers.length);
+    layers.forEach((l, i) => {
+      setLayerField('edTerrainLayerTex' + i, l.texture || '');
+      setLayerField('edTerrainLayerTile' + i, round2(l.tile));
+    });
+    // 自動塗りの行（層の数と既定の帯はサーバーの値。欄の値はこのブラウザが持つ）。
+    buildTerrainAutoPaintRows(terrainAutoPaintDefaults());
     if (t.color) set('color', 'edTerrainColor', t.color);
     set('roughness', 'edTerrainRough', round2(t.roughness));
     set('metallic', 'edTerrainMetal', round2(t.metallic));
@@ -186,6 +307,109 @@
   }
   // 読めなければ空 = 既定値のまま。
   restoreFields(TERRAIN_NOISE_STORE, TERRAIN_NOISE_FIELDS);
+
+  // ---- 自動塗り（secTerrain 節）---------------------------------------------
+  // ノイズで生成と同じく、値は送るときだけ使い（テレインには覚えない）、この
+  // ブラウザの localStorage に覚える（欄・チェックを変えたその時に。押さずに
+  // リロードしても消えない）。既定の帯はここに持たない: 行の数・薄い
+  // 数字（placeholder）・チェックの初期値は、サーバーの terrainTools.autoPaintDefaults
+  // から取る。空の欄のキーは送らない = サーバーの既定の帯。
+  // 層ごとの欄（キー → id の頭。id は頭 + 層の番号）。
+  const TERRAIN_AUTOPAINT_FIELDS = {
+    slopeMin: 'edTerrainAutoSlopeMin', slopeMax: 'edTerrainAutoSlopeMax',
+    heightMin: 'edTerrainAutoHeightMin', heightMax: 'edTerrainAutoHeightMax'
+  };
+  const TERRAIN_AUTOPAINT_SOFT = { softness: 'edTerrainAutoSoft' };
+  const TERRAIN_AUTOPAINT_STORE = 'terrain:autopaint';
+  // 層 i の欄の表（readFields / fillFields に渡す形）。
+  function autoPaintRowFields(i) {
+    const map = {};
+    for (const key in TERRAIN_AUTOPAINT_FIELDS) map[key] = TERRAIN_AUTOPAINT_FIELDS[key] + i;
+    return map;
+  }
+  // 層の行（index.html の #edTerrainAutoRows の中身）を既定の帯 defaults
+  // （{softness, layers:[...]}）の層の数だけ作る。作るのは初回と数が変わったとき
+  // だけで、欄にフォーカスがある間は作り直さない（層の行と同じ）。欄の値は覚えた
+  // もの、チェックは覚えたもの（無ければ既定）。
+  const TERRAIN_AUTOPAINT_TIP = {
+    slopeMin: '傾きの下限（度、0 = 水平）', slopeMax: '傾きの上限（度、90 = 垂直）',
+    heightMin: '高さの下限（テレインの位置 Y からの m）',
+    heightMax: '高さの上限（テレインの位置 Y からの m）'
+  };
+  function buildTerrainAutoPaintRows(defaults) {
+    const box = document.getElementById('edTerrainAutoRows');
+    const layers = (defaults && defaults.layers) || [];
+    if (!box || box.childElementCount === layers.length) return;
+    if (box.contains(document.activeElement)) return;
+    const saved = loadStoredJson(TERRAIN_AUTOPAINT_STORE) || {};
+    const savedLayers = Array.isArray(saved.layers) ? saved.layers : [];
+    box.textContent = '';
+    layers.forEach((d, i) => {
+      const name = terrainLayerLabel(i);
+      const row = document.createElement('div');
+      row.className = 'autoRow';
+      const label = document.createElement('label');
+      label.title = name + ' を塗るか（外すと、この層は自動塗りで使わない）';
+      const on = document.createElement('input');
+      on.type = 'checkbox';
+      on.id = 'edTerrainAutoOn' + i;
+      const s = savedLayers[i] || {};
+      on.checked = typeof s.enabled === 'boolean' ? s.enabled : !!d.enabled;
+      // 外した層の行は欄を薄くする（欄は無効にしない = 値は打てる）。
+      row.classList.toggle('off', !on.checked);
+      on.onchange = () => {
+        row.classList.toggle('off', !on.checked);
+        storeTerrainAutoPaint();
+      };
+      label.append(on, ' ' + name);
+      row.appendChild(label);
+      const map = autoPaintRowFields(i);
+      for (const key in map) {
+        const input = document.createElement('input');
+        input.id = map[key];
+        input.className = 'num';
+        input.type = 'number';
+        input.step = key.startsWith('slope') ? '5' : '1';
+        // 範囲（min / max）は持たない: サーバーが丸める（1 か所）。
+        input.placeholder = Number.isFinite(d[key]) ? String(round2(d[key])) : '';
+        input.title = name + ' の' + TERRAIN_AUTOPAINT_TIP[key] + '。空 = 薄い数字（既定）';
+        input.onchange = () => storeTerrainAutoPaint();
+        row.appendChild(input);
+      }
+      box.appendChild(row);
+      fillFields(s, map);
+    });
+    const soft = document.getElementById(TERRAIN_AUTOPAINT_SOFT.softness);
+    if (soft && defaults && Number.isFinite(defaults.softness))
+      soft.placeholder = String(round2(defaults.softness));
+  }
+  // 欄の値（送る形 = {softness?, layers:[{enabled, slopeMin?, ...}]}）。
+  function readTerrainAutoPaint() {
+    const rules = readFields(TERRAIN_AUTOPAINT_SOFT);
+    const count = document.getElementById('edTerrainAutoRows').childElementCount;
+    rules.layers = [];
+    for (let i = 0; i < count; i++) {
+      const band = readFields(autoPaintRowFields(i));
+      band.enabled = !!document.getElementById('edTerrainAutoOn' + i).checked;
+      rules.layers.push(band);
+    }
+    return rules;
+  }
+  // 欄・チェックの確定（onchange）で覚える。rules = 読んだばかりの値（省けば
+  // 欄から読む）。行がまだ無い（層の数が届く前）ときは覚えない（空の layers で
+  // 覚えた値を消さない）。
+  function storeTerrainAutoPaint(rules) {
+    const r = rules || readTerrainAutoPaint();
+    if (r.layers.length === 0) return;
+    storeJson(TERRAIN_AUTOPAINT_STORE, r);
+  }
+  function autoPaintTerrain() {
+    const rules = readTerrainAutoPaint();
+    storeTerrainAutoPaint(rules);
+    // 確定待ちの形（全幅など）も同じ 1 通で送る（サーバーが先に当ててから塗る）。
+    flushTerrain({ autopaint: rules });
+  }
+  restoreFields(TERRAIN_AUTOPAINT_STORE, TERRAIN_AUTOPAINT_SOFT);
 
   // ---- ハイトマップの取り込みと書き出し（secTerrain 節）----------------------
   // サーバーの import / export は部分更新を当てない（ファイルの分岐で終わる）ので、

@@ -2,33 +2,56 @@
 // （ground_lit.mat）と同じく光と影を受け、箱と同じく影も落とす（落とすかは
 // レンダラブル側の設定）。
 //
-// 色 = baseColor テクスチャ（sRGB、無ければ白 1 画素）× baseColor（リニア）。
-// UV は頂点が持つ「メートル単位」の値で、ここで uvScale（= 1 / タイルの
-// メートル数）を掛けてタイルさせる。だからタイルを変えても頂点を送り直さなくて
-// よい（Renderer::setTerrainSurface がパラメータを変えるだけ）。
+// 色 = 4 層のテクスチャ（albedo = テクスチャ配列、sRGB。テクスチャ無しの層は
+// 白）を塗り分けの重み（splat）で混ぜたもの × baseColor（リニア）。
+// UV は頂点が持つ「メートル単位」の値（格子のローカル、原点中心）で、
+//   * 層 i は uvScale[i]（= 1 / その層のタイルのメートル数）を掛けてタイルさせる
+//   * 重みは uv * splatInvSize（= 1 / テレインの全幅）+ 0.5 で 0〜1 に直して引く
+//     （テクセル (i, j) の中心 = セル (i, j) の中心）
+// だからタイルや塗りを変えても頂点を送り直さなくてよい（Renderer::
+// setTerrainSurface / setTerrainSplat がパラメータとテクスチャを変えるだけ）。
+// 重みの合計が 0 のテクセルは層 0 だけとして扱う（塗っていない = 層 0 の絵）。
 //
-// 材質（roughness / metallic）はシーン文書の値。.mat には既定値が書けないので、
-// インスタンスを作ったら必ず入れること（Renderer::Renderer / setTerrainSurface）。
-// 穴（後の段階）は縮退三角形で表すので、ここでは何もしない。
+// 材質（roughness / metallic）はシーン文書の値で、層では分けない。.mat には
+// 既定値が書けないので、インスタンスを作ったら必ず入れること（Renderer::Renderer
+// / setTerrainSurface）。穴は縮退三角形で表すので、ここでは何もしない。
+//
+// flipUV : false が要る: matc は既定で UV の y を 1 - y に反転するが、頂点の UV は
+// ローカルのメートルなので反転させると重みの引き方が Z 方向に鏡写しになり、さらに
+// 1 m ずれる（塗った場所がカーソルの反対側に出る）。重みのテクスチャはデータの
+// 0 行目 = t = 0 = -Z 側のセルの行 j = 0。層のテクスチャだけは自分で 1 - y に
+// 反転して引く = 反転していた従来の地面と同じ向き・同じ位置。
 material {
     name : terrain,
     shadingModel : lit,
     doubleSided : true,
     requires : [ uv0 ],
+    flipUV : false,
     parameters : [
-        { type : float3,    name : baseColor },
-        { type : sampler2d, name : albedo },
-        { type : float,     name : uvScale },
-        { type : float,     name : roughness },
-        { type : float,     name : metallic }
+        { type : float3,         name : baseColor },
+        { type : sampler2dArray, name : albedo },
+        { type : sampler2d,      name : splat },
+        { type : float4,         name : uvScale },
+        { type : float,          name : splatInvSize },
+        { type : float,          name : roughness },
+        { type : float,          name : metallic }
     ]
 }
 
 fragment {
     void material(inout MaterialInputs material) {
         prepareMaterial(material);
-        vec3 albedo = texture(materialParams_albedo,
-                              getUV0() * materialParams.uvScale).rgb;
+        vec2 uv = getUV0();
+        vec4 w = texture(materialParams_splat, uv * materialParams.splatInvSize + 0.5);
+        float s = w.r + w.g + w.b + w.a;
+        w = s > 0.0 ? w / s : vec4(1.0, 0.0, 0.0, 0.0);
+        vec4 tile = materialParams.uvScale;
+        vec2 tuv = vec2(uv.x, 1.0 - uv.y);  // 層のテクスチャの向き（先頭のコメント）
+        vec3 albedo =
+            w.r * texture(materialParams_albedo, vec3(tuv * tile.x, 0.0)).rgb +
+            w.g * texture(materialParams_albedo, vec3(tuv * tile.y, 1.0)).rgb +
+            w.b * texture(materialParams_albedo, vec3(tuv * tile.z, 2.0)).rgb +
+            w.a * texture(materialParams_albedo, vec3(tuv * tile.w, 3.0)).rgb;
         material.baseColor.rgb = materialParams.baseColor * albedo;
         material.roughness = materialParams.roughness;
         material.metallic = materialParams.metallic;

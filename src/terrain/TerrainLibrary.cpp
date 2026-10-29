@@ -284,9 +284,10 @@ TerrainDuplicateResult TerrainLibrary::duplicate(const std::string& name,
         r.reason = "terrain " + inQuotes(newName) + " already exists";
         return r;
     }
-    // 背番号は新しく採る（同じ背番号のファイルを 2 つ作らない）。
+    // 背番号は新しく採る（同じ背番号のファイルを 2 つ作らない）。塗り（格子の中）と
+    // 層の定義はそのまま引き継ぐ。
     const TerrainGuid guid = makeRandomGuid();
-    if (!writeFile(dst, data.field, data.height, guid, r.reason)) return r;
+    if (!writeFile(dst, data.field, data.height, guid, r.reason, data.layers)) return r;
     r.name = newName;
     std::lock_guard<std::mutex> lock(mutex_);
     entries_.push_back(

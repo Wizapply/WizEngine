@@ -1,6 +1,7 @@
 // テレインの編集の記録と取り消し。宣言と単位の約束は TerrainUndo.h。
 #include "terrain/TerrainUndo.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace wizengine {
@@ -8,7 +9,8 @@ namespace terrain {
 namespace {
 
 // TerrainEdit の並び（TerrainUndo.h の約束）: 高さは 1 行 (i1 - i0 + 1) 個、
-// 穴は 1 行 (i1 - i0) 個の行優先。数と添字はここだけで出す。
+// 穴は 1 行 (i1 - i0) 個、重みは穴の kSplatChannels 倍の行優先。数と添字は
+// ここだけで出す。
 std::size_t heightCount(const GridRect& r) {
     return std::size_t(r.i1 - r.i0 + 1) * std::size_t(r.j1 - r.j0 + 1);
 }
@@ -21,20 +23,26 @@ std::size_t heightIndex(const GridRect& r, int i, int j) {
 std::size_t holeIndex(const GridRect& r, int i, int j) {
     return std::size_t(j - r.j0) * std::size_t(r.i1 - r.i0) + std::size_t(i - r.i0);
 }
+std::size_t splatCount(const GridRect& r) {
+    return holeCount(r) * std::size_t(kSplatChannels);
+}
+std::size_t splatIndex(const GridRect& r, int i, int j) {
+    return holeIndex(r, i, j) * std::size_t(kSplatChannels);
+}
 
 // 記録が自分の矩形と合っているか（矩形が 0〜resolution の中、値の数が
 // 矩形どおり）。壊れた記録を当てない・混ぜないための検査。
 bool wellFormed(const TerrainEdit& e) {
     const GridRect& r = e.rect;
-    if (r.empty() || r.i0 < 0 || r.j0 < 0 || r.i1 > e.resolution || r.j1 > e.resolution)
-        return false;
-    return e.heights.size() == heightCount(r) && e.holes.size() == holeCount(r);
+    if (!r.inside(e.resolution)) return false;
+    return e.heights.size() == heightCount(r) && e.holes.size() == holeCount(r) &&
+           e.splat.size() == splatCount(r);
 }
 
 }  // namespace
 
 std::size_t TerrainEdit::bytes() const {
-    return sizeof(TerrainEdit) + heights.size() * sizeof(float) + holes.size();
+    return sizeof(TerrainEdit) + heights.size() * sizeof(float) + holes.size() + splat.size();
 }
 
 TerrainEdit captureRegion(const HeightField& field, const GridRect& rect) {
@@ -53,6 +61,8 @@ TerrainEdit captureRegion(const HeightField& field, const GridRect& rect) {
     for (int j = r.j0; j < r.j1; ++j)
         for (int i = r.i0; i < r.i1; ++i)
             out.holes[holeIndex(r, i, j)] = field.holeAt(i, j) ? 1 : 0;
+    out.splat.resize(splatCount(r));
+    field.copySplat(r, out.splat.data());
     return out;
 }
 
@@ -73,6 +83,8 @@ TerrainEdit applyEdit(HeightField& field, const TerrainEdit& edit) {
             if (field.holeAt(i, j) != hole) field.setHole(i, j, hole);
         }
     }
+    // 塗っていない格子に既定だけの記録を当てても配列は確保されない（pasteSplat）。
+    field.pasteSplat(r, edit.splat.data(), edit.splat.size());
     return inverse;
 }
 
@@ -92,9 +104,13 @@ TerrainEdit growEdit(const HeightField& before, const TerrainEdit& acc, const Gr
     for (int j = a.j0; j <= a.j1; ++j)
         for (int i = a.i0; i <= a.i1; ++i)
             out.heights[heightIndex(f, i, j)] = acc.heights[heightIndex(a, i, j)];
-    for (int j = a.j0; j < a.j1; ++j)
-        for (int i = a.i0; i < a.i1; ++i)
+    for (int j = a.j0; j < a.j1; ++j) {
+        for (int i = a.i0; i < a.i1; ++i) {
             out.holes[holeIndex(f, i, j)] = acc.holes[holeIndex(a, i, j)];
+            std::copy_n(acc.splat.begin() + std::ptrdiff_t(splatIndex(a, i, j)), kSplatChannels,
+                        out.splat.begin() + std::ptrdiff_t(splatIndex(f, i, j)));
+        }
+    }
     return out;
 }
 

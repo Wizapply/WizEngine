@@ -3,6 +3,7 @@
 // stb_perlin の実装はこの翻訳単位にだけ置く（STB_PERLIN_IMPLEMENTATION の
 // 定義はここ 1 か所。他の場所で定義するとリンクで重複する）。
 #include "terrain/HeightField.h"
+#include "terrain/TerrainHash.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,16 +16,6 @@
 namespace wizengine {
 namespace terrain {
 namespace {
-
-// 32 ビットの整数ハッシュ（lowbias32）。種を散らすためだけに使う。
-uint32_t mix32(uint32_t x) {
-    x ^= x >> 16;
-    x *= 0x7feb352du;
-    x ^= x >> 15;
-    x *= 0x846ca68bu;
-    x ^= x >> 16;
-    return x;
-}
 
 // ハッシュから [0, 256) の実数。stb_perlin のノイズは 256 で一周するので、
 // それより大きなずらしは意味が無い。

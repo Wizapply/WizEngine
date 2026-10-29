@@ -1629,21 +1629,31 @@ void Scene::applyToRenderer() {
     // テレインも同じ扱い。全チャンクのメッシュ化（解像度 1024 で 16x16
     // チャンク）とテクスチャの読込はロックの外で。格子は dirty と同じロックの
     // 中で取り出す（publishTerrainField が同じロックの中で差し替えるので組が揃う）。
-    // 筆が触ったチャンクの矩形（terrainChunkDirty_）も同じロックで取り出して空に戻す。
+    // 筆が触ったチャンクの矩形（terrainChunkDirty_）と塗ったセルの矩形
+    // （terrainSplatDirty_）も同じロックで取り出して空に戻す。
     bool terrainMesh = false, terrainSurface = false, terrainOn = false;
-    wizengine::terrain::GridRect terrainChunks;
+    wizengine::terrain::GridRect terrainChunks, terrainSplat;
     ed::TerrainDesc terrainPending;
+    wizengine::terrain::TerrainLayers terrainLayersPending;
     std::shared_ptr<const wizengine::terrain::HeightField> terrainFieldPending;
-    if (terrainMeshDirty_ || terrainSurfaceDirty_ || !terrainChunkDirty_.empty()) {
+    if (terrainMeshDirty_ || terrainSurfaceDirty_ || terrainLayersDirty_ ||
+        !terrainChunkDirty_.empty() || !terrainSplatDirty_.empty()) {
         terrainMesh = terrainMeshDirty_;
-        terrainSurface = terrainSurfaceDirty_;
+        // 表面（色・材質）と層（テクスチャ・タイル）はどちらも setTerrainSurface 1 回で
+        // 入れる。層のテクスチャを読み直すのは、パスが変わった層だけ（Renderer が
+        // 層ごとに前回のパスを覚えている）= 色だけの変更で画像は読まない。
+        terrainSurface = terrainSurfaceDirty_ || terrainLayersDirty_;
         terrainChunks = terrainChunkDirty_;
+        terrainSplat = terrainSplatDirty_;
         terrainMeshDirty_ = false;
         terrainSurfaceDirty_ = false;
+        terrainLayersDirty_ = false;
         terrainChunkDirty_ = wizengine::terrain::GridRect{};
+        terrainSplatDirty_ = wizengine::terrain::GridRect{};
         terrainOn = hasTerrain_;
         terrainPending = terrain_;
-        if (terrainMesh || !terrainChunks.empty()) {
+        terrainLayersPending = terrainLayers_;
+        if (terrainMesh || !terrainChunks.empty() || !terrainSplat.empty()) {
             terrainFieldPending = terrainField();  // 末端のロック
         }
     }
@@ -1661,9 +1671,9 @@ void Scene::applyToRenderer() {
         renderer_.setTerrainTransform(toFilament(pose));
     }
     lk.unlock();
-    if (terrainMesh || terrainSurface || !terrainChunks.empty()) {
-        syncTerrain(terrainMesh, terrainChunks, terrainSurface, terrainOn, terrainPending,
-                    terrainFieldPending);
+    if (terrainMesh || terrainSurface || !terrainChunks.empty() || !terrainSplat.empty()) {
+        syncTerrain(terrainMesh, terrainChunks, terrainSplat, terrainSurface, terrainOn,
+                    terrainPending, terrainLayersPending, terrainFieldPending);
     }
     if (applyRender) {
         renderer_.setRenderSettings(wizengine::toRendererSettings(renderPending));

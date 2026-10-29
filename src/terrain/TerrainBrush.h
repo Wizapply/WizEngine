@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <limits>
 #include <string>
+#include <vector>
 
 #include "terrain/HeightField.h"
 
@@ -15,15 +17,23 @@
 // 1 スタンプは「前回の点 → 今回の点」の線分 1 本で、線分を半径の 1/4 刻みに
 // 割って円（ディスク）を順に当てる（ポインタが速く動いても筋が途切れない）。
 // 始点の円は前回のスタンプが当て済みなので当てない（begin は始点 = 終点で
-// 1 個だけ）。dt は円の数で等分する = 線の長さで効き目の総量が変わらない。
+// 1 個だけ）。高さ・穴の道具は dt を円の数で等分する = 線の長さで効き目の
+// 総量が変わらない。Paint は円の重みをセルごとの最大でまとめて 1 スタンプ
+// 1 回だけ塗る（動かす速さで塗れる量が変わらない）。
 namespace wizengine {
 namespace terrain {
 
-enum class BrushTool { Raise, Lower, Flatten, Smooth, Hole, Unhole };
+enum class BrushTool { Raise, Lower, Flatten, Smooth, Hole, Unhole, Paint, Erase };
 
-// 名前（"raise" "lower" "flatten" "smooth" "hole" "unhole"）→ ツール。
-// 知らない名前は fallback。
+// 名前（"raise" "lower" "flatten" "smooth" "hole" "unhole" "paint" "erase"）→
+// ツール。知らない名前は fallback。
 BrushTool brushToolFromName(const std::string& name, BrushTool fallback);
+
+// 塗り分けの重みだけを書き換える道具か（Paint / Erase。高さ・穴は変えない）。
+// 呼び手が描画・当たり判定の作り直しを決めるのに使う。
+inline bool brushPaintsWeights(BrushTool tool) {
+    return tool == BrushTool::Paint || tool == BrushTool::Erase;
+}
 
 // 筆の値の範囲（丸めは clampBrush の 1 か所。ブラウザの min / max は表示用）。
 constexpr double kBrushMinRadius = 0.1;    // m
@@ -37,6 +47,14 @@ constexpr double kBrushMaxDt = 0.1;        // s
 //                      （Flatten の目標 = target、Smooth の目標 = 周り 3x3 の平均）。
 //   Hole / Unhole   … 即時（中心が半径内のセルを穴にする / 埋める。strength と
 //                      dt は見ない）。
+//   Paint           … strength = 1/s。中心が半径内のセルの層 layer の重みを、
+//                      満杯（重みの合計）との差の min(1, strength × dt) × 減衰
+//                      だけ増やし、他の層は同じ割合で減らす（高さ・穴は変えない。
+//                      穴のセルは塗らない）。増分の目盛りの端数は seed で決まる
+//                      くじで丸める（平均が式どおり = 押し続ければ満杯に届く）。
+//                      下地の層（kBaseSplatLayer）と範囲外の層は塗れない
+//                      （スタンプごと弾く）。
+//   Erase           … 下地の層を塗るのと同じ計算（layer は見ない）。
 // 減衰は中心 1 → 半径 0 の smoothstep。高さは [0, maxHeight] に丸める
 // （どちらも格子値 = baseY からの相対高さ。元から範囲の外にある値は、その
 // 向きへは押し戻さない）。target は heightAt と同じ値 = **ローカル**の高さ
@@ -57,6 +75,12 @@ struct BrushStamp {
     // （他の道具では NaN でもよい）。
     double target = 0.0;
     BrushTool tool = BrushTool::Raise;
+    // Paint で塗る層（0〜kSplatChannels - 1。範囲外と下地の層 = kBaseSplatLayer は
+    // Paint ではスタンプごと弾く = 丸めない）。他の道具では見ない。
+    int layer = 0;
+    // Paint の端数のくじの種。呼び手がスタンプごとに変える（同じ種のままだと、
+    // 止めて押し続けたときに毎回同じくじになり、端数ぶんが進まないセルが出る）。
+    uint32_t seed = 0;
 };
 
 // 筆の減衰: 中心からの距離 d の重み（中心 1 → 半径 r 以上で 0、smoothstep で
@@ -67,6 +91,7 @@ double brushFalloff(double d, double r);
 // 半径 kBrushMinRadius〜kBrushMaxRadius、強さ 0〜kBrushMaxStrength、
 // dt 0〜kBrushMaxDt、maxHeight 0 以上に丸める。NaN は丸めずに残す
 // （stampRect / applyStamp が何もしない = 壊れた入力で格子を書き換えない）。
+// layer は丸めない（範囲外の Paint は stampRect / applyStamp が弾く）。
 BrushStamp clampBrush(BrushStamp s);
 
 // スタンプが書き換えうるセルの矩形（セル単位、0〜resolution に切り詰め済み。
@@ -79,6 +104,9 @@ GridRect stampRect(const HeightField& field, const BrushStamp& stamp);
 // 高さの道具は何も書かずに false）。範囲は stampRect の中に収まる。
 // 共有中の格子（shared_ptr<const>）には呼べない = コピーに対して呼ぶ。
 bool applyStamp(HeightField& field, const BrushStamp& stamp);
+// 同じ。scratch は作業用の領域（Smooth の写し・Paint の重みの 1 枚）で、続けて
+// 当てる呼び手が使い回せば、スタンプごとに確保しない。中身は呼ぶたびに作り直す。
+bool applyStamp(HeightField& field, const BrushStamp& stamp, std::vector<float>& scratch);
 
 }  // namespace terrain
 }  // namespace wizengine

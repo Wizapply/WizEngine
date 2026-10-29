@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -62,12 +63,14 @@
 //       <ground size="10" visual="8" texture="textures/ground.png" tile="2"/>
 //                                    ... pos / euler は既定（原点・回転なし）でなければ書く
 //       <terrain data="hills" guid="(32 桁の hex)" pos="0 0 0" euler="0 0 0"
-//                texture="" tile="2" rgba="..." roughness="0.9" metallic="0"/>
+//                rgba="..." roughness="0.9" metallic="0"/>
 //                                    ... 起伏のある地面（
 //                                        EditorTypes.h の TerrainDesc）。
-//                                        高さ格子と size / resolution / height は
+//                                        高さ格子と size / resolution / height、
+//                                        塗り分けの層（テクスチャ・タイル）は
 //                                        assets/terrains/<data>.terrain が持つ
-//                                        （XML には書かない）。pos の y は最低点
+//                                        （XML には書かない。旧属性 texture /
+//                                        tile は読込で層 0 へ移す）。pos の y は最低点
 //       <light .../> <camera .../>
 //       <body name pos euler fixed>
 //         <geom type size mass rgba collision="trimesh"
@@ -132,12 +135,13 @@
 //     assets/terrains/<data>.terrain で、文書はその名前（data）と背番号
 //     （guid）・pos（X / Z が中心・Y が最低点）・表面だけを持つ。節を
 //     書かない文書はテレイン無し（hasTerrain = false）で、書き出しにも
-//     <terrain> は出ない。texture は assets/ 相対。
+//     <terrain> は出ない。
 //     **旧形式**（data 属性の無い <terrain>。size（全幅）/ resolution /
 //     height と seed / octaves / gain / lacunarity / scale のノイズを属性に
 //     持つ）も読める: 値は terrainLegacy に入り、読込側が一度生成して開く。
 //     書き出しは常に新形式（次の保存で移る）。<terrain/> だけは既定の
-//     大きさで平ら。新形式に旧属性が混ざっていたら警告して無視する。
+//     大きさで平ら。新形式に旧属性が混ざっていたら警告して無視する（例外は
+//     texture / tile: 警告せず読み、読込側が .terrain の層 0 へ取り込む）。
 //   * 色は rgba="r g b a"（リニア値、a は今は常に 1）。
 //   * body1 / body2 は名前でも番号でも書ける。"world" と -1 が地面。
 //     保存側は名前が一意ならその名前、そうでなければ番号を書く。
@@ -192,6 +196,14 @@ struct TerrainLegacyDesc {
     // 生成する（書いていないノイズの属性は既定値 = 以前の版と同じ丘）。
     // false（<terrain/> や表面だけの <terrain>）は平ら。
     bool hasNoise = false;
+    // 旧属性 <terrain texture tile>（以前の版は新形式でも書いていた）。used とは
+    // 独立で、新旧どちらの形式でも読む。どちらかの属性が書いてあれば hasSurface。
+    // 層の定義はいまは .terrain が持つので、読込側（Scene::adoptLegacySurface）が
+    // 層 0 へ取り込む。texture は検査済み（不正なパスは警告して空）。tile は
+    // 書いてあるときだけ値を持つ（無ければ層の既定のまま = 既定値をここに持たない）。
+    bool hasSurface = false;
+    std::string texture;
+    std::optional<double> tile;
 };
 
 struct SceneDocument {

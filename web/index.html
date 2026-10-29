@@ -987,23 +987,34 @@
                   title="assets/terrains/&lt;名前&gt;.png に書き出す（16 ビットのグレースケール、上書き）"
                   >📤 PNG</button>
         </div>
+        <!-- 塗り分けの層（テクスチャとタイル）。値はシーンの XML ではなく
+             .terrain が持つ（どのシーンで開いても同じ）。行は層の数だけ
+             terrain.js の renderTerrainSection が作る（ツールチップもそこ）。 -->
+        <div id="edTerrainLayersHead" class="edLabel">塗り分けの層（テクスチャ / タイル m）</div>
+        <div id="edTerrainLayers"></div>
+        <!-- 自動塗り（傾きと高さの帯で全体の塗りを作り直す。取り消しは 1 段）。
+             行は層の数だけ terrain.js が作る。欄の値はボタンを押したときにだけ
+             送る（テレインには覚えず、変えたときにこのブラウザに記憶。空 =
+             サーバーの既定の帯 = 欄の薄い数字）。 -->
+        <div id="edTerrainAutoHead" class="edLabel"
+             title="傾きは度（0 = 水平、90 = 垂直）、高さはテレインの位置の高さ（位置 Y）からの m（筆で盛り上げたり削ったりしても、この基準は動きません）。どの帯にも入らない所は層 1"
+             >自動塗り（傾き ° 下〜上 / 高さ m 下〜上）</div>
+        <div id="edTerrainAutoRows"></div>
         <div class="edRow">
-          <span>テクスチャ</span>
-          <input id="edTerrainTex" class="txt" type="text"
-                 placeholder="textures/ground.png"
-                 title="assets/ からの相対パス。空 = 単色"
-                 onchange="applyTerrain('texture')">
+          <span>縁のぼかし</span>
+          <input id="edTerrainAutoSoft" class="num" type="number" step="0.05" min="0"
+                 max="1" onchange="storeTerrainAutoPaint()" title="帯の縁をなめらかにつなぐ幅（0 = くっきり、1 = 帯の幅いっぱい）">
+        </div>
+        <div class="edRow btnRow">
+          <button onclick="autoPaintTerrain()"
+                  title="上の帯でテレイン全体の塗り分けを作り直す（高さは変えない。取り消しで戻せる）"
+                  >🎨 傾きと高さで塗り分け</button>
         </div>
         <div class="edRow">
-          <span>タイル (m) / 色</span>
-          <span>
-            <input id="edTerrainTile" class="num" type="number" step="0.5"
-                   min="0.1" max="100" title="テクスチャ 1 リピートのメートル"
-                   onchange="applyTerrain('tile')">
-            <input id="edTerrainColor" class="col" type="color"
-                   title="単色 / テクスチャに乗せる色"
-                   onchange="applyTerrain('color')">
-          </span>
+          <span>色</span>
+          <input id="edTerrainColor" class="col" type="color"
+                 title="単色 / テクスチャに乗せる色（全層に共通）"
+                 onchange="applyTerrain('color')">
         </div>
         <div class="edRow">
           <span>粗さ / 金属</span>
@@ -1446,11 +1457,21 @@
                 title="穴をあける">◯</button>
         <button data-tool="unhole" onclick="setBrushTool('unhole')"
                 title="穴を埋める">●</button>
+        <button data-tool="paint" onclick="setBrushTool('paint')"
+                title="塗る（押している間、右の選択の層が強さ 1/s で濃くなる）">🖌</button>
+        <button data-tool="erase" onclick="setBrushTool('erase')"
+                title="消す（押している間、塗った層が強さ 1/s で薄くなり下地に戻る）">🧽</button>
+        <!-- 🖌 で塗る層（下地より後ろの層。下地は 🧽 が受け持つ）。選択肢と title は
+             テレインの層（/scene の terrain.layers）から terrain-brush.js が作る。
+             値は 0 始まりの層の番号。テクスチャの無い層は灰色。隣の #tbLayerNote は
+             🖌 で塗れない・テクスチャが無いときの知らせ。 -->
+        <select id="tbLayer" class="strSel" onchange="applyBrushLayer()"></select>
+        <span id="tbLayerNote" hidden></span>
         <span class="gzSep"></span>
         <label title="筆の半径 (m)">半径
           <input id="tbRadius" type="number" min="0.1" max="500" step="0.5"
                  placeholder="既定" onchange="applyBrushValues()"></label>
-        <label title="筆の強さ（盛り上げ・掘り下げは m/s、平らに・なだらかには 1/s）">強さ
+        <label title="筆の強さ（盛り上げ・掘り下げは m/s、平らに・なだらか・塗るは 1/s）">強さ
           <input id="tbStrength" type="number" min="0" max="100" step="0.1"
                  placeholder="既定" onchange="applyBrushValues()"></label>
         <span class="gzSep"></span>

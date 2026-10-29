@@ -1266,17 +1266,16 @@ xml::Element eventAssetElement(const EventAssetDesc& a, bool withContents = fals
 
 // ---- テレイン（<worldbody> の <terrain/>）-----------------------------------
 // 書き出しと読み込みの対。書くのは新形式だけ: data（テレイン名）・guid・pos・
-// 表面。size / resolution / height とノイズは .terrain ファイルが持つので
-// 書かない（2 か所に書くと食い違う）。表面は <ground> と同じく全属性を書く
-// （手で値を変えるときに属性名を探さずに済む）。guid は空なら書かない。
+// 表面。size / resolution / height とノイズ、塗り分けの層（texture / tile）は
+// .terrain ファイルが持つので書かない（2 か所に書くと食い違う）。表面は
+// <ground> と同じく全属性を書く（手で値を変えるときに属性名を探さずに済む）。
+// guid は空なら書かない。
 xml::Element terrainElement(const TerrainDesc& t) {
     xml::Element e("terrain");
     e.set("data", t.data);
     if (!t.guid.empty()) e.set("guid", t.guid);
     setVec3(e, "pos", t.position);
     if (!isZero(t.rotation)) setVec3(e, "euler", t.rotation);  // 回転なしは書かない
-    e.set("texture", t.texture);
-    e.setNumber("tile", t.tile);
     setColor(e, "rgba", t.color);
     e.setNumber("roughness", t.roughness, 4);
     e.setNumber("metallic", t.metallic, 4);
@@ -1349,18 +1348,24 @@ TerrainDesc terrainFromXml(const xml::Element& e, TerrainLegacyDesc& legacy,
     }
     t.position = getVec3(e, "pos", t.position);
     t.rotation = getVec3(e, "euler", t.rotation);
+    // 旧属性 texture / tile（層の定義は .terrain へ移った）。新旧どちらの形式でも
+    // legacy に読み、読込側が層 0 へ取り込む（警告はしない = 古い文書は黙って開く）。
     if (e.has("texture")) {
+        legacy.hasSurface = true;
         const std::string tex = e.attr("texture");
         if (tex.empty() || assetFileAllowed(tex)) {
-            t.texture = tex;
+            legacy.texture = tex;
         } else {
             warn("<terrain> texture=\"" + tex +
                  "\" is not allowed (assets-relative paths only) - "
-                 "using a solid color");
-            t.texture.clear();
+                 "not moved to terrain layer 0");
         }
     }
-    t.tile = e.number("tile", t.tile);
+    if (e.has("tile")) {
+        legacy.hasSurface = true;
+        // 読めない値は NaN（取り込む側の層の検査が既定へ倒す。範囲もそこ）。
+        legacy.tile = e.number("tile", std::nan(""));
+    }
     t.color = getColor(e, "rgba", t.color);
     t.roughness = e.number("roughness", t.roughness);
     t.metallic = e.number("metallic", t.metallic);

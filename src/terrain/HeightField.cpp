@@ -121,6 +121,118 @@ bool HeightField::anyHoles() const {
 
 void HeightField::clearHoles() { holes_.clear(); }
 
+namespace {
+
+constexpr std::size_t kSplatTexelBytes = std::size_t(kSplatChannels);
+
+}  // namespace
+
+std::size_t HeightField::splatOffset(int i, int j) const {
+    return (std::size_t(j) * std::size_t(resolution_) + std::size_t(i)) * kSplatTexelBytes;
+}
+
+void HeightField::allocateSplat() {
+    const std::size_t cells = std::size_t(resolution_) * std::size_t(resolution_);
+    splat_.resize(cells * kSplatTexelBytes);
+    for (std::size_t k = 0; k < cells; ++k)
+        std::copy(kDefaultSplatTexel.begin(), kDefaultSplatTexel.end(),
+                  splat_.begin() + std::ptrdiff_t(k * kSplatTexelBytes));
+}
+
+bool HeightField::anySplat() const {
+    for (std::size_t at = 0; at < splat_.size(); at += kSplatTexelBytes) {
+        if (!std::equal(kDefaultSplatTexel.begin(), kDefaultSplatTexel.end(),
+                        splat_.begin() + std::ptrdiff_t(at)))
+            return true;
+    }
+    return false;
+}
+
+void HeightField::splatAt(int i, int j, uint8_t out[kSplatChannels]) const {
+    if (splat_.empty() || i < 0 || j < 0 || i >= resolution_ || j >= resolution_) {
+        std::copy(kDefaultSplatTexel.begin(), kDefaultSplatTexel.end(), out);
+        return;
+    }
+    const std::size_t at = splatOffset(i, j);
+    std::copy_n(splat_.begin() + std::ptrdiff_t(at), kSplatChannels, out);
+}
+
+bool HeightField::setSplatWeights(int i, int j, const float w[kSplatChannels]) {
+    return setSplatWeights(i, j, w, nullptr);
+}
+
+bool HeightField::setSplatWeights(int i, int j, const float w[kSplatChannels],
+                                  const uint8_t current[kSplatChannels]) {
+    if (i < 0 || j < 0 || i >= resolution_ || j >= resolution_) return false;
+    if (holeAt(i, j)) return false;  // 穴のセルは塗らない（ヘッダの約束）
+    // 目盛りに直してから（splatScaled。合計 0 = 下地だけ）、合計 kSplatWeightTotal への
+    // 最大剰余法: 切り捨ててから、足りない分を端数の大きい層へ。
+    double v[kSplatChannels];
+    splatScaled(w, v);
+    std::array<uint8_t, kSplatChannels> q{};
+    double frac[kSplatChannels];
+    int total = 0;
+    for (int k = 0; k < kSplatChannels; ++k) {
+        const double s = std::min(v[k], double(kSplatWeightTotal));
+        const double f = std::floor(s);
+        q[std::size_t(k)] = uint8_t(f);
+        frac[k] = s - f;
+        total += int(f);
+    }
+    for (int left = kSplatWeightTotal - total; left > 0; --left) {
+        int best = 0;
+        for (int k = 1; k < kSplatChannels; ++k)
+            if (frac[k] > frac[best]) best = k;  // 同じ端数なら番号の小さい層
+        ++q[std::size_t(best)];
+        frac[best] = -1.0;
+    }
+    uint8_t read[kSplatChannels];
+    if (!current) {
+        splatAt(i, j, read);
+        current = read;
+    }
+    if (std::equal(q.begin(), q.end(), current)) return false;
+    if (splat_.empty()) allocateSplat();
+    const std::size_t at = splatOffset(i, j);
+    std::copy(q.begin(), q.end(), splat_.begin() + std::ptrdiff_t(at));
+    return true;
+}
+
+bool HeightField::copySplat(const GridRect& cells, uint8_t* out) const {
+    if (!valid() || !out || !cells.inside(resolution_)) return false;
+    const std::size_t row = std::size_t(cells.i1 - cells.i0) * kSplatTexelBytes;
+    for (int j = cells.j0; j < cells.j1; ++j) {
+        uint8_t* dst = out + std::size_t(j - cells.j0) * row;
+        if (splat_.empty()) {
+            for (std::size_t k = 0; k < row; k += kSplatTexelBytes)
+                std::copy(kDefaultSplatTexel.begin(), kDefaultSplatTexel.end(), dst + k);
+            continue;
+        }
+        const std::size_t at = splatOffset(cells.i0, j);
+        std::copy_n(splat_.begin() + std::ptrdiff_t(at), row, dst);
+    }
+    return true;
+}
+
+bool HeightField::pasteSplat(const GridRect& cells, const uint8_t* rgba, std::size_t count) {
+    if (!valid() || !rgba || !cells.inside(resolution_)) return false;
+    const std::size_t row = std::size_t(cells.i1 - cells.i0) * kSplatTexelBytes;
+    if (count != row * std::size_t(cells.j1 - cells.j0)) return false;
+    if (splat_.empty()) {
+        bool allDefault = true;
+        for (std::size_t k = 0; k < count && allDefault; ++k)
+            allDefault = rgba[k] == kDefaultSplatTexel[k % kSplatTexelBytes];
+        if (allDefault) return true;  // 塗っていない = 配列を持たないまま
+        allocateSplat();
+    }
+    for (int j = cells.j0; j < cells.j1; ++j) {
+        const std::size_t at = splatOffset(cells.i0, j);
+        std::copy_n(rgba + std::size_t(j - cells.j0) * row, row,
+                    splat_.begin() + std::ptrdiff_t(at));
+    }
+    return true;
+}
+
 bool HeightField::isSolidCell(int i, int j) const {
     return i >= 0 && j >= 0 && i < resolution_ && j < resolution_ && !holeAt(i, j);
 }

@@ -57,8 +57,7 @@ void Renderer::addGround(float halfSize, const filament::math::float3& color,
     // 古いテクスチャは新しい方をマテリアルに付けてから壊す（付いたまま壊すと
     // Filament が止まる。removeGround の注意と同じ）。
     filament::Texture* oldTexture = groundTexture_;
-    groundTexture_ = loadTextureRGBA(*engine_, texturePath, "ground",
-                                     TextureFallback::Checker);
+    groundTexture_ = loadTextureRGBA(*engine_, texturePath, "ground");
 
     filament::TextureSampler sampler(
         filament::TextureSampler::MinFilter::LINEAR_MIPMAP_LINEAR,

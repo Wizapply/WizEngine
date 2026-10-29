@@ -32,23 +32,33 @@ void Scene::stampTerrain(std::vector<wizengine::terrain::BrushStamp>& stamps) {
     // このパスで書き換えうる範囲（全スタンプの和）。格子のコピーは 1 パスに 1 回。
     // 高さの上限は今のテレインの値をここで入れる（呼び手に渡させない = 渡し忘れが無い。
     // terrain_ を書くのはこのスレッドだけなのでロック不要）。
+    // 何を書き換えるか: 塗り・消し（brushPaintsWeights）は重みだけ、他の道具は
+    // 高さ・穴。1 パスに両方が混ざれば Both（描画のスプラットとチャンク、
+    // 当たり判定の張り直し）。数えるのは当たる（矩形が空でない）スタンプの道具だけ
+    // （弾かれたスタンプの分まで描画や当たり判定を作り直さない）。
     wizengine::terrain::GridRect rect;
+    unsigned parts = 0;
     for (wizengine::terrain::BrushStamp& s : stamps) {
         s.maxHeight = terrain_.height;
-        rect = rect.united(wizengine::terrain::stampRect(*field, s));
+        const wizengine::terrain::GridRect r = wizengine::terrain::stampRect(*field, s);
+        if (r.empty()) continue;
+        rect = rect.united(r);
+        parts |= unsigned(wizengine::terrain::brushPaintsWeights(s.tool) ? TerrainChanged::Paint
+                                                                          : TerrainChanged::Shape);
     }
     if (rect.empty()) return;  // 格子の外・壊れた値
     const bool changed = editTerrainField(
         rect,
         [&stamps](wizengine::terrain::HeightField& f) {
             bool any = false;
+            std::vector<float> scratch;  // 作業の領域（スタンプごとに確保しない）
             for (const wizengine::terrain::BrushStamp& s : stamps) {
                 // 全部当てる（|| で途中を飛ばさない）。
-                if (wizengine::terrain::applyStamp(f, s)) any = true;
+                if (wizengine::terrain::applyStamp(f, s, scratch)) any = true;
             }
             return any;
         },
-        TerrainRecord::Stroke);
+        TerrainRecord::Stroke, TerrainChanged(parts));
     // 計測は格子を実際に書き換えたパスだけ（回数・スタンプ数・時間を揃える）。
     if (!changed) return;
     ++terrainStroke_.passes;

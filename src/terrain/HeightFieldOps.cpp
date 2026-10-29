@@ -16,6 +16,13 @@ namespace wizengine {
 namespace terrain {
 namespace {
 
+// 解像度を変えたとき、新しいセル n の中心を含む元のセル（1 軸ぶん、最近傍）。
+// ratio = 元のセル数 / 新しいセル数。穴の拡大と重みの再サンプル（縮小・拡大
+// とも）が使う。
+int nearestCell(int n, double ratio, int srcRes) {
+    return std::clamp(int(std::floor((n + 0.5) * ratio)), 0, srcRes - 1);
+}
+
 // 解像度を変えたとき、新しいセル n が元のどのセル [lo, hi] から穴を受けるか
 // （1 軸ぶん）。ratio = 元のセル数 / 新しいセル数。
 //   縮小（ratio > 1）: 新しいセルと重なる元のセル全部（OR を取る = 1 セルの
@@ -28,7 +35,7 @@ void sourceCells(int n, double ratio, int srcRes, int& lo, int& hi) {
         lo = int(std::floor(n * ratio + kEps));
         hi = int(std::ceil((n + 1) * ratio - kEps)) - 1;
     } else {
-        lo = hi = int(std::floor((n + 0.5) * ratio));
+        lo = hi = nearestCell(n, ratio, srcRes);
     }
     lo = std::clamp(lo, 0, srcRes - 1);
     hi = std::clamp(hi, lo, srcRes - 1);
@@ -63,6 +70,7 @@ HeightField HeightField::withGeometry(float size, float centerX, float baseY,
     if (!out.valid()) return out;  // 引数が不正 = 空
     out.heights_ = heights_;
     out.holes_ = holes_;
+    out.splat_ = splat_;
     return out;
 }
 
@@ -109,6 +117,26 @@ HeightField HeightField::resampled(int resolution) const {
             }
         }
         if (any) out.holes_ = std::move(mask);  // 穴が残らなければ空のまま
+    }
+
+    // 重みは最近傍（重みを混ぜると合計 255 の量子化をやり直すことになるため、
+    // テクセルをそのまま拾う）。塗っていなければ配列を持たないまま。
+    if (!splat_.empty()) {
+        const double ratio = double(resolution_) / double(resolution);
+        // 行優先の順にテクセルを足して組む（既定値や 0 で埋めてから上書きしない）。
+        std::vector<uint8_t> w;
+        w.reserve(std::size_t(resolution) * std::size_t(resolution) *
+                  std::size_t(kSplatChannels));
+        for (int j = 0; j < resolution; ++j) {
+            const int sj = nearestCell(j, ratio, resolution_);
+            for (int i = 0; i < resolution; ++i) {
+                const int si = nearestCell(i, ratio, resolution_);
+                uint8_t texel[kSplatChannels];
+                splatAt(si, sj, texel);
+                w.insert(w.end(), texel, texel + kSplatChannels);
+            }
+        }
+        out.splat_ = std::move(w);
     }
     return out;
 }

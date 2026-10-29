@@ -80,6 +80,7 @@ std::string Scene::publishNewTerrain(ed::TerrainDesc desc,
     desc.data.clear();
     desc.guid.clear();
     fillTerrainIdentity(desc, base);
+    // 名前と背番号が変わる = 層は publishTerrainField が既定に戻す。
     publishTerrainField(desc, std::move(field), TerrainHistory::Clear,
                         TerrainFileState::Dirty);
     return desc.data;
@@ -89,6 +90,7 @@ std::string Scene::publishNewTerrain(ed::TerrainDesc desc,
 
 std::shared_ptr<const wt::HeightField> Scene::readTerrainFile(const std::string& name,
                                                               ed::TerrainDesc& desc,
+                                                              wt::TerrainLayers& layers,
                                                               std::string& reason) const {
     const std::filesystem::path path = terrainLibrary_->pathFor(name);
     if (path.empty()) {
@@ -122,7 +124,9 @@ std::shared_ptr<const wt::HeightField> Scene::readTerrainFile(const std::string&
         reason = path.u8string() + ": cannot place the grid at the terrain position";
         return nullptr;
     }
+    sanitizeTerrainLayers(data.layers, "file");
     desc = got;
+    layers = data.layers;
     return std::make_shared<const wt::HeightField>(std::move(field));
 }
 
@@ -139,8 +143,9 @@ void Scene::loadTerrainField(const ed::TerrainDesc& doc) {
     TerrainFileState missing = TerrainFileState::Missing;
     if (!res.file.empty()) {
         ed::TerrainDesc desc = doc;
+        wt::TerrainLayers layers;
         std::string reason;
-        auto field = readTerrainFile(res.file, desc, reason);
+        auto field = readTerrainFile(res.file, desc, layers, reason);
         if (field) {
             if (res.dataChanged) {
                 terrainLoadCaveat_ = "（テレイン " + label + " は背番号で見つけた " +
@@ -151,7 +156,7 @@ void Scene::loadTerrainField(const ed::TerrainDesc& doc) {
                                      " 件 - コンソール参照）";
             }
             publishTerrainField(desc, std::move(field), TerrainHistory::Clear,
-                                TerrainFileState::Saved);
+                                TerrainFileState::Saved, {}, false, &layers);
             return;
         }
         // 使えないファイル: 使わず、上書きもしない（壊れたファイル・共有ファイルの
@@ -172,6 +177,7 @@ void Scene::loadTerrainField(const ed::TerrainDesc& doc) {
     // Missing: 文書の名前と背番号をそのまま覚えて（次の保存の XML に
     // 残る = ファイルを戻せば元に戻る）、格子無しで出す。注意の文は publish の後に
     // 状態から作る（/scene の terrainMissing と同じ口 = 名前が食い違わない）。
+    // 層はファイルが持つので分からない（格子無し = publishTerrainField が既定に戻す）。
     publishTerrainField(doc, nullptr, TerrainHistory::Clear, missing);
     terrainLoadCaveat_ = "（注意: " + terrainMissingText() + "）";
 }
@@ -212,6 +218,7 @@ void Scene::setTerrainFromDocument(const ed::SceneDocument& doc, bool keepSameTe
         next.resolution = terrain_.resolution;
         next.height = terrain_.height;
         reshapeTerrain(next);
+        adoptLegacySurface(doc.terrainLegacy);
         return;
     }
     const ed::TerrainLegacyDesc& legacy = doc.terrainLegacy;
@@ -231,10 +238,45 @@ void Scene::setTerrainFromDocument(const ed::SceneDocument& doc, bool keepSameTe
              doc.terrain.resolution, ms, name.c_str());
         terrainLoadCaveat_ = "（旧形式のテレインをテレイン " + name +
                              " として開きました - 保存すると .terrain に移ります）";
+        adoptLegacySurface(legacy);
         return;
     }
     // 新形式: 名前と背番号で assets/terrains/ を解決して読む。
     loadTerrainField(doc.terrain);
+    adoptLegacySurface(legacy);
+}
+
+void Scene::adoptLegacySurface(const ed::TerrainLegacyDesc& legacy) {
+    // テクスチャの無い旧属性（以前の版が書いていた texture="" tile="2"）は見た目に
+    // 効かないので取り込まない（触っていないテレインを Dirty にしない）。
+    if (!legacy.hasSurface || legacy.texture.empty() || !terrainLoaded()) return;
+    const wt::TerrainLayer& now = terrainLayers_[0];
+    if (!now.texture.empty()) {
+        // ファイルの層 0 が勝つ（同じ .terrain を使う別のシーンが先に移した等）。
+        LOGI("scene", "terrain: the file already has layer 0 ('%s') - XML texture attribute "
+                      "'%s' ignored", now.texture.c_str(), legacy.texture.c_str());
+        // 違う値を書いていた（📄 XML で書き換えた等）ならステータスにも出す
+        // （同じ値 = 移した後の古い XML なので知らせない）。
+        if (legacy.texture != now.texture) {
+            terrainLoadCaveat_ += "（XML の texture 属性は使いませんでした - " +
+                                  terrainLayerLabel(0) +
+                                  " は .terrain が持っています。Inspector の『塗り分けの層』で"
+                                  "変えてください）";
+        }
+        return;
+    }
+    wt::TerrainLayers layers = terrainLayers_;
+    layers[0].texture = legacy.texture;
+    if (legacy.tile) layers[0].tile = float(*legacy.tile);
+    sanitizeTerrainLayers(layers, "XML");
+    if (layers == terrainLayers_) return;
+    LOGI("scene", "terrain: XML texture attribute '%s' moved to layer 0 of '%s' (saving "
+                  "writes it to the .terrain file)", layers[0].texture.c_str(),
+         terrain_.data.c_str());
+    publishTerrainField(terrain_, terrainField(), TerrainHistory::Keep, TerrainFileState::Dirty,
+                        {}, false, &layers);
+    terrainLoadCaveat_ += "（XML のテクスチャを" + terrainLayerLabel(0) +
+                          " として .terrain に移します - 保存で書きます）";
 }
 
 std::string Scene::terrainLoadCaveat() {
@@ -268,7 +310,8 @@ bool Scene::saveTerrainData(const std::string& sceneName, std::string& written,
     // 書き換えない）。ファイルが無ければ必ず書く。
     const std::filesystem::path path = terrainLibrary_->pathFor(terrain_.data);
     if (!terrainDirty() && fileExists(path)) return true;
-    if (!wt::writeFile(path, *field, float(terrain_.height), guid, reason)) return false;
+    if (!wt::writeFile(path, *field, float(terrain_.height), guid, reason, terrainLayers_))
+        return false;
     terrainFile_ = TerrainFileState::Saved;  // 保存の成功（publish の外で書く唯一の場所）
     refreshTerrainFiles();
     written = terrain_.data;
@@ -426,6 +469,15 @@ nlohmann::json Scene::terrainJson() const {
     // この値。applyTerrainOp の enabled:true）。
     j["hasTerrain"] = hasTerrain_;
     j["terrain"] = ed::toJson(terrain_);
+    // 塗り分けの層（.terrain が持つ = 文書の値ではないので Scene が足す）。
+    j["terrain"]["layers"] = layersToJson(terrainLayers_);
+    // テレインの道具の既定（テレインごとに変わらない定数なので terrain の外）。
+    // baseLayer = 下地の層の番号（筆の 🖌 の選択肢は後ろの層だけ）、
+    // autoPaintDefaults = 自動塗りの既定の帯（ブラウザは既定を持たず、空欄の
+    // 初期値にこれを使う）。
+    j["terrainTools"] = {
+        {"baseLayer", wt::kBaseSplatLayer},
+        {"autoPaintDefaults", autoPaintRulesToJson(wt::defaultAutoPaintRules())}};
     j["terrainDirty"] = terrainDirty();
     // Missing（ファイルが無い・読めない）なら説明の文、そうでなければ空。
     j["terrainMissing"] = terrainMissingText();

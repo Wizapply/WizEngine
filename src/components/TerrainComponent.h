@@ -100,6 +100,7 @@ private:
     Clock::time_point prevTime_{};
     bool haveTarget_ = false;       // Flatten の目標（ストロークで最初に当たった点の高さ）
     double flattenTarget_ = 0.0;
+    std::uint32_t stampSerial_ = 0; // スタンプの通し番号（Paint のくじの種）
 
     // PHYSICS スレッドだけが使う（ストロークが開いているかは Scene が持つ）。
     std::vector<Pending> work_;     // pending_ と入れ替える受け皿
