@@ -324,8 +324,8 @@ inline std::string terrainLayerLabel(std::size_t index) {
 // して LOGW。where = どこから来た値か、英語。長すぎるパスを残すと保存のたびに
 // encode が失敗する）、tile は地面と同じ範囲（ed::kSurfaceTileMin〜Max。NaN・無限は
 // 既定値へ倒してから丸める - std::clamp は NaN を素通しするため）。roughness /
-// metallic は NaN・負なら「テレイン全体に従う」(kLayerFollowsTerrain)、ほかは粗さ ed::kRoughnessMin〜1・
-// 金属 0〜1。normalScale は 0〜4（NaN は既定の 1）。
+// metallic は NaN・負なら「テレイン全体に従う」(kLayerFollowsTerrain)、ほかは
+// 粗さ ed::kRoughnessMin〜1・金属 0〜1。normalScale は 0〜4（NaN は既定の 1）。
 inline void sanitizeTerrainLayers(wizengine::terrain::TerrainLayers& layers,
                                   const char* where) {
     using wizengine::terrain::layerFollowsTerrain;
@@ -389,10 +389,11 @@ inline nlohmann::json layersToJson(const wizengine::terrain::TerrainLayers& laye
 
 // edit.terrain の layer の部分更新: 送られたキー（texture / normal / mask / tile /
 // roughness / metallic / normalScale）だけ base から変える。型違いのキーは無視。
-// roughness / metallic は null を送ると「テレイン全体に従う」(kLayerFollowsTerrain)。検査（範囲を
-// 含む）は呼び手が sanitizeTerrainLayers で掛ける。数値は float に入る範囲へ寄せて
-// から float にするだけ（1e39 などをそのまま float にすると無限大になり、検査で上限
-// ではなく既定値へ倒れるため）。NaN は base のまま。
+// roughness / metallic は null を送ると「テレイン全体に従う」
+// (kLayerFollowsTerrain)。検査（範囲を含む）は呼び手が sanitizeTerrainLayers で
+// 掛ける。数値は float に入る範囲へ寄せてから float にするだけ（1e39 などをそのまま
+// float にすると無限大になり、検査で上限ではなく既定値へ倒れるため）。NaN は
+// base のまま。
 inline wizengine::terrain::TerrainLayer layerPatchFromJson(
     const nlohmann::json& j, const wizengine::terrain::TerrainLayer& base) {
     wizengine::terrain::TerrainLayer l = base;

@@ -9,6 +9,8 @@
 #include "terrain/HeightField.h"  // kDefaultSplatTexel（既定の重みの唯一の定義）
 #include "terrain/TerrainFile.h"  // layerImageName（層の画像の欄の英語名）
 
+#include <optional>
+
 using namespace filament;
 using namespace filament::math;
 using namespace render_detail;
@@ -20,7 +22,8 @@ using Texel = std::array<uint8_t, 4>;
 // 画像の無い層の単色（配列ごとの「画像無し」の唯一の定義。decodeTextureRGBA は
 // None で代わりの絵を作らない）。
 //   色     … 白（255 は sRGB でもリニアでも 1.0 = baseColor がそのまま色）
-//   法線   … (0, 0, 1) = 平ら（128 / 255 * 2 - 1 ≒ 0。シェーダで正規化する）
+//   法線   … (0, 0, 1) = 平ら（128 / 255 * 2 - 1 ≒ 0。法線マップの無い層は
+//            hasNormal = 0 でシェーダが正確な (0, 0, 1) を使うので見た目には出ない）
 //   マスク … 遮蔽なし・粗さ 1・金属 0。マスクの無い層は hasMask = 0 で数値に
 //            倒れるので見た目には出ない（念のため中立の値を入れておく）
 constexpr Texel kWhiteTexel{255, 255, 255, 255};
@@ -28,7 +31,7 @@ constexpr Texel kFlatNormalTexel{128, 128, 255, 255};
 constexpr Texel kNeutralMaskTexel{255, 255, 0, 255};
 
 // rgba 1 色で埋めた size 四方の画素（層の単色と、既定のスプラットが使う）。
-std::vector<uint8_t> solidLayerPixels(int size, const Texel& rgba) {
+std::vector<uint8_t> solidPixels(int size, const Texel& rgba) {
     const std::size_t texels = std::size_t(size) * std::size_t(size);
     std::vector<uint8_t> pixels(texels * 4);
     for (std::size_t k = 0; k < texels; ++k) {
@@ -54,7 +57,7 @@ filament::Texture* createLayerArray(filament::Engine& engine,
             .sampler(filament::Texture::Sampler::SAMPLER_2D_ARRAY)
             .build(engine);
     for (int i = 0; i < wizengine::TerrainSurface::kLayers; ++i) {
-        uploadMipChain(engine, array, uint32_t(i), solidLayerPixels(size, solid), size, size);
+        uploadMipChain(engine, array, uint32_t(i), solidPixels(size, solid), size, size);
     }
     return array;
 }
@@ -79,7 +82,7 @@ bool uploadLayerImage(filament::Engine& engine, filament::Texture* array, int la
     // 同じ大きさの画像はそのまま渡す。
     std::vector<uint8_t> resized;
     if (!fromFile) {
-        resized = solidLayerPixels(size, solid);
+        resized = solidPixels(size, solid);
     } else if (w == size && h == size) {
         resized = std::move(pixels);
     } else {
@@ -132,7 +135,7 @@ void Renderer::recreateTerrainSplat(int resolution, bool fill) {
     if (fill) {
         // 既定のテクセルは terrain::kDefaultSplatTexel（数字をここに書かない）。
         const std::vector<uint8_t> texelsRgba =
-            solidLayerPixels(resolution, terrain::kDefaultSplatTexel);
+            solidPixels(resolution, terrain::kDefaultSplatTexel);
         next->setImage(*engine_, 0, copyToPixelDescriptor(texelsRgba.data(), texelsRgba.size()));
     }
     // 重みはセルの間で滑らかに混ぜる（LINEAR）。端は伸ばす（CLAMP = 反対側の
@@ -162,32 +165,43 @@ void Renderer::setTerrainSurface(const TerrainSurface& surface) {
     float4 roughness{0.0f};
     float4 metallic{0.0f};
     float4 normalScale{0.0f};
+    float4 hasNormal{0.0f};
     float4 hasMask{0.0f};
     for (int i = 0; i < TerrainSurface::kLayers; ++i) {
         const TerrainSurface::Layer& layer = surface.layers[i];
         TerrainLayerImages& loaded = terrainLayerImages_[i];
         // パスが前回と違えば読み直して「ファイルから読めたか」を返す。同じなら
-        // 読まずに previous を返す。
+        // 読まずに空を返す（前回の結果のまま）。
         auto refresh = [&](filament::Texture* array, const std::string& want,
-                           std::string& have, LayerImage image, const Texel& solid,
-                           bool previous) {
-            if (want == have) return previous;
+                           std::string& have, LayerImage image,
+                           const Texel& solid) -> std::optional<bool> {
+            if (want == have) return std::nullopt;
             have = want;
             return uploadLayerImage(*engine_, array, i, want, terrain::layerImageName(image),
                                     solid);
         };
+        // 画像の種類（terrain::kLayerImages の順）ごとの配列と既定の単色。
         refresh(terrainLayerTextures_, layer.texture, loaded.texture, LayerImage::Color,
-                kWhiteTexel, false);
-        refresh(terrainNormalTextures_, layer.normal, loaded.normal, LayerImage::Normal,
-                kFlatNormalTexel, false);
-        loaded.hasMask = refresh(terrainMaskTextures_, layer.mask, loaded.mask,
-                                 LayerImage::Mask, kNeutralMaskTexel, loaded.hasMask);
+                kWhiteTexel);
+        if (const std::optional<bool> ok = refresh(terrainNormalTextures_, layer.normal,
+                                                   loaded.normal, LayerImage::Normal,
+                                                   kFlatNormalTexel)) {
+            loaded.hasNormal = *ok;
+        }
+        if (const std::optional<bool> ok = refresh(terrainMaskTextures_, layer.mask,
+                                                   loaded.mask, LayerImage::Mask,
+                                                   kNeutralMaskTexel)) {
+            loaded.hasMask = *ok;
+        }
         // UV はメートル単位なので、1 / タイルのメートル数でタイルする（3 枚とも同じ）。
         uvScale[i] = (layer.tileMeters > 1e-4f) ? 1.0f / layer.tileMeters : 1.0f;
         // 数値は呼ぶ側で検査済み（TerrainSurface::Layer の説明）。ここでは範囲を決めない。
         roughness[i] = layer.roughness;
         metallic[i] = layer.metallic;
         normalScale[i] = layer.normalScale;
+        // 法線マップが読めた層だけマップの法線を使う（無い層は正確に平ら = (0, 0, 1)。
+        // 既定の単色 128 は 0 ちょうどにならず、少し傾くため）。
+        hasNormal[i] = loaded.hasNormal ? 1.0f : 0.0f;
         // マスクが読めた層は粗さ・金属をマスクから（数値は使わない）。
         hasMask[i] = loaded.hasMask ? 1.0f : 0.0f;
     }
@@ -196,6 +210,7 @@ void Renderer::setTerrainSurface(const TerrainSurface& surface) {
     terrainMatInstance_->setParameter("roughness", roughness);
     terrainMatInstance_->setParameter("metallic", metallic);
     terrainMatInstance_->setParameter("normalScale", normalScale);
+    terrainMatInstance_->setParameter("hasNormal", hasNormal);
     terrainMatInstance_->setParameter("hasMask", hasMask);
 }
 

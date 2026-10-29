@@ -96,7 +96,7 @@ inline filament::LightManager::ShadowOptions shadowOptionsFrom(
 // 画像が読めない・指定が空のときの代わりの絵。
 //   Checker … 2 x 2 の市松模様（地面の従来の見た目）
 //   None    … 代わりの絵を作らない（画素は空）。呼び手が自分の代わりを持つ
-//             （テレインの層 = RendererTerrainSurface.cpp の solidLayerPixels = 単色）
+//             （テレインの層 = RendererTerrainSurface.cpp の solidPixels = 単色）
 enum class TextureFallback { Checker, None };
 
 // 以下 RendererTextures.cpp。テクスチャの部品は 3 つ（デコード → 大きさの

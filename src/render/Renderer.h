@@ -700,12 +700,14 @@ private:
     filament::Texture* terrainNormalTextures_ = nullptr;
     filament::Texture* terrainMaskTextures_ = nullptr;
     // 層に今入っている画像のパス（同じなら読み直さない。初期の単色は空文字列と
-    // 同じ = 「画像無し」）。hasMask = マスクがファイルから読めたか（無ければ
-    // 粗さ・金属は数値、遮蔽は無し）。
+    // 同じ = 「画像無し」）。hasNormal = 法線マップがファイルから読めたか（無ければ
+    // 平ら）。hasMask = マスクがファイルから読めたか（無ければ粗さ・金属は数値、
+    // 遮蔽は無し）。
     struct TerrainLayerImages {
         std::string texture;
         std::string normal;
         std::string mask;
+        bool hasNormal = false;
         bool hasMask = false;
     };
     TerrainLayerImages terrainLayerImages_[TerrainSurface::kLayers];

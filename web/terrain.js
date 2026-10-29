@@ -97,8 +97,11 @@
     metallic: { id: 'edTerrainLayerMetal', kind: 'numOrNull', row: 2, cls: 'layerNum',
                 step: '0.05', placeholder: '全体', tip: '金属。空 = テレイン全体の値' },
   };
-  // 層の中の行の見出し（TERRAIN_LAYER_FIELDS の row の番号順。0 行目は層の名前）。
+  // 層の中の行の見出し（TERRAIN_LAYER_FIELDS の row の番号順。null と、ここに
+  // 無い行は層の名前）。行の数は表の row から決める（TERRAIN_LAYER_ROW_COUNT）。
   const TERRAIN_LAYER_ROW_LABELS = [null, '法線', 'マスク'];
+  const TERRAIN_LAYER_ROW_COUNT =
+    1 + Math.max(...Object.values(TERRAIN_LAYER_FIELDS).map((spec) => spec.row));
   // key = 送るキー。'layer' のときだけ index = 層の番号（0 から）、field =
   // 変えた欄（TERRAIN_LAYER_FIELDS のキー）で、その 1 つだけを layer{index, <field>}
   // の 1 通ですぐ送る（触っていない欄の値は送らない = 丸めた表示の値や古い値で
@@ -118,6 +121,10 @@
         const id = spec.id + index;
         const el = pick(id);
         if (!el) return;
+        // 数の欄に打ちかけの文字（「1e」「-」など）があると、ブラウザは value を ''
+        // で返す。空と区別できないので送らない（numOrNull で null = 「全体に従う」へ
+        // 戻さない。ポーリングが戻す）。
+        if (spec.kind !== 'text' && el.validity && el.validity.badInput) return;
         const layer = { index };
         let shown;
         if (spec.kind === 'text') {
@@ -214,11 +221,11 @@
       const name = terrainLayerLabel(i);
       const group = document.createElement('div');
       group.className = 'layerGroup';
-      const rows = TERRAIN_LAYER_ROW_LABELS.map((rowLabel) => {
+      const rows = Array.from({ length: TERRAIN_LAYER_ROW_COUNT }, (_, r) => {
         const row = document.createElement('div');
         row.className = 'edRow layerRow';
         const label = document.createElement('span');
-        label.textContent = rowLabel || name;
+        label.textContent = TERRAIN_LAYER_ROW_LABELS[r] || name;
         label.title = name + '。' + TERRAIN_LAYER_TIP;
         row.appendChild(label);
         group.appendChild(row);

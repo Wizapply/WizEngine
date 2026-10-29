@@ -15,8 +15,9 @@
 //
 // 層ごとの画像（どちらもリニアの RGBA8 の配列）:
 //   * normalMaps … 接空間の法線マップ（緑が画像の上 = ローカルの +Z を向く向き）。
-//     画像の無い層は (0.5, 0.5, 1) = 平ら。normalScale[i] が xy を伸縮する
-//     （1 = 原寸、0 = 平ら）。重みで足してから正規化する。
+//     hasNormal[i] が 0 の層（画像の無い層）は正確に (0, 0, 1) = 平ら（配列の
+//     既定の単色 128 は 0 ちょうどにならないので使わない）。normalScale[i] が xy を
+//     伸縮する（1 = 原寸、0 = 平ら）。重みで足してから正規化する。
 //   * masks … R = 遮蔽・G = 粗さ・B = 金属（A は使わない）。hasMask[i] が 1 の
 //     層は粗さ・金属をマスクから取り、roughness[i] / metallic[i] は使わない
 //     （0 の層は数値を使い、遮蔽は無し = 1）。
@@ -24,10 +25,11 @@
 // 決まり: prepareMaterial が接空間の法線をワールドへ直す）。色・粗さ・金属・
 // 遮蔽はその後。
 //
-// 層の数値（roughness / metallic / normalScale / hasMask）は Renderer が解決済みの
-// float4（成分 = 層）で入れる（「テレイン全体に従う」はその前に解決済み）。.mat には
-// 既定値が書けないので、インスタンスを作ったら必ず入れること（Renderer::Renderer
-// / setTerrainSurface）。穴は縮退三角形で表すので、ここでは何もしない。
+// 層の数値（roughness / metallic / normalScale / hasNormal / hasMask）は Renderer が
+// 解決済みの float4（成分 = 層）で入れる（「テレイン全体に従う」はその前に解決
+// 済み）。.mat には既定値が書けないので、インスタンスを作ったら必ず入れること
+// （Renderer::Renderer / setTerrainSurface）。穴は縮退三角形で表すので、ここでは
+// 何もしない。
 //
 // flipUV : false が要る: matc は既定で UV の y を 1 - y に反転するが、頂点の UV は
 // ローカルのメートルなので反転させると重みの引き方が Z 方向に鏡写しになり、さらに
@@ -50,6 +52,7 @@ material {
         { type : float,          name : splatInvSize },
         { type : float4,         name : roughness },
         { type : float4,         name : metallic },
+        { type : float4,         name : hasNormal },
         { type : float4,         name : hasMask },
         { type : float4,         name : normalScale }
     ]
@@ -71,7 +74,7 @@ fragment {
             vec3 m = texture(materialParams_normalMaps, vec3(tuv * tile[i], float(i))).xyz *
                      2.0 - 1.0;
             m.xy *= materialParams.normalScale[i];
-            n += w[i] * m;
+            n += w[i] * mix(vec3(0.0, 0.0, 1.0), m, materialParams.hasNormal[i]);
         }
         material.normal = normalize(vec3(n.xy, max(n.z, 1e-3)));
 

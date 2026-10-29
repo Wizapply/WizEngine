@@ -689,8 +689,10 @@ struct TerrainDesc {
     double size = 200.0;          // 1 辺の長さ (m)。全幅（半寸法ではない）
     int resolution = 256;         // 1 辺のセル（クアッド）数（1〜1024）
     double height = 20.0;         // 高さの上限 (m)。起伏は 0〜height
-    // 表面。塗り分けの層（テクスチャとタイル）は .terrain ファイルが持つので
-    // ここには無い（Scene の terrainLayers_）。色と材質は全層に共通。
+    // 表面。塗り分けの層（テクスチャ・法線・マスク・タイル・粗さ・金属・法線の
+    // 強さ）は .terrain ファイルが持つのでここには無い（Scene の terrainLayers_）。
+    // 色は全層に共通。粗さ・金属は層ごとに持ち、層の値が空（全体に従う）の層は
+    // ここの値を使う（マスクのある層はマスクが勝つ）。
     Color3 color{0.35f, 0.45f, 0.25f};  // 単色 / テクスチャに乗す色（リニア）
     double roughness = 0.9;       // 地面と同じつや消しが既定
     double metallic = 0.0;
@@ -2305,10 +2307,11 @@ inline TerrainNoiseParams terrainNoiseFromJson(const nlohmann::json& j,
 //     200 万を超えると作り直しが重い）。チャンク数の上限との整合は Scene が見る。
 //   * size は 1〜4000 m（描画距離 kFarPlane 2000 m の 2 倍まで）、height は
 //     kTerrainMinHeight〜1000 m、pos は各軸 ±10000 m。
-//   * 表面は地面と同じ範囲（roughness 0.02〜1、metallic 0〜1）で、色は各成分
-//     0〜1。層のテクスチャとタイルは .terrain が持つので、Scene の
-//     sanitizeTerrainLayers が検査する（タイルの範囲は地面と同じ
-//     kSurfaceTileMin〜kSurfaceTileMax）。
+//   * 表面は地面と同じ範囲（roughness kRoughnessMin〜1、metallic 0〜1）で、色は
+//     各成分 0〜1。層の値（テクスチャ・法線・マスクのパス、タイル、粗さ・金属・
+//     法線の強さ）は .terrain が持つので、Scene の sanitizeTerrainLayers が検査
+//     する（タイルの範囲は地面と同じ kSurfaceTileMin〜kSurfaceTileMax、粗さ・
+//     金属はここと同じ範囲）。
 inline TerrainDesc clampTerrain(TerrainDesc t) {
     const TerrainDesc d;
     const auto cl = clampTerrainNumber;
