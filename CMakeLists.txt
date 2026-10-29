@@ -335,6 +335,7 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererOverlays.cpp
     src/render/RendererGround.cpp
     src/render/RendererTerrain.cpp
+    src/render/RendererTerrainSurface.cpp
     src/render/RendererTextures.cpp)
 set(WIZ_STREAMING_SOURCES
     src/streaming/HttpServer.cpp

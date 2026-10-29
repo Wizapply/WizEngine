@@ -664,6 +664,7 @@ private:
     // テレイン（RendererTerrain.cpp）。チャンクごとに自前の頂点 /
     // インデックスバッファとエンティティを持ち、マテリアルインスタンスは
     // 全チャンクで 1 個を共有する（材質はテレイン全体で 1 つ）。
+    // 表面（層のテクスチャ配列・スプラット・材質）は RendererTerrainSurface.cpp。
     struct TerrainChunk {
         utils::Entity entity;
         filament::VertexBuffer* vb = nullptr;
@@ -688,7 +689,7 @@ private:
     filament::Texture* terrainSplat_ = nullptr;
     int terrainSplatRes_ = 0;
     // コンストラクタから: 層の配列（白）と 1×1 の既定のスプラットを作って
-    // マテリアルへ付ける（RendererTerrain.cpp）。
+    // マテリアルへ付ける（RendererTerrainSurface.cpp）。
     void createTerrainTextures();
     // 解像度 resolution の既定のスプラットを作って付け替える（fill = 既定の
     // テクセルで埋める。直後に全体を書くなら省く）。
