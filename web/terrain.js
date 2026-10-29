@@ -71,9 +71,37 @@
     }
     setField(id, v);
   }
+  // 塗り分けの層の欄の表（キー = サーバーの terrain.layers[i] と layer{...} の
+  // キー）。id は欄の id の頭（後ろに層の番号）、kind は値の扱い:
+  // text = パス（前後の空白を落として送る）、num = 数（空 = 送らない）、
+  // numOrNull = 数か null（空 = null = テレイン全体の値に従う）。row は層の中の
+  // 何行目か（0 = 層 N、1 = 法線、2 = マスク）で、表の順に左から並ぶ。範囲
+  // （min / max）は持たない: 範囲はサーバーが丸める（1 か所）。
+  const TERRAIN_LAYER_FIELDS = {
+    texture: { id: 'edTerrainLayerTex', kind: 'text', row: 0, cls: 'layerPath',
+               placeholder: 'textures/ground.png',
+               tip: 'テクスチャ（assets/ からの相対パス。空 = 単色）' },
+    tile: { id: 'edTerrainLayerTile', kind: 'num', row: 0, cls: 'layerNum', step: '0.5',
+            tip: 'タイル（テクスチャ 1 リピートのメートル。法線・マスクも同じ）' },
+    normal: { id: 'edTerrainLayerNormal', kind: 'text', row: 1, cls: 'layerPath',
+              placeholder: 'textures/ground_nor_gl.png',
+              tip: '法線マップ（OpenGL 向き = 緑が画像の上）。空 = 平ら' },
+    normalScale: { id: 'edTerrainLayerNScale', kind: 'num', row: 1, cls: 'layerNum',
+                   step: '0.1', tip: '法線の強さ（1 = 原寸、0 = 平ら）' },
+    mask: { id: 'edTerrainLayerMask', kind: 'text', row: 2, cls: 'layerPath',
+            placeholder: 'textures/ground_arm.png',
+            tip: 'マスク: R = 遮蔽、G = 粗さ、B = 金属（polyhaven の arm）。' +
+                 'あれば右の数字は使わない' },
+    roughness: { id: 'edTerrainLayerRough', kind: 'numOrNull', row: 2, cls: 'layerNum',
+                 step: '0.05', placeholder: '全体', tip: '粗さ。空 = テレイン全体の値' },
+    metallic: { id: 'edTerrainLayerMetal', kind: 'numOrNull', row: 2, cls: 'layerNum',
+                step: '0.05', placeholder: '全体', tip: '金属。空 = テレイン全体の値' },
+  };
+  // 層の中の行の見出し（TERRAIN_LAYER_FIELDS の row の番号順。0 行目は層の名前）。
+  const TERRAIN_LAYER_ROW_LABELS = [null, '法線', 'マスク'];
   // key = 送るキー。'layer' のときだけ index = 層の番号（0 から）、field =
-  // 変えた欄（'texture' / 'tile'）で、その 1 つだけを layer{index, <field>} の
-  // 1 通ですぐ送る（触っていない欄の値は送らない = 丸めた表示の値や古い値で
+  // 変えた欄（TERRAIN_LAYER_FIELDS のキー）で、その 1 つだけを layer{index, <field>}
+  // の 1 通ですぐ送る（触っていない欄の値は送らない = 丸めた表示の値や古い値で
   // 上書きしない）。
   function applyTerrain(key, index, field) {
     const t = (sceneData && sceneData.terrain) || {};
@@ -85,21 +113,26 @@
       case 'layer': {
         // 層は部分更新のキーに混ぜない（サーバーは layer の 1 通を層だけの操作として
         // 扱う）。溜まっている形のキーは先に別の 1 通で送る（層とは独立）。
+        const spec = TERRAIN_LAYER_FIELDS[field];
+        if (!spec) return;
+        const id = spec.id + index;
+        const el = pick(id);
+        if (!el) return;
         const layer = { index };
-        let id, shown;
-        if (field === 'texture') {
-          id = 'edTerrainLayerTex' + index;
-          const tex = pick(id);
-          if (!tex) return;
-          layer.texture = shown = tex.value.trim();
-        } else if (field === 'tile') {
-          id = 'edTerrainLayerTile' + index;
-          const tile = n(id, NaN);
-          if (!Number.isFinite(tile)) return;  // 空・数でない = 送らない（ポーリングが戻す）
-          layer.tile = tile;
-          shown = round2(tile);
+        let shown;
+        if (spec.kind === 'text') {
+          layer[field] = shown = el.value.trim();
         } else {
-          return;
+          const v = n(id, NaN);
+          if (Number.isFinite(v)) {
+            layer[field] = v;
+            shown = round2(v);
+          } else if (spec.kind === 'numOrNull' && el.value.trim() === '') {
+            layer[field] = null;  // 空 = テレイン全体の値に従う
+            shown = '';
+          } else {
+            return;  // 空・数でない = 送らない（ポーリングが戻す）
+          }
         }
         syncTerrainLayerSent();
         terrainLayerSent[id] = { value: shown, until: Date.now() + TERRAIN_LAYER_HOLD_MS };
@@ -167,6 +200,9 @@
   function terrainAutoPaintDefaults() { return terrainTools().autoPaintDefaults; }
   const TERRAIN_LAYER_TIP = '層はこのテレインの .terrain に保存され、どのシーンでも同じ';
   const TERRAIN_TILE_TIP = 'タイル 4 m 以上が配信に優しい';
+  // 層ごとに 1 つの箱（.layerGroup）に 3 行（.edRow.layerRow: 層 N = テクスチャ /
+  // タイル、法線 = パス / 強さ、マスク = パス / 粗さ / 金属）。行の中身は
+  // TERRAIN_LAYER_FIELDS から作る。
   function buildTerrainLayerRows(count) {
     const box = document.getElementById('edTerrainLayers');
     if (!box || box.childElementCount === count) return;
@@ -176,29 +212,32 @@
     box.textContent = '';
     for (let i = 0; i < count; i++) {
       const name = terrainLayerLabel(i);
-      const row = document.createElement('div');
-      row.className = 'edRow';
-      const label = document.createElement('span');
-      label.textContent = name;
-      label.title = name + '。' + TERRAIN_LAYER_TIP;
-      const tex = document.createElement('input');
-      tex.id = 'edTerrainLayerTex' + i;
-      tex.className = 'txt layerTex';
-      tex.type = 'text';
-      tex.placeholder = 'textures/ground.png';
-      tex.title = name + ' のテクスチャ（assets/ からの相対パス。空 = 単色）。' +
-        TERRAIN_LAYER_TIP;
-      tex.onchange = () => applyTerrain('layer', i, 'texture');
-      // 範囲（min / max）は持たない: タイルの範囲はサーバーが丸める（1 か所）。
-      const tile = document.createElement('input');
-      tile.id = 'edTerrainLayerTile' + i;
-      tile.className = 'num layerTile';
-      tile.type = 'number';
-      tile.step = '0.5';
-      tile.title = name + ' のタイル（テクスチャ 1 リピートのメートル）。' + TERRAIN_TILE_TIP;
-      tile.onchange = () => applyTerrain('layer', i, 'tile');
-      row.append(label, tex, tile);
-      box.appendChild(row);
+      const group = document.createElement('div');
+      group.className = 'layerGroup';
+      const rows = TERRAIN_LAYER_ROW_LABELS.map((rowLabel) => {
+        const row = document.createElement('div');
+        row.className = 'edRow layerRow';
+        const label = document.createElement('span');
+        label.textContent = rowLabel || name;
+        label.title = name + '。' + TERRAIN_LAYER_TIP;
+        row.appendChild(label);
+        group.appendChild(row);
+        return row;
+      });
+      for (const field in TERRAIN_LAYER_FIELDS) {
+        const spec = TERRAIN_LAYER_FIELDS[field];
+        const input = document.createElement('input');
+        input.id = spec.id + i;
+        input.className = (spec.kind === 'text' ? 'txt ' : 'num ') + spec.cls;
+        input.type = spec.kind === 'text' ? 'text' : 'number';
+        if (spec.step) input.step = spec.step;
+        if (spec.placeholder) input.placeholder = spec.placeholder;
+        input.title = name + ' の' + spec.tip + '。' +
+          (field === 'tile' ? TERRAIN_TILE_TIP : TERRAIN_LAYER_TIP);
+        input.onchange = () => applyTerrain('layer', i, field);
+        rows[spec.row].appendChild(input);
+      }
+      box.appendChild(group);
     }
   }
   // 節の出し入れは renderEditor（選択が terrain のときだけ）。ここは中身。
@@ -242,8 +281,17 @@
     const layers = t.layers || [];
     buildTerrainLayerRows(layers.length);
     layers.forEach((l, i) => {
-      setLayerField('edTerrainLayerTex' + i, l.texture || '');
-      setLayerField('edTerrainLayerTile' + i, round2(l.tile));
+      for (const field in TERRAIN_LAYER_FIELDS) {
+        const spec = TERRAIN_LAYER_FIELDS[field];
+        const v = l[field];
+        // パスは文字列、数は丸めて、null（全体に従う）・無い値は空の欄。
+        setLayerField(spec.id + i, spec.kind === 'text' ? (v || '')
+          : (v === null || v === undefined ? '' : round2(v)));
+      }
+      // マスクのある層は粗さ・金属の数字を使わない（マスクが勝つ）ので薄く見せる。
+      const mask = document.getElementById(TERRAIN_LAYER_FIELDS.mask.id + i);
+      const maskRow = mask && mask.closest('.layerRow');
+      if (maskRow) maskRow.classList.toggle('masked', !!l.mask);
     });
     // 自動塗りの行（層の数と既定の帯はサーバーの値。欄の値はこのブラウザが持つ）。
     buildTerrainAutoPaintRows(terrainAutoPaintDefaults());

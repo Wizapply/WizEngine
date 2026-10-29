@@ -268,13 +268,16 @@ struct MaterialDesc {
     double emissive = 0.0;
 };
 
+// 粗さ（roughness）の下限。物体の材質・地面・テレイン全体・テレインの層が
+// 共通で使う。0 でないのは、完全な 0 はハイライトが 1 ピクセルになって派手に
+// ちらつくため。
+constexpr double kRoughnessMin = 0.02;
+
 inline MaterialDesc clampMaterial(MaterialDesc m) {
     auto cl = [](double v, double lo, double hi) {
         return v < lo ? lo : (v > hi ? hi : v);
     };
-    // roughness の下限が 0 でないのは Filament と同じ理由: 完全な 0 は
-    // ハイライトが 1 ピクセルになって派手にちらつく。
-    m.roughness = cl(m.roughness, 0.02, 1.0);
+    m.roughness = cl(m.roughness, kRoughnessMin, 1.0);
     m.metallic = cl(m.metallic, 0.0, 1.0);
     m.reflectance = cl(m.reflectance, 0.0, 1.0);
     m.clearCoat = cl(m.clearCoat, 0.0, 1.0);
@@ -2239,7 +2242,7 @@ inline GroundDesc clampGround(GroundDesc g) {
     g.half = cl(g.half, 1.0, 1000.0);
     g.visualHalf = cl(g.visualHalf, 1.0, 1000.0);
     g.tile = cl(g.tile, kSurfaceTileMin, kSurfaceTileMax);
-    g.roughness = cl(g.roughness, 0.02, 1.0);
+    g.roughness = cl(g.roughness, kRoughnessMin, 1.0);
     g.metallic = cl(g.metallic, 0.0, 1.0);
     return g;
 }
@@ -2327,7 +2330,7 @@ inline TerrainDesc clampTerrain(TerrainDesc t) {
     t.color.r = clf(t.color.r, d.color.r);
     t.color.g = clf(t.color.g, d.color.g);
     t.color.b = clf(t.color.b, d.color.b);
-    t.roughness = cl(t.roughness, 0.02, 1.0, d.roughness);
+    t.roughness = cl(t.roughness, kRoughnessMin, 1.0, d.roughness);
     t.metallic = cl(t.metallic, 0.0, 1.0, d.metallic);
     return t;
 }

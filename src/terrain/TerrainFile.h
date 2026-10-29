@@ -33,10 +33,14 @@
 //          既定でないセルが無ければ（HeightField::anySplat が false）書かない。
 //          無ければ全セル層 0。
 //     LAYR（版 1）: 層の定義。u32 count のあと、層ごとに u32 recordBytes /
-//          u16 pathLen + UTF-8 のパス（assets/ 相対）/ f32 tile (m)。読むのは
+//          u16 pathLen + UTF-8 のパス（色。assets/ 相対）/ f32 tile (m) /
+//          u16 normalLen + 法線マップのパス / u16 maskLen + マスクのパス /
+//          f32 roughness / f32 metallic / f32 normalScale。読むのは
 //          先頭の min(count, kSplatChannels) 層で、残りの層とレコードの後ろの
 //          知らない欄は recordBytes で飛ばす（後で欄を末尾へ足しても古い版が
-//          読める）。全部の層が既定なら書かない。無ければ全層既定。
+//          読める）。tile でレコードが終わる古い形式は、法線から後ろを既定と
+//          みなす（法線の欄からの途中で尽きたら壊れた節）。全部の層が既定なら
+//          書かない。無ければ全層既定。
 //     未知の tag は読み飛ばす（後の段階で TREE / GRAS を足す）。
 //
 // 位置（中心・baseY）はファイルに入れない（シーンの XML が持つ）。decode が
@@ -77,17 +81,62 @@ struct TerrainFileHeader {
     uint32_t sectionCount = 0;
 };
 
+// 層の粗さ・金属の「テレイン全体の <terrain roughness metallic> に従う」を表す値。
+// 判定は layerFollowsTerrain（負なら従う）。
+constexpr float kLayerFollowsTerrain = -1.0f;
+// 層の粗さ・金属の値が「テレイン全体の値に従う」を表しているか（負 = 従う）。
+inline bool layerFollowsTerrain(float v) { return v < 0.0f; }
+
 // 塗り分けの層 1 つの定義（.terrain の LAYR 節）。値の検査（パスの関所・
 // tile の範囲）は呼び手（Scene）の担当で、ここは素の値を運ぶだけ。
+// 色・法線・マスクの 3 枚は同じ tile で貼る。
 struct TerrainLayer {
-    std::string texture;  // assets/ 相対のパス。空 = テクスチャ無し
+    std::string texture;  // 色の画像（assets/ 相対のパス）。空 = テクスチャ無し
     float tile = 2.0f;    // テクスチャ 1 枚の幅 (m)
+    // 法線マップ（assets/ 相対。緑が画像の上を向く向き）。空 = 平ら
+    std::string normal;
+    // マスク（assets/ 相対。R = 遮蔽、G = 粗さ、B = 金属、A は使わない。
+    // リニア）。あれば下の roughness / metallic は使わない（マスクが勝つ）
+    std::string mask;
+    // 粗さ・金属。負 = テレイン全体の <terrain roughness metallic> に従う
+    // （layerFollowsTerrain）
+    float roughness = kLayerFollowsTerrain;
+    float metallic = kLayerFollowsTerrain;
+    float normalScale = 1.0f;  // 法線マップの強さ（1 = 原寸、0 = 平ら）
 
     bool operator==(const TerrainLayer& o) const {
-        return texture == o.texture && tile == o.tile;
+        return texture == o.texture && tile == o.tile && normal == o.normal &&
+               mask == o.mask && roughness == o.roughness && metallic == o.metallic &&
+               normalScale == o.normalScale;
     }
     bool operator!=(const TerrainLayer& o) const { return !(*this == o); }
 };
+// 層が持つ画像の欄（色・法線・マスク）の一覧。パスの検査（長さの上限・
+// assets/ の関所）はこれを回す = 欄を足したらここに足せば全部の検査に効く。
+enum class LayerImage { Color, Normal, Mask };
+constexpr std::array<LayerImage, 3> kLayerImages = {LayerImage::Color, LayerImage::Normal,
+                                                     LayerImage::Mask};
+// 層の画像の欄のパス。
+inline const std::string& layerImagePath(const TerrainLayer& l, LayerImage image) {
+    switch (image) {
+        case LayerImage::Normal: return l.normal;
+        case LayerImage::Mask: return l.mask;
+        case LayerImage::Color: break;
+    }
+    return l.texture;
+}
+inline std::string& layerImagePath(TerrainLayer& l, LayerImage image) {
+    return const_cast<std::string&>(layerImagePath(static_cast<const TerrainLayer&>(l), image));
+}
+// 画像の欄の英語名（ログと reason 用）。
+inline const char* layerImageName(LayerImage image) {
+    switch (image) {
+        case LayerImage::Normal: return "normal map";
+        case LayerImage::Mask: return "mask";
+        case LayerImage::Color: break;
+    }
+    return "texture";
+}
 using TerrainLayers = std::array<TerrainLayer, kSplatChannels>;
 // LAYR のパスの長さの上限（バイト）。超える層は書かず、読みは壊れた節とみなす。
 constexpr std::size_t kMaxLayerPathBytes = 1024;
@@ -109,8 +158,8 @@ bool readHeader(const uint8_t* data, std::size_t size, TerrainFileHeader& out,
 bool readHeader(const std::filesystem::path& path, TerrainFileHeader& out,
                 std::string& reason);
 
-// 格子 → バイト列。field が空・height が正の有限値でない・層のパスが
-// kMaxLayerPathBytes を超えるなら false。
+// 格子 → バイト列。field が空・height が正の有限値でない・層のパス（色・
+// 法線・マスクのどれか）が kMaxLayerPathBytes を超えるなら false。
 // 高さは [0, height] の外の値を端に丸めて量子化して保存する（呼び手が範囲内に
 // 保つ前提。範囲外の値は読み戻すと端の値になる）。layers は LAYR 節に書く
 // （全層既定 = 書かない）。層を渡し忘れて黙って消さないよう、既定引数は持たない。

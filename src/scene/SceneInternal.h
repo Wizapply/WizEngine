@@ -319,57 +319,109 @@ inline std::string terrainLayerLabel(std::size_t index) {
     return "層 " + std::to_string(index + 1);
 }
 
-// 層の値を常識的な範囲へ: テクスチャは assets/ 相対のパスで、長さは
-// terrain::kMaxLayerPathBytes 以下だけ（外れたら空にして LOGW。where = どこから
-// 来た値か、英語。長すぎるパスを残すと保存のたびに encode が失敗する）、tile は
-// 地面と同じ範囲（ed::kSurfaceTileMin〜Max。NaN・無限は既定値へ倒してから丸める -
-// std::clamp は NaN を素通しするため）。
+// 層の値を常識的な範囲へ: 3 つの画像（色 texture・法線 normal・マスク mask）は
+// assets/ 相対のパスで、長さは terrain::kMaxLayerPathBytes 以下だけ（外れたら空に
+// して LOGW。where = どこから来た値か、英語。長すぎるパスを残すと保存のたびに
+// encode が失敗する）、tile は地面と同じ範囲（ed::kSurfaceTileMin〜Max。NaN・無限は
+// 既定値へ倒してから丸める - std::clamp は NaN を素通しするため）。roughness /
+// metallic は NaN・負なら「テレイン全体に従う」(kLayerFollowsTerrain)、ほかは粗さ ed::kRoughnessMin〜1・
+// 金属 0〜1。normalScale は 0〜4（NaN は既定の 1）。
 inline void sanitizeTerrainLayers(wizengine::terrain::TerrainLayers& layers,
                                   const char* where) {
+    using wizengine::terrain::layerFollowsTerrain;
     for (std::size_t i = 0; i < layers.size(); ++i) {
         wizengine::terrain::TerrainLayer& l = layers[i];
-        if (l.texture.size() > wizengine::terrain::kMaxLayerPathBytes) {
-            LOGW("scene", "terrain layer %zu (%s): texture path is longer than %zu bytes "
-                          "- cleared",
-                 i, where, std::size_t(wizengine::terrain::kMaxLayerPathBytes));
-            l.texture.clear();
-        } else if (!l.texture.empty() && !ed::assetFileAllowed(l.texture)) {
-            LOGW("scene", "terrain layer %zu (%s): texture '%s' is not allowed "
-                          "(assets-relative paths only) - cleared",
-                 i, where, l.texture.c_str());
-            l.texture.clear();
-        }
+        auto sanitizePath = [&](std::string& path, const char* what) {
+            if (path.size() > wizengine::terrain::kMaxLayerPathBytes) {
+                LOGW("scene", "terrain layer %zu (%s): %s path is longer than %zu bytes "
+                              "- cleared",
+                     i, where, what, std::size_t(wizengine::terrain::kMaxLayerPathBytes));
+                path.clear();
+            } else if (!path.empty() && !ed::assetFileAllowed(path)) {
+                LOGW("scene", "terrain layer %zu (%s): %s '%s' is not allowed "
+                              "(assets-relative paths only) - cleared",
+                     i, where, what, path.c_str());
+                path.clear();
+            }
+        };
+        for (const wizengine::terrain::LayerImage image : wizengine::terrain::kLayerImages)
+            sanitizePath(wizengine::terrain::layerImagePath(l, image),
+                         wizengine::terrain::layerImageName(image));
         if (!std::isfinite(l.tile)) l.tile = wizengine::terrain::TerrainLayer{}.tile;
         l.tile = std::clamp(l.tile, float(ed::kSurfaceTileMin), float(ed::kSurfaceTileMax));
+        // 負（と NaN）は「全体に従う」の値にそろえる。
+        auto followOr = [](float v, float lo, float hi) {
+            return (std::isnan(v) || layerFollowsTerrain(v))
+                       ? wizengine::terrain::kLayerFollowsTerrain
+                       : std::clamp(v, lo, hi);
+        };
+        l.roughness = followOr(l.roughness, float(ed::kRoughnessMin), 1.0f);
+        l.metallic = followOr(l.metallic, 0.0f, 1.0f);
+        if (std::isnan(l.normalScale))
+            l.normalScale = wizengine::terrain::TerrainLayer{}.normalScale;
+        l.normalScale = std::clamp(l.normalScale, 0.0f, 4.0f);
     }
 }
 
-// /scene の terrain.layers: [{texture, tile, label}, ...]（層の数ぶん、順は層の
-// 番号。label は表示名 = terrainLayerLabel で、読み込み側は見ない）。
+// /scene の terrain.layers: [{texture, tile, normal, mask, roughness, metallic,
+// normalScale, label}, ...]（層の数ぶん、順は層の番号。roughness / metallic は
+// テレイン全体に従うなら null。label は表示名 = terrainLayerLabel で、読み込み側は
+// 見ない）。
 inline nlohmann::json layersToJson(const wizengine::terrain::TerrainLayers& layers) {
+    using wizengine::terrain::layerFollowsTerrain;
+    auto orNull = [](float v) {
+        return layerFollowsTerrain(v) ? nlohmann::json(nullptr) : nlohmann::json(v);
+    };
     nlohmann::json a = nlohmann::json::array();
     for (std::size_t i = 0; i < layers.size(); ++i) {
-        a.push_back(nlohmann::json{{"texture", layers[i].texture},
-                                   {"tile", layers[i].tile},
+        const wizengine::terrain::TerrainLayer& l = layers[i];
+        a.push_back(nlohmann::json{{"texture", l.texture},
+                                   {"tile", l.tile},
+                                   {"normal", l.normal},
+                                   {"mask", l.mask},
+                                   {"roughness", orNull(l.roughness)},
+                                   {"metallic", orNull(l.metallic)},
+                                   {"normalScale", l.normalScale},
                                    {"label", terrainLayerLabel(i)}});
     }
     return a;
 }
 
-// edit.terrain の layer の部分更新: 送られたキー（texture / tile）だけ base から変える。
-// 型違いのキーは無視。検査（タイルの範囲を含む）は呼び手が sanitizeTerrainLayers で
-// 掛ける。tile は float に入る範囲へ寄せてから float にするだけ（1e39 などをそのまま
-// float にすると無限大になり、検査で上限ではなく既定値へ倒れるため）。NaN は base のまま。
+// edit.terrain の layer の部分更新: 送られたキー（texture / normal / mask / tile /
+// roughness / metallic / normalScale）だけ base から変える。型違いのキーは無視。
+// roughness / metallic は null を送ると「テレイン全体に従う」(kLayerFollowsTerrain)。検査（範囲を
+// 含む）は呼び手が sanitizeTerrainLayers で掛ける。数値は float に入る範囲へ寄せて
+// から float にするだけ（1e39 などをそのまま float にすると無限大になり、検査で上限
+// ではなく既定値へ倒れるため）。NaN は base のまま。
 inline wizengine::terrain::TerrainLayer layerPatchFromJson(
     const nlohmann::json& j, const wizengine::terrain::TerrainLayer& base) {
     wizengine::terrain::TerrainLayer l = base;
-    if (const auto it = j.find("texture"); it != j.end() && it->is_string())
-        l.texture = it->get<std::string>();
-    const double tile = ed::jsonNumber(j, "tile", double(l.tile));
-    if (!std::isnan(tile)) {
-        constexpr double kFloatMax = double(std::numeric_limits<float>::max());
-        l.tile = float(std::clamp(tile, -kFloatMax, kFloatMax));
-    }
+    auto text = [&](const char* key, std::string& field) {
+        if (const auto it = j.find(key); it != j.end() && it->is_string())
+            field = it->get<std::string>();
+    };
+    auto number = [&](const char* key, float& field) {
+        const double v = ed::jsonNumber(j, key, double(field));
+        if (!std::isnan(v)) {
+            constexpr double kFloatMax = double(std::numeric_limits<float>::max());
+            field = float(std::clamp(v, -kFloatMax, kFloatMax));
+        }
+    };
+    // null = 全体に従う。数なら number と同じ。
+    auto numberOrFollow = [&](const char* key, float& field) {
+        if (const auto it = j.find(key); it != j.end() && it->is_null()) {
+            field = wizengine::terrain::kLayerFollowsTerrain;
+            return;
+        }
+        number(key, field);
+    };
+    text("texture", l.texture);
+    text("normal", l.normal);
+    text("mask", l.mask);
+    number("tile", l.tile);
+    number("normalScale", l.normalScale);
+    numberOrFollow("roughness", l.roughness);
+    numberOrFollow("metallic", l.metallic);
     return l;
 }
 

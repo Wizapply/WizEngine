@@ -162,10 +162,18 @@ void Scene::editTerrainLayer(int index, const nlohmann::json& patch) {
     wt::TerrainLayers layers = terrainLayers_;
     layers[std::size_t(index)] = layerPatchFromJson(patch, layers[std::size_t(index)]);
     // 検査で消されたパスは適用しない（黙ってテクスチャ無しにしない）。
-    const std::string asked = layers[std::size_t(index)].texture;
+    const wt::TerrainLayer asked = layers[std::size_t(index)];
     sanitizeTerrainLayers(layers, "browser");
-    if (layers[std::size_t(index)].texture != asked) {
-        editor_.setStatus(label + " のテクスチャは assets/ からの相対パス（" +
+    const wt::TerrainLayer& got = layers[std::size_t(index)];
+    for (const wt::LayerImage image : wt::kLayerImages) {
+        if (wt::layerImagePath(asked, image) == wt::layerImagePath(got, image)) continue;
+        const char* what = "";
+        switch (image) {
+            case wt::LayerImage::Color: what = "色"; break;
+            case wt::LayerImage::Normal: what = "法線マップ"; break;
+            case wt::LayerImage::Mask: what = "マスク"; break;
+        }
+        editor_.setStatus(label + " の" + what + "の画像は assets/ からの相対パス（" +
                           std::to_string(wt::kMaxLayerPathBytes) + " バイトまで）で指定してください");
         return;
     }
@@ -330,13 +338,15 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
     const auto patched = [this, &a]() {
         return ed::clampTerrain(ed::terrainFromJson(a, terrain_));
     };
-    // 塗り分けの層: layer{index, texture?, tile?}。部分更新へは落とさない。
+    // 塗り分けの層: layer{index, texture?, tile?, normal?, mask?, roughness?, metallic?,
+    // normalScale?}。部分更新へは落とさない。
     if (const auto it = a.find("layer"); it != a.end()) {
         const double index = it->is_object() ? ed::jsonNumber(*it, "index", -1.0) : -1.0;
         if (!(index >= 0.0 && index < double(wt::kSplatChannels) &&
               index == std::floor(index))) {
             editor_.setStatus(
-                "層の指定が正しくありません（layer は {index, texture, tile}、index は層の番号）");
+                "層の指定が正しくありません（layer は {index, texture, tile, normal, mask, "
+                "roughness, metallic, normalScale}、index は層の番号）");
             return;
         }
         editTerrainLayer(int(index), *it);
