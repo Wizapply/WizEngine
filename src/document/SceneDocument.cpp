@@ -1358,7 +1358,7 @@ TerrainDesc terrainFromXml(const xml::Element& e, TerrainLegacyDesc& legacy,
         } else {
             warn("<terrain> texture=\"" + tex +
                  "\" is not allowed (assets-relative paths only) - "
-                 "using a solid color");
+                 "not moved to terrain layer 0");
         }
     }
     if (e.has("tile")) {

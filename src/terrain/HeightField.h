@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -52,11 +53,34 @@ constexpr int kSplatChannels = 4;
 // 下地の層（何も塗っていないマスの層）。消しゴムはこの層を塗る道具で、塗る筆は
 // この層を塗れない（TerrainBrush）。
 inline constexpr int kBaseSplatLayer = 0;
-// スプラットの既定のテクセル = 下地の層（kBaseSplatLayer）だけ（重みの合計は常に 255）。
+// 1 テクセルの重みの合計（満杯 = uint8 の最大）。setSplatWeights の量子化と
+// 筆の塗る量（TerrainBrush の paint）が同じ満杯を使う。
+inline constexpr int kSplatWeightTotal = 255;
+// スプラットの既定のテクセル = 下地の層（kBaseSplatLayer）だけ（重みは満杯）。
 inline constexpr std::array<uint8_t, kSplatChannels> kDefaultSplatTexel{255, 0, 0, 0};
 static_assert(kBaseSplatLayer >= 0 && kBaseSplatLayer < kSplatChannels &&
-                  kDefaultSplatTexel[kBaseSplatLayer] == 255,
+                  kDefaultSplatTexel[kBaseSplatLayer] == kSplatWeightTotal,
               "the default texel must be the base layer only");
+
+// 重みの読み方の唯一の定義: in（層ごとの相対値。負・NaN・無限大は 0）を合計に
+// 対する比で読み、満杯 kSplatWeightTotal の目盛りに直して out に書く。合計 0 は
+// 下地だけ（kDefaultSplatTexel）。setSplatWeights の量子化の前と、筆の塗り
+// （TerrainBrush の paint。ファイルから読んだ合計が 255 でないテクセルも比で読む）が
+// 使う。T は float（指定の重み）か uint8_t（格子の重み）。
+template <class T>
+inline void splatScaled(const T in[kSplatChannels], double out[kSplatChannels]) {
+    double sum = 0.0;
+    for (int k = 0; k < kSplatChannels; ++k) {
+        const double v = double(in[k]);
+        // 無限大を残すと合計が無限大になり比が出せない。
+        out[k] = (std::isfinite(v) && v > 0.0) ? v : 0.0;
+        sum += out[k];
+    }
+    for (int k = 0; k < kSplatChannels; ++k) {
+        out[k] = sum > 0.0 ? out[k] * double(kSplatWeightTotal) / sum
+                           : double(kDefaultSplatTexel[std::size_t(k)]);
+    }
+}
 
 // 生成パラメータ。シーン文書の <terrain> の属性に 1 対 1 で対応する素の値
 // （文書側の型 editor::TerrainDesc はこれを知らない。Scene が詰め替える）。
@@ -188,11 +212,16 @@ public:
     bool anyHoles() const;   // 穴が 1 つでもあるか（全セルを走査する）
     void clearHoles();       // 穴を全部埋める
 
-    // 塗り分けの重み（スプラット。セル単位、1 セル kSplatChannels 個の u8 で
-    // 合計は常に 255）。穴と同じく最初に既定以外を書くまで配列を持たない。
-    // 範囲外の添字は splatAt が既定、書き込みは何もしない。
+    // 塗り分けの重み（スプラット。セル単位、1 セル kSplatChannels 個の u8）。
+    // setSplatWeights で書いた値は合計 255。pasteSplat（ファイルの読み込み・
+    // 取り消し）は値を検査しない = 合計が 255 でないテクセルもありうる（シェーダは
+    // 合計で割り、合計 0 は下地の層で描く）。穴と同じく最初に既定以外を書くまで
+    // 配列を持たない。範囲外の添字は splatAt が既定、書き込みは何もしない。
     // 配列を持っているか（全部既定の配列のこともある - 穴を全部埋めた後と同じ）。
     bool hasSplat() const { return !splat_.empty(); }
+    // 既定でないテクセルが 1 つでもあるか（全セルを走査する。anyHoles と同じ扱い:
+    // ファイルに SPLT を書くかはこれで決める）。
+    bool anySplat() const;
     // セル (i, j) の重み。配列が無い・範囲外は kDefaultSplatTexel。
     void splatAt(int i, int j, uint8_t out[kSplatChannels]) const;
     // セル (i, j) の重みを w（層ごとの相対値）にする。負・NaN は 0、合計が 0 なら
@@ -203,6 +232,10 @@ public:
     // 自動塗りも穴を飛ばす規則はここ 1 か所）。値が変わったら（必要なら配列を
     // 確保して）書いて true、同じ・範囲外・穴なら false。
     bool setSplatWeights(int i, int j, const float w[kSplatChannels]);
+    // 同じ。current = 呼び手が splatAt(i, j) で読んだばかりの今の重み（変わったかの
+    // 比較に使い、もう一度読まない）。null なら読む。
+    bool setSplatWeights(int i, int j, const float w[kSplatChannels],
+                         const uint8_t current[kSplatChannels]);
     // セルの矩形 cells（0〜resolution の中であること）の重みを out へ写す。
     // 並びは行優先（1 行 (i1 - i0) セル × kSplatChannels バイト）で、out は
     // (i1 - i0) × (j1 - j0) × kSplatChannels バイトの大きさを呼び手が用意する。

@@ -674,10 +674,13 @@ private:
     // 無ければ値を覚えるだけ）。keepShape なら height の変更は比例伸縮の
     // 代わりに上限だけを変える（格子はそのまま、新しい上限を超える所は切る）。
     // 1 回の操作の指示なので TerrainDesc には持たない。
-    // status が空でなければ、publish の前にそれをステータスに出す（切った点が
-    // あれば、その知らせを後ろに足す = 部分更新の文を消さない）。
-    void reshapeTerrain(const wizengine::editor::TerrainDesc& next, bool keepShape = false,
-                        const std::string& status = std::string());
+    // status が空でなければ、publish の前にそれをステータスに出す（再サンプル
+    // した・切った点があれば、その知らせを後ろに足す = 部分更新の文を消さない）。
+    // 戻り値はその形の変更の知らせ（無ければ空。後で別のステータスを出す
+    // 呼び手 = 自動塗りが、その文の後ろに添えるため）。
+    std::string reshapeTerrain(const wizengine::editor::TerrainDesc& next,
+                               bool keepShape = false,
+                               const std::string& status = std::string());
     // 格子の書き換えの唯一の口（コピーオンライト）: 今の格子をコピーして
     // mutate(コピー) を呼び、publishTerrainField で差し替える（Undo は残し、
     // ファイルの dirty を立て、描画は rect に触れたチャンクだけ作り直す）。
@@ -701,7 +704,8 @@ private:
     // 自動塗り（SceneTerrainPaint.cpp）: 今の格子の全セルの塗り分けの重みを、
     // 傾きと高さの帯（edit.terrain の autopaint。送られなかったキーは既定の帯）で
     // 書き直す（高さ・穴はそのまま。Undo は 1 段、ファイルの dirty を立てる）。
-    void autoPaintTerrain(const nlohmann::json& rules);
+    // notes = 結果のステータスの後ろに添える文（同じ 1 通で当てた形の変更の知らせ）。
+    void autoPaintTerrain(const nlohmann::json& rules, const std::string& notes = std::string());
     // 最後の編集を 1 段取り消す（結果はステータス）。
     void undoTerrain();
 

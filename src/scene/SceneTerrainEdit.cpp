@@ -14,13 +14,10 @@ namespace wt = wizengine::terrain;
 
 namespace {
 
-// 部分更新のステータスの文（applyTerrainOp）。
-const char* terrainPatchStatus(bool hasTerrain, int oldResolution, int newResolution) {
-    if (!hasTerrain) return "テレインの設定を更新（無効のまま）";
-    // 再サンプル（HeightField::resampled）の性質を一言。
-    if (newResolution != oldResolution)
-        return "テレインを更新（解像度を下げると細い起伏は消え、穴は少し太ります）";
-    return "テレインを更新";
+// 部分更新のステータスの文（applyTerrainOp）。形の変更の知らせ（再サンプル・
+// 切った点）は reshapeTerrain が後ろに足す。
+const char* terrainPatchStatus(bool hasTerrain) {
+    return hasTerrain ? "テレインを更新" : "テレインの設定を更新（無効のまま）";
 }
 
 // args の key が true か（型違い・無しは false = 投げない）。
@@ -161,14 +158,15 @@ void Scene::editTerrainLayer(int index, const nlohmann::json& patch) {
         editor_.setStatus("テレインがありません（層を変えられません）");
         return;
     }
-    const std::string label = "層 " + std::to_string(index + 1);  // 表示は 1 から
+    const std::string label = terrainLayerLabel(std::size_t(index));
     wt::TerrainLayers layers = terrainLayers_;
     layers[std::size_t(index)] = layerPatchFromJson(patch, layers[std::size_t(index)]);
     // 検査で消されたパスは適用しない（黙ってテクスチャ無しにしない）。
     const std::string asked = layers[std::size_t(index)].texture;
     sanitizeTerrainLayers(layers, "browser");
     if (layers[std::size_t(index)].texture != asked) {
-        editor_.setStatus(label + " のテクスチャは assets/ からの相対パスで指定してください");
+        editor_.setStatus(label + " のテクスチャは assets/ からの相対パス（" +
+                          std::to_string(wt::kMaxLayerPathBytes) + " バイトまで）で指定してください");
         return;
     }
     if (layers == terrainLayers_) {
@@ -366,8 +364,9 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
             editor_.setStatus("塗り分けの指定が正しくありません（autopaint はオブジェクト）");
             return;
         }
-        reshapeTerrain(patched(), argIsTrue(a, "keepShape"));
-        autoPaintTerrain(*it);
+        // 形の変更の知らせ（再サンプル・切った点）は塗りの結果の文の後ろに残す。
+        const std::string notes = reshapeTerrain(patched(), argIsTrue(a, "keepShape"));
+        autoPaintTerrain(*it, notes);
         return;
     }
     if (const auto it = a.find("undo"); it != a.end()) {
@@ -384,5 +383,5 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
     // 高さの変更で形を保つか（Inspector の「形を保つ」。height と同じ 1 通で届く）。
     // ステータスは reshapeTerrain が出す（切った点の知らせを後ろに足すため）。
     reshapeTerrain(next, argIsTrue(a, "keepShape"),
-                   terrainPatchStatus(hasTerrain_, terrain_.resolution, next.resolution));
+                   terrainPatchStatus(hasTerrain_));
 }

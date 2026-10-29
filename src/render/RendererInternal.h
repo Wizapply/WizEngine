@@ -16,6 +16,7 @@
 //   RendererTextures.cpp  : テクスチャ読込（地面とテレインで共用）
 
 #include "render/Renderer.h"
+#include "render/ImageScale.h"
 #include "core/Log.h"
 
 #include <filament/Box.h>
@@ -93,15 +94,19 @@ inline filament::LightManager::ShadowOptions shadowOptionsFrom(
 
 // 画像が読めない・指定が空のときの代わりの絵。
 //   Checker … 2 x 2 の市松模様（地面の従来の見た目）
-//   White   … 白 1 画素 = baseColor の単色
-enum class TextureFallback { Checker, White };
+//   None    … 代わりの絵を作らない（画素は空）。呼び手が自分の代わりを持つ
+//             （テレインの層 = RendererTerrain.cpp の whiteLayerPixels = 単色）
+enum class TextureFallback { Checker, None };
 
 // 以下 RendererTextures.cpp。テクスチャの部品は 3 つ（デコード → 大きさの
 // 揃え直し → ミップ列のアップロード）で、地面の 2D テクスチャ（loadTextureRGBA
-// = 3 つの合成）とテレインの層のテクスチャ配列が同じものを通る。
+// = 3 つの合成）とテレインの層のテクスチャ配列が同じものを通る。大きさの
+// 揃え直し（resizeRGBA）とミップの段数（mipLevelCount）は Filament を知らない
+// 計算なので render/ImageScale.h（単体テストあり）。
 
 // assets/ 相対の画像（PNG/JPEG/TGA/BMP）を RGBA8 の画素へデコードする。読めない・
-// 空なら fallback の絵（リニア）を入れ、指定があったのに読めなければ警告する。
+// 空なら fallback の絵（リニア。None なら空）を入れ、指定があったのに読めなければ
+// 警告する。
 // 失敗で止めない（テクスチャはシーン文書 = 手で書ける値なので降格する）。
 // label はログの主語（"ground" なら "ground texture: ..."）。
 // 戻り値 = ファイルから読めた（画素は sRGB）か。
@@ -109,29 +114,20 @@ bool decodeTextureRGBA(const std::string& texturePath, const char* label,
                        TextureFallback fallback, std::vector<uint8_t>& pixels,
                        int& width, int& height);
 
-// RGBA8 の画素 src（srcW × srcH）を dstW × dstH へ双一次補間で伸縮して dst へ
-// 書く（縦横比が違えば引き伸ばす）。大きさが同じなら写すだけ。
-void resizeRGBA(const uint8_t* src, int srcW, int srcH, int dstW, int dstH,
-                std::vector<uint8_t>& dst);
-
-// width × height のテクスチャのミップの段数（大きい方の辺から 1×1 まで）。
-uint8_t mipLevelCount(int width, int height);
-
 // pixels（RGBA8、width × height = texture の段 0 の大きさ）を段 0 に入れ、
-// 自前のボックスフィルタで作った縮小をテクスチャの全段へ入れる（generateMipmaps
-// は版によって usage フラグが要るため使わない）。layer は配列の層の番号
-// （2D テクスチャは 0）。ボックスフィルタはここ 1 つだけ。
+// ボックスフィルタ（ImageScale.h の halveRGBA）で作った縮小をテクスチャの全段へ
+// 入れる（generateMipmaps は版によって usage フラグが要るため使わない）。layer は
+// 配列の層の番号（2D テクスチャは 0）。画素は各段とも記述子へ移す（写さない）。
 void uploadMipChain(filament::Engine& engine, filament::Texture* texture,
                     uint32_t layer, std::vector<uint8_t> pixels, int width,
                     int height);
 
 // assets/ 相対の画像を 2D テクスチャとして作る（decodeTextureRGBA →
-// uploadMipChain。読めた画像は sRGB、代わりの絵はリニア RGBA8）。戻り値は
-// 呼び出し側が engine.destroy する。
+// uploadMipChain。読めた画像は sRGB、読めなければ市松模様 = Checker のリニア
+// RGBA8）。戻り値は呼び出し側が engine.destroy する。
 filament::Texture* loadTextureRGBA(filament::Engine& engine,
                                    const std::string& texturePath,
-                                   const char* label,
-                                   TextureFallback fallback);
+                                   const char* label);
 
 // assets/ の .filamat を読んでマテリアルを作る。無い・空・壊れている場合は
 // AssetError を投げる（黙って描かないのではなく、原因を示して止める）。
@@ -161,6 +157,18 @@ filament::backend::BufferDescriptor copyToDescriptor(const T* data,
     return filament::backend::BufferDescriptor(
         copy, sizeof(T) * count,
         [](void* p, size_t, void*) { delete[] static_cast<T*>(p); });
+}
+
+// RGBA8 の画素の配列をそのまま記述子へ移す（copyToPixelDescriptor と違い写さない。
+// 配列は Filament が読み終えたとき = 転送の完了コールバックで解放する）。
+inline filament::Texture::PixelBufferDescriptor moveToPixelDescriptor(
+    std::vector<uint8_t>&& rgba) {
+    auto* owned = new std::vector<uint8_t>(std::move(rgba));
+    return filament::Texture::PixelBufferDescriptor(
+        owned->data(), owned->size(), filament::Texture::Format::RGBA,
+        filament::Texture::Type::UBYTE,
+        [](void*, size_t, void* user) { delete static_cast<std::vector<uint8_t>*>(user); },
+        owned);
 }
 
 // テクスチャの転送用に RGBA8 の画素 bytes バイトをヒープへ写した

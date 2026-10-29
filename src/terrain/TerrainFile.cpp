@@ -54,29 +54,34 @@ float getF32(const uint8_t* p) {
 }
 
 // ---- 文字列（u16 の長さ + UTF-8。長さの上限は kMaxLayerPathBytes）----
+using StringLength = uint16_t;                         // 長さの欄の型
+constexpr std::size_t kStringLengthBytes = sizeof(StringLength);  // 長さの欄の大きさ
 void putString(std::vector<uint8_t>& out, const std::string& s) {
-    putLE<uint16_t>(out, uint16_t(s.size()));  // 長さは呼び手が上限内に保つ
+    putLE<StringLength>(out, StringLength(s.size()));  // 長さは呼び手が上限内に保つ
     out.insert(out.end(), s.begin(), s.end());
 }
+// putString が書く（getString が読む）バイト数。
+std::size_t stringBytes(std::size_t length) { return kStringLengthBytes + length; }
+std::size_t stringBytes(const std::string& s) { return stringBytes(s.size()); }
 // p から avail バイトの中の文字列を読む。読んだバイト数を used に書く。
 bool getString(const uint8_t* p, std::size_t avail, std::string& out, std::size_t& used,
                std::string& reason) {
-    if (avail < 2) {
+    if (avail < kStringLengthBytes) {
         reason = "string length runs past end of record";
         return false;
     }
-    const std::size_t len = getLE<uint16_t>(p);
+    const std::size_t len = getLE<StringLength>(p);
     if (len > kMaxLayerPathBytes) {
         reason = "string length " + std::to_string(len) + " exceeds " +
                  std::to_string(kMaxLayerPathBytes);
         return false;
     }
-    if (len > avail - 2) {
+    if (stringBytes(len) > avail) {
         reason = "string runs past end of record";
         return false;
     }
-    out.assign(reinterpret_cast<const char*>(p + 2), len);
-    used = 2 + len;
+    out.assign(reinterpret_cast<const char*>(p + kStringLengthBytes), len);
+    used = stringBytes(len);
     return true;
 }
 
@@ -330,7 +335,7 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
     }
     const std::size_t res = std::size_t(field.resolution());
     const bool holes = field.anyHoles();
-    const bool splat = field.hasSplat();
+    const bool splat = field.anySplat();  // 全部既定（塗って全部取り消した）なら書かない
     const bool layered = std::any_of(layers.begin(), layers.end(),
                                      [](const TerrainLayer& l) { return l != TerrainLayer{}; });
     const std::size_t splatBytes = splatSectionBytes(res);
@@ -338,9 +343,22 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
     // buf の末尾へ直接書く = 標本・バイトの中間の配列を作らない）。
     const std::size_t heightBytes = field.samples().size() * 2;
 
+    // LAYR の中身: u32 count + 層ごとに u32 recordBytes + レコード
+    // （u16 pathLen + パス + f32 tile。欄は末尾へ足す = 古い版は recordBytes で飛ばす）。
+    auto layerRecordBytes = [](const TerrainLayer& l) {
+        return stringBytes(l.texture) + sizeof(float);
+    };
+    std::size_t layerBytes = sizeof(uint32_t);
+    for (const TerrainLayer& l : layers) layerBytes += sizeof(uint32_t) + layerRecordBytes(l);
+
+    // 節ごとに見出し + 中身 + 8 バイト境界までの詰め物（最大 7）。
+    auto sectionBytes = [](std::size_t payload) {
+        return kSectionHeaderBytes + alignUp8(payload);
+    };
     std::vector<uint8_t> buf;
-    buf.reserve(kTerrainHeaderBytes + 3 * kSectionHeaderBytes + heightBytes +
-                (holes ? res * res : 0) + (splat ? splatBytes : 0) + 24);
+    buf.reserve(kTerrainHeaderBytes + sectionBytes(heightBytes) +
+                (holes ? sectionBytes(res * res) : 0) + (splat ? sectionBytes(splatBytes) : 0) +
+                (layered ? sectionBytes(layerBytes) : 0));
     buf.insert(buf.end(), kMagic, kMagic + 4);
     putLE<uint32_t>(buf, kTerrainFileVersion);
     putLE<uint32_t>(buf, uint32_t(res));
@@ -373,17 +391,13 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
     }
 
     if (layered) {
-        std::vector<uint8_t> payload;
-        putLE<uint32_t>(payload, uint32_t(kSplatChannels));
+        beginSection(buf, kTagLayers, kLayersVersion, uint64_t(layerBytes));
+        putLE<uint32_t>(buf, uint32_t(kSplatChannels));
         for (const TerrainLayer& l : layers) {
-            std::vector<uint8_t> record;  // 欄は末尾へ足す（古い版は recordBytes で飛ばす）
-            putString(record, l.texture);
-            putF32(record, l.tile);
-            putLE<uint32_t>(payload, uint32_t(record.size()));  // recordBytes
-            payload.insert(payload.end(), record.begin(), record.end());
+            putLE<uint32_t>(buf, uint32_t(layerRecordBytes(l)));  // recordBytes
+            putString(buf, l.texture);
+            putF32(buf, l.tile);
         }
-        beginSection(buf, kTagLayers, kLayersVersion, uint64_t(payload.size()));
-        buf.insert(buf.end(), payload.begin(), payload.end());
         padTo8(buf);
     }
     out = std::move(buf);

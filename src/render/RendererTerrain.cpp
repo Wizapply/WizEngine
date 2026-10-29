@@ -19,6 +19,17 @@ using utils::Entity;
 using utils::EntityManager;
 using namespace render_detail;
 
+namespace {
+
+// テクスチャの無い層の画素: 白で埋めた kTerrainLayerTexSize 四方（白 255 は
+// sRGB でもリニアでも 1.0 = 色がそのまま出る）。「テクスチャの無い層は白」の
+// 唯一の定義（decodeTextureRGBA は None で代わりの絵を作らない）。
+std::vector<uint8_t> whiteLayerPixels(int size) {
+    return std::vector<uint8_t>(std::size_t(size) * std::size_t(size) * 4, uint8_t(255));
+}
+
+}  // namespace
+
 namespace wizengine {
 
 bool Renderer::addTerrain(int chunksX, int chunksZ, int quadsPerChunk) {
@@ -225,7 +236,7 @@ bool Renderer::setTerrainChunk(int cx, int cz, const TerrainChunkMesh& mesh) {
 void Renderer::createTerrainTextures() {
     // 層の配列: 全層を白で埋める（= テクスチャ無しの層。色がそのまま出る）。
     // 配列は全層が同じ大きさ・同じ形式なので、ファイルの画像（sRGB）に合わせて
-    // SRGB8_A8 にする（白 255 は sRGB でもリニアでも 1.0）。
+    // SRGB8_A8 にする（白は whiteLayerPixels）。
     const int size = kTerrainLayerTexSize;
     terrainLayerTextures_ =
         filament::Texture::Builder()
@@ -236,9 +247,9 @@ void Renderer::createTerrainTextures() {
             .format(filament::Texture::InternalFormat::SRGB8_A8)
             .sampler(filament::Texture::Sampler::SAMPLER_2D_ARRAY)
             .build(*engine_);
-    const std::vector<uint8_t> white(std::size_t(size) * std::size_t(size) * 4, uint8_t(255));
     for (int i = 0; i < TerrainSurface::kLayers; ++i) {
-        uploadMipChain(*engine_, terrainLayerTextures_, uint32_t(i), white, size, size);
+        uploadMipChain(*engine_, terrainLayerTextures_, uint32_t(i), whiteLayerPixels(size),
+                       size, size);
         terrainLayerPaths_[i].clear();
     }
     // タイルさせる（REPEAT）。斜めから見る面なので異方性を効かせる。
@@ -300,7 +311,7 @@ void Renderer::setTerrainSurface(const TerrainSurface& surface) {
             std::vector<uint8_t> pixels;
             int w = 0;
             int h = 0;
-            const bool fromFile = decodeTextureRGBA(layer.texture, label, TextureFallback::White,
+            const bool fromFile = decodeTextureRGBA(layer.texture, label, TextureFallback::None,
                                                     pixels, w, h);
             // 配列は全層が同じ大きさ: 違う大きさ・縦横比の画像は引き伸ばす。
             const int size = kTerrainLayerTexSize;
@@ -308,8 +319,15 @@ void Renderer::setTerrainSurface(const TerrainSurface& surface) {
                 LOGI("render", "%s texture resized from %dx%d to %dx%d%s", label, w, h, size,
                      size, w != h ? " (not square - stretched)" : "");
             }
+            // 読めない・空の層は白（whiteLayerPixels）。同じ大きさの画像はそのまま渡す。
             std::vector<uint8_t> resized;
-            resizeRGBA(pixels.data(), w, h, size, size, resized);
+            if (!fromFile) {
+                resized = whiteLayerPixels(size);
+            } else if (w == size && h == size) {
+                resized = std::move(pixels);
+            } else {
+                resizeRGBA(pixels.data(), w, h, size, size, resized);
+            }
             uploadMipChain(*engine_, terrainLayerTextures_, uint32_t(i), std::move(resized),
                            size, size);
             terrainLayerPaths_[i] = layer.texture;

@@ -123,14 +123,20 @@ HeightField HeightField::resampled(int resolution) const {
     // テクセルをそのまま拾う）。塗っていなければ配列を持たないまま。
     if (!splat_.empty()) {
         const double ratio = double(resolution_) / double(resolution);
-        out.allocateSplat();
+        // 行優先の順にテクセルを足して組む（既定値や 0 で埋めてから上書きしない）。
+        std::vector<uint8_t> w;
+        w.reserve(std::size_t(resolution) * std::size_t(resolution) *
+                  std::size_t(kSplatChannels));
         for (int j = 0; j < resolution; ++j) {
             const int sj = nearestCell(j, ratio, resolution_);
             for (int i = 0; i < resolution; ++i) {
                 const int si = nearestCell(i, ratio, resolution_);
-                splatAt(si, sj, &out.splat_[out.splatOffset(i, j)]);
+                uint8_t texel[kSplatChannels];
+                splatAt(si, sj, texel);
+                w.insert(w.end(), texel, texel + kSplatChannels);
             }
         }
+        out.splat_ = std::move(w);
     }
     return out;
 }

@@ -3,7 +3,7 @@
 // hitEl / hoverNdc / clearHover / touches / NDC_OFFSCREEN / owner / sceneData /
 // isEditorCam / myEditorSel / focusInField / storeJson / loadStoredJson /
 // readFields / restoreFields）と terrain.js（currentTerrain /
-// undoTerrain / terrainLayerLabel）のトップレベルをそのまま使う。ここの関数も
+// undoTerrain / terrainLayerLabel / terrainTools / terrainIdentity）のトップレベルをそのまま使う。ここの関数も
 // グローバルのままにする（index.html の onclick= と app.js の renderEditor
 // などが名前で呼ぶため）。
 //
@@ -132,48 +132,64 @@
     const l = brushTerrainLayers()[i];
     return !!(l && l.texture);
   }
-  // 下地の層の番号（何も塗っていないマスの層 = 🧽 消すが塗る層）。サーバーの
-  // terrain::kBaseSplatLayer と同じ意味（サーバーは 🖌 がこの層を塗るスタンプを
-  // 弾く）。🖌 の選択肢はこれより後ろの層だけ。
-  const BRUSH_BASE_LAYER = 0;
+  // 下地の層の番号（何も塗っていないマスの層 = 🧽 消すが塗る層）。値はサーバーの
+  // terrainTools.baseLayer（terrain::kBaseSplatLayer）で、ここには持たない。
+  // 届いていなければ null。🖌 の選択肢はこれより後ろの層だけ。
+  function brushBaseLayer() {
+    const b = terrainTools().baseLayer;
+    return Number.isInteger(b) ? b : null;
+  }
   // 層の選択欄の説明（知らせが無いときの title）。
   const BRUSH_LAYER_TIP = '🖌 で塗る層（Inspector の『塗り分けの層』の番号）';
-  // 🖌 で塗れる層の番号か（下地より後ろで、層の数の内側）。
+  // 🖌 で塗れる層の番号か（下地より後ろで、層の数の内側）。選択肢の作り方と
+  // 知らせのための表示用の判定で、塗れるかの最終判断はサーバー（下地や範囲外の
+  // 層のスタンプは terrain::usableStamp が弾く）。
   function brushPaintableLayer(v) {
-    return Number.isInteger(v) && v > BRUSH_BASE_LAYER && v < brushTerrainLayers().length;
+    const base = brushBaseLayer();
+    return base !== null && Number.isInteger(v) && v > base &&
+        v < brushTerrainLayers().length;
   }
   // 🖌 で塗る層の選択肢: 下地の次（層 2）〜N（値は 0 始まりの層の番号）。下地は
   // 🧽 消すが受け持つ（何も塗っていないマスは下地が 100% なので、下地を塗っても
   // 何も変わらない）。数はサーバーの terrain.layers の数（ここには持たない）。
   // テクスチャの無い層は灰色（選べる。全部空でも選べなくならないように）。
-  // 作り直すのは数かテクスチャの有無が変わったときだけで、選択中は触らない。
+  // 作り直すのは層の数・下地の番号・テレイン（terrainIdentity）が変わったとき
+  // だけ。そのときは選択中（フォーカス中）でも閉じて作り直す（古い選択肢と層を
+  // 残さない）。テクスチャの有無の変化（他の人の操作でも起きる）は作り直さず、
+  // 灰色の印だけ付け直す（開いている選択を閉じない）。
   // 選ぶ層は、今の値 → 覚えた値 → 下地の次の層の順（下地・範囲外は下地の次）。
   function renderBrushLayers() {
     const sel = document.getElementById('tbLayer');
-    if (!sel || sel === document.activeElement) return;
+    if (!sel) return;
     const layers = brushTerrainLayers();
-    const sig = layers.map((l, i) => (brushLayerHasTexture(i) ? '1' : '0')).join('');
-    if (sel.dataset.sig === sig) return;
-    sel.dataset.sig = sig;
-    sel.textContent = '';
-    for (let i = BRUSH_BASE_LAYER + 1; i < layers.length; i++) {
-      const opt = document.createElement('option');
-      opt.value = String(i);
-      opt.textContent = terrainLayerLabel(i);
-      if (!brushLayerHasTexture(i)) {
-        opt.className = 'noTex';
-        opt.title = 'テクスチャがありません';
+    const base = brushBaseLayer();
+    const sig = base + ':' + layers.length + ':' + terrainIdentity();
+    if (sel.dataset.sig !== sig) {
+      if (sel === document.activeElement) sel.blur();
+      sel.dataset.sig = sig;
+      sel.textContent = '';
+      for (let i = base === null ? layers.length : base + 1; i < layers.length; i++) {
+        const opt = document.createElement('option');
+        opt.value = String(i);
+        opt.textContent = terrainLayerLabel(i);
+        sel.appendChild(opt);
       }
-      sel.appendChild(opt);
+      const saved = (loadStoredJson(BRUSH_STORE) || {}).layer;
+      const want = brushPaintableLayer(brushValues.layer) ? brushValues.layer
+                 : brushPaintableLayer(saved) ? saved
+                 : base === null ? null : base + 1;
+      if (brushPaintableLayer(want)) {
+        sel.value = String(want);
+        brushValues.layer = want;
+      } else {
+        delete brushValues.layer;  // 塗れる層が無い（層が下地だけ・下地が届いていない）
+      }
     }
-    const saved = (loadStoredJson(BRUSH_STORE) || {}).layer;
-    const want = brushPaintableLayer(brushValues.layer) ? brushValues.layer
-               : brushPaintableLayer(saved) ? saved : BRUSH_BASE_LAYER + 1;
-    if (brushPaintableLayer(want)) {
-      sel.value = String(want);
-      brushValues.layer = want;
-    } else {
-      delete brushValues.layer;  // 塗れる層が無い（層が下地だけ）
+    // テクスチャの有無の印（毎回。選択肢は作り直さない）。
+    for (const opt of sel.options) {
+      const none = !brushLayerHasTexture(Number(opt.value));
+      opt.classList.toggle('noTex', none);
+      opt.title = none ? 'テクスチャがありません' : '';
     }
   }
   // 🖌 で塗れない理由（塗れるなら空）。塗れる層が無い・選んだ層にテクスチャが
@@ -232,10 +248,16 @@
     renderTerrainBar();
   }
   // 半径・強さ・層の欄の確定（onchange）。範囲の丸めはサーバー。覚えるのは
-  // 数の入っている欄だけ。
+  // 数の入っている欄だけ。層の選択肢がまだ無い（層の一覧が届く前・塗れる層が
+  // 無い）ときは、覚えた層を消さずに残す（次に選択肢ができたらそれを選ぶ）。
   function applyBrushValues() {
     brushValues = readFields(BRUSH_FIELDS);
-    storeJson(BRUSH_STORE, brushValues);
+    const store = Object.assign({}, brushValues);
+    if (!('layer' in store)) {
+      const saved = (loadStoredJson(BRUSH_STORE) || {}).layer;
+      if (Number.isInteger(saved)) store.layer = saved;
+    }
+    storeJson(BRUSH_STORE, store);
   }
   // 覚えた値があるときだけ欄に入れる（無ければ空 = サーバーの既定値）。
   restoreFields(BRUSH_STORE, BRUSH_FIELDS);

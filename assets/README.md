@@ -47,12 +47,14 @@ Files the scene loads at runtime, copied next to the executable by the build.
   `git add` に混ぜないよう注意）。置き方:
   1. <https://polyhaven.com/textures> などから、地面のテクスチャ（草・岩・土・
      雪など）の **Diffuse（色の画像）を 1K か 2K の PNG か JPG** で落とす。
-     読み込み時に 1024×1024 へ揃えるので、4K 以上は縮めるときに細かい模様が
-     崩れることがある。正方形でない画像は引き伸ばされる。
+     読み込み時に 1024×1024 へ揃える（2K・4K などの大きな画像は半分ずつ平均して
+     縮めるので、細かい模様もちらつかない。読む時間とメモリは大きいほどかかる）。
+     正方形でない画像は引き伸ばされる。
   2. `assets/textures/` に置く（次のビルドで実行フォルダへ写る）。試すだけなら
      実行フォルダの `build/assets/textures/` に直接置けば再ビルドも再起動も
      要らない。ただし層に入れたパスはそのままで画像だけを差し替えたときは
-     読み直さないので、パスを一度空にして入れ直すか、シーンを開き直す。
+     読み直さない（シーンを開き直しても読み直さない）ので、パスを一度空にして
+     入れ直す。
   3. Inspector のテレインの「塗り分けの層」に `textures/grass.png` のように
      assets/ からの相対パスで入れる。**層 1 は下地**（何も塗っていない所は全部
      層 1）で、層 2〜4 は 🎨 の自動塗りか 🖌 の筆で塗った所にだけ出る。🧽 は
@@ -60,6 +62,7 @@ Files the scene loads at runtime, copied next to the executable by the build.
   4. 配信の画質のため、タイルは 4 m 以上・コントラストは控えめの画像が向く
      （細かく強い模様は映像の圧縮でつぶれやすい）。
 - `*.hdr`, `*.glb` (this folder's root) — environment maps and models named
-  by SceneConfig.h. Not committed to git (see .gitignore); fetch your own.
+  by the scene documents (`<environment hdr>`, `<asset><mesh file>`). Not
+  committed to git (see .gitignore); fetch your own.
 
 Everything under this folder is copied next to the executable at build time.

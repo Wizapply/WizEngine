@@ -154,8 +154,8 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
     else rebuildTerrainBody();
 }
 
-void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
-                           const std::string& status) {
+std::string Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
+                                  const std::string& status) {
     const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
     const ed::TerrainDesc& now = terrain_;
     const bool sized = next.size != now.size;
@@ -170,7 +170,7 @@ void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
         // 形はそのまま（またはテレイン無し = 値だけ覚える）: 表面と置き場所だけ。
         if (!status.empty()) editor_.setStatus(status);
         publishTerrainField(next, field, TerrainHistory::Keep, TerrainFileState::Keep);
-        return;
+        return std::string();
     }
     // 形の変更は今の格子のコピーから作る（共有中の格子は書き換えない）。
     // 大きさ → 再サンプル → 比例伸縮（形を保つなら切り詰め）の順。
@@ -185,14 +185,16 @@ void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
     std::size_t clipped = 0;
     if (scaled && keepShape) clipped = grid.clampHeights(float(next.height));
     else if (scaled) grid.scaleHeights(float(next.height / now.height));
-    // 切った点があれば status の後ろに足して知らせる（ステータスは publish の前）。
-    // 全部の点が上限より上だった = 全体が上限の高さの板になった、は別の文で。
+    // 形の変更の知らせを status の後ろに足す（ステータスは publish の前）:
+    // 再サンプルしたなら HeightField::resampled の性質を一言、切った点があればその数
+    // （全部の点が上限より上だった = 全体が上限の高さの板になった、は別の文で）。
     std::string note;
+    if (resampled) note = "（解像度を下げると細い起伏は消え、穴は少し太ります）";
     if (clipped > 0 && clipped == grid.samples().size()) {
-        note = "（形を保つ: すべての点が新しい上限より上だったため、全体が上限の高さの"
-               "平らな面になりました）";
+        note += "（形を保つ: すべての点が新しい上限より上だったため、全体が上限の高さの"
+                "平らな面になりました）";
     } else if (clipped > 0) {
-        note = "（形を保つ: " + std::to_string(clipped) + " 点が新しい上限で切られました）";
+        note += "（形を保つ: " + std::to_string(clipped) + " 点が新しい上限で切られました）";
     }
     if (!status.empty() || !note.empty()) editor_.setStatus(status + note);
     LOGI("scene", "terrain reshaped: %dx%d cells, %.0f m, %.0f m high (%s) in %.1f ms",
@@ -202,6 +204,7 @@ void Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
         next, std::make_shared<const wizengine::terrain::HeightField>(std::move(grid)),
         fileChanged ? TerrainHistory::Clear : TerrainHistory::Keep,
         fileChanged ? TerrainFileState::Dirty : TerrainFileState::Keep);
+    return note;
 }
 
 bool Scene::editTerrainField(

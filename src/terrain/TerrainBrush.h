@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <vector>
 
 #include "terrain/HeightField.h"
 
@@ -51,7 +52,8 @@ constexpr double kBrushMaxDt = 0.1;        // s
 //                      だけ増やし、他の層は同じ割合で減らす（高さ・穴は変えない。
 //                      穴のセルは塗らない）。増分の目盛りの端数は seed で決まる
 //                      くじで丸める（平均が式どおり = 押し続ければ満杯に届く）。
-//                      下地の層（kBaseSplatLayer）は塗れない（スタンプごと弾く）。
+//                      下地の層（kBaseSplatLayer）と範囲外の層は塗れない
+//                      （スタンプごと弾く）。
 //   Erase           … 下地の層を塗るのと同じ計算（layer は見ない）。
 // 減衰は中心 1 → 半径 0 の smoothstep。高さは [0, maxHeight] に丸める
 // （どちらも格子値 = baseY からの相対高さ。元から範囲の外にある値は、その
@@ -73,8 +75,8 @@ struct BrushStamp {
     // （他の道具では NaN でもよい）。
     double target = 0.0;
     BrushTool tool = BrushTool::Raise;
-    // Paint で塗る層（0〜kSplatChannels - 1。clampBrush が丸める。下地の層 =
-    // kBaseSplatLayer は Paint では弾く）。他の道具では見ない。
+    // Paint で塗る層（0〜kSplatChannels - 1。範囲外と下地の層 = kBaseSplatLayer は
+    // Paint ではスタンプごと弾く = 丸めない）。他の道具では見ない。
     int layer = 0;
     // Paint の端数のくじの種。呼び手がスタンプごとに変える（同じ種のままだと、
     // 止めて押し続けたときに毎回同じくじになり、端数ぶんが進まないセルが出る）。
@@ -87,9 +89,9 @@ struct BrushStamp {
 double brushFalloff(double d, double r);
 
 // 半径 kBrushMinRadius〜kBrushMaxRadius、強さ 0〜kBrushMaxStrength、
-// dt 0〜kBrushMaxDt、maxHeight 0 以上、layer 0〜kSplatChannels - 1 に丸める。
-// NaN は丸めずに残す（stampRect / applyStamp が何もしない = 壊れた入力で格子を
-// 書き換えない）。
+// dt 0〜kBrushMaxDt、maxHeight 0 以上に丸める。NaN は丸めずに残す
+// （stampRect / applyStamp が何もしない = 壊れた入力で格子を書き換えない）。
+// layer は丸めない（範囲外の Paint は stampRect / applyStamp が弾く）。
 BrushStamp clampBrush(BrushStamp s);
 
 // スタンプが書き換えうるセルの矩形（セル単位、0〜resolution に切り詰め済み。
@@ -102,6 +104,9 @@ GridRect stampRect(const HeightField& field, const BrushStamp& stamp);
 // 高さの道具は何も書かずに false）。範囲は stampRect の中に収まる。
 // 共有中の格子（shared_ptr<const>）には呼べない = コピーに対して呼ぶ。
 bool applyStamp(HeightField& field, const BrushStamp& stamp);
+// 同じ。scratch は作業用の領域（Smooth の写し・Paint の重みの 1 枚）で、続けて
+// 当てる呼び手が使い回せば、スタンプごとに確保しない。中身は呼ぶたびに作り直す。
+bool applyStamp(HeightField& field, const BrushStamp& stamp, std::vector<float>& scratch);
 
 }  // namespace terrain
 }  // namespace wizengine

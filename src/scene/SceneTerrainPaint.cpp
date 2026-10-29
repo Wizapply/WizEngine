@@ -47,7 +47,7 @@ wt::AutoPaintRules autoPaintRulesFromJson(const nlohmann::json& j,
 
 }  // namespace scene_detail
 
-void Scene::autoPaintTerrain(const nlohmann::json& rulesJson) {
+void Scene::autoPaintTerrain(const nlohmann::json& rulesJson, const std::string& notes) {
     const std::shared_ptr<const wt::HeightField> field = terrainField();
     if (!field) {
         editor_.setStatus("テレインがありません（塗り分けできません）");
@@ -65,10 +65,10 @@ void Scene::autoPaintTerrain(const nlohmann::json& rulesJson) {
         TerrainRecord::Undo, TerrainChanged::Paint);
     // ステータスは結果が分かってから 1 回だけ。
     if (!changed) {
-        editor_.setStatus("塗り分けは変わりませんでした（今の重みが同じ規則のとおりです）");
+        editor_.setStatus("塗り分けは変わりませんでした（今の重みが同じ規則のとおりです）" + notes);
         return;
     }
-    editor_.setStatus("テレインを傾きと高さで塗り分けました（取り消しできます）");
+    editor_.setStatus("テレインを傾きと高さで塗り分けました（取り消しできます）" + notes);
     LOGI("scene", "terrain auto-painted by slope and height (softness %.2f): %dx%d cells "
                   "in %.1f ms",
          rules.softness, res, res, elapsedMs(t0));

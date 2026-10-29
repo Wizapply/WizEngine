@@ -21,7 +21,8 @@ constexpr int kMaxDiscsPerStamp = 256;
 // 当ててよいスタンプか（使う値が全部有限、半径が正、上限が負でない =
 // std::clamp の lo <= hi を守る）。maxHeight を渡し忘れた（既定の NaN）
 // スタンプもここで弾く。target は Flatten のときだけ、layer は Paint のときだけ
-// 見る（Erase は下地の層に決まっているので見ない）。Paint は下地の層
+// 見る（Erase は下地の層に決まっているので見ない）。範囲外の layer は丸めずに
+// 弾く（丸めると別の層を塗る）。Paint は下地の層
 // （kBaseSplatLayer）を塗れない: 下地を塗る = 消しゴムの役目で、layer を送り
 // 忘れた（既定 0 の）塗りが黙って消しゴムになるのを防ぐ。
 bool usableStamp(const BrushStamp& s) {
@@ -180,11 +181,11 @@ double paintLottery(int i, int j, uint32_t seed) {
 
 // Paint の 1 スタンプ（1 回ぶん）。peak = cells（スタンプの矩形）の行優先で、
 // セルごとの減衰の重み（線分に並べた円のうち最大）。層 s.layer の重みを、満杯
-// （今の重みの合計）との差の min(1, strength × dt) × 重み だけ増やし、他の層は
-// 同じ割合で減らす（合計は保たれる）。正規化・量子化と穴のセルを飛ばすのは
-// setSplatWeights。増やす目盛りの端数はくじで丸める（平均が式どおり = 強さと
-// 減衰が効き、端数を捨てて満杯の手前で止まることも、切り上げて縁が速く
-// 濃くなることもない）。
+// （kSplatWeightTotal）との差の min(1, strength × dt) × 重み だけ増やし、他の層は
+// 同じ割合で減らす。正規化・量子化と穴のセルを飛ばす規則は setSplatWeights
+// （ここで先に穴を見るのは計算を省くためだけ）。増やす目盛りの端数はくじで丸める
+// （平均が式どおり = 強さと減衰が効き、端数を捨てて満杯の手前で止まることも、
+// 切り上げて縁が速く濃くなることもない）。
 bool paint(HeightField& f, const BrushStamp& s, const GridRect& cells,
            const std::vector<float>& peak) {
     const double rate = std::min(1.0, s.strength * s.dt);
@@ -193,13 +194,15 @@ bool paint(HeightField& f, const BrushStamp& s, const GridRect& cells,
     for (int j = cells.j0; j < cells.j1; ++j) {
         for (int i = cells.i0; i < cells.i1; ++i, ++n) {
             const double w = peak[n];
-            if (!(w > 0.0)) continue;
+            if (!(w > 0.0) || f.holeAt(i, j)) continue;
             uint8_t cur[kSplatChannels];
             f.splatAt(i, j, cur);
-            double total = 0.0;
-            for (int k = 0; k < kSplatChannels; ++k) total += cur[k];
-            const double rest = total - double(cur[s.layer]);  // 他の層の合計
-            if (!(rest > 0.0)) continue;                      // もう満杯
+            // 今の重みを満杯の目盛りで読む（splatScaled。ファイルから読んだ合計が
+            // 255 でないテクセルも比で読む）。
+            double now[kSplatChannels];
+            splatScaled(cur, now);
+            const double rest = double(kSplatWeightTotal) - now[s.layer];  // 他の層の合計
+            if (!(rest > 1e-9)) continue;  // もう満杯
             const double want = rest * rate * w;               // 式どおりの増分（目盛り）
             double add = std::floor(want);
             if (paintLottery(i, j, s.seed) < want - add) add += 1.0;
@@ -208,8 +211,8 @@ bool paint(HeightField& f, const BrushStamp& s, const GridRect& cells,
             const double keep = 1.0 - add / rest;  // 他の層に残す割合
             float next[kSplatChannels];
             for (int k = 0; k < kSplatChannels; ++k)
-                next[k] = k == s.layer ? float(double(cur[k]) + add) : float(cur[k] * keep);
-            changed = f.setSplatWeights(i, j, next) || changed;
+                next[k] = k == s.layer ? float(now[k] + add) : float(now[k] * keep);
+            changed = f.setSplatWeights(i, j, next, cur) || changed;
         }
     }
     return changed;
@@ -217,13 +220,14 @@ bool paint(HeightField& f, const BrushStamp& s, const GridRect& cells,
 
 // Paint のスタンプ: 線分に並べた円（discAt(1..discs)）の重みをセルごとの最大で
 // 1 枚にまとめてから 1 回だけ塗る（円の数 = 動かす速さで塗れる量が変わらない）。
-// rect = スタンプの矩形（stampRect。各円の矩形はこの部分の箱）。
+// rect = スタンプの矩形（stampRect。各円の矩形はこの部分の箱）。peak = その
+// 1 枚（呼び手の使い回しの領域。中身はここで作り直す）。
 template <class DiscAt>
 bool paintStamp(HeightField& f, const BrushStamp& s, const GridRect& rect, int discs,
-                DiscAt&& discAt) {
+                DiscAt&& discAt, std::vector<float>& peak) {
     if (!(s.strength * s.dt > 0.0) || rect.empty()) return false;  // 強さか dt が 0
     const int width = rect.i1 - rect.i0;
-    std::vector<float> peak(std::size_t(width) * std::size_t(rect.j1 - rect.j0), 0.0f);
+    peak.assign(std::size_t(width) * std::size_t(rect.j1 - rect.j0), 0.0f);
     for (int k = 1; k <= discs; ++k) {
         const Disc disc = discAt(k);
         forEachCellInDisc(f, disc, discCells(f, disc), [&](int i, int j, double w) {
@@ -274,7 +278,7 @@ BrushStamp clampBrush(BrushStamp s) {
     s.strength = std::clamp(s.strength, 0.0, kBrushMaxStrength);
     s.dt = std::clamp(s.dt, 0.0, kBrushMaxDt);
     s.maxHeight = std::max(s.maxHeight, 0.0);
-    s.layer = std::clamp(s.layer, 0, kSplatChannels - 1);
+    // layer は丸めない（範囲外は usableStamp が弾く = 別の層を塗らない）。
     return s;
 }
 
@@ -286,6 +290,11 @@ GridRect stampRect(const HeightField& field, const BrushStamp& stamp) {
 }
 
 bool applyStamp(HeightField& field, const BrushStamp& stamp) {
+    std::vector<float> scratch;
+    return applyStamp(field, stamp, scratch);
+}
+
+bool applyStamp(HeightField& field, const BrushStamp& stamp, std::vector<float>& scratch) {
     if (!field.valid() || !usableStamp(stamp)) return false;
     const double dx = stamp.x1 - stamp.x0;
     const double dz = stamp.z1 - stamp.z0;
@@ -304,11 +313,11 @@ bool applyStamp(HeightField& field, const BrushStamp& stamp) {
         // Erase は下地の層を塗るのと同じ: 塗る層を読み替えるだけ。
         BrushStamp p = stamp;
         if (p.tool == BrushTool::Erase) p.layer = kBaseSplatLayer;
-        return paintStamp(field, p, stampRect(field, p), discs, discAt);
+        return paintStamp(field, p, stampRect(field, p), discs, discAt, scratch);
     }
-    // 高さ・穴の道具: dt を円の数で等分して 1 個ずつ当てる。
+    // 高さ・穴の道具: dt を円の数で等分して 1 個ずつ当てる（scratch は Smooth の
+    // 写し。円ごとに使い回す）。
     const double dt = stamp.dt / double(discs);
-    std::vector<float> scratch;  // Smooth の写し（円ごとに使い回す）
     bool changed = false;
     for (int k = 1; k <= discs; ++k)
         changed = applyDisc(field, stamp, discAt(k), dt, scratch) || changed;

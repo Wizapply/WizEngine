@@ -139,6 +139,15 @@ void HeightField::allocateSplat() {
                   splat_.begin() + std::ptrdiff_t(k * kSplatTexelBytes));
 }
 
+bool HeightField::anySplat() const {
+    for (std::size_t at = 0; at < splat_.size(); at += kSplatTexelBytes) {
+        if (!std::equal(kDefaultSplatTexel.begin(), kDefaultSplatTexel.end(),
+                        splat_.begin() + std::ptrdiff_t(at)))
+            return true;
+    }
+    return false;
+}
+
 void HeightField::splatAt(int i, int j, uint8_t out[kSplatChannels]) const {
     if (splat_.empty() || i < 0 || j < 0 || i >= resolution_ || j >= resolution_) {
         std::copy(kDefaultSplatTexel.begin(), kDefaultSplatTexel.end(), out);
@@ -149,38 +158,40 @@ void HeightField::splatAt(int i, int j, uint8_t out[kSplatChannels]) const {
 }
 
 bool HeightField::setSplatWeights(int i, int j, const float w[kSplatChannels]) {
+    return setSplatWeights(i, j, w, nullptr);
+}
+
+bool HeightField::setSplatWeights(int i, int j, const float w[kSplatChannels],
+                                  const uint8_t current[kSplatChannels]) {
     if (i < 0 || j < 0 || i >= resolution_ || j >= resolution_) return false;
     if (holeAt(i, j)) return false;  // 穴のセルは塗らない（ヘッダの約束）
-    // 負・NaN・無限大は 0（無限大を残すと合計が無限大になり比が出せない）。
+    // 目盛りに直してから（splatScaled。合計 0 = 下地だけ）、合計 kSplatWeightTotal への
+    // 最大剰余法: 切り捨ててから、足りない分を端数の大きい層へ。
     double v[kSplatChannels];
-    double sum = 0.0;
+    splatScaled(w, v);
+    std::array<uint8_t, kSplatChannels> q{};
+    double frac[kSplatChannels];
+    int total = 0;
     for (int k = 0; k < kSplatChannels; ++k) {
-        v[k] = (std::isfinite(w[k]) && w[k] > 0.0f) ? double(w[k]) : 0.0;
-        sum += v[k];
+        const double s = std::min(v[k], double(kSplatWeightTotal));
+        const double f = std::floor(s);
+        q[std::size_t(k)] = uint8_t(f);
+        frac[k] = s - f;
+        total += int(f);
     }
-    std::array<uint8_t, kSplatChannels> q = kDefaultSplatTexel;
-    if (sum > 0.0) {
-        // 合計 255 への最大剰余法: 切り捨ててから、足りない分を端数の大きい層へ。
-        double frac[kSplatChannels];
-        int total = 0;
-        for (int k = 0; k < kSplatChannels; ++k) {
-            const double s = std::min(v[k] * 255.0 / sum, 255.0);
-            const double f = std::floor(s);
-            q[std::size_t(k)] = uint8_t(f);
-            frac[k] = s - f;
-            total += int(f);
-        }
-        for (int left = 255 - total; left > 0; --left) {
-            int best = 0;
-            for (int k = 1; k < kSplatChannels; ++k)
-                if (frac[k] > frac[best]) best = k;  // 同じ端数なら番号の小さい層
-            ++q[std::size_t(best)];
-            frac[best] = -1.0;
-        }
+    for (int left = kSplatWeightTotal - total; left > 0; --left) {
+        int best = 0;
+        for (int k = 1; k < kSplatChannels; ++k)
+            if (frac[k] > frac[best]) best = k;  // 同じ端数なら番号の小さい層
+        ++q[std::size_t(best)];
+        frac[best] = -1.0;
     }
-    uint8_t cur[kSplatChannels];
-    splatAt(i, j, cur);
-    if (std::equal(q.begin(), q.end(), cur)) return false;
+    uint8_t read[kSplatChannels];
+    if (!current) {
+        splatAt(i, j, read);
+        current = read;
+    }
+    if (std::equal(q.begin(), q.end(), current)) return false;
     if (splat_.empty()) allocateSplat();
     const std::size_t at = splatOffset(i, j);
     std::copy(q.begin(), q.end(), splat_.begin() + std::ptrdiff_t(at));

@@ -255,6 +255,14 @@ void Scene::adoptLegacySurface(const ed::TerrainLegacyDesc& legacy) {
         // ファイルの層 0 が勝つ（同じ .terrain を使う別のシーンが先に移した等）。
         LOGI("scene", "terrain: the file already has layer 0 ('%s') - XML texture attribute "
                       "'%s' ignored", now.texture.c_str(), legacy.texture.c_str());
+        // 違う値を書いていた（📄 XML で書き換えた等）ならステータスにも出す
+        // （同じ値 = 移した後の古い XML なので知らせない）。
+        if (legacy.texture != now.texture) {
+            terrainLoadCaveat_ += "（XML の texture 属性は使いませんでした - " +
+                                  terrainLayerLabel(0) +
+                                  " は .terrain が持っています。Inspector の『塗り分けの層』で"
+                                  "変えてください）";
+        }
         return;
     }
     wt::TerrainLayers layers = terrainLayers_;
@@ -267,7 +275,8 @@ void Scene::adoptLegacySurface(const ed::TerrainLegacyDesc& legacy) {
          terrain_.data.c_str());
     publishTerrainField(terrain_, terrainField(), TerrainHistory::Keep, TerrainFileState::Dirty,
                         {}, false, &layers);
-    terrainLoadCaveat_ += "（XML のテクスチャを層 0 として .terrain に移します - 保存で書きます）";
+    terrainLoadCaveat_ += "（XML のテクスチャを" + terrainLayerLabel(0) +
+                          " として .terrain に移します - 保存で書きます）";
 }
 
 std::string Scene::terrainLoadCaveat() {
@@ -462,8 +471,13 @@ nlohmann::json Scene::terrainJson() const {
     j["terrain"] = ed::toJson(terrain_);
     // 塗り分けの層（.terrain が持つ = 文書の値ではないので Scene が足す）。
     j["terrain"]["layers"] = layersToJson(terrainLayers_);
-    // 自動塗りの既定の帯（ブラウザは既定を持たず、空欄の初期値にこれを使う）。
-    j["terrain"]["autoPaintDefaults"] = autoPaintRulesToJson(wt::defaultAutoPaintRules());
+    // テレインの道具の既定（テレインごとに変わらない定数なので terrain の外）。
+    // baseLayer = 下地の層の番号（筆の 🖌 の選択肢は後ろの層だけ）、
+    // autoPaintDefaults = 自動塗りの既定の帯（ブラウザは既定を持たず、空欄の
+    // 初期値にこれを使う）。
+    j["terrainTools"] = {
+        {"baseLayer", wt::kBaseSplatLayer},
+        {"autoPaintDefaults", autoPaintRulesToJson(wt::defaultAutoPaintRules())}};
     j["terrainDirty"] = terrainDirty();
     // Missing（ファイルが無い・読めない）なら説明の文、そうでなければ空。
     j["terrainMissing"] = terrainMissingText();

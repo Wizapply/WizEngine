@@ -15,6 +15,7 @@
 
 #include "core/AssetError.h"
 #include "render/ImageLoader.h"
+#include "render/ImageScale.h"
 #include "core/Log.h"
 
 using namespace filament;
@@ -56,8 +57,7 @@ EnvironmentIBL loadEnvironmentIBL(filament::Engine& engine,
     // reflection levels. The prefilter's precondition is exact: the equirect
     // must have ilogb(width)+1 levels allocated, no more, no less. Width is
     // the larger side here (w == 2*h), so counting from max(w, h) matches.
-    uint32_t levels = 1;
-    for (int dim = std::max(w, h); dim > 1; dim >>= 1) ++levels;
+    const uint8_t levels = render_detail::mipLevelCount(w, h);
     // GEN_MIPMAPPABLE is required: EquirectangularToCubemap calls
     // generateMipmaps() on this texture unconditionally ("we need mipmaps
     // because we're sampling down"), and without the flag that call hits a
@@ -67,7 +67,7 @@ EnvironmentIBL loadEnvironmentIBL(filament::Engine& engine,
     Texture* equirect = Texture::Builder()
                             .width(uint32_t(w))
                             .height(uint32_t(h))
-                            .levels(uint8_t(levels))
+                            .levels(levels)
                             .format(Texture::InternalFormat::R11F_G11F_B10F)
                             .sampler(Texture::Sampler::SAMPLER_2D)
                             .usage(Texture::Usage::DEFAULT |

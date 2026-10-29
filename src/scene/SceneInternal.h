@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstddef>
+#include <limits>
 
 #include "core/AssetError.h"
 #include "core/Clock.h"
@@ -311,15 +312,28 @@ inline wizengine::terrain::TerrainParams toTerrainParams(const ed::TerrainDesc& 
 // 写さない）。ファイルの読込（readTerrainFile）・ブラウザの変更（editTerrainLayer）・
 // 旧属性の取り込み（adoptLegacySurface）が同じ検査を通る。
 
-// 層の値を常識的な範囲へ: テクスチャは assets/ 相対のパスだけ（".." や絶対パスは
-// 空にして LOGW。where = どこから来た値か、英語）、tile は地面と同じ範囲
-// （ed::kSurfaceTileMin〜Max。NaN・無限は既定値へ倒してから丸める - std::clamp は
-// NaN を素通しするため）。
+// 層の表示名（index = 0 始まりの層の番号、表示は 1 始まり）。ステータスの文と
+// /scene の terrain.layers[i].label（ブラウザの層の欄・自動塗り・筆の選択）が
+// 同じ名前を出すための 1 か所。
+inline std::string terrainLayerLabel(std::size_t index) {
+    return "層 " + std::to_string(index + 1);
+}
+
+// 層の値を常識的な範囲へ: テクスチャは assets/ 相対のパスで、長さは
+// terrain::kMaxLayerPathBytes 以下だけ（外れたら空にして LOGW。where = どこから
+// 来た値か、英語。長すぎるパスを残すと保存のたびに encode が失敗する）、tile は
+// 地面と同じ範囲（ed::kSurfaceTileMin〜Max。NaN・無限は既定値へ倒してから丸める -
+// std::clamp は NaN を素通しするため）。
 inline void sanitizeTerrainLayers(wizengine::terrain::TerrainLayers& layers,
                                   const char* where) {
     for (std::size_t i = 0; i < layers.size(); ++i) {
         wizengine::terrain::TerrainLayer& l = layers[i];
-        if (!l.texture.empty() && !ed::assetFileAllowed(l.texture)) {
+        if (l.texture.size() > wizengine::terrain::kMaxLayerPathBytes) {
+            LOGW("scene", "terrain layer %zu (%s): texture path is longer than %zu bytes "
+                          "- cleared",
+                 i, where, std::size_t(wizengine::terrain::kMaxLayerPathBytes));
+            l.texture.clear();
+        } else if (!l.texture.empty() && !ed::assetFileAllowed(l.texture)) {
             LOGW("scene", "terrain layer %zu (%s): texture '%s' is not allowed "
                           "(assets-relative paths only) - cleared",
                  i, where, l.texture.c_str());
@@ -330,29 +344,39 @@ inline void sanitizeTerrainLayers(wizengine::terrain::TerrainLayers& layers,
     }
 }
 
-// /scene の terrain.layers: [{texture, tile}, ...]（層の数ぶん、順は層の番号）。
+// /scene の terrain.layers: [{texture, tile, label}, ...]（層の数ぶん、順は層の
+// 番号。label は表示名 = terrainLayerLabel で、読み込み側は見ない）。
 inline nlohmann::json layersToJson(const wizengine::terrain::TerrainLayers& layers) {
     nlohmann::json a = nlohmann::json::array();
-    for (const wizengine::terrain::TerrainLayer& l : layers)
-        a.push_back(nlohmann::json{{"texture", l.texture}, {"tile", l.tile}});
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        a.push_back(nlohmann::json{{"texture", layers[i].texture},
+                                   {"tile", layers[i].tile},
+                                   {"label", terrainLayerLabel(i)}});
+    }
     return a;
 }
 
 // edit.terrain の layer の部分更新: 送られたキー（texture / tile）だけ base から変える。
-// 型違いのキーは無視。検査は呼び手が sanitizeTerrainLayers で掛ける。
+// 型違いのキーは無視。検査（タイルの範囲を含む）は呼び手が sanitizeTerrainLayers で
+// 掛ける。tile は float に入る範囲へ寄せてから float にするだけ（1e39 などをそのまま
+// float にすると無限大になり、検査で上限ではなく既定値へ倒れるため）。NaN は base のまま。
 inline wizengine::terrain::TerrainLayer layerPatchFromJson(
     const nlohmann::json& j, const wizengine::terrain::TerrainLayer& base) {
     wizengine::terrain::TerrainLayer l = base;
     if (const auto it = j.find("texture"); it != j.end() && it->is_string())
         l.texture = it->get<std::string>();
-    l.tile = float(ed::jsonNumber(j, "tile", l.tile));
+    const double tile = ed::jsonNumber(j, "tile", double(l.tile));
+    if (!std::isnan(tile)) {
+        constexpr double kFloatMax = double(std::numeric_limits<float>::max());
+        l.tile = float(std::clamp(tile, -kFloatMax, kFloatMax));
+    }
     return l;
 }
 
 // ---- 自動塗りの規則（SceneTerrainPaint.cpp）-----------------------------------
 // 規則の JSON の唯一の定義: {softness, layers:[{enabled, slopeMin, slopeMax,
 // heightMin, heightMax}, ...]}（層の数ぶん、順は層の番号。傾きは度、高さは
-// テレインの置き場所の高さ = 格子の基準 baseY からの m。最低点ではない）。/scene の terrain.autoPaintDefaults（terrainJson）と
+// テレインの置き場所の高さ = 格子の基準 baseY からの m。最低点ではない）。/scene の terrainTools.autoPaintDefaults（terrainJson）と
 // edit.terrain の autopaint（autoPaintTerrain）が使う。
 nlohmann::json autoPaintRulesToJson(const wizengine::terrain::AutoPaintRules& rules);
 // 送られたキーだけ base から変え、clampAutoPaintRules を通して返す。型違いの

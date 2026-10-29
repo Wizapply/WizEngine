@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1188,11 +1189,18 @@ inline double jsonNumber(const nlohmann::json& j, const char* key,
     const auto it = j.find(key);
     return (it != j.end() && it->is_number()) ? it->get<double>() : fallback;
 }
+// int に入らない値（NaN・無限・範囲外）も fallback（double から int への変換は
+// 範囲外で未定義）。小数は 0 の向きへ切り捨てる。
 inline int jsonInt(const nlohmann::json& j, const char* key, int fallback) {
     if (!j.is_object()) return fallback;
     const auto it = j.find(key);
-    return (it != j.end() && it->is_number()) ? int(it->get<double>())
-                                              : fallback;
+    if (it == j.end() || !it->is_number()) return fallback;
+    const double v = it->get<double>();
+    // NaN はどの比較も偽 = fallback。
+    if (!(v > double(std::numeric_limits<int>::min()) - 1.0 &&
+          v < double(std::numeric_limits<int>::max()) + 1.0))
+        return fallback;
+    return int(v);
 }
 // 文字列版（型が違えば fallback。nlohmann の value() のように投げない）。
 inline std::string jsonString(const nlohmann::json& j, const char* key,

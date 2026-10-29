@@ -135,12 +135,13 @@
 //     assets/terrains/<data>.terrain で、文書はその名前（data）と背番号
 //     （guid）・pos（X / Z が中心・Y が最低点）・表面だけを持つ。節を
 //     書かない文書はテレイン無し（hasTerrain = false）で、書き出しにも
-//     <terrain> は出ない。texture は assets/ 相対。
+//     <terrain> は出ない。
 //     **旧形式**（data 属性の無い <terrain>。size（全幅）/ resolution /
 //     height と seed / octaves / gain / lacunarity / scale のノイズを属性に
 //     持つ）も読める: 値は terrainLegacy に入り、読込側が一度生成して開く。
 //     書き出しは常に新形式（次の保存で移る）。<terrain/> だけは既定の
-//     大きさで平ら。新形式に旧属性が混ざっていたら警告して無視する。
+//     大きさで平ら。新形式に旧属性が混ざっていたら警告して無視する（例外は
+//     texture / tile: 警告せず読み、読込側が .terrain の層 0 へ取り込む）。
 //   * 色は rgba="r g b a"（リニア値、a は今は常に 1）。
 //   * body1 / body2 は名前でも番号でも書ける。"world" と -1 が地面。
 //     保存側は名前が一意ならその名前、そうでなければ番号を書く。

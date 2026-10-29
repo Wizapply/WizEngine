@@ -28,9 +28,10 @@
 //          中身は RAW16 のハイトマップと同じ（量子化と変換は Heightmap.h）。
 //     HOLE（版 1）: u8 × res²。0 = 穴、255 = 中身（メモリ上の HeightField とは
 //          逆向き）。穴が 1 つも無ければ書かない。読むときは 0 だけを穴とみなす。
-//     SPLT（版 1）: u8 × res² × kSplatChannels。セルごとの層の重み（合計 255）。
-//          並びは行 = +Z、行内 = +X。塗っていなければ（HeightField::hasSplat が
-//          false）書かない。無ければ全セル層 0。
+//     SPLT（版 1）: u8 × res² × kSplatChannels。セルごとの層の重み（合計 255。
+//          読むときは検査しない - HeightField.h の注記）。並びは行 = +Z、行内 = +X。
+//          既定でないセルが無ければ（HeightField::anySplat が false）書かない。
+//          無ければ全セル層 0。
 //     LAYR（版 1）: 層の定義。u32 count のあと、層ごとに u32 recordBytes /
 //          u16 pathLen + UTF-8 のパス（assets/ 相対）/ f32 tile (m)。読むのは
 //          先頭の min(count, kSplatChannels) 層で、残りの層とレコードの後ろの
