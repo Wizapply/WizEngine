@@ -545,9 +545,18 @@
   #edTerrainFields { border:0; padding:0; margin:0; min-width:0; }
   /* スポットの円錐（内/外）は 1 行に 2 欄。edRow .num の 55% 制限とは別枠。 */
   .edRow .coneNum { max-width: 26%; }
-  /* テレインの塗り分けの層は 1 行にパスとタイルの 2 欄。 */
-  .edRow .layerTex { max-width: 50%; }
-  .edRow .layerTile { max-width: 20%; }
+  /* テレインの塗り分けの層: 層ごとに 3 行（層 N = テクスチャ / タイル、法線 =
+     パス / 強さ、マスク = パス / 粗さ / 金属）。行の見出し・パス・数・数の 4 列を
+     全行でそろえ、数の欄が縦に並ぶ（数が 1 つの行は最後の列が空く）。 */
+  .layerGroup { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
+  .edRow.layerRow {
+    display: grid; grid-template-columns: 40px 1fr 54px 54px; gap: 4px;
+  }
+  .edRow.layerRow > span { font-size: 11px; white-space: nowrap; }
+  .edRow .layerPath, .edRow .layerNum { max-width: none; }
+  .edRow .layerNum { padding: 3px 4px; }
+  /* マスクのある層は粗さ・金属の数字を使わない（マスクが勝つ）。打てるが薄く。 */
+  .edRow.layerRow.masked .layerNum { opacity: .45; }
   /* テレインの自動塗りの行: 有効のチェック + 層の名前 と、傾き・高さの下〜上の 4 欄。 */
   .autoRow {
     display: grid; grid-template-columns: 56px repeat(4, 1fr);

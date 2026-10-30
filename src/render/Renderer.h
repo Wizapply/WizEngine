@@ -155,23 +155,35 @@ struct TerrainChunkMesh {
 };
 
 // テレインの表面（setTerrainSurface に渡す）。層は塗り分けの重み（スプラット、
-// setTerrainSplat）の RGBA の順で、各層がテクスチャ 1 枚とそのタイルの幅を持つ。
-// 色・粗さ・金属はテレイン全体で 1 つ（色は全層に掛かる）。
-//   texture    … assets/ 相対のパス（空 = 白 1 色 = color がそのまま色）
-//   tileMeters … テクスチャ 1 枚の幅 (m)
-//   color      … リニア rgba（a は使わない = 不透明）
+// setTerrainSplat）の RGBA の順で、各層が画像 3 枚（色・法線・マスク。3 枚とも
+// 同じタイル）とそのタイルの幅・粗さ・金属・法線の強さを持つ。色はテレイン全体で
+// 1 つ（全層に掛かる）。層の値は解決済み（「テレイン全体に従う」は呼び手が
+// 全体の値に置き換えてから渡す。Renderer は従うかどうかを知らない）。
+//   texture     … 色の画像（assets/ 相対。空 = 白 1 色 = color がそのまま色、sRGB）
+//   normal      … 法線マップ（assets/ 相対。空 = 平ら。リニア、緑が画像の上）
+//   mask        … マスク（assets/ 相対。R = 遮蔽・G = 粗さ・B = 金属、リニア。
+//                 空 = 無し = roughness / metallic の数値を使う。あれば数値は使わない）
+//   tileMeters  … 画像 1 枚の幅 (m)
+//   roughness / metallic … 0〜1（マスクの無い層で効く）
+//   normalScale … 法線マップの強さ（1 = 原寸、0 = 平ら）
+// 数値（tileMeters・roughness・metallic・normalScale）は呼ぶ側で検査済み
+// （範囲の規則は Scene が持つ）。Renderer はそのまま材質へ渡す。
+//   color       … リニア rgba（a は使わない = 不透明）
 struct TerrainSurface {
     // 層の数。terrain::kSplatChannels と同じ値に保つこと（Renderer は src/terrain
     // の型を公開 API に出さないので、両方を見る Scene が static_assert で照合する）。
     static constexpr int kLayers = 4;
     struct Layer {
         std::string texture;
+        std::string normal;
+        std::string mask;
         float tileMeters = 2.0f;
+        float roughness = 0.9f;
+        float metallic = 0.0f;
+        float normalScale = 1.0f;
     };
     Layer layers[kLayers];
     filament::math::float4 color{1.0f, 1.0f, 1.0f, 1.0f};
-    float roughness = 0.9f;
-    float metallic = 0.0f;
 };
 
 inline bool operator==(const BatchShape& x, const BatchShape& y) {
@@ -282,13 +294,14 @@ public:
     // バウンディングボックスも頂点から作り直す。配列の長さが合わなければ
     // 警告して何もしない（false）。
     bool setTerrainChunk(int cx, int cz, const TerrainChunkMesh& mesh);
-    // 表面の材質（層のテクスチャとタイル・色・粗さ・金属）。層のテクスチャは
-    // 前回とパスが違う層だけ読み直す（読めなければ警告して白 1 色）。どの層も
-    // kTerrainLayerTexSize 四方へ揃えて（縦横比が違えば引き伸ばす）テクスチャ
-    // 配列の 1 枚に入れる。色やタイルだけの変更は画像を読まない。
+    // 表面の材質（層の画像 3 枚とタイル・粗さ・金属・法線の強さ、色）。層の画像は
+    // 前回とパスが違う画像だけ読み直す（読めなければ警告して既定の単色 = 色は白・
+    // 法線は平ら・マスクは無し = 数値を使う）。どの画像も kTerrainLayerTexSize
+    // 四方へ揃えて（縦横比が違えば引き伸ばす）その種類のテクスチャ配列の 1 枚に
+    // 入れる。色・タイル・数値だけの変更は画像を読まない。
     void setTerrainSurface(const TerrainSurface& surface);
     // 層のテクスチャ配列の 1 辺（全層この大きさに揃える。ミップ込みで 1 層
-    // 約 5.6 MB）。
+    // 約 5.6 MB、配列は色・法線・マスクの 3 本）。
     static constexpr int kTerrainLayerTexSize = 1024;
     // 塗り分けの重み（スプラット: resolution × resolution のテクセル、1 テクセル
     // RGBA8 = 層 0〜3 の重み。テクセル (i, j) がセル (i, j) に対応）の矩形
@@ -663,7 +676,9 @@ private:
 
     // テレイン（RendererTerrain.cpp）。チャンクごとに自前の頂点 /
     // インデックスバッファとエンティティを持ち、マテリアルインスタンスは
-    // 全チャンクで 1 個を共有する（材質はテレイン全体で 1 つ）。
+    // 全チャンクで 1 個を共有する（層ごとの画像・粗さ・金属・法線の強さは
+    // テクスチャ配列と float4 のパラメータで持つので、インスタンスは 1 個で足りる）。
+    // 表面（層のテクスチャ配列・スプラット・材質）は RendererTerrainSurface.cpp。
     struct TerrainChunk {
         utils::Entity entity;
         filament::VertexBuffer* vb = nullptr;
@@ -677,18 +692,31 @@ private:
     int terrainQuads_ = 0;  // 1 チャンクの 1 辺のクアッド数
     filament::Material* terrainMaterial_ = nullptr;
     filament::MaterialInstance* terrainMatInstance_ = nullptr;
-    // 層のテクスチャ配列（kTerrainLayerTexSize 四方 × kLayers 層、sRGB）。
-    // 作るのはコンストラクタの 1 回だけ（全層を白で埋める）で、以後は層ごとに
-    // 中身を入れ替える。terrainLayerPaths_ = その層に今入っている画像のパス
-    // （同じなら読み直さない。初期の白は空文字列と同じ = 「テクスチャ無し」）。
+    // 層のテクスチャ配列（どれも kTerrainLayerTexSize 四方 × kLayers 層）。色は
+    // SRGB8_A8、法線とマスクは RGBA8（= リニア。sRGB で読むと法線が曲がる）。
+    // 作るのはコンストラクタの 1 回だけ（全層を既定の単色で埋める）で、以後は
+    // 層ごとに中身を入れ替える。
     filament::Texture* terrainLayerTextures_ = nullptr;
-    std::string terrainLayerPaths_[TerrainSurface::kLayers];
+    filament::Texture* terrainNormalTextures_ = nullptr;
+    filament::Texture* terrainMaskTextures_ = nullptr;
+    // 層に今入っている画像のパス（同じなら読み直さない。初期の単色は空文字列と
+    // 同じ = 「画像無し」）。hasNormal = 法線マップがファイルから読めたか（無ければ
+    // 平ら）。hasMask = マスクがファイルから読めたか（無ければ粗さ・金属は数値、
+    // 遮蔽は無し）。
+    struct TerrainLayerImages {
+        std::string texture;
+        std::string normal;
+        std::string mask;
+        bool hasNormal = false;
+        bool hasMask = false;
+    };
+    TerrainLayerImages terrainLayerImages_[TerrainSurface::kLayers];
     // 塗り分けの重み（resolution 四方、リニア RGBA8、ミップ無し）。コンストラクタで
     // 1×1 の既定（層 0 だけ）を作り、setTerrainSplat が解像度に合わせて作り直す。
     filament::Texture* terrainSplat_ = nullptr;
     int terrainSplatRes_ = 0;
-    // コンストラクタから: 層の配列（白）と 1×1 の既定のスプラットを作って
-    // マテリアルへ付ける（RendererTerrain.cpp）。
+    // コンストラクタから: 層の配列 3 本（既定の単色）と 1×1 の既定のスプラットを作って
+    // マテリアルへ付ける（RendererTerrainSurface.cpp）。
     void createTerrainTextures();
     // 解像度 resolution の既定のスプラットを作って付け替える（fill = 既定の
     // テクセルで埋める。直後に全体を書くなら省く）。

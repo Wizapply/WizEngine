@@ -6,15 +6,30 @@
 // 白）を塗り分けの重み（splat）で混ぜたもの × baseColor（リニア）。
 // UV は頂点が持つ「メートル単位」の値（格子のローカル、原点中心）で、
 //   * 層 i は uvScale[i]（= 1 / その層のタイルのメートル数）を掛けてタイルさせる
+//     （色・法線・マスクの 3 枚とも同じタイル）
 //   * 重みは uv * splatInvSize（= 1 / テレインの全幅）+ 0.5 で 0〜1 に直して引く
 //     （テクセル (i, j) の中心 = セル (i, j) の中心）
 // だからタイルや塗りを変えても頂点を送り直さなくてよい（Renderer::
 // setTerrainSurface / setTerrainSplat がパラメータとテクスチャを変えるだけ）。
 // 重みの合計が 0 のテクセルは層 0 だけとして扱う（塗っていない = 層 0 の絵）。
 //
-// 材質（roughness / metallic）はシーン文書の値で、層では分けない。.mat には
-// 既定値が書けないので、インスタンスを作ったら必ず入れること（Renderer::Renderer
-// / setTerrainSurface）。穴は縮退三角形で表すので、ここでは何もしない。
+// 層ごとの画像（どちらもリニアの RGBA8 の配列）:
+//   * normalMaps … 接空間の法線マップ（緑が画像の上 = ローカルの +Z を向く向き）。
+//     hasNormal[i] が 0 の層（画像の無い層）は正確に (0, 0, 1) = 平ら（配列の
+//     既定の単色 128 は 0 ちょうどにならないので使わない）。normalScale[i] が xy を
+//     伸縮する（1 = 原寸、0 = 平ら）。重みで足してから正規化する。
+//   * masks … R = 遮蔽・G = 粗さ・B = 金属（A は使わない）。hasMask[i] が 1 の
+//     層は粗さ・金属をマスクから取り、roughness[i] / metallic[i] は使わない
+//     （0 の層は数値を使い、遮蔽は無し = 1）。
+// **法線の合成（material.normal）は prepareMaterial の前**に書く（Filament の
+// 決まり: prepareMaterial が接空間の法線をワールドへ直す）。色・粗さ・金属・
+// 遮蔽はその後。
+//
+// 層の数値（roughness / metallic / normalScale / hasNormal / hasMask）は Renderer が
+// 解決済みの float4（成分 = 層）で入れる（「テレイン全体に従う」はその前に解決
+// 済み）。.mat には既定値が書けないので、インスタンスを作ったら必ず入れること
+// （Renderer::Renderer / setTerrainSurface）。穴は縮退三角形で表すので、ここでは
+// 何もしない。
 //
 // flipUV : false が要る: matc は既定で UV の y を 1 - y に反転するが、頂点の UV は
 // ローカルのメートルなので反転させると重みの引き方が Z 方向に鏡写しになり、さらに
@@ -30,30 +45,57 @@ material {
     parameters : [
         { type : float3,         name : baseColor },
         { type : sampler2dArray, name : albedo },
+        { type : sampler2dArray, name : normalMaps },
+        { type : sampler2dArray, name : masks },
         { type : sampler2d,      name : splat },
         { type : float4,         name : uvScale },
         { type : float,          name : splatInvSize },
-        { type : float,          name : roughness },
-        { type : float,          name : metallic }
+        { type : float4,         name : roughness },
+        { type : float4,         name : metallic },
+        { type : float4,         name : hasNormal },
+        { type : float4,         name : hasMask },
+        { type : float4,         name : normalScale }
     ]
 }
 
 fragment {
     void material(inout MaterialInputs material) {
-        prepareMaterial(material);
         vec2 uv = getUV0();
         vec4 w = texture(materialParams_splat, uv * materialParams.splatInvSize + 0.5);
         float s = w.r + w.g + w.b + w.a;
         w = s > 0.0 ? w / s : vec4(1.0, 0.0, 0.0, 0.0);
         vec4 tile = materialParams.uvScale;
         vec2 tuv = vec2(uv.x, 1.0 - uv.y);  // 層のテクスチャの向き（先頭のコメント）
-        vec3 albedo =
-            w.r * texture(materialParams_albedo, vec3(tuv * tile.x, 0.0)).rgb +
-            w.g * texture(materialParams_albedo, vec3(tuv * tile.y, 1.0)).rgb +
-            w.b * texture(materialParams_albedo, vec3(tuv * tile.z, 2.0)).rgb +
-            w.a * texture(materialParams_albedo, vec3(tuv * tile.w, 3.0)).rgb;
+
+        // 法線（prepareMaterial の前）。全層が平らなら (0, 0, 1)。z を少し残して
+        // 正規化する（打ち消し合って長さ 0 になっても NaN にしない）。
+        vec3 n = vec3(0.0);
+        for (int i = 0; i < 4; ++i) {
+            vec3 m = texture(materialParams_normalMaps, vec3(tuv * tile[i], float(i))).xyz *
+                     2.0 - 1.0;
+            m.xy *= materialParams.normalScale[i];
+            n += w[i] * mix(vec3(0.0, 0.0, 1.0), m, materialParams.hasNormal[i]);
+        }
+        material.normal = normalize(vec3(n.xy, max(n.z, 1e-3)));
+
+        prepareMaterial(material);
+
+        vec3 albedo = vec3(0.0);
+        float roughness = 0.0;
+        float metallic = 0.0;
+        float ao = 0.0;
+        for (int i = 0; i < 4; ++i) {
+            vec3 luv = vec3(tuv * tile[i], float(i));
+            albedo += w[i] * texture(materialParams_albedo, luv).rgb;
+            vec4 mk = texture(materialParams_masks, luv);
+            float h = materialParams.hasMask[i];
+            roughness += w[i] * mix(materialParams.roughness[i], mk.g, h);
+            metallic += w[i] * mix(materialParams.metallic[i], mk.b, h);
+            ao += w[i] * mix(1.0, mk.r, h);
+        }
         material.baseColor.rgb = materialParams.baseColor * albedo;
-        material.roughness = materialParams.roughness;
-        material.metallic = materialParams.metallic;
+        material.roughness = roughness;
+        material.metallic = metallic;
+        material.ambientOcclusion = ao;
     }
 }

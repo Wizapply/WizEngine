@@ -12,7 +12,8 @@
 //   RendererLines.cpp     : 線（グラブ線・ジョイント線・太線バッチ・細線セット）
 //   RendererOverlays.cpp  : エディタ専用レイヤの頂点色つき半透明メッシュ
 //   RendererGround.cpp    : 地面
-//   RendererTerrain.cpp   : テレイン（チャンク分割の高さメッシュ）
+//   RendererTerrain.cpp   : テレインのメッシュ（チャンク分割の高さメッシュ）
+//   RendererTerrainSurface.cpp : テレインの表面（層のテクスチャ配列・スプラット・材質）
 //   RendererTextures.cpp  : テクスチャ読込（地面とテレインで共用）
 
 #include "render/Renderer.h"
@@ -95,7 +96,7 @@ inline filament::LightManager::ShadowOptions shadowOptionsFrom(
 // 画像が読めない・指定が空のときの代わりの絵。
 //   Checker … 2 x 2 の市松模様（地面の従来の見た目）
 //   None    … 代わりの絵を作らない（画素は空）。呼び手が自分の代わりを持つ
-//             （テレインの層 = RendererTerrain.cpp の whiteLayerPixels = 単色）
+//             （テレインの層 = RendererTerrainSurface.cpp の solidPixels = 単色）
 enum class TextureFallback { Checker, None };
 
 // 以下 RendererTextures.cpp。テクスチャの部品は 3 つ（デコード → 大きさの

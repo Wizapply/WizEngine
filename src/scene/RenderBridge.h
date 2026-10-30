@@ -72,16 +72,25 @@ inline RenderSettings toRendererSettings(const editor::RenderDesc& d) {
 // テレインの表面。文書の <terrain> の色・材質 + .terrain の層（LAYR）->
 // setTerrainSurface の値。層の数は terrain::kSplatChannels と
 // TerrainSurface::kLayers が同じ（SceneTerrainRender.cpp の static_assert）。
+// 層の粗さ・金属の「テレイン全体に従う」はここで全体の値へ解決する（Renderer は
+// 解決済みの値だけを受け、従うかどうかを知らない）。
 inline TerrainSurface toTerrainSurface(const editor::TerrainDesc& desc,
                                        const terrain::TerrainLayers& layers) {
     TerrainSurface r;
+    const float roughness = float(desc.roughness);
+    const float metallic = float(desc.metallic);
     for (int i = 0; i < TerrainSurface::kLayers; ++i) {
-        r.layers[i].texture = layers[std::size_t(i)].texture;
-        r.layers[i].tileMeters = layers[std::size_t(i)].tile;
+        const terrain::TerrainLayer& l = layers[std::size_t(i)];
+        TerrainSurface::Layer& out = r.layers[i];
+        out.texture = l.texture;
+        out.normal = l.normal;
+        out.mask = l.mask;
+        out.tileMeters = l.tile;
+        out.roughness = terrain::layerFollowsTerrain(l.roughness) ? roughness : l.roughness;
+        out.metallic = terrain::layerFollowsTerrain(l.metallic) ? metallic : l.metallic;
+        out.normalScale = l.normalScale;
     }
     r.color = filament::math::float4{desc.color.r, desc.color.g, desc.color.b, 1.0f};
-    r.roughness = float(desc.roughness);
-    r.metallic = float(desc.metallic);
     return r;
 }
 

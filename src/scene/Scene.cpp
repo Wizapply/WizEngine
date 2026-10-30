@@ -1639,9 +1639,10 @@ void Scene::applyToRenderer() {
     if (terrainMeshDirty_ || terrainSurfaceDirty_ || terrainLayersDirty_ ||
         !terrainChunkDirty_.empty() || !terrainSplatDirty_.empty()) {
         terrainMesh = terrainMeshDirty_;
-        // 表面（色・材質）と層（テクスチャ・タイル）はどちらも setTerrainSurface 1 回で
-        // 入れる。層のテクスチャを読み直すのは、パスが変わった層だけ（Renderer が
-        // 層ごとに前回のパスを覚えている）= 色だけの変更で画像は読まない。
+        // 表面（色・材質）と層（テクスチャ・法線・マスクの画像とタイル・粗さ・金属・
+        // 法線の強さ）はどちらも setTerrainSurface 1 回で入れる。層の画像を読み直す
+        // のは、パスが変わった画像だけ（Renderer が層ごとに前回のパスを覚えている）
+        // = 色や数値だけの変更で画像は読まない。
         terrainSurface = terrainSurfaceDirty_ || terrainLayersDirty_;
         terrainChunks = terrainChunkDirty_;
         terrainSplat = terrainSplatDirty_;

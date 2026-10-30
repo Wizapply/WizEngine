@@ -216,16 +216,33 @@ bool decodeLayers(const SectionRef& sec, TerrainLayers& out, std::string& reason
         left -= 4;
         if (k < uint32_t(kSplatChannels)) {
             TerrainLayer& layer = layers[k];
-            std::size_t used = 0;
-            if (!getString(p, recordBytes, layer.texture, used, reason)) {
-                reason = what + ": " + reason;
+            std::size_t at = 0;  // レコードの中の読んだ位置
+            auto readString = [&](std::string& s) {
+                std::size_t used = 0;
+                if (!getString(p + at, recordBytes - at, s, used, reason)) {
+                    reason = what + ": " + reason;
+                    return false;
+                }
+                at += used;
+                return true;
+            };
+            auto readF32 = [&](float& f) {
+                if (recordBytes - at < sizeof(float)) {
+                    reason = what + " is too short (" + std::to_string(recordBytes) + " bytes)";
+                    return false;
+                }
+                f = getF32(p + at);
+                at += sizeof(float);
+                return true;
+            };
+            if (!readString(layer.texture) || !readF32(layer.tile)) return false;
+            // tile で終わる古い形式は、法線から後ろを既定のままにする。
+            if (at < recordBytes &&
+                (!readString(layer.normal) || !readString(layer.mask) ||
+                 !readF32(layer.roughness) || !readF32(layer.metallic) ||
+                 !readF32(layer.normalScale))) {
                 return false;
             }
-            if (recordBytes - used < 4) {
-                reason = what + " is too short (" + std::to_string(recordBytes) + " bytes)";
-                return false;
-            }
-            layer.tile = getF32(p + used);
         }
         p += recordBytes;  // 知らない欄・知らない層は飛ばす
         left -= recordBytes;
@@ -327,10 +344,12 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
         return false;
     }
     for (const TerrainLayer& l : layers) {
-        if (l.texture.size() > kMaxLayerPathBytes) {
-            reason = "layer texture path is longer than " +
-                     std::to_string(kMaxLayerPathBytes) + " bytes";
-            return false;
+        for (const LayerImage image : kLayerImages) {
+            if (layerImagePath(l, image).size() > kMaxLayerPathBytes) {
+                reason = std::string("layer ") + layerImageName(image) + " path is longer than " +
+                         std::to_string(kMaxLayerPathBytes) + " bytes";
+                return false;
+            }
         }
     }
     const std::size_t res = std::size_t(field.resolution());
@@ -344,9 +363,12 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
     const std::size_t heightBytes = field.samples().size() * 2;
 
     // LAYR の中身: u32 count + 層ごとに u32 recordBytes + レコード
-    // （u16 pathLen + パス + f32 tile。欄は末尾へ足す = 古い版は recordBytes で飛ばす）。
+    // （色のパス + f32 tile + 法線のパス + マスクのパス + f32 roughness /
+    // metallic / normalScale。パスは u16 長さ + UTF-8。欄は末尾へ足す = 古い版は
+    // recordBytes で飛ばす）。
     auto layerRecordBytes = [](const TerrainLayer& l) {
-        return stringBytes(l.texture) + sizeof(float);
+        return stringBytes(l.texture) + sizeof(float) + stringBytes(l.normal) +
+               stringBytes(l.mask) + 3 * sizeof(float);
     };
     std::size_t layerBytes = sizeof(uint32_t);
     for (const TerrainLayer& l : layers) layerBytes += sizeof(uint32_t) + layerRecordBytes(l);
@@ -397,6 +419,11 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
             putLE<uint32_t>(buf, uint32_t(layerRecordBytes(l)));  // recordBytes
             putString(buf, l.texture);
             putF32(buf, l.tile);
+            putString(buf, l.normal);
+            putString(buf, l.mask);
+            putF32(buf, l.roughness);
+            putF32(buf, l.metallic);
+            putF32(buf, l.normalScale);
         }
         padTo8(buf);
     }
