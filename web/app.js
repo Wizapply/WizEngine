@@ -2896,7 +2896,7 @@
         '<span class="ico">🧩</span><span class="name">' + ndEsc(p.name) +
         '</span><span class="kind">prefab</span></div>';
     }
-    html += renderTerrainTiles();  // ⛰ assets/terrains/*.terrain（terrain.js）
+    html += renderTerrainTiles();  // ⛰ assets/terrains/*.terrain（terrain-files.js）
     for (const f of files) {
       const cur = f === sceneData.sceneFile;
       html += '<div class="asItem' + (cur ? ' sel' : '') +
