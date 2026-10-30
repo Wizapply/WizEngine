@@ -1,6 +1,6 @@
 // Charon web UI: テレイン欄（Inspector の secTerrain 節 = 選択したテレイン、XML の <terrain>）。app.js の後ろに読む
 // 古典スクリプトで、app.js のトップレベル（send / num / setField / round2 /
-// sceneData / owner など）をそのまま使う。ここの関数もグローバルのままにする
+// sceneData など）をそのまま使う。ここの関数もグローバルのままにする
 // （index.html の onchange= と app.js の renderEditor などが名前で呼ぶため）。
 // 層の欄は terrain-layers.js、1 回きりの道具は terrain-tools.js、ファイルの操作は
 // terrain-files.js、筆は terrain-brush.js（どれもこの後ろに読む）。
@@ -52,31 +52,30 @@
     const t = (sceneData && sceneData.terrain) || {};
     const pick = (id) => document.getElementById(id);
     // 欄が空・数でないときは今の値（無ければ送らない）。
-    const n = (id, cur) => num(id, cur);
     let value;
     switch (key) {
-      case 'size': value = n('edTerrainSize', t.size); break;
-      case 'resolution': value = Math.round(n('edTerrainRes', t.resolution)); break;
-      case 'height': value = n('edTerrainHeight', t.height); break;
+      case 'size': value = num('edTerrainSize', t.size); break;
+      case 'resolution': value = Math.round(num('edTerrainRes', t.resolution)); break;
+      case 'height': value = num('edTerrainHeight', t.height); break;
       case 'pos': {
         const p = t.pos || {};
-        value = { x: n('edTerrainPX', p.x), y: n('edTerrainPY', p.y),
-                  z: n('edTerrainPZ', p.z) };
+        value = { x: num('edTerrainPX', p.x), y: num('edTerrainPY', p.y),
+                  z: num('edTerrainPZ', p.z) };
         if (!Number.isFinite(value.x) || !Number.isFinite(value.y) ||
             !Number.isFinite(value.z)) return;
         break;
       }
       case 'rot': {
         const r = t.rot || {};
-        value = { x: n('edTerrainRX', r.x), y: n('edTerrainRY', r.y),
-                  z: n('edTerrainRZ', r.z) };
+        value = { x: num('edTerrainRX', r.x), y: num('edTerrainRY', r.y),
+                  z: num('edTerrainRZ', r.z) };
         if (!Number.isFinite(value.x) || !Number.isFinite(value.y) ||
             !Number.isFinite(value.z)) return;
         break;
       }
       case 'color': value = pick('edTerrainColor').value; break;
-      case 'roughness': value = n('edTerrainRough', t.roughness); break;
-      case 'metallic': value = n('edTerrainMetal', t.metallic); break;
+      case 'roughness': value = num('edTerrainRough', t.roughness); break;
+      case 'metallic': value = num('edTerrainMetal', t.metallic); break;
       default: return;
     }
     if (typeof value === 'number' && !Number.isFinite(value)) return;

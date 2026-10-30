@@ -1,11 +1,11 @@
 // Charon web UI: テレインの筆（映像左上の #terrainBar と、映像の上のポインタ
-// 操作）。terrain-files.js の後ろ（最後）に読む古典スクリプトで、app.js（send / toNdc /
-// hitEl / hoverNdc / clearHover / touches / NDC_OFFSCREEN / owner / sceneData /
-// isEditorCam / myEditorSel / focusInField / storeJson / loadStoredJson /
-// readFields / restoreFields）と terrain.js（currentTerrain /
-// terrainLayerLabel / terrainTools / terrainIdentity）のトップレベルをそのまま使う。ここの関数も
-// グローバルのままにする（index.html の onclick= と app.js の renderEditor
-// などが名前で呼ぶため）。
+// 操作）。terrain-files.js の後ろ（最後）に読む古典スクリプトで、app.js
+// （send / toNdc / hitEl / hoverNdc / clearHover / touches / NDC_OFFSCREEN /
+// owner / sceneData / isEditorCam / myEditorSel / focusInField / storeJson /
+// loadStoredJson / readFields / restoreFields）と terrain.js（currentTerrain /
+// terrainLayerLabel / terrainTools / terrainIdentity）のトップレベルをそのまま
+// 使う。ここの関数もグローバルのままにする（index.html の onclick= と app.js の
+// renderEditor などが名前で呼ぶため）。
 //
 // 送るのは edit.terrain.brush {phase, x, y, tool, radius, strength, layer}（x, y は
 // 映像の NDC）。phase は hover（輪だけ）/ begin / move / end。値の既定値・

@@ -5,8 +5,8 @@
 // （flushTerrain / discardTerrain / currentTerrain / terrainTools / terrainLayerLabel）の
 // トップレベルをそのまま使う。ここの関数もグローバルのままにする（index.html の
 // onclick= と terrain.js の renderTerrainSection などが名前で呼ぶため）。
-
-  function terrainAutoPaintDefaults() { return terrainTools().autoPaintDefaults; }
+// 取り消し（undoTerrain）は secTerrain 節のほか、index.html の #terrainBar の ↶
+// からも呼ばれる。
 
   // ---- ノイズで生成と取り消し（secTerrain 節）-------------------------------
   // 値は送るときだけ使い、テレインには覚えない（サーバーは送られなかった
@@ -46,6 +46,7 @@
   };
   const TERRAIN_AUTOPAINT_SOFT = { softness: 'edTerrainAutoSoft' };
   const TERRAIN_AUTOPAINT_STORE = 'terrain:autopaint';
+  function terrainAutoPaintDefaults() { return terrainTools().autoPaintDefaults; }
   // 層 i の欄の表（readFields / fillFields に渡す形）。
   function autoPaintRowFields(i) {
     const map = {};
@@ -111,7 +112,9 @@
   // 欄の値（送る形 = {softness?, layers:[{enabled, slopeMin?, ...}]}）。
   function readTerrainAutoPaint() {
     const rules = readFields(TERRAIN_AUTOPAINT_SOFT);
-    const count = document.getElementById('edTerrainAutoRows').childElementCount;
+    // 欄が無ければ層は 0 個（storeTerrainAutoPaint は覚えずに抜ける）。
+    const box = document.getElementById('edTerrainAutoRows');
+    const count = box ? box.childElementCount : 0;
     rules.layers = [];
     for (let i = 0; i < count; i++) {
       const band = readFields(autoPaintRowFields(i));

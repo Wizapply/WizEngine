@@ -1579,7 +1579,8 @@
   }
   // 欄の下限（data-limit="<名前>" の欄の min）を /scene の limits から入れる。
   // 下限の持ち主はサーバー（ed::kRoughnessMin など）で、HTML に数字を写さない。
-  // 値が変わったときだけ書く（ポーリングのたびに属性を書き換えない）。
+  // ポーリングのたびに欄ごとに比べ、値が違うときだけ書く（同じ値で属性を
+  // 書き換えない）。
   function applyFieldLimits() {
     const limits = sceneData && sceneData.limits;
     if (!limits) return;
