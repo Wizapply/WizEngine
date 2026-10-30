@@ -1,9 +1,9 @@
 // Charon web UI: テレインの塗り分けの層の欄（Inspector の secTerrain 節の #edTerrainLayers。
-// 欄の表・行の組み立て・送った値をポーリングで戻さない守り）。app.js と terrain.js の
-// 後ろに読む古典スクリプトで、app.js（setField）と terrain.js（terrainIdentity /
-// terrainLayerLabel / applyTerrain）のトップレベルをそのまま使う。ここの関数も
-// グローバルのままにする（terrain.js の applyTerrain / renderTerrainSection が
-// 名前で使うため）。
+// 欄の表・行の組み立て・値の表示と送信・送った値をポーリングで戻さない守り）。app.js と
+// terrain.js の後ろに読む古典スクリプトで、app.js（send / num / setField / round2）と
+// terrain.js（terrainIdentity / terrainLayerLabel / flushTerrain）のトップレベルを
+// そのまま使う。ここの関数もグローバルのままにする（terrain.js の
+// renderTerrainSection が名前で使うため）。
 
   // 層の欄で送った値（キーは欄の id、値は {value, until}）。サーバーの値が
   // 送った値になるまで（届かなければ TERRAIN_LAYER_HOLD_MS まで）、ポーリングで
@@ -105,9 +105,65 @@
         if (spec.placeholder) input.placeholder = spec.placeholder;
         input.title = name + ' の' + spec.tip + '。' +
           (field === 'tile' ? TERRAIN_TILE_TIP : TERRAIN_LAYER_TIP);
-        input.onchange = () => applyTerrain('layer', i, field);
+        input.onchange = () => applyTerrainLayer(i, field);
         rows[spec.row].appendChild(input);
       }
       box.appendChild(group);
     }
+  }
+  // 層の欄を 1 つ送る。index = 層の番号（0 から）、field = 変えた欄
+  // （TERRAIN_LAYER_FIELDS のキー）で、その 1 つだけを layer{index, <field>}
+  // の 1 通ですぐ送る（触っていない欄の値は送らない = 丸めた表示の値や古い値で
+  // 上書きしない）。
+  function applyTerrainLayer(index, field) {
+    // 層は部分更新のキーに混ぜない（サーバーは layer の 1 通を層だけの操作として
+    // 扱う）。溜まっている形のキーは先に別の 1 通で送る（層とは独立）。
+    const spec = TERRAIN_LAYER_FIELDS[field];
+    if (!spec) return;
+    const id = spec.id + index;
+    const el = document.getElementById(id);
+    if (!el) return;
+    // 数の欄に打ちかけの文字（「1e」「-」など）があると、ブラウザは value を ''
+    // で返す。空と区別できないので送らない（numOrNull で null = 「全体に従う」へ
+    // 戻さない。ポーリングが戻す）。
+    if (spec.kind !== 'text' && el.validity && el.validity.badInput) return;
+    const layer = { index };
+    let shown;
+    if (spec.kind === 'text') {
+      layer[field] = shown = el.value.trim();
+    } else {
+      const v = num(id, NaN);
+      if (Number.isFinite(v)) {
+        layer[field] = v;
+        shown = round2(v);
+      } else if (spec.kind === 'numOrNull' && el.value.trim() === '') {
+        layer[field] = null;  // 空 = テレイン全体の値に従う
+        shown = '';
+      } else {
+        return;  // 空・数でない = 送らない（ポーリングが戻す）
+      }
+    }
+    syncTerrainLayerSent();
+    terrainLayerSent[id] = { value: shown, until: Date.now() + TERRAIN_LAYER_HOLD_MS };
+    flushTerrain();
+    send('edit.terrain', { layer });
+    return;
+  }
+  // 層の欄の中身（layers = サーバーの terrain.layers。順 = 層の番号）。行を
+  // そろえてから値を入れ、マスクのある層の行を薄く見せる。
+  function renderTerrainLayers(layers) {
+    buildTerrainLayerRows(layers.length);
+    layers.forEach((l, i) => {
+      for (const field in TERRAIN_LAYER_FIELDS) {
+        const spec = TERRAIN_LAYER_FIELDS[field];
+        const v = l[field];
+        // パスは文字列、数は丸めて、null（全体に従う）・無い値は空の欄。
+        setLayerField(spec.id + i, spec.kind === 'text' ? (v || '')
+          : (v === null || v === undefined ? '' : round2(v)));
+      }
+      // マスクのある層は粗さ・金属の数字を使わない（マスクが勝つ）ので薄く見せる。
+      const mask = document.getElementById(TERRAIN_LAYER_FIELDS.mask.id + i);
+      const maskRow = mask && mask.closest('.layerRow');
+      if (maskRow) maskRow.classList.toggle('masked', !!l.mask);
+    });
   }

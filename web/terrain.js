@@ -4,6 +4,8 @@
 // （index.html の onchange= と app.js の renderEditor などが名前で呼ぶため）。
 // 層の欄は terrain-layers.js、1 回きりの道具は terrain-tools.js、ファイルの操作は
 // terrain-files.js、筆は terrain-brush.js（どれもこの後ろに読む）。
+// 描き直し（renderTerrainSection）は後ろの renderTerrainLayers（terrain-layers.js）と
+// buildTerrainAutoPaintRows / terrainAutoPaintDefaults（terrain-tools.js）を呼ぶ。
 
   // ---- テレイン（選択オブジェクトの secTerrain 節）---------------------------
   // テレインはシーンに 1 つのオブジェクト。Objects 一覧の Terrain 行で選ぶと
@@ -45,51 +47,14 @@
     const t = (sceneData && sceneData.terrain) || {};
     return (t.data || '') + '|' + (t.guid || '');
   }
-  // key = 送るキー。'layer' のときだけ index = 層の番号（0 から）、field =
-  // 変えた欄（TERRAIN_LAYER_FIELDS のキー）で、その 1 つだけを layer{index, <field>}
-  // の 1 通ですぐ送る（触っていない欄の値は送らない = 丸めた表示の値や古い値で
-  // 上書きしない）。
-  function applyTerrain(key, index, field) {
+  // key = 送るキー。層の欄は terrain-layers.js の applyTerrainLayer が送る。
+  function applyTerrain(key) {
     const t = (sceneData && sceneData.terrain) || {};
     const pick = (id) => document.getElementById(id);
     // 欄が空・数でないときは今の値（無ければ送らない）。
     const n = (id, cur) => num(id, cur);
     let value;
     switch (key) {
-      case 'layer': {
-        // 層は部分更新のキーに混ぜない（サーバーは layer の 1 通を層だけの操作として
-        // 扱う）。溜まっている形のキーは先に別の 1 通で送る（層とは独立）。
-        const spec = TERRAIN_LAYER_FIELDS[field];
-        if (!spec) return;
-        const id = spec.id + index;
-        const el = pick(id);
-        if (!el) return;
-        // 数の欄に打ちかけの文字（「1e」「-」など）があると、ブラウザは value を ''
-        // で返す。空と区別できないので送らない（numOrNull で null = 「全体に従う」へ
-        // 戻さない。ポーリングが戻す）。
-        if (spec.kind !== 'text' && el.validity && el.validity.badInput) return;
-        const layer = { index };
-        let shown;
-        if (spec.kind === 'text') {
-          layer[field] = shown = el.value.trim();
-        } else {
-          const v = n(id, NaN);
-          if (Number.isFinite(v)) {
-            layer[field] = v;
-            shown = round2(v);
-          } else if (spec.kind === 'numOrNull' && el.value.trim() === '') {
-            layer[field] = null;  // 空 = テレイン全体の値に従う
-            shown = '';
-          } else {
-            return;  // 空・数でない = 送らない（ポーリングが戻す）
-          }
-        }
-        syncTerrainLayerSent();
-        terrainLayerSent[id] = { value: shown, until: Date.now() + TERRAIN_LAYER_HOLD_MS };
-        flushTerrain();
-        send('edit.terrain', { layer });
-        return;
-      }
       case 'size': value = n('edTerrainSize', t.size); break;
       case 'resolution': value = Math.round(n('edTerrainRes', t.resolution)); break;
       case 'height': value = n('edTerrainHeight', t.height); break;
@@ -132,8 +97,9 @@
     }
   }
   // 層の表示名（i = 0 始まりの層の番号）。名前の付け方はサーバーが持つ
-  // （/scene の terrain.layers[i].label = ステータスの文と同じ名前）。層の欄・
-  // 自動塗りの行・筆の層の選択（terrain-brush.js）はここを通す。
+  // （/scene の terrain.layers[i].label = ステータスの文と同じ名前）。層の欄
+  // （terrain-layers.js）・自動塗りの行（terrain-tools.js）・筆の層の選択
+  // （terrain-brush.js）はここを通す。
   function terrainLayerLabel(i) {
     const l = ((sceneData && sceneData.terrain && sceneData.terrain.layers) || [])[i];
     return (l && l.label) || '';
@@ -181,21 +147,7 @@
     set('rot', 'edTerrainRY', round2(r.y));
     set('rot', 'edTerrainRZ', round2(r.z));
     // 塗り分けの層（.terrain の LAYR。サーバーの terrain.layers の順 = 層の番号）。
-    const layers = t.layers || [];
-    buildTerrainLayerRows(layers.length);
-    layers.forEach((l, i) => {
-      for (const field in TERRAIN_LAYER_FIELDS) {
-        const spec = TERRAIN_LAYER_FIELDS[field];
-        const v = l[field];
-        // パスは文字列、数は丸めて、null（全体に従う）・無い値は空の欄。
-        setLayerField(spec.id + i, spec.kind === 'text' ? (v || '')
-          : (v === null || v === undefined ? '' : round2(v)));
-      }
-      // マスクのある層は粗さ・金属の数字を使わない（マスクが勝つ）ので薄く見せる。
-      const mask = document.getElementById(TERRAIN_LAYER_FIELDS.mask.id + i);
-      const maskRow = mask && mask.closest('.layerRow');
-      if (maskRow) maskRow.classList.toggle('masked', !!l.mask);
-    });
+    renderTerrainLayers(t.layers || []);
     // 自動塗りの行（層の数と既定の帯はサーバーの値。欄の値はこのブラウザが持つ）。
     buildTerrainAutoPaintRows(terrainAutoPaintDefaults());
     if (t.color) set('color', 'edTerrainColor', t.color);
@@ -224,7 +176,8 @@
   function isOpenTerrain(name) {
     const open = (sceneData && sceneData.terrainOpen) || '';
     return !!open && sameTerrainName(name, open);
-  }  // 取り替えると失う変更があるか（サーバーの未保存 + ここで確定待ちの欄）。
+  }
+  // 取り替えると失う変更があるか（サーバーの未保存 + ここで確定待ちの欄）。
   // テレインが無ければ失うものは無い（確定待ちの欄は黙って捨ててよい -
   // 新規は既定の大きさで作る仕様）。
   function terrainUnsaved() {
