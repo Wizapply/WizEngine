@@ -119,6 +119,8 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
                          {"modal", f.modal},
                          {"parsers", wizengine::importAvailable()}};
     }
+    // 入力欄の下限（UI が data-limit の欄の min に入れる。値の持ち主はここ）。
+    j["limits"] = {{"roughnessMin", ed::kRoughnessMin}};
     j["modal"] = modalFrequencies();
     j["gizmo"] = ed::toJson(editor_.gizmo());
     j["statusSeq"] = editor_.statusSeq();  // status より先に読む（EditorState.h）

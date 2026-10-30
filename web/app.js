@@ -1577,6 +1577,18 @@
     const v = parseFloat(document.getElementById(id).value);
     return Number.isFinite(v) ? v : fallback;
   }
+  // 欄の下限（data-limit="<名前>" の欄の min）を /scene の limits から入れる。
+  // 下限の持ち主はサーバー（ed::kRoughnessMin など）で、HTML に数字を写さない。
+  // 値が変わったときだけ書く（ポーリングのたびに属性を書き換えない）。
+  function applyFieldLimits() {
+    const limits = sceneData && sceneData.limits;
+    if (!limits) return;
+    for (const el of document.querySelectorAll('[data-limit]')) {
+      const v = limits[el.dataset.limit];
+      if (!Number.isFinite(v)) continue;
+      if (el.min !== String(v)) el.min = String(v);
+    }
+  }
   // フォームの欄（input / select / textarea）にフォーカスがあるか。キーの
   // ショートカットは、欄に打っている間は効かせない。
   function focusInField() {
@@ -4403,6 +4415,7 @@
     try {
       const r = await fetch('scene');
       sceneData = await r.json();
+      applyFieldLimits();
       noteSceneChanges(sceneData);
       const status = sceneData.status || '';
       if (xmlEdOpen) {

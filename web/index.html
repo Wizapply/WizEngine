@@ -555,7 +555,7 @@
           <div class="edRow">
             <span>粗さ / 金属</span>
             <span>
-              <input id="edRough" class="num" type="number" step="0.05" min="0.02"
+              <input id="edRough" class="num" type="number" step="0.05" data-limit="roughnessMin"
                      max="1" title="0 = 鏡のように映り込む、1 = つや消し"
                      onchange="applyMaterial()">
               <input id="edMetal" class="num" type="number" step="0.1" min="0" max="1"
@@ -844,7 +844,7 @@
           <span>地面の粗さ / 金属</span>
           <span>
             <input id="edGroundRough" class="num" type="number" step="0.05"
-                   min="0.02" max="1"
+                   data-limit="roughnessMin" max="1"
                    title="0 = 鏡のように映り込む（濡れた路面）、1 = つや消し"
                    onchange="applyGround()">
             <input id="edGroundMetal" class="num" type="number" step="0.1"
@@ -1020,7 +1020,7 @@
           <span>粗さ / 金属</span>
           <span>
             <input id="edTerrainRough" class="num" type="number" step="0.05"
-                   min="0.02" max="1" title="0 = 鏡のように映り込む、1 = つや消し"
+                   data-limit="roughnessMin" max="1" title="0 = 鏡のように映り込む、1 = つや消し"
                    onchange="applyTerrain('roughness')">
             <input id="edTerrainMetal" class="num" type="number" step="0.1"
                    min="0" max="1" title="0 = 土・岩、1 = 金属"
