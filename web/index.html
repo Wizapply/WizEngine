@@ -989,12 +989,12 @@
         </div>
         <!-- 塗り分けの層（テクスチャ / 法線 / マスクと数値）。値はシーンの XML ではなく
              .terrain が持つ（どのシーンで開いても同じ）。行は層の数だけ
-             terrain.js の renderTerrainSection が作る（ツールチップもそこ）。 -->
+             terrain-layers.js の buildTerrainLayerRows が作る（ツールチップもそこ）。 -->
         <div id="edTerrainLayersHead" class="edLabel">塗り分けの層（テクスチャ / 法線 / マスク）</div>
         <div id="edTerrainLayers"></div>
         <!-- 自動塗り（傾きと高さの帯で全体の塗りを作り直す。取り消しは 1 段）。
-             行は層の数だけ terrain.js が作る。欄の値はボタンを押したときにだけ
-             送る（テレインには覚えず、変えたときにこのブラウザに記憶。空 =
+             行は層の数だけ terrain-tools.js の buildTerrainAutoPaintRows が作る。
+             欄の値はボタンを押したときにだけ送る（テレインには覚えず、変えたときにこのブラウザに記憶。空 =
              サーバーの既定の帯 = 欄の薄い数字）。 -->
         <div id="edTerrainAutoHead" class="edLabel"
              title="傾きは度（0 = 水平、90 = 垂直）、高さはテレインの位置の高さ（位置 Y）からの m（筆で盛り上げたり削ったりしても、この基準は動きません）。どの帯にも入らない所は層 1"
@@ -1623,6 +1623,8 @@
 </div>
 <script src="app.js"></script>
 <script src="terrain.js"></script>
+<script src="terrain-layers.js"></script>
+<script src="terrain-tools.js"></script>
 <script src="terrain-files.js"></script>
 <script src="terrain-brush.js"></script>
 </body>

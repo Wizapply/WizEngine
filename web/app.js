@@ -4417,7 +4417,7 @@
       renderNodeEditor();
     } catch (e) { /* server busy or gone; try again next tick */ }
   }
-  // 後ろに読む terrain.js / terrain-brush.js（renderEditor が使う）の実行を
+  // 後ろに読む terrain*.js（renderEditor / renderAssets が使う）の実行を
   // 待ってから回し始める。
   // DOMContentLoaded は body 末尾のスクリプトが全部走ったあとに来る。
   window.addEventListener('DOMContentLoaded', () => {
