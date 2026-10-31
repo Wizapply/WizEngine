@@ -62,7 +62,8 @@
   // だけのブラウザがシーンを書き換えられては困る）。
   function setControlsEnabled(on) {
     document.querySelectorAll(
-        '#sidebar button.wide, #sidebar .modeBtn, #paneEditor button')
+        '#sidebar button.wide, #sidebar .modeBtn, #paneEditor button, ' +
+        '#secWorld button, #secRender button')
       .forEach((b) => { b.disabled = !on; });
   }
   setControlsEnabled(false);
@@ -1333,10 +1334,8 @@
     document.getElementById('secPrefab').hidden = !on;
     const banner = document.getElementById('vhPrefab');
     banner.hidden = !on;
-    // World 節と描画節はここでしか隠さないので、抜けたら必ず戻す
+    // World 節と描画節は World/Physics タブにあるので、ここでは触らない
     // （secObj / secJoint は renderEditor が毎回決め直す）。
-    document.getElementById('secWorld').hidden = on;
-    document.getElementById('secRender').hidden = on;
     if (!on) {
       prefabListKey = '';
       return;
@@ -2223,7 +2222,7 @@
     send('edit.import', { file: f.trim() });
   }
 
-  // シミュレート設定（Physics タブ）。物理レートはここでは送らない - Rate
+  // シミュレート設定（World/Physics タブ）。物理レートはここでは送らない - Rate
   // セクション（rate コマンド）が受け持ち、サーバー側で保存値にも映る。
   function applySim() {
     send('edit.sim', {
@@ -2405,6 +2404,12 @@
     if (!editorHere && !document.getElementById('paneEditor').hidden) {
       showTab('scene');  // 隠したタブを開いたままにしない
     }
+    // シーン全体の設定（World・描画）は World/Physics タブにあるが、送るのは
+    // edit.environment / edit.render / edit.event.* = エディタカメラの
+    // ページ専用の操作（サーバーが他のページからのぶんを弾く）。押しても
+    // 効かない欄は出さない - Inspector にあった頃と同じ見え方。
+    document.getElementById('secWorld').hidden = !editorHere;
+    document.getElementById('secRender').hidden = !editorHere;
 
     // モード切替はどのカメラのページからでもできる（サーバー側も同じ扱い）。
     // Editor Camera は「編集できる」カメラなだけで、モードを握ってはいない。
@@ -2418,8 +2423,8 @@
     if (!editorHere) {
       const eCamIdx =
         (sceneData.editorCam !== undefined) ? sceneData.editorCam : 0;
-      editTitle += '（編集操作は Editor Camera = /cam' + eCamIdx +
-        '/ のページから）';
+      editTitle += '（Editor Camera = /cam' + eCamIdx +
+        '/ のページへ移ります）';
     }
     vEdit.title = editTitle;
 
@@ -2643,8 +2648,9 @@
     // シミュレートへ戻したら、編集のための窓（カメラのプレビュー）は閉じる。
     if (!editing) closeCamPopups();
 
-    // Inspector のイベント節。オブジェクトと World は「付いているアセット」、
-    // ライト / カメラはそれを対象にしているノードの一覧（付け先になれない）。
+    // イベント節（Inspector と World/Physics タブの World 節）。オブジェクトと
+    // World は「付いているアセット」、ライト / カメラはそれを対象にしている
+    // ノードの一覧（付け先になれない）。
     renderEventAttachments('edWorldEvents', 'edWorldEventPick', worldEvents(), -1);
     if (sel) {
       renderEventAttachments('edObjEvents', 'edObjEventPick', sel.events || [],
@@ -2716,7 +2722,7 @@
         }).join('')
       : '<div class="edHint">このオブジェクトのケーブルはまだありません。</div>';
 
-    // シミュレート設定（Physics タブへ移設済み。全カメラで見える・変えられる）。
+    // シミュレート設定（World/Physics タブへ移設済み。全カメラで見える・変えられる）。
     const s = sceneData.sim;
     if (s) {
       setField('edGravity', round2(s.gravity));
@@ -3074,9 +3080,10 @@
     ];
   }
 
-  // Inspector の「イベント」一覧の右クリック（開く / 外す）。行は
-  // renderEventAttachments が data-event / data-owner を付けて出す。
-  document.getElementById('paneEditor').addEventListener('contextmenu', (e) => {
+  // Inspector の「イベント」一覧と、World/Physics タブの World 節（シーン全体の
+  // イベント）の右クリック（開く / 外す）。行は renderEventAttachments が
+  // data-event / data-owner を付けて出す。
+  const onEventRowMenu = (e) => {
     if (!owner || !sceneData || sceneData.mode !== 'editor') return;
     const row = e.target.closest ? e.target.closest('[data-event]') : null;
     if (!row) return;
@@ -3088,7 +3095,9 @@
       { label: '✕ ここから外す', danger: true,
         onClick: () => detachEvent(name, parseInt(owner_, 10)) },
     ]);
-  });
+  };
+  document.getElementById('paneEditor').addEventListener('contextmenu', onEventRowMenu);
+  document.getElementById('secWorld').addEventListener('contextmenu', onEventRowMenu);
 
   // ---- ノードエディタ（Node-RED 風のイベント設計）--------------------------
   // グラフの実体はサーバー（/scene の events = {assets:[{name,nodes,wires}],
@@ -4412,10 +4421,30 @@
     renderAssetStatus();
   }
 
+  // シミュレート → エディタに戻ったら、必ず Editor Camera のページへ移る。
+  // 編集操作（Inspector・ギズモ・アセットパネル）はそのページでしかできない
+  // ので、Camera 1 などで走らせて止めたあとに手で移る手間を省く。判定は
+  // ポーリングで見た「前回のモード」との差分なので、どのページ・どの経路
+  // （ヘッダーのボタン、他のページからの切替）で戻っても同じ。開いた直後の
+  // 1 回目（前回が無い）は移らない = エディタ中に Camera 1 のページを開いて
+  // 観察するのは今までどおりできる。プレビュー窓（?popup=1）は見るための
+  // 窓なので移らない（元のページが移り、窓はそこで閉じる）。
+  let lastSeenMode = null;
+  function followEditorCamera(prevMode) {
+    if (prevMode !== 'simulate' || sceneData.mode !== 'editor') return false;
+    if (document.body.classList.contains('popup') || isEditorCam()) return false;
+    const e = (sceneData.editorCam !== undefined) ? sceneData.editorCam : 0;
+    location.href = camPath(e);
+    return true;
+  }
+
   async function pollScene() {
     try {
       const r = await fetch('scene');
       sceneData = await r.json();
+      const prevMode = lastSeenMode;
+      lastSeenMode = sceneData.mode;
+      if (followEditorCamera(prevMode)) return;  // ページを離れるので描かない
       applyFieldLimits();
       noteSceneChanges(sceneData);
       const status = sceneData.status || '';
