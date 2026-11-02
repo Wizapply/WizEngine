@@ -8,7 +8,8 @@
 
 #include "terrain/HeightField.h"
 
-// テレインの散布物（木や小物）の値型と、置き場所の座標の換算・値の検査。
+// テレインの散布物（木や小物）の値型と、置き場所の座標の換算・値の検査、
+// 散布の筆の計算（scatterStamp: 円の中へ配置を足す / 円の中の配置を消す）。
 //
 // 散布物は「原型」（モデルのパスと幹の寸法）と「配置」（どの原型をどこに・
 // どの向きと倍率で）の 2 つ。配置の位置はテレインの正規化座標 (u, v)
@@ -21,12 +22,15 @@
 namespace wizengine {
 namespace terrain {
 
+struct BrushStamp;  // TerrainBrush.h（scatterStamp が参照で受けるだけ）
+
 // 原型の数（固定の席。配置は番号で原型を指す）。
 constexpr int kMaxScatterPrototypes = 8;
 // 配置の数の上限（描画と当たり判定の重さの安全弁）。
 constexpr int kMaxScatterInstances = 4096;
 // 原型の倍率の範囲（clampScatterPrototype が丸める。配置の倍率は丸めず、
-// pruneScatterInstances が 0 以下・有限でないものを落とすだけ）。
+// pruneScatterInstances が 0 以下・有限でないものを落とすだけ）。下限は散布の
+// 筆（scatterStamp）が作る配置の倍率の下限にも使う。
 constexpr float kScatterScaleMin = 0.01f;
 constexpr float kScatterScaleMax = 100.0f;
 // 幹の半径・高さの上限 (m)。下限は 0。
@@ -96,6 +100,42 @@ ScatterPrototype clampScatterPrototype(ScatterPrototype p);
 // 0 以下・向きが有限でない・原型の番号が範囲外。そのあと kMaxScatterInstances を
 // 超えるぶんを後ろから切る。戻り値は落とした数（切ったぶんを含む）。
 std::size_t pruneScatterInstances(TerrainScatter& s);
+
+// 散布の筆の安全弁: 円 1 個の目標の個数の上限と、スタンプ 1 個で試す場所の数の
+// 上限（どちらも半径・密度を最大にしたときの重さを抑える）。
+constexpr int kScatterMaxPerDisc = 256;
+constexpr int kScatterMaxTriesPerStamp = 1024;
+
+// scatterStamp の結果の内訳（呼び手のステータス用）。
+struct ScatterStampStats {
+    std::size_t added = 0;    // 足した配置の数
+    std::size_t removed = 0;  // 消した配置の数
+    bool capped = false;      // kMaxScatterInstances に当たって置けなかった場所があった
+};
+
+// 散布の筆のスタンプ 1 個を scatter の配置に当てる（格子の座標 = field と同じ
+// ローカル。円・円の中・届く範囲は TerrainBrush の stampDiscCount / stampDisc /
+// stampBounds）。
+//   Scatter   … 円ごとの目標の個数は density × π r²（kScatterMaxPerDisc まで）の
+//                端数をくじで丸めた数（roundByLottery。くじは seed と円の番号から
+//                決まる）。平均が式どおりなのは、何も無い所へのスタンプ 1 回ぶん
+//                だけ: 同じ場所で押し続ける・線分の円が重なると、スタンプごとに
+//                種が変わるので、円の中の数は ceil(density × π r²) まで増える
+//                （spacing がそれより先に詰まればそこまで）。小さな筆でも当て
+//                続ければ置ける。この目標に対して、
+//                円の中にある同じ原型の配置の不足分を、不足分の 4 倍まで
+//                （スタンプ全体で kScatterMaxTriesPerStamp まで）場所を試して足す。
+//                場所は円の中の一様なくじ（seed と円・試行の番号から決まる =
+//                同じ入力なら同じ結果）。穴・格子の外（solidAt が false）と、
+//                どれかの配置（原型によらない）から spacing 未満の場所には
+//                置かない。向きは 0〜2π、倍率は 1 + scaleJitter × [-1, 1)
+//                （kScatterScaleMin を下限にする = 0 以下の倍率を作らない）。
+//                kMaxScatterInstances に達したら止めて capped。
+//   Unscatter … どれかの円の中にある配置を原型によらず全部消す。
+// 使えないスタンプ（brushStampUsable）・散布の道具でない・空の格子は何もしない。
+// 配置が 1 つでも増減したら true。stats は省略可（あれば上書きする）。
+bool scatterStamp(const HeightField& field, const BrushStamp& stamp, TerrainScatter& scatter,
+                  ScatterStampStats* stats = nullptr);
 
 }  // namespace terrain
 }  // namespace wizengine

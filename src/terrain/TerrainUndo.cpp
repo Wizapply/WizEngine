@@ -42,7 +42,8 @@ bool wellFormed(const TerrainEdit& e) {
 }  // namespace
 
 std::size_t TerrainEdit::bytes() const {
-    return sizeof(TerrainEdit) + heights.size() * sizeof(float) + holes.size() + splat.size();
+    return sizeof(TerrainEdit) + heights.size() * sizeof(float) + holes.size() + splat.size() +
+           scatter.size() * sizeof(ScatterInstance);
 }
 
 TerrainEdit captureRegion(const HeightField& field, const GridRect& rect) {
@@ -89,7 +90,14 @@ TerrainEdit applyEdit(HeightField& field, const TerrainEdit& edit) {
 }
 
 TerrainEdit growEdit(const HeightField& before, const TerrainEdit& acc, const GridRect& rect) {
-    if (acc.empty()) return captureRegion(before, rect);
+    // 格子をまだ記録していなければ今回の範囲を写す。配置の記録は引き継ぐ
+    // （散布してから彫ったストロークも、散布ぶんを戻せるように）。
+    if (acc.rect.empty()) {
+        TerrainEdit out = captureRegion(before, rect);
+        out.hasScatter = acc.hasScatter;
+        out.scatter = acc.scatter;
+        return out;
+    }
     // 別の格子の記録・壊れた記録は混ぜない（acc の「変更前」を失わない）。
     if (!before.valid() || acc.resolution != before.resolution() || !wellFormed(acc)) return acc;
     const GridRect& a = acc.rect;
@@ -111,7 +119,24 @@ TerrainEdit growEdit(const HeightField& before, const TerrainEdit& acc, const Gr
                         out.splat.begin() + std::ptrdiff_t(splatIndex(f, i, j)));
         }
     }
+    out.hasScatter = acc.hasScatter;
+    out.scatter = acc.scatter;
     return out;
+}
+
+void growScatter(TerrainEdit& acc, const TerrainScatter& before) {
+    if (acc.hasScatter) return;  // ストロークの前の配置は最初の 1 回だけ写す
+    acc.hasScatter = true;
+    acc.scatter = before.instances;
+}
+
+TerrainEdit applyScatterEdit(TerrainScatter& scatter, const TerrainEdit& edit) {
+    if (!edit.hasScatter) return {};
+    TerrainEdit inverse;
+    inverse.hasScatter = true;
+    inverse.scatter = scatter.instances;
+    scatter.instances = edit.scatter;
+    return inverse;
 }
 
 TerrainUndoStack::TerrainUndoStack(std::size_t maxEntries, std::size_t maxBytes)
