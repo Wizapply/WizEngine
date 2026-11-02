@@ -91,6 +91,7 @@ std::string Scene::publishNewTerrain(ed::TerrainDesc desc,
 std::shared_ptr<const wt::HeightField> Scene::readTerrainFile(const std::string& name,
                                                               ed::TerrainDesc& desc,
                                                               wt::TerrainLayers& layers,
+                                                              wt::TerrainScatter& scatter,
                                                               std::string& reason) const {
     const std::filesystem::path path = terrainLibrary_->pathFor(name);
     if (path.empty()) {
@@ -125,8 +126,10 @@ std::shared_ptr<const wt::HeightField> Scene::readTerrainFile(const std::string&
         return nullptr;
     }
     sanitizeTerrainLayers(data.layers, "file");
+    sanitizeScatter(data.scatter, "file");
     desc = got;
     layers = data.layers;
+    scatter = std::move(data.scatter);
     return std::make_shared<const wt::HeightField>(std::move(field));
 }
 
@@ -144,8 +147,9 @@ void Scene::loadTerrainField(const ed::TerrainDesc& doc) {
     if (!res.file.empty()) {
         ed::TerrainDesc desc = doc;
         wt::TerrainLayers layers;
+        wt::TerrainScatter scatter;
         std::string reason;
-        auto field = readTerrainFile(res.file, desc, layers, reason);
+        auto field = readTerrainFile(res.file, desc, layers, scatter, reason);
         if (field) {
             if (res.dataChanged) {
                 terrainLoadCaveat_ = "（テレイン " + label + " は背番号で見つけた " +
@@ -156,7 +160,9 @@ void Scene::loadTerrainField(const ed::TerrainDesc& doc) {
                                      " 件 - コンソール参照）";
             }
             publishTerrainField(desc, std::move(field), TerrainHistory::Clear,
-                                TerrainFileState::Saved, {}, false, &layers);
+                                TerrainFileState::Saved, {}, false, &layers,
+                                TerrainChanged::Both,
+                                std::make_shared<const wt::TerrainScatter>(std::move(scatter)));
             return;
         }
         // 使えないファイル: 使わず、上書きもしない（壊れたファイル・共有ファイルの
@@ -177,7 +183,7 @@ void Scene::loadTerrainField(const ed::TerrainDesc& doc) {
     // Missing: 文書の名前と背番号をそのまま覚えて（次の保存の XML に
     // 残る = ファイルを戻せば元に戻る）、格子無しで出す。注意の文は publish の後に
     // 状態から作る（/scene の terrainMissing と同じ口 = 名前が食い違わない）。
-    // 層はファイルが持つので分からない（格子無し = publishTerrainField が既定に戻す）。
+    // 層と散布物はファイルが持つので分からない（格子無し = publishTerrainField が既定に戻す）。
     publishTerrainField(doc, nullptr, TerrainHistory::Clear, missing);
     terrainLoadCaveat_ = "（注意: " + terrainMissingText() + "）";
 }
@@ -310,7 +316,8 @@ bool Scene::saveTerrainData(const std::string& sceneName, std::string& written,
     // 書き換えない）。ファイルが無ければ必ず書く。
     const std::filesystem::path path = terrainLibrary_->pathFor(terrain_.data);
     if (!terrainDirty() && fileExists(path)) return true;
-    if (!wt::writeFile(path, *field, float(terrain_.height), guid, reason, terrainLayers_))
+    if (!wt::writeFile(path, *field, float(terrain_.height), guid, reason, terrainLayers_,
+                       *terrainScatter()))
         return false;
     terrainFile_ = TerrainFileState::Saved;  // 保存の成功（publish の外で書く唯一の場所）
     refreshTerrainFiles();
@@ -471,6 +478,8 @@ nlohmann::json Scene::terrainJson() const {
     j["terrain"] = ed::toJson(terrain_);
     // 塗り分けの層（.terrain が持つ = 文書の値ではないので Scene が足す）。
     j["terrain"]["layers"] = layersToJson(terrainLayers_);
+    // 散布物の原型と配置の数（同じく .terrain が持つ。配置そのものは送らない）。
+    j["terrain"]["scatter"] = scatterToJson(*terrainScatter());
     // テレインの道具の既定（テレインごとに変わらない定数なので terrain の外）。
     // baseLayer = 下地の層の番号（筆の 🖌 の選択肢は後ろの層だけ）、
     // autoPaintDefaults = 自動塗りの既定の帯（ブラウザは既定を持たず、空欄の

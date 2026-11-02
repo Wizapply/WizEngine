@@ -357,12 +357,14 @@ set(WIZ_SCENE_SOURCES
     src/scene/SceneTerrainFile.cpp
     src/scene/SceneTerrainPaint.cpp
     src/scene/SceneTerrainRender.cpp
+    src/scene/SceneTerrainScatter.cpp
     src/scene/SceneTerrainSculpt.cpp
     src/scene/SoftLattice.cpp)
 set(WIZ_COMPONENT_SOURCES
     src/components/EditorComponent.cpp
     src/components/GizmoComponent.cpp
     src/components/PrefabComponent.cpp
+    src/components/ScatterComponent.cpp
     src/components/TerrainComponent.cpp
     src/components/VehicleComponent.cpp)
 set(WIZ_VEHICLE_SOURCES
@@ -386,6 +388,7 @@ set(WIZ_TERRAIN_SOURCES
     src/terrain/TerrainFile.cpp
     src/terrain/TerrainLibrary.cpp
     src/terrain/TerrainNoise.cpp
+    src/terrain/TerrainScatter.cpp
     src/terrain/TerrainUndo.cpp)
 
 add_executable(wizengine

@@ -197,7 +197,7 @@ void TerrainComponent::pushSegment(wt::BrushStamp s, double x, double z,
     // 穴の道具だけがその場で効く。
     s.dt = havePrev_ ? secondsBetween(prevTime_, now) : 0.0;
     s.target = flattenTarget_;
-    s.seed = ++stampSerial_;  // Paint の端数のくじ（スタンプごとに変える）
+    s.seed = ++stampSerial_;  // Paint・散布のくじの種（スタンプごとに変える）
     // maxHeight は Scene::stampTerrain が今のテレインの値を入れる。
     push(Pending::Kind::Stamp, wt::clampBrush(s));
     prevX_ = x;
@@ -236,6 +236,12 @@ bool TerrainComponent::onCommand(Scene& scene, std::size_t camIndex,
     s.radius = ed::jsonNumber(msg, "radius", s.radius);
     s.strength = ed::jsonNumber(msg, "strength", s.strength);
     s.layer = ed::jsonInt(msg, "layer", s.layer);  // Paint の層（0 始まり）
+    // 散布の道具の欄（送られなければ BrushStamp の既定）。原型の番号は丸めない
+    // （範囲外は brushStampUsable がスタンプごと弾く）。
+    s.prototype = ed::jsonInt(msg, "prototype", s.prototype);
+    s.density = ed::jsonNumber(msg, "density", s.density);
+    s.spacing = ed::jsonNumber(msg, "spacing", s.spacing);
+    s.scaleJitter = ed::jsonNumber(msg, "scaleJitter", s.scaleJitter);
     s = wt::clampBrush(s);
 
     const LocalHit h = hitTerrain(scene, camIndex, ed::jsonNumber(msg, "x", 9.0),

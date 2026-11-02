@@ -22,7 +22,22 @@ bool sameTerrainSurface(const ed::TerrainDesc& a, const ed::TerrainDesc& b) {
            a.roughness == b.roughness && a.metallic == b.metallic;
 }
 
+// .terrain が持つ値（層・散布物）の次の値を選ぶ規則（publishTerrainField）: 渡されれば
+// それ。渡されず同じファイル（sameFile）なら空 = 今のまま、それ以外（格子が無くなる・
+// 別のテレイン）は既定（fallback）。P はポインタの形（生ポインタか shared_ptr）。
+template <class P>
+P nextFileOwned(P passed, bool sameFile, P fallback) {
+    if (passed) return passed;
+    return sameFile ? P{} : fallback;
+}
+
 }  // namespace
+
+std::shared_ptr<const wizengine::terrain::TerrainScatter> Scene::defaultTerrainScatter() {
+    static const std::shared_ptr<const wizengine::terrain::TerrainScatter> kDefault =
+        std::make_shared<const wizengine::terrain::TerrainScatter>();
+    return kDefault;
+}
 
 void Scene::settleTerrainFileState(TerrainFileState file, bool on, bool missing) {
     switch (file) {
@@ -48,7 +63,8 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
                                 const wizengine::terrain::GridRect& changedCells,
                                 bool brushPass,
                                 const wizengine::terrain::TerrainLayers* layers,
-                                TerrainChanged changed) {
+                                TerrainChanged changed,
+                                std::shared_ptr<const wizengine::terrain::TerrainScatter> scatter) {
     // ストローク中に飛ばした張り直し（Clear はストロークを捨てるので先に読む）。
     const bool collisionPending = terrainStroke_.collisionStale;
     if (history == TerrainHistory::Clear) abortTerrainStroke();
@@ -76,14 +92,21 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
     const BodyTransform pose = placementPose(desc.position, desc.rotation);
     bool poseChanged = false;
     const bool renamed = desc.data != terrain_.data;
-    // 塗り分けの層の規則（ここだけ）: 渡されればそれ。渡されず、格子が無くなる
-    // （外す・全消し・Missing）か別のテレイン（名前か背番号が変わる = 新規・旧形式の
-    // 生成）になるなら既定へ戻す（層は .terrain が持つので前のテレインのものを残さない）。
-    // それ以外（同じテレインの形・表面・位置・格子の書き換え）は今のまま。
+    // 塗り分けの層と散布物の規則（ここだけ = nextFileOwned）: 渡されればそれ。渡されず、
+    // 格子が無くなる（外す・全消し・Missing）か別のテレイン（名前か背番号が変わる =
+    // 新規・旧形式の生成）になるなら既定へ戻す（どちらも .terrain が持つので前の
+    // テレインのものを残さない）。それ以外（同じテレインの形・表面・位置・格子の
+    // 書き換え）は今のまま。
     static const wizengine::terrain::TerrainLayers kDefaultLayers{};
     const bool sameFile = on && !renamed && desc.guid == terrain_.guid;
     const wizengine::terrain::TerrainLayers* nextLayers =
-        layers ? layers : (sameFile ? nullptr : &kDefaultLayers);
+        nextFileOwned(layers, sameFile, &kDefaultLayers);
+    // 散布物は中身が今と同じなら差し替えない = ポインタで変化を見る側（描画・当たり
+    // 判定）に作り直させない。比べるのはロックの外（terrainScatter_ を書くのはこの
+    // スレッドだけ = 取り出した物は差し替えまで今のもの）。
+    std::shared_ptr<const wizengine::terrain::TerrainScatter> nextScatter =
+        nextFileOwned(std::move(scatter), sameFile, defaultTerrainScatter());
+    if (nextScatter && *nextScatter == *terrainScatter()) nextScatter.reset();
     {
         // 格子の差し替えと dirty は同じロックの中で: 描画スレッドは dirty を
         // 見たのと同じロックの中で格子を取り出すので、「新しい dirty と古い
@@ -108,6 +131,7 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
                 terrainPoseDirty_ = true;
                 poseChanged = true;
             }
+            if (nextScatter) terrainScatter_ = std::move(nextScatter);
         }
         if (surfaceChanged) terrainSurfaceDirty_ = true;
         if (nextLayers && *nextLayers != terrainLayers_) {
@@ -210,7 +234,8 @@ std::string Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
 bool Scene::editTerrainField(
     const wizengine::terrain::GridRect& rect,
     const std::function<bool(wizengine::terrain::HeightField&)>& mutate,
-    TerrainRecord record, TerrainChanged changed) {
+    TerrainRecord record, TerrainChanged changed,
+    std::shared_ptr<const wizengine::terrain::TerrainScatter> scatter) {
     // 筆以外の書き換え（取り消し・生成）はストロークを先に終える: ストロークの
     // 記録の後ろに積む / ストロークごと取り消す、の順序にする。
     if (record != TerrainRecord::Stroke) endTerrainStroke();
@@ -232,7 +257,7 @@ bool Scene::editTerrainField(
     publishTerrainField(terrain_,
                         std::make_shared<const wizengine::terrain::HeightField>(std::move(copy)),
                         TerrainHistory::Keep, TerrainFileState::Dirty, rect,
-                        record == TerrainRecord::Stroke, nullptr, changed);
+                        record == TerrainRecord::Stroke, nullptr, changed, std::move(scatter));
     return true;
 }
 
@@ -287,20 +312,41 @@ void Scene::undoTerrain() {
         editor_.setStatus("取り消すものがありません");
         return;
     }
-    // 戻す操作そのものは記録しない（Redo は作らない）。applyEdit が空を返す =
-    // 解像度が違う格子など、当てられない記録（取り出したまま捨てる）。
-    const bool ok = editTerrainField(
-        edit.rect,
-        [&edit](wizengine::terrain::HeightField& f) {
-            return !wizengine::terrain::applyEdit(f, edit).empty();
-        },
-        // 記録は高さ・穴・重みを組で戻すので、描画も当たり判定も両方。
-        TerrainRecord::None, TerrainChanged::Both);
-    // ステータスは結果が分かってから 1 回だけ。
-    if (!ok) {
-        LOGW("scene", "terrain: an undo record (resolution %d) does not fit the current grid "
-                      "- discarded", edit.resolution);
+    // 1 段は格子（rect が空でない）と散布物の配置（hasScatter）の片方か両方を
+    // 持つ（散布 → 彫るのストロークは両方）。持っている方を 1 回の publish で戻す
+    // （格子を戻す editTerrainField に配置も渡す）。戻す操作そのものは記録しない
+    // （Redo は作らない）。applyEdit が空を返す = 解像度が違う格子など、当てられない
+    // 記録（取り出したまま捨てる）。格子が無ければ何も戻さない（配置も作らない =
+    // 下の配置だけの publish でテレインを外さない）。
+    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
+    std::shared_ptr<const wizengine::terrain::TerrainScatter> scatter =
+        field ? undoneScatter(edit) : nullptr;
+    const bool hasGrid = !edit.rect.empty();
+    bool gridOk = false;
+    if (field && hasGrid) {
+        gridOk = editTerrainField(
+            edit.rect,
+            [&edit](wizengine::terrain::HeightField& f) {
+                return !wizengine::terrain::applyEdit(f, edit).empty();
+            },
+            // 記録は高さ・穴・重みを組で戻すので、描画も当たり判定も両方。
+            TerrainRecord::None, TerrainChanged::Both, scatter);
+        if (!gridOk) {
+            LOGW("scene", "terrain: an undo record (resolution %d) does not fit the current grid "
+                          "- discarded", edit.resolution);
+        }
+    }
+    // 格子を戻せなかった（か格子を持たない）記録の配置は、配置だけ差し替える。
+    const bool scatterOnly = scatter && !gridOk;
+    if (scatterOnly) publishTerrainScatter(field, std::move(scatter), false);
+    // ステータスは結果が分かってから 1 回だけ（格子が無いときもここ）。
+    if (!gridOk && !scatterOnly) {
         editor_.setStatus("テレインの編集を取り消せませんでした");
+        return;
+    }
+    // 格子と配置の両方を持つ記録で格子だけ戻せなかった = 一部だけ。
+    if (hasGrid && !gridOk) {
+        editor_.setStatus("テレインの編集を一部だけ取り消しました（コンソール参照）");
         return;
     }
     editor_.setStatus("テレインの編集を取り消しました");
@@ -441,10 +487,17 @@ std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainField() con
     return terrainField_;
 }
 
+std::shared_ptr<const wizengine::terrain::TerrainScatter> Scene::terrainScatter() const {
+    std::lock_guard<std::mutex> fl(terrainFieldMutex_);
+    return terrainScatter_;
+}
+
 std::shared_ptr<const wizengine::terrain::HeightField> Scene::copyTerrainFieldAndPose(
-    BodyTransform& pose) const {
+    BodyTransform& pose,
+    std::shared_ptr<const wizengine::terrain::TerrainScatter>* scatter) const {
     std::lock_guard<std::mutex> fl(terrainFieldMutex_);
     pose = terrainPose_;
+    if (scatter) *scatter = terrainScatter_;
     return terrainField_;
 }
 
@@ -458,6 +511,12 @@ std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainField(
                                                             p.qy, p.qz);
     }
     return field;
+}
+
+std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainFieldAndScatter(
+    BodyTransform& pose,
+    std::shared_ptr<const wizengine::terrain::TerrainScatter>& scatter) const {
+    return copyTerrainFieldAndPose(pose, &scatter);
 }
 
 // ---- ギズモの移動 / 回転（PHYSICS thread）----------------------------------

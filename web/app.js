@@ -1576,17 +1576,21 @@
     const v = parseFloat(document.getElementById(id).value);
     return Number.isFinite(v) ? v : fallback;
   }
-  // 欄の下限（data-limit="<名前>" の欄の min）を /scene の limits から入れる。
-  // 下限の持ち主はサーバー（ed::kRoughnessMin など）で、HTML に数字を写さない。
+  // 欄の下限・上限（data-limit="<名前>" の欄の min、data-limit-max="<名前>" の
+  // 欄の max）を /scene の limits から入れる。範囲の持ち主はサーバー
+  // （ed::kRoughnessMin・terrain::kBrush* など）で、HTML に数字を写さない。
   // ポーリングのたびに欄ごとに比べ、値が違うときだけ書く（同じ値で属性を
   // 書き換えない）。
   function applyFieldLimits() {
     const limits = sceneData && sceneData.limits;
     if (!limits) return;
-    for (const el of document.querySelectorAll('[data-limit]')) {
-      const v = limits[el.dataset.limit];
-      if (!Number.isFinite(v)) continue;
-      if (el.min !== String(v)) el.min = String(v);
+    for (const [sel, key, attr] of [['[data-limit]', 'limit', 'min'],
+                                    ['[data-limit-max]', 'limitMax', 'max']]) {
+      for (const el of document.querySelectorAll(sel)) {
+        const v = limits[el.dataset[key]];
+        if (!Number.isFinite(v)) continue;
+        if (el[attr] !== String(v)) el[attr] = String(v);
+      }
     }
   }
   // フォームの欄（input / select / textarea）にフォーカスがあるか。キーの

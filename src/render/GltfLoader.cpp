@@ -111,7 +111,10 @@ std::size_t GltfLoader::loadModel(const std::string& pathIn) {
     }
 
     scene_.addEntities(asset->getEntities(), asset->getEntityCount());
-    asset->releaseSourceData();  // the CPU-side glTF is no longer needed
+    // releaseSourceData() は呼ばない: インスタンス化アセットでは、元の glTF
+    // （CPU 側のデータ）を捨てると createInstance が新しい実体を作れなくなる
+    // （gltfio/FilamentAsset.h）。同じモデルの 2 つ目以降が作れず失敗していた。
+    // 代わりに元のデータをモデル 1 種類につき 1 回ぶんメモリに持ち続ける。
 
     Model m;
     m.asset = asset;

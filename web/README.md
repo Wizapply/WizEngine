@@ -14,9 +14,14 @@ server reads it from at runtime (everything the program loads lives under
   when a terrain is selected): the `<terrain>` fields and their partial
   updates (loaded right after `app.js` and uses its top-level helpers; same
   classic-script rules)
+- `terrain-rows.js` — shared parts for the indexed rows of the terrain
+  section (row building from a field table, filling values, sending one
+  changed field, keeping just-sent values from being overwritten by polling)
+  (loaded right after `terrain.js` and uses the helpers of `app.js` and
+  `terrain.js`; same classic-script rules)
 - `terrain-layers.js` — the paint layer rows of the terrain section (field
-  table, row building, keeping just-sent values from being overwritten by
-  polling) (loaded after `terrain.js` and uses the helpers of both; same
+  table, layer-only row handling) (loaded after `terrain-rows.js` and uses
+  the helpers of `app.js`, `terrain.js` and `terrain-rows.js`; same
   classic-script rules)
 - `terrain-tools.js` — the one-shot terrain tools (noise generation, undo,
   auto paint, heightmap import / export) (loaded after `terrain-layers.js`
@@ -29,10 +34,14 @@ server reads it from at runtime (everything the program loads lives under
 - `terrain-brush.js` — the terrain brush toolbar (`#terrainBar`) and the
   brush pointer input over the video (loaded right after `terrain-files.js`
   and uses the helpers of `app.js` and `terrain.js`; same classic-script rules)
+- `terrain-scatter.js` — the scatter prototype rows of the terrain section
+  (field table and redraw, placement count) (loaded last, after
+  `terrain-brush.js`, and uses the helpers of `app.js`, `terrain.js` and
+  `terrain-rows.js`; same classic-script rules)
 
   Script order at the end of `index.html`: `app.js` → `terrain.js` →
-  `terrain-layers.js` → `terrain-tools.js` → `terrain-files.js` →
-  `terrain-brush.js`. Statements that run at load time must not touch a
+  `terrain-rows.js` → `terrain-layers.js` → `terrain-tools.js` → `terrain-files.js` →
+  `terrain-brush.js` → `terrain-scatter.js`. Statements that run at load time must not touch a
   later file (its `const` / `let` is not defined yet), and a top-level
   `const` / `let` name must not appear in two files.
 

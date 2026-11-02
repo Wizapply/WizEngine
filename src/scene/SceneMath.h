@@ -2,6 +2,7 @@
 
 #include <Eigen/Geometry>
 
+#include "core/MathConstants.h"
 #include "scene/CameraObject.h"
 #include "physics/PhysicsWorld.h"
 
@@ -15,12 +16,8 @@ namespace scenemath {
 using Vec3 = Eigen::Vector3d;
 using Quat = Eigen::Quaterniond;
 
-// Pi from Eigen, so the value is not spelled out in several places.
-#ifdef EIGEN_PI
-inline constexpr double kPi = EIGEN_PI;
-#else
-inline constexpr double kPi = 3.14159265358979323846;
-#endif
+// π は core/MathConstants.h の 1 か所（ここはその別名）。
+inline constexpr double kPi = wizengine::kPi;
 
 // 円を線分で描くときの分割数（ギズモの回転リングとテレインの筆の輪・円盤）。
 inline constexpr int kCircleSegments = 48;

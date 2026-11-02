@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "terrain/HeightField.h"
+#include "terrain/TerrainScatter.h"
 
 // テレインの編集の記録と取り消し（コマンド）。
 //
@@ -31,14 +32,22 @@ namespace terrain {
 // 包める（矩形を 2 つ持つと、片方だけ広げ忘れる食い違いが起きうる）。
 // サンプル (k) を書き換えた編集は、そのサンプルを角に持つセル（k - 1 と k、
 // 切り詰め済み）を rect に入れる。
+//
+// 散布物の配置は格子と別に、丸ごと 1 枚を写す（hasScatter / scatter。配置は
+// 正規化座標なので矩形に切れない）。持つのは配置だけで原型は持たない = 原型の
+// 変更は取り消しの対象にしない。格子と散布の両方を書き換えた 1 回の編集は
+// 両方を持つ。
 struct TerrainEdit {
     int resolution = 0;            // 記録した格子の resolution（違う格子へは当てない）
-    GridRect rect;                 // セル単位。空 = 何もしない編集
+    GridRect rect;                 // セル単位。空 = 格子は書き換えない編集
     std::vector<float> heights;    // 行優先、1 行 (i1 - i0 + 1) 個
     std::vector<uint8_t> holes;    // 行優先、1 行 (i1 - i0) 個。1 = 穴
     std::vector<uint8_t> splat;    // 行優先、1 行 (i1 - i0) × kSplatChannels 個
+    bool hasScatter = false;                // 配置を記録したか
+    std::vector<ScatterInstance> scatter;   // 記録した配置（hasScatter のときだけ意味がある）
 
-    bool empty() const { return rect.empty(); }
+    // 格子も配置も記録していない = 何もしない編集（積まない）。
+    bool empty() const { return rect.empty() && !hasScatter; }
     // 記録に使っているおおよそのメモリ（バイト）。上限の判定に使う。
     std::size_t bytes() const;
 };
@@ -47,8 +56,9 @@ struct TerrainEdit {
 // 切り詰めて空になった矩形は空の編集を返す。
 TerrainEdit captureRegion(const HeightField& field, const GridRect& rect);
 
-// edit の値を field へ書き戻し、書き戻す直前の値を逆操作として返す。
-// resolution が違う格子・空の編集には何もせず空の編集を返す。
+// edit の格子の値を field へ書き戻し、書き戻す直前の値を逆操作として返す
+// （配置は見ない = applyScatterEdit）。resolution が違う格子・格子を記録して
+// いない編集には何もせず空の編集を返す。
 // 共有中の格子（shared_ptr<const>）には呼べない = コピーに対して呼ぶ。
 TerrainEdit applyEdit(HeightField& field, const TerrainEdit& edit);
 
@@ -58,8 +68,18 @@ TerrainEdit applyEdit(HeightField& field, const TerrainEdit& edit);
 // 記録で、acc の矩形の中は acc の値（= ストロークの前の値）、外は before の値
 // （= まだ触っていなかった所 = 変更前）。範囲は関数の中で取るので、呼び手が
 // 狭く取り違えることはない。acc が別の格子の記録（resolution 違い・矩形と
-// 合わない）か before が空なら acc をそのまま返す。
+// 合わない）か before が空なら acc をそのまま返す。acc の配置の記録
+// （hasScatter / scatter）はどの場合も引き継ぐ。
 TerrainEdit growEdit(const HeightField& before, const TerrainEdit& acc, const GridRect& rect);
+
+// 1 回の編集の配置の「変更前」を記録する: acc がまだ配置を記録していなければ
+// before の配置を写す（ストロークの最初の 1 回だけ = 2 回目からは何もしない）。
+void growScatter(TerrainEdit& acc, const TerrainScatter& before);
+
+// edit の配置を scatter へ書き戻し（原型は今のまま）、書き戻す直前の配置を
+// 逆操作（hasScatter だけの編集）として返す。配置を記録していない編集には
+// 何もせず空の編集を返す。
+TerrainEdit applyScatterEdit(TerrainScatter& scatter, const TerrainEdit& edit);
 
 constexpr std::size_t kUndoMaxEntries = 32;
 constexpr std::size_t kUndoMaxBytes = std::size_t(64) * 1024 * 1024;

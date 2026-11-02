@@ -4,21 +4,19 @@
 #include <cmath>
 #include <utility>
 
+#include "core/MathConstants.h"
+#include "terrain/TerrainMath.h"
+
 namespace wizengine {
 namespace terrain {
 
 namespace {
 
-// ラジアン → 度（数学の定数。傾きを度で比べるためだけに使う）。
-constexpr double kDegPerRad = 57.295779513082320876798;
+// ラジアン → 度（傾きを度で比べるためだけに使う）。
+constexpr double kDegPerRad = 180.0 / kPi;
 // 傾きの取りうる範囲（度）。
 constexpr double kSlopeLo = 0.0;
 constexpr double kSlopeHi = 90.0;
-
-// 有限なら v を [lo, hi] へ、そうでなければ fallback。
-double clampOr(double v, double lo, double hi, double fallback) {
-    return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback;
-}
 
 // 0 → 1 のなめらかな段（e0 < e1 であること）。
 double smoothStep(double e0, double e1, double x) {

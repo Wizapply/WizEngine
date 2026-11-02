@@ -3,14 +3,18 @@
 // （send / toNdc / hitEl / hoverNdc / clearHover / touches / NDC_OFFSCREEN /
 // owner / sceneData / isEditorCam / myEditorSel / focusInField / storeJson /
 // loadStoredJson / readFields / restoreFields）と terrain.js（currentTerrain /
-// terrainLayerLabel / terrainTools / terrainIdentity）のトップレベルをそのまま
-// 使う。ここの関数もグローバルのままにする（index.html の onclick= と app.js の
+// terrainLayerLabel / terrainTools / terrainIdentity）と terrain-scatter.js
+// （currentScatterPrototypes / terrainPrototypeLabel。読み込みはこの後ろだが、
+// 呼ぶのは描画のときなので読み終わっている）のトップレベルをそのまま使う。
+// ここの関数もグローバルのままにする（index.html の onclick= と app.js の
 // renderEditor などが名前で呼ぶため）。
 //
-// 送るのは edit.terrain.brush {phase, x, y, tool, radius, strength, layer}（x, y は
-// 映像の NDC）。phase は hover（輪だけ）/ begin / move / end。値の既定値・
+// 送るのは edit.terrain.brush {phase, x, y, tool, radius, strength, layer, prototype,
+// density, spacing, scaleJitter}（x, y は映像の NDC。後ろの 4 つは 🌲 散布の欄）。
+// phase は hover（輪だけ）/ begin / move / end。値の既定値・
 // 丸めと「エディタモード × エディタカメラ」の守りはサーバー（TerrainComponent
-// と terrain::clampBrush）が持つ。入力欄の min / max は表示用。
+// と terrain::clampBrush）が持つ。入力欄の min / max はサーバーの limits から
+// 入り、確定した値をその範囲へ丸めて欄に書き戻す（clampBrushFieldsToRange）。
 //
 // app.js との分担: 押していない間の hover は app.js の HOVER_MS のタイマーが
 // sendBrushHover を呼び、映像から出たときの輪の消去も app.js の pointerleave。
@@ -23,14 +27,21 @@
   // 筆の 1 通の送信の期限。返らない送信で順番待ちが止まらないよう、過ぎたら
   // 失敗として次へ進む。
   const BRUSH_SEND_TIMEOUT_MS = 2000;
-  // 半径・強さ・塗る層はこのブラウザの localStorage に覚える（道具は覚えない =
-  // 開き直したら選んでいない状態から始まる）。
+  // 半径・強さ・塗る層・散布の欄はこのブラウザの localStorage に覚える（道具は
+  // 覚えない = 開き直したら選んでいない状態から始まる）。
   const BRUSH_STORE = 'terrain:brush';
-  // 半径・強さ・塗る層の欄（送るキー → 欄の id）。欄が空ならそのキーは送らない =
-  // サーバーの既定値。層の select は値が層の番号（0 始まり）の数なので同じ
-  // readFields で読める。
-  const BRUSH_FIELDS = { radius: 'tbRadius', strength: 'tbStrength', layer: 'tbLayer' };
-  // 確定した（onchange の）半径・強さ・層。送るのはこちら（打っている途中の
+  // 筆の欄（送るキー → 欄の id）。欄が空ならそのキーは送らない = サーバーの
+  // 既定値。層・原型の select は値が番号（0 始まり）の数なので同じ readFields で
+  // 読める。prototype〜scaleJitter は 🌲 散布の欄（サーバーは散布の道具のときだけ
+  // 見る）。
+  const BRUSH_FIELDS = {
+    radius: 'tbRadius', strength: 'tbStrength', layer: 'tbLayer',
+    prototype: 'tbProto', density: 'tbDensity', spacing: 'tbSpacing',
+    scaleJitter: 'tbJitter',
+  };
+  // 選択肢がまだ無い間も覚えた値を消さない select の欄（applyBrushValues）。
+  const BRUSH_SELECT_KEYS = ['layer', 'prototype'];
+  // 確定した（onchange の）筆の欄の値。送るのはこちら（打っている途中の
   // 欄の値を 33 ms ごとに送らない）。
   let brushValues = {};
 
@@ -117,6 +128,11 @@
     }
     renderBrushLayers();
     renderBrushLayerNote();
+    renderBrushProtos();
+    // 散布の欄（原型・密度・間隔・ばらつき）は 🌲 のときだけ（⌫ は円の中を原型に
+    // よらず全部消すので、どれも使わない）。
+    const scatterFields = document.getElementById('tbScatter');
+    if (scatterFields) scatterFields.hidden = brushTool !== 'scatter';
     bar.querySelectorAll('button, input, select').forEach((el) => { el.disabled = !owner; });
     brushToolButtons().forEach((b) => {
       b.classList.toggle('on', b.dataset.tool === brushTool);
@@ -149,6 +165,37 @@
     return base !== null && Number.isInteger(v) && v > base &&
         v < brushTerrainLayers().length;
   }
+  // 番号の select（層・原型）の選択肢を作り直す: sig（中身の目印）が前回と違う
+  // ときだけ、first〜end - 1 の番号を labelFn(番号) の名前で並べ直す。そのときは
+  // 選択中（フォーカス中）でも閉じて作り直す（古い選択肢を残さない）。作り直したら
+  // true（呼び手は続けて pickBrushSelect で選ぶ）。
+  function rebuildBrushSelect(sel, sig, first, end, labelFn) {
+    if (sel.dataset.sig === sig) return false;
+    if (sel === document.activeElement) sel.blur();
+    sel.dataset.sig = sig;
+    sel.textContent = '';
+    for (let i = first; i < end; i++) {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = labelFn(i);
+      sel.appendChild(opt);
+    }
+    return true;
+  }
+  // 番号の select で選ぶ値: 今の値（brushValues[key]）→ 覚えた値 → fallback の順で、
+  // isValid を満たす最初のもの。どれも満たさなければ brushValues[key] を消す
+  // （そのキーは送らない）。
+  function pickBrushSelect(sel, key, isValid, fallback) {
+    const saved = (loadStoredJson(BRUSH_STORE) || {})[key];
+    const want = isValid(brushValues[key]) ? brushValues[key]
+               : isValid(saved) ? saved : fallback;
+    if (isValid(want)) {
+      sel.value = String(want);
+      brushValues[key] = want;
+    } else {
+      delete brushValues[key];
+    }
+  }
   // 🖌 で塗る層の選択肢: 下地の次（層 2）〜N（値は 0 始まりの層の番号）。下地は
   // 🧽 消すが受け持つ（何も塗っていないマスは下地が 100% なので、下地を塗っても
   // 何も変わらない）。数はサーバーの terrain.layers の数（ここには持たない）。
@@ -164,26 +211,10 @@
     const layers = brushTerrainLayers();
     const base = brushBaseLayer();
     const sig = base + ':' + layers.length + ':' + terrainIdentity();
-    if (sel.dataset.sig !== sig) {
-      if (sel === document.activeElement) sel.blur();
-      sel.dataset.sig = sig;
-      sel.textContent = '';
-      for (let i = base === null ? layers.length : base + 1; i < layers.length; i++) {
-        const opt = document.createElement('option');
-        opt.value = String(i);
-        opt.textContent = terrainLayerLabel(i);
-        sel.appendChild(opt);
-      }
-      const saved = (loadStoredJson(BRUSH_STORE) || {}).layer;
-      const want = brushPaintableLayer(brushValues.layer) ? brushValues.layer
-                 : brushPaintableLayer(saved) ? saved
-                 : base === null ? null : base + 1;
-      if (brushPaintableLayer(want)) {
-        sel.value = String(want);
-        brushValues.layer = want;
-      } else {
-        delete brushValues.layer;  // 塗れる層が無い（層が下地だけ・下地が届いていない）
-      }
+    const first = base === null ? layers.length : base + 1;
+    if (rebuildBrushSelect(sel, sig, first, layers.length, terrainLayerLabel)) {
+      // 塗れる層が無い（層が下地だけ・下地が届いていない）なら選ばない。
+      pickBrushSelect(sel, 'layer', brushPaintableLayer, base === null ? null : base + 1);
     }
     // テクスチャの有無の印（毎回。選択肢は作り直さない）。
     for (const opt of sel.options) {
@@ -191,6 +222,21 @@
       opt.classList.toggle('noTex', none);
       opt.title = none ? 'テクスチャがありません' : '';
     }
+  }
+  // 🌲 で置く原型の選択肢（値は 0 始まりの原型の番号、名前は terrainPrototypeLabel）。
+  // 作り直すのは原型の数・テレイン（terrainIdentity）が変わったときだけ。
+  // 選ぶ原型は、今の値 → 覚えた値 → 最初の原型の順（一覧が届いていなければ選ばない）。
+  function renderBrushProtos() {
+    const sel = document.getElementById('tbProto');
+    if (!sel) return;
+    const protos = currentScatterPrototypes();
+    const sig = protos.length + ':' + terrainIdentity();
+    if (!rebuildBrushSelect(sel, sig, 0, protos.length,
+                            (i) => terrainPrototypeLabel(protos, i))) {
+      return;
+    }
+    const inRange = (v) => Number.isInteger(v) && v >= 0 && v < protos.length;
+    pickBrushSelect(sel, 'prototype', inRange, 0);
   }
   // 🖌 で塗れない理由（塗れるなら空）。塗れる層が無い・選んだ層にテクスチャが
   // 無い（こちらは塗れるが見えない）の知らせの文。
@@ -247,15 +293,36 @@
     brushTool = next;
     renderTerrainBar();
   }
-  // 半径・強さ・層の欄の確定（onchange）。範囲の丸めはサーバー。覚えるのは
-  // 数の入っている欄だけ。層の選択肢がまだ無い（層の一覧が届く前・塗れる層が
-  // 無い）ときは、覚えた層を消さずに残す（次に選択肢ができたらそれを選ぶ）。
+  // 筆の数の欄の値を欄の min / max（サーバーの limits から applyFieldLimits が
+  // 入れたもの）に丸めて欄に書き戻す。サーバーも同じ範囲で丸めるが、黙って
+  // 丸めると欄と localStorage には打った値が残り、送った値と効いている値が
+  // 食い違って見えるため。範囲がまだ入っていない端（limits が届く前）は丸めない。
+  // 空の欄・数でない欄は触らない（空 = サーバーの既定値）。
+  function clampBrushFieldsToRange() {
+    for (const key in BRUSH_FIELDS) {
+      const el = document.getElementById(BRUSH_FIELDS[key]);
+      if (!el || el.type !== 'number' || el.value === '') continue;
+      const v = parseFloat(el.value);
+      if (!Number.isFinite(v)) continue;
+      const lo = parseFloat(el.min);
+      const hi = parseFloat(el.max);
+      let c = v;
+      if (Number.isFinite(hi) && c > hi) c = hi;
+      if (Number.isFinite(lo) && c < lo) c = lo;
+      if (c !== v) el.value = String(c);
+    }
+  }
+  // 筆の欄の確定（onchange）。範囲を超えた値は先に欄の範囲へ丸めて書き戻す
+  // （clampBrushFieldsToRange）。覚えるのは数の入っている欄だけ。層・原型の
+  // 選択肢がまだ無い（一覧が届く前・塗れる層が無い）ときは、覚えた値を消さずに
+  // 残す（次に選択肢ができたらそれを選ぶ）。
   function applyBrushValues() {
+    clampBrushFieldsToRange();
     brushValues = readFields(BRUSH_FIELDS);
     const store = Object.assign({}, brushValues);
-    if (!('layer' in store)) {
-      const saved = (loadStoredJson(BRUSH_STORE) || {}).layer;
-      if (Number.isInteger(saved)) store.layer = saved;
+    const saved = loadStoredJson(BRUSH_STORE) || {};
+    for (const key of BRUSH_SELECT_KEYS) {
+      if (!(key in store) && Number.isInteger(saved[key])) store[key] = saved[key];
     }
     storeJson(BRUSH_STORE, store);
   }

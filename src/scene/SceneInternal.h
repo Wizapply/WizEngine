@@ -12,6 +12,7 @@
 //   SceneTerrainEdit.cpp: ブラウザの edit.terrain の受け口と操作
 //   SceneTerrainFile.cpp: テレインと文書・.terrain・ブラウザの JSON との出入り
 //   SceneTerrainPaint.cpp: 塗り分けの道具（自動塗り）
+//   SceneTerrainScatter.cpp: 散布物（木や小物）のサーバー側の操作
 
 #include "scene/Scene.h"
 #include "scene/SceneConfig.h"
@@ -307,6 +308,85 @@ inline wizengine::terrain::TerrainParams toTerrainParams(const ed::TerrainDesc& 
     return p;
 }
 
+// ---- .terrain が持つ値の共通の部品（層 LAYR と散布物 TREE）-------------------
+// パスの検査と、ブラウザの部分更新のキーの取り出し。層（sanitizeTerrainLayers /
+// layerPatchFromJson）と散布物の原型（sanitizeScatter / prototypePatchFromJson）が
+// 同じ規則を通る。
+
+// .terrain に書くパス（assets/ 相対）の検査: 長さが terrain::kMaxTerrainPathBytes を
+// 超える（残すと保存のたびに encode が失敗する）か、関所（ed::assetFileAllowed）を
+// 通らなければ空にして LOGW。持ち主は ownerKind + ownerIndex（英語。例 "terrain layer"
+// と 0 = "terrain layer 0"。文字列は LOGW のときだけ組む = 毎回作らない）、what =
+// 何のパスか（英語。例 "texture"）、where = どこから来た値か（英語）。空にしたら true。
+inline bool sanitizeTerrainPath(std::string& path, const char* ownerKind,
+                                std::size_t ownerIndex, const char* what, const char* where) {
+    if (path.size() > wizengine::terrain::kMaxTerrainPathBytes) {
+        LOGW("scene", "%s %zu (%s): %s path is longer than %zu bytes - cleared", ownerKind,
+             ownerIndex, where, what, std::size_t(wizengine::terrain::kMaxTerrainPathBytes));
+        path.clear();
+        return true;
+    }
+    if (!path.empty() && !ed::assetFileAllowed(path)) {
+        LOGW("scene", "%s %zu (%s): %s '%s' is not allowed (assets-relative paths only) - cleared",
+             ownerKind, ownerIndex, where, what, path.c_str());
+        path.clear();
+        return true;
+    }
+    return false;
+}
+// sanitizeTerrainPath の規則をブラウザに伝える文の部分（「assets/ からの相対パス
+// （1024 バイトまで）」。数字は kMaxTerrainPathBytes）。断ったときのステータス
+// （editTerrainLayer / editTerrainPrototype）が「… は <これ> で指定してください」に使う。
+inline std::string terrainPathRuleText() {
+    return "assets/ からの相対パス（" + std::to_string(wizengine::terrain::kMaxTerrainPathBytes) +
+           " バイトまで）";
+}
+
+// 部分更新のキーの取り出し（edit.terrain の layer / scatter）: j に key があり型が
+// 合うときだけ field を変える（投げない）。戻り値は「キーが無いか型が合った」で、
+// 型違いなら false（field はそのまま）。呼び手はそれを知らせて何も適用しない。
+inline bool jsonTextInto(const nlohmann::json& j, const char* key, std::string& field) {
+    if (!j.is_object()) return true;
+    const auto it = j.find(key);
+    if (it == j.end()) return true;
+    if (!it->is_string()) return false;
+    field = ed::jsonString(j, key, field);
+    return true;
+}
+// 数値は float に入る範囲へ寄せてから float にするだけ（1e39 などをそのまま float に
+// すると無限大になり、検査で上限ではなく既定値へ倒れるため）。NaN はそのまま。
+inline bool jsonFloatInto(const nlohmann::json& j, const char* key, float& field) {
+    if (!j.is_object()) return true;
+    const auto it = j.find(key);
+    if (it == j.end()) return true;
+    if (!it->is_number()) return false;
+    const double v = ed::jsonNumber(j, key, double(field));
+    if (!std::isnan(v)) {
+        constexpr double kFloatMax = double(std::numeric_limits<float>::max());
+        field = float(std::clamp(v, -kFloatMax, kFloatMax));
+    }
+    return true;
+}
+inline bool jsonBoolInto(const nlohmann::json& j, const char* key, bool& field) {
+    if (!j.is_object()) return true;
+    const auto it = j.find(key);
+    if (it == j.end()) return true;
+    if (!it->is_boolean()) return false;
+    field = it->get<bool>();
+    return true;
+}
+
+// 部分更新で型の合わないキーがあったときのステータス（層と原型の共通の文）。
+// label = 持ち主の表示名（terrainLayerLabel / terrainPrototypeLabel）、key = キー名。
+inline std::string terrainPatchTypeStatus(const std::string& label, const std::string& key) {
+    return label + " の " + key + " の値の型が正しくありません";
+}
+// layerPatchFromJson / prototypePatchFromJson の型違いの記録: ok が false で、まだ
+// 何も入っていなければ key を *badKey へ（最初の 1 つだけ残す）。
+inline void noteBadPatchKey(bool ok, const char* key, std::string* badKey) {
+    if (!ok && badKey && badKey->empty()) *badKey = key;
+}
+
 // ---- 塗り分けの層（.terrain の LAYR）-----------------------------------------
 // 層の値の検査と JSON の唯一の定義（型は terrain::TerrainLayer 1 つ。文書の型には
 // 写さない）。ファイルの読込（readTerrainFile）・ブラウザの変更（editTerrainLayer）・
@@ -320,33 +400,20 @@ inline std::string terrainLayerLabel(std::size_t index) {
 }
 
 // 層の値を常識的な範囲へ: 3 つの画像（色 texture・法線 normal・マスク mask）は
-// assets/ 相対のパスで、長さは terrain::kMaxLayerPathBytes 以下だけ（外れたら空に
-// して LOGW。where = どこから来た値か、英語。長すぎるパスを残すと保存のたびに
-// encode が失敗する）、tile は地面と同じ範囲（ed::kSurfaceTileMin〜Max。NaN・無限は
-// 既定値へ倒してから丸める - std::clamp は NaN を素通しするため）。roughness /
-// metallic は NaN・負なら「テレイン全体に従う」(kLayerFollowsTerrain)、ほかは
-// 粗さ ed::kRoughnessMin〜1・金属 0〜1。normalScale は 0〜4（NaN は既定の 1）。
+// assets/ 相対のパスで、長さは terrain::kMaxTerrainPathBytes 以下だけ（外れたら空に
+// して LOGW = sanitizeTerrainPath。where = どこから来た値か、英語）、tile は地面と
+// 同じ範囲（ed::kSurfaceTileMin〜Max。NaN・無限は既定値へ倒してから丸める -
+// std::clamp は NaN を素通しするため）。roughness / metallic は NaN・負なら
+// 「テレイン全体に従う」(kLayerFollowsTerrain)、ほかは粗さ ed::kRoughnessMin〜1・
+// 金属 0〜1。normalScale は 0〜4（NaN は既定の 1）。
 inline void sanitizeTerrainLayers(wizengine::terrain::TerrainLayers& layers,
                                   const char* where) {
     using wizengine::terrain::layerFollowsTerrain;
     for (std::size_t i = 0; i < layers.size(); ++i) {
         wizengine::terrain::TerrainLayer& l = layers[i];
-        auto sanitizePath = [&](std::string& path, const char* what) {
-            if (path.size() > wizengine::terrain::kMaxLayerPathBytes) {
-                LOGW("scene", "terrain layer %zu (%s): %s path is longer than %zu bytes "
-                              "- cleared",
-                     i, where, what, std::size_t(wizengine::terrain::kMaxLayerPathBytes));
-                path.clear();
-            } else if (!path.empty() && !ed::assetFileAllowed(path)) {
-                LOGW("scene", "terrain layer %zu (%s): %s '%s' is not allowed "
-                              "(assets-relative paths only) - cleared",
-                     i, where, what, path.c_str());
-                path.clear();
-            }
-        };
         for (const wizengine::terrain::LayerImage image : wizengine::terrain::kLayerImages)
-            sanitizePath(wizengine::terrain::layerImagePath(l, image),
-                         wizengine::terrain::layerImageName(image));
+            sanitizeTerrainPath(wizengine::terrain::layerImagePath(l, image), "terrain layer", i,
+                                wizengine::terrain::layerImageName(image), where);
         if (!std::isfinite(l.tile)) l.tile = wizengine::terrain::TerrainLayer{}.tile;
         l.tile = std::clamp(l.tile, float(ed::kSurfaceTileMin), float(ed::kSurfaceTileMax));
         // 負（と NaN）は「全体に従う」の値にそろえる。
@@ -388,42 +455,103 @@ inline nlohmann::json layersToJson(const wizengine::terrain::TerrainLayers& laye
 }
 
 // edit.terrain の layer の部分更新: 送られたキー（texture / normal / mask / tile /
-// roughness / metallic / normalScale）だけ base から変える。型違いのキーは無視。
+// roughness / metallic / normalScale）だけ base から変える。型違いのキーがあれば
+// *badKey に最初の 1 つの名前を入れる（そのキーの値は base のまま。呼び手は
+// terrainPatchTypeStatus を出して何も適用しない）。
 // roughness / metallic は null を送ると「テレイン全体に従う」
 // (kLayerFollowsTerrain)。検査（範囲を含む）は呼び手が sanitizeTerrainLayers で
-// 掛ける。数値は float に入る範囲へ寄せてから float にするだけ（1e39 などをそのまま
-// float にすると無限大になり、検査で上限ではなく既定値へ倒れるため）。NaN は
-// base のまま。
+// 掛ける。数値は jsonFloatInto（float に入る範囲へ寄せるだけ。NaN は base のまま）。
 inline wizengine::terrain::TerrainLayer layerPatchFromJson(
-    const nlohmann::json& j, const wizengine::terrain::TerrainLayer& base) {
+    const nlohmann::json& j, const wizengine::terrain::TerrainLayer& base,
+    std::string* badKey) {
     wizengine::terrain::TerrainLayer l = base;
-    auto text = [&](const char* key, std::string& field) {
-        if (const auto it = j.find(key); it != j.end() && it->is_string())
-            field = it->get<std::string>();
-    };
-    auto number = [&](const char* key, float& field) {
-        const double v = ed::jsonNumber(j, key, double(field));
-        if (!std::isnan(v)) {
-            constexpr double kFloatMax = double(std::numeric_limits<float>::max());
-            field = float(std::clamp(v, -kFloatMax, kFloatMax));
-        }
-    };
-    // null = 全体に従う。数なら number と同じ。
+    // null = 全体に従う。数なら jsonFloatInto と同じ。
     auto numberOrFollow = [&](const char* key, float& field) {
         if (const auto it = j.find(key); it != j.end() && it->is_null()) {
             field = wizengine::terrain::kLayerFollowsTerrain;
             return;
         }
-        number(key, field);
+        noteBadPatchKey(jsonFloatInto(j, key, field), key, badKey);
     };
-    text("texture", l.texture);
-    text("normal", l.normal);
-    text("mask", l.mask);
-    number("tile", l.tile);
-    number("normalScale", l.normalScale);
+    noteBadPatchKey(jsonTextInto(j, "texture", l.texture), "texture", badKey);
+    noteBadPatchKey(jsonTextInto(j, "normal", l.normal), "normal", badKey);
+    noteBadPatchKey(jsonTextInto(j, "mask", l.mask), "mask", badKey);
+    noteBadPatchKey(jsonFloatInto(j, "tile", l.tile), "tile", badKey);
+    noteBadPatchKey(jsonFloatInto(j, "normalScale", l.normalScale), "normalScale", badKey);
     numberOrFollow("roughness", l.roughness);
     numberOrFollow("metallic", l.metallic);
     return l;
+}
+
+// ---- 散布物（.terrain の TREE）------------------------------------------------
+// 散布物の値の検査と JSON の唯一の定義（型は terrain::TerrainScatter 1 つ）。
+// ファイルの読込（readTerrainFile）とブラウザの原型の変更（editTerrainPrototype）が
+// 同じ検査を通る。
+
+// 原型の表示名（index = 0 始まりの原型の番号、表示は 1 始まり）。ステータスの文と
+// /scene の terrain.scatter.prototypes[i].label が同じ名前を出すための 1 か所。
+inline std::string terrainPrototypeLabel(std::size_t index) {
+    return "原型 " + std::to_string(index + 1);
+}
+
+// 原型 1 つを使える形へ（index = 原型の番号、LOGW の持ち主に使う）: モデルのパスは
+// sanitizeTerrainPath（外れたら空 = 代役で描く）、数値は terrain::clampScatterPrototype。
+// ファイルの読込（sanitizeScatter）とブラウザの原型の変更（editTerrainPrototype =
+// 変えた原型だけ）が同じ検査を通る。where = どこから来た値か、英語。
+inline void sanitizeScatterPrototype(wizengine::terrain::ScatterPrototype& p, std::size_t index,
+                                     const char* where) {
+    sanitizeTerrainPath(p.file, "terrain scatter prototype", index, "model", where);
+    p = wizengine::terrain::clampScatterPrototype(p);
+}
+
+// 散布物の値を使える形へ: 原型は全部 sanitizeScatterPrototype、使えない配置は
+// terrain::pruneScatterInstances で落として件数を LOGW（where = どこから来た値か、
+// 英語）。.terrain の decode は値を検査しないので、読んだ散布物は必ずここを通す。
+inline void sanitizeScatter(wizengine::terrain::TerrainScatter& s, const char* where) {
+    for (std::size_t i = 0; i < s.prototypes.size(); ++i)
+        sanitizeScatterPrototype(s.prototypes[i], i, where);
+    const std::size_t dropped = wizengine::terrain::pruneScatterInstances(s);
+    if (dropped > 0) {
+        LOGW("scene", "terrain scatter (%s): %zu unusable placements dropped "
+                      "(non-finite or out-of-range values, unknown prototype, or over %d)",
+             where, dropped, wizengine::terrain::kMaxScatterInstances);
+    }
+}
+
+// /scene の terrain.scatter: {prototypes: [{file, scale, trunkRadius, trunkHeight,
+// collide, label}, ...]（原型の数ぶん、順は原型の番号。label は表示名 =
+// terrainPrototypeLabel で、読み込み側は見ない）, count（配置の数）, max（配置の
+// 上限）}。配置そのものは送らない（最大 4096 個をポーリングのたびに送らない）。
+inline nlohmann::json scatterToJson(const wizengine::terrain::TerrainScatter& s) {
+    nlohmann::json protos = nlohmann::json::array();
+    for (std::size_t i = 0; i < s.prototypes.size(); ++i) {
+        const wizengine::terrain::ScatterPrototype& p = s.prototypes[i];
+        protos.push_back(nlohmann::json{{"file", p.file},
+                                        {"scale", p.scale},
+                                        {"trunkRadius", p.trunkRadius},
+                                        {"trunkHeight", p.trunkHeight},
+                                        {"collide", p.collide},
+                                        {"label", terrainPrototypeLabel(i)}});
+    }
+    return nlohmann::json{{"prototypes", std::move(protos)},
+                          {"count", s.instances.size()},
+                          {"max", wizengine::terrain::kMaxScatterInstances}};
+}
+
+// edit.terrain の scatter の部分更新: 送られたキー（file / scale / trunkRadius /
+// trunkHeight / collide）だけ base から変える。型違いのキーがあれば *badKey に最初の
+// 1 つの名前を入れる（layerPatchFromJson と同じ）。検査（範囲を含む）は呼び手が
+// sanitizeScatterPrototype で掛ける。
+inline wizengine::terrain::ScatterPrototype prototypePatchFromJson(
+    const nlohmann::json& j, const wizengine::terrain::ScatterPrototype& base,
+    std::string* badKey) {
+    wizengine::terrain::ScatterPrototype p = base;
+    noteBadPatchKey(jsonTextInto(j, "file", p.file), "file", badKey);
+    noteBadPatchKey(jsonFloatInto(j, "scale", p.scale), "scale", badKey);
+    noteBadPatchKey(jsonFloatInto(j, "trunkRadius", p.trunkRadius), "trunkRadius", badKey);
+    noteBadPatchKey(jsonFloatInto(j, "trunkHeight", p.trunkHeight), "trunkHeight", badKey);
+    noteBadPatchKey(jsonBoolInto(j, "collide", p.collide), "collide", badKey);
+    return p;
 }
 
 // ---- 自動塗りの規則（SceneTerrainPaint.cpp）-----------------------------------

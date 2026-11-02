@@ -2,6 +2,8 @@
 // 保存は document()、読込は loadDocument()、/scene は hierarchyJson()。
 #include "scene/SceneInternal.h"
 
+#include "terrain/TerrainBrush.h"
+
 using namespace chrono;
 using namespace scene_detail;
 
@@ -119,9 +121,20 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
                          {"modal", f.modal},
                          {"parsers", wizengine::importAvailable()}};
     }
-    // 入力欄の下限（UI が data-limit の欄の min に入れる）。値の持ち主は
-    // ed::kRoughnessMin（EditorTypes.h）で、ここは送るだけ。
-    j["limits"] = {{"roughnessMin", ed::kRoughnessMin}};
+    // 入力欄の範囲（UI が data-limit / data-limit-max の欄の min / max に入れる）。
+    // 値の持ち主は ed::kRoughnessMin（EditorTypes.h）とテレインの筆の
+    // terrain::kBrush*（TerrainBrush.h、丸めは clampBrush）で、ここは送るだけ。
+    j["limits"] = {{"roughnessMin", ed::kRoughnessMin},
+                   {"brushRadiusMin", wizengine::terrain::kBrushMinRadius},
+                   {"brushRadiusMax", wizengine::terrain::kBrushMaxRadius},
+                   {"brushStrengthMin", wizengine::terrain::kBrushMinStrength},
+                   {"brushStrengthMax", wizengine::terrain::kBrushMaxStrength},
+                   {"brushDensityMin", wizengine::terrain::kBrushMinDensity},
+                   {"brushDensityMax", wizengine::terrain::kBrushMaxDensity},
+                   {"brushSpacingMin", wizengine::terrain::kBrushMinSpacing},
+                   {"brushSpacingMax", wizengine::terrain::kBrushMaxSpacing},
+                   {"brushScaleJitterMin", wizengine::terrain::kBrushMinScaleJitter},
+                   {"brushScaleJitterMax", wizengine::terrain::kBrushMaxScaleJitter}};
     j["modal"] = modalFrequencies();
     j["gizmo"] = ed::toJson(editor_.gizmo());
     j["statusSeq"] = editor_.statusSeq();  // status より先に読む（EditorState.h）

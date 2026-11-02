@@ -796,6 +796,12 @@
              terrain-layers.js の buildTerrainLayerRows が作る（ツールチップもそこ）。 -->
         <div id="edTerrainLayersHead" class="edLabel">塗り分けの層（テクスチャ / 法線 / マスク）</div>
         <div id="edTerrainLayers"></div>
+        <!-- 散布物の原型（モデル / 倍率と幹の当たり判定・寸法）と配置の数。値は
+             .terrain が持つ（どのシーンで開いても同じ）。行は原型の数だけ
+             terrain-scatter.js の renderTerrainScatterSection が作る（ツールチップもそこ）。 -->
+        <div id="edScatterHead" class="edLabel">散布物の原型（モデル / 幹）</div>
+        <div id="edScatterProtos"></div>
+        <div id="edScatterCount" class="edHint"></div>
         <!-- 自動塗り（傾きと高さの帯で全体の塗りを作り直す。取り消しは 1 段）。
              行は層の数だけ terrain-tools.js の buildTerrainAutoPaintRows が作る。
              欄の値はボタンを押したときにだけ送る（テレインには覚えず、変えたときにこのブラウザに記憶。空 =
@@ -1451,7 +1457,7 @@
            terrain-brush.js の renderTerrainBar()）。道具を選ぶと映像の左ドラッグが
            筆になり、同じボタンをもう一度押すか Esc でやめる。道具の名前は
            ボタンの data-tool が唯一の一覧（サーバーの brushToolFromName と同じ
-           綴り）。半径・強さの欄が空ならサーバーの既定値。 -->
+           綴り）。半径・強さ・散布の欄が空ならサーバーの既定値。 -->
       <div id="terrainBar" hidden>
         <button data-tool="raise" onclick="setBrushTool('raise')"
                 title="盛り上げる（押している間、強さ m/s で上がる）">▲</button>
@@ -1469,18 +1475,43 @@
                 title="塗る（押している間、右の選択の層が強さ 1/s で濃くなる）">🖌</button>
         <button data-tool="erase" onclick="setBrushTool('erase')"
                 title="消す（押している間、塗った層が強さ 1/s で薄くなり下地に戻る）">🧽</button>
+        <button data-tool="scatter" onclick="setBrushTool('scatter')"
+                title="散布する（右の選択の原型を、密度と間隔を守って円の中に置く）">🌲</button>
+        <button data-tool="unscatter" onclick="setBrushTool('unscatter')"
+                title="散布物を消す（円の中の配置を原型によらず全部消す）">⌫</button>
         <!-- 🖌 で塗る層（下地より後ろの層。下地は 🧽 が受け持つ）。選択肢と title は
              テレインの層（/scene の terrain.layers）から terrain-brush.js が作る。
              値は 0 始まりの層の番号。テクスチャの無い層は灰色。隣の #tbLayerNote は
              🖌 で塗れない・テクスチャが無いときの知らせ。 -->
         <select id="tbLayer" class="strSel" onchange="applyBrushLayer()"></select>
         <span id="tbLayerNote" hidden></span>
+        <!-- 🌲 散布の欄（🌲 を選んでいる間だけ出す = terrain-brush.js の
+             renderTerrainBar）。原型の選択肢と名前は /scene の terrain.scatter から
+             terrain-brush.js が作る（値は 0 始まりの原型の番号）。数の欄が空なら
+             サーバーの既定値。範囲の持ち主はサーバーで、下限・上限は /scene の
+             limits から data-limit / data-limit-max で入る（app.js の applyFieldLimits）。
+             範囲を超えた値は terrain-brush.js が欄に書き戻す。 -->
+        <span id="tbScatter" hidden>
+          <select id="tbProto" class="strSel" onchange="applyBrushValues()"
+                  title="🌲 で置く原型（Inspector の『散布物の原型』の番号）"></select>
+          <label title="密度（1 m² あたりの個数）">密度
+            <input id="tbDensity" type="number" data-limit="brushDensityMin"
+                   data-limit-max="brushDensityMax" step="0.01" placeholder="既定" onchange="applyBrushValues()"></label>
+          <label title="配置どうしの最小の間隔 (m)">間隔
+            <input id="tbSpacing" type="number" data-limit="brushSpacingMin"
+                   data-limit-max="brushSpacingMax" step="0.5" placeholder="既定" onchange="applyBrushValues()"></label>
+          <label title="大きさのばらつき（0 = そろえる。範囲を超えた値は範囲の端へ丸めます）">ばらつき
+            <input id="tbJitter" type="number" data-limit="brushScaleJitterMin"
+                   data-limit-max="brushScaleJitterMax" step="0.05" placeholder="既定" onchange="applyBrushValues()"></label>
+        </span>
         <span class="gzSep"></span>
         <label title="筆の半径 (m)">半径
-          <input id="tbRadius" type="number" min="0.1" max="500" step="0.5"
+          <input id="tbRadius" type="number" data-limit="brushRadiusMin"
+                 data-limit-max="brushRadiusMax" step="0.5"
                  placeholder="既定" onchange="applyBrushValues()"></label>
         <label title="筆の強さ（盛り上げ・掘り下げは m/s、平らに・なだらか・塗るは 1/s）">強さ
-          <input id="tbStrength" type="number" min="0" max="100" step="0.1"
+          <input id="tbStrength" type="number" data-limit="brushStrengthMin"
+                 data-limit-max="brushStrengthMax" step="0.1"
                  placeholder="既定" onchange="applyBrushValues()"></label>
         <span class="gzSep"></span>
         <button onclick="undoTerrain()"
@@ -1631,9 +1662,11 @@
 </div>
 <script src="app.js"></script>
 <script src="terrain.js"></script>
+<script src="terrain-rows.js"></script>
 <script src="terrain-layers.js"></script>
 <script src="terrain-tools.js"></script>
 <script src="terrain-files.js"></script>
 <script src="terrain-brush.js"></script>
+<script src="terrain-scatter.js"></script>
 </body>
 </html>

@@ -2,6 +2,7 @@
 #include "terrain/TerrainBrush.h"
 
 #include "terrain/TerrainHash.h"
+#include "terrain/TerrainScatter.h"
 
 #include <algorithm>
 #include <cmath>
@@ -17,39 +18,6 @@ namespace {
 // 1 スタンプで当てる円の数の上限（安全弁）。円の間隔は半径の 1/4 なので、
 // 線分が半径の 64 倍を超えるときだけ間隔が広がる（隙間が出るのは 512 倍超）。
 constexpr int kMaxDiscsPerStamp = 256;
-
-// 当ててよいスタンプか（使う値が全部有限、半径が正、上限が負でない =
-// std::clamp の lo <= hi を守る）。maxHeight を渡し忘れた（既定の NaN）
-// スタンプもここで弾く。target は Flatten のときだけ、layer は Paint のときだけ
-// 見る（Erase は下地の層に決まっているので見ない）。範囲外の layer は丸めずに
-// 弾く（丸めると別の層を塗る）。Paint は下地の層
-// （kBaseSplatLayer）を塗れない: 下地を塗る = 消しゴムの役目で、layer を送り
-// 忘れた（既定 0 の）塗りが黙って消しゴムになるのを防ぐ。
-bool usableStamp(const BrushStamp& s) {
-    return std::isfinite(s.x0) && std::isfinite(s.z0) && std::isfinite(s.x1) &&
-           std::isfinite(s.z1) && std::isfinite(s.radius) && std::isfinite(s.strength) &&
-           std::isfinite(s.dt) && std::isfinite(s.maxHeight) &&
-           (s.tool != BrushTool::Flatten || std::isfinite(s.target)) &&
-           (s.tool != BrushTool::Paint || (s.layer >= 0 && s.layer < kSplatChannels &&
-                                           s.layer != kBaseSplatLayer)) &&
-           s.radius > 0.0 && s.maxHeight >= 0.0;
-}
-
-// 当てる円 1 個（格子の座標）。内外は二乗距離で比べ、平方根は重みを出すときだけ。
-struct Disc {
-    double cx, cz, r;
-    double r2;  // r * r
-    double distanceSq(double x, double z) const {
-        const double dx = x - cx, dz = z - cz;
-        return dx * dx + dz * dz;
-    }
-    bool contains(double x, double z) const { return distanceSq(x, z) < r2; }
-    // 減衰の重み。半径の外は 0。
-    double weight(double x, double z) const {
-        const double d2 = distanceSq(x, z);
-        return d2 < r2 ? brushFalloff(std::sqrt(d2), r) : 0.0;
-    }
-};
 
 // 格子の座標の矩形 [xMin, xMax] x [zMin, zMax] に入るサンプル k を
 // 角に持つセル（k − 1 と k）と、中心が入るセルを包むセルの矩形（切り詰め済み）。
@@ -85,7 +53,7 @@ bool writeHeight(HeightField& f, int i, int j, double h, double maxHeight) {
 // 円の中のサンプル（cells の角 = [i0, i1] x [j0, j1]）ごとに fn(i, j, 番号, 重み)。
 // 番号は矩形内の行優先の通し番号（Smooth の写しの添字）。重み 0 は呼ばない。
 template <class Fn>
-void forEachWeighted(const HeightField& f, const Disc& disc, const GridRect& cells, Fn&& fn) {
+void forEachWeighted(const HeightField& f, const StampDisc& disc, const GridRect& cells, Fn&& fn) {
     const double cell = f.cellSize();
     std::size_t k = 0;
     for (int j = cells.j0; j <= cells.j1; ++j) {
@@ -98,7 +66,7 @@ void forEachWeighted(const HeightField& f, const Disc& disc, const GridRect& cel
 }
 
 // Raise / Lower / Flatten。隣を読まないのでその場で書く。amount = strength × dt。
-bool raiseLowerFlatten(HeightField& f, const BrushStamp& s, const Disc& disc,
+bool raiseLowerFlatten(HeightField& f, const BrushStamp& s, const StampDisc& disc,
                        const GridRect& cells, double amount) {
     const double rate = std::min(1.0, amount);  // Flatten の寄せ率
     const double flatTarget = s.target - double(f.baseY());
@@ -119,7 +87,7 @@ bool raiseLowerFlatten(HeightField& f, const BrushStamp& s, const Disc& disc,
 
 // Smooth（周り 3x3 の平均へ寄せる）。書き換え途中の隣を読んで片寄らないよう、
 // 新しい値を写し（scratch、呼び手が使い回す）へ全部出してから書く。
-bool smooth(HeightField& f, const BrushStamp& s, const Disc& disc, const GridRect& cells,
+bool smooth(HeightField& f, const BrushStamp& s, const StampDisc& disc, const GridRect& cells,
             double amount, std::vector<float>& scratch) {
     const double rate = std::min(1.0, amount);
     constexpr float kUntouched = std::numeric_limits<float>::quiet_NaN();
@@ -145,7 +113,7 @@ bool smooth(HeightField& f, const BrushStamp& s, const Disc& disc, const GridRec
 // 円の中のセル（cells = 半開のセル矩形）ごとに fn(i, j, 中心の減衰の重み)。
 // セルの選び方はここ 1 か所。
 template <class Fn>
-void forEachCellInDisc(const HeightField& f, const Disc& disc, const GridRect& cells, Fn&& fn) {
+void forEachCellInDisc(const HeightField& f, const StampDisc& disc, const GridRect& cells, Fn&& fn) {
     for (int j = cells.j0; j < cells.j1; ++j) {
         const double z = f.cellCenterZ(j);
         for (int i = cells.i0; i < cells.i1; ++i) {
@@ -156,12 +124,12 @@ void forEachCellInDisc(const HeightField& f, const Disc& disc, const GridRect& c
 }
 
 // 円 1 個が触れうるセルの矩形（切り詰め済み）。
-GridRect discCells(const HeightField& f, const Disc& disc) {
+GridRect discCells(const HeightField& f, const StampDisc& disc) {
     return cellsOfBox(f, disc.cx - disc.r, disc.cz - disc.r, disc.cx + disc.r, disc.cz + disc.r);
 }
 
 // Hole / Unhole。中心が円の中のセルを書き換える。
-bool holes(HeightField& f, bool hole, const Disc& disc, const GridRect& cells) {
+bool holes(HeightField& f, bool hole, const StampDisc& disc, const GridRect& cells) {
     bool changed = false;
     forEachCellInDisc(f, disc, cells, [&](int i, int j, double) {
         // 変わったかを知るため、同じ値なら書かない。
@@ -175,8 +143,7 @@ bool holes(HeightField& f, bool hole, const Disc& disc, const GridRect& cells) {
 // 塗りの端数のくじ: セル (i, j) とスタンプの種から決まる [0, 1) の値（状態を
 // 持たない = 同じ入力なら同じ結果。種はスタンプごとに呼び手が変える）。
 double paintLottery(int i, int j, uint32_t seed) {
-    const uint32_t h = mix32(uint32_t(i) ^ mix32(uint32_t(j) ^ mix32(seed)));
-    return double(h >> 8) / 16777216.0;  // 上位 24 ビット / 2^24
+    return hashUnit(mix32(uint32_t(i) ^ mix32(uint32_t(j) ^ mix32(seed))));
 }
 
 // Paint の 1 スタンプ（1 回ぶん）。peak = cells（スタンプの矩形）の行優先で、
@@ -204,9 +171,7 @@ bool paint(HeightField& f, const BrushStamp& s, const GridRect& cells,
             const double rest = double(kSplatWeightTotal) - now[s.layer];  // 他の層の合計
             if (!(rest > 1e-9)) continue;  // もう満杯
             const double want = rest * rate * w;               // 式どおりの増分（目盛り）
-            double add = std::floor(want);
-            if (paintLottery(i, j, s.seed) < want - add) add += 1.0;
-            add = std::min(add, rest);
+            const double add = std::min(roundByLottery(want, paintLottery(i, j, s.seed)), rest);
             if (!(add > 0.0)) continue;
             const double keep = 1.0 - add / rest;  // 他の層に残す割合
             float next[kSplatChannels];
@@ -229,7 +194,7 @@ bool paintStamp(HeightField& f, const BrushStamp& s, const GridRect& rect, int d
     const int width = rect.i1 - rect.i0;
     peak.assign(std::size_t(width) * std::size_t(rect.j1 - rect.j0), 0.0f);
     for (int k = 1; k <= discs; ++k) {
-        const Disc disc = discAt(k);
+        const StampDisc disc = discAt(k);
         forEachCellInDisc(f, disc, discCells(f, disc), [&](int i, int j, double w) {
             if (i < rect.i0 || i >= rect.i1 || j < rect.j0 || j >= rect.j1) return;  // 念のため
             float& p = peak[std::size_t(j - rect.j0) * std::size_t(width) +
@@ -240,7 +205,7 @@ bool paintStamp(HeightField& f, const BrushStamp& s, const GridRect& rect, int d
     return paint(f, s, rect, peak);
 }
 
-bool applyDisc(HeightField& f, const BrushStamp& s, const Disc& disc, double dt,
+bool applyDisc(HeightField& f, const BrushStamp& s, const StampDisc& disc, double dt,
                std::vector<float>& scratch) {
     const GridRect cells = discCells(f, disc);
     if (cells.empty()) return false;
@@ -269,24 +234,64 @@ BrushTool brushToolFromName(const std::string& name, BrushTool fallback) {
     if (name == "unhole") return BrushTool::Unhole;
     if (name == "paint") return BrushTool::Paint;
     if (name == "erase") return BrushTool::Erase;
+    if (name == "scatter") return BrushTool::Scatter;
+    if (name == "unscatter") return BrushTool::Unscatter;
     return fallback;
 }
 
 BrushStamp clampBrush(BrushStamp s) {
     // std::clamp / std::max は NaN をそのまま返す = NaN は残る（ヘッダの約束）。
     s.radius = std::clamp(s.radius, kBrushMinRadius, kBrushMaxRadius);
-    s.strength = std::clamp(s.strength, 0.0, kBrushMaxStrength);
+    s.strength = std::clamp(s.strength, kBrushMinStrength, kBrushMaxStrength);
     s.dt = std::clamp(s.dt, 0.0, kBrushMaxDt);
     s.maxHeight = std::max(s.maxHeight, 0.0);
-    // layer は丸めない（範囲外は usableStamp が弾く = 別の層を塗らない）。
+    s.density = std::clamp(s.density, kBrushMinDensity, kBrushMaxDensity);
+    s.spacing = std::clamp(s.spacing, kBrushMinSpacing, kBrushMaxSpacing);
+    s.scaleJitter = std::clamp(s.scaleJitter, kBrushMinScaleJitter, kBrushMaxScaleJitter);
+    // layer / prototype は丸めない（範囲外は brushStampUsable が弾く = 別の層を
+    // 塗らない・別の原型を置かない）。
     return s;
 }
 
+bool brushStampUsable(const BrushStamp& s) {
+    return std::isfinite(s.x0) && std::isfinite(s.z0) && std::isfinite(s.x1) &&
+           std::isfinite(s.z1) && std::isfinite(s.radius) && std::isfinite(s.strength) &&
+           std::isfinite(s.dt) && std::isfinite(s.maxHeight) &&
+           (s.tool != BrushTool::Flatten || std::isfinite(s.target)) &&
+           (s.tool != BrushTool::Paint || (s.layer >= 0 && s.layer < kSplatChannels &&
+                                           s.layer != kBaseSplatLayer)) &&
+           (!brushScatters(s.tool) ||
+            (s.prototype >= 0 && s.prototype < kMaxScatterPrototypes &&
+             std::isfinite(s.density) && std::isfinite(s.spacing) &&
+             std::isfinite(s.scaleJitter))) &&
+           s.radius > 0.0 && s.maxHeight >= 0.0;
+}
+
+int stampDiscCount(const BrushStamp& s) {
+    const double length = std::hypot(s.x1 - s.x0, s.z1 - s.z0);
+    const double n = length / (s.radius * 0.25);
+    // NaN（半径 0 の長さ 0 など）は 1 個。int にする前に上限で抑える。
+    if (!(n > 1.0)) return 1;
+    return std::clamp(int(std::ceil(std::min(n, double(kMaxDiscsPerStamp)))), 1,
+                      kMaxDiscsPerStamp);
+}
+
+StampDisc stampDisc(const BrushStamp& s, int discs, int k) {
+    const double t = double(k) / double(discs);
+    return StampDisc{s.x0 + (s.x1 - s.x0) * t, s.z0 + (s.z1 - s.z0) * t, s.radius,
+                     s.radius * s.radius};
+}
+
+StampBounds stampBounds(const BrushStamp& s, double margin) {
+    return {std::min(s.x0, s.x1) - margin, std::min(s.z0, s.z1) - margin,
+            std::max(s.x0, s.x1) + margin, std::max(s.z0, s.z1) + margin};
+}
+
 GridRect stampRect(const HeightField& field, const BrushStamp& stamp) {
-    if (!field.valid() || !usableStamp(stamp)) return {};
-    const double r = stamp.radius;
-    return cellsOfBox(field, std::min(stamp.x0, stamp.x1) - r, std::min(stamp.z0, stamp.z1) - r,
-                      std::max(stamp.x0, stamp.x1) + r, std::max(stamp.z0, stamp.z1) + r);
+    // 散布の道具は格子を書き換えない（配置は scatterStamp）。
+    if (!field.valid() || !brushStampUsable(stamp) || brushScatters(stamp.tool)) return {};
+    const StampBounds b = stampBounds(stamp, stamp.radius);
+    return cellsOfBox(field, b.x0, b.z0, b.x1, b.z1);
 }
 
 bool applyStamp(HeightField& field, const BrushStamp& stamp) {
@@ -295,20 +300,10 @@ bool applyStamp(HeightField& field, const BrushStamp& stamp) {
 }
 
 bool applyStamp(HeightField& field, const BrushStamp& stamp, std::vector<float>& scratch) {
-    if (!field.valid() || !usableStamp(stamp)) return false;
-    const double dx = stamp.x1 - stamp.x0;
-    const double dz = stamp.z1 - stamp.z0;
-    const double length = std::hypot(dx, dz);
+    if (!field.valid() || !brushStampUsable(stamp) || brushScatters(stamp.tool)) return false;
     // 始点は前回のスタンプが当て済み = 1..n 番目の点（終点を含む）に当てる。
-    const double spacing = stamp.radius * 0.25;
-    const int discs =
-        std::clamp(int(std::ceil(std::min(length / spacing, double(kMaxDiscsPerStamp)))), 1,
-                   kMaxDiscsPerStamp);
-    const auto discAt = [&](int k) {
-        const double t = double(k) / double(discs);
-        return Disc{stamp.x0 + dx * t, stamp.z0 + dz * t, stamp.radius,
-                    stamp.radius * stamp.radius};
-    };
+    const int discs = stampDiscCount(stamp);
+    const auto discAt = [&](int k) { return stampDisc(stamp, discs, k); };
     if (brushPaintsWeights(stamp.tool)) {
         // Erase は下地の層を塗るのと同じ: 塗る層を読み替えるだけ。
         BrushStamp p = stamp;

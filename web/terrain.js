@@ -2,10 +2,12 @@
 // 古典スクリプトで、app.js のトップレベル（send / num / setField / round2 /
 // sceneData など）をそのまま使う。ここの関数もグローバルのままにする
 // （index.html の onchange= と app.js の renderEditor などが名前で呼ぶため）。
-// 層の欄は terrain-layers.js、1 回きりの道具は terrain-tools.js、ファイルの操作は
-// terrain-files.js、筆は terrain-brush.js（どれもこの後ろに読む）。
-// 描き直し（renderTerrainSection）は後ろの renderTerrainLayers（terrain-layers.js）と
-// buildTerrainAutoPaintRows / terrainAutoPaintDefaults（terrain-tools.js）を呼ぶ。
+// 番号付きの欄の共通部品は terrain-rows.js、層の欄は terrain-layers.js、1 回きりの道具は
+// terrain-tools.js、ファイルの操作は terrain-files.js、筆は terrain-brush.js、散布物の
+// 原型の欄は terrain-scatter.js（どれもこの後ろに読む）。
+// 描き直し（renderTerrainSection）は後ろの renderTerrainLayers（terrain-layers.js）・
+// buildTerrainAutoPaintRows / terrainAutoPaintDefaults（terrain-tools.js）・
+// renderTerrainScatterSection（terrain-scatter.js）を呼ぶ。
 
   // ---- テレイン（選択オブジェクトの secTerrain 節）---------------------------
   // テレインはシーンに 1 つのオブジェクト。Objects 一覧の Terrain 行で選ぶと
@@ -41,13 +43,13 @@
   // ページを離れるときは送信待ちを捨てずに送る（触った値が黙って消えない
   // ように）。通常の fetch は離脱で打ち切られうるので keepalive を付ける。
   window.addEventListener('pagehide', () => flushTerrain(null, true));
-  // 今のテレインの見分け（data と guid）。層の欄の守り（terrain-layers.js）と筆の
+  // 今のテレインの見分け（data と guid）。番号付きの欄の守り（terrain-rows.js）と筆の
   // 層の選択肢（terrain-brush.js）が「テレインが差し替わったか」をこれで見る。
   function terrainIdentity() {
     const t = (sceneData && sceneData.terrain) || {};
     return (t.data || '') + '|' + (t.guid || '');
   }
-  // key = 送るキー。層の欄は terrain-layers.js の applyTerrainLayer が送る。
+  // key = 送るキー。層の欄は terrain-rows.js の sendIndexedField が送る。
   function applyTerrain(key) {
     const t = (sceneData && sceneData.terrain) || {};
     const pick = (id) => document.getElementById(id);
@@ -147,6 +149,8 @@
     set('rot', 'edTerrainRZ', round2(r.z));
     // 塗り分けの層（.terrain の LAYR。サーバーの terrain.layers の順 = 層の番号）。
     renderTerrainLayers(t.layers || []);
+    // 散布物の原型と配置の数（.terrain の TREE。サーバーの terrain.scatter）。
+    renderTerrainScatterSection(t.scatter);
     // 自動塗りの行（層の数と既定の帯はサーバーの値。欄の値はこのブラウザが持つ）。
     buildTerrainAutoPaintRows(terrainAutoPaintDefaults());
     if (t.color) set('color', 'edTerrainColor', t.color);
