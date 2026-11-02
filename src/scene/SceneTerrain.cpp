@@ -311,19 +311,27 @@ void Scene::undoTerrain() {
         editor_.setStatus("取り消すものがありません");
         return;
     }
-    // 戻す操作そのものは記録しない（Redo は作らない）。applyEdit が空を返す =
-    // 解像度が違う格子など、当てられない記録（取り出したまま捨てる）。
-    const bool ok = editTerrainField(
-        edit.rect,
-        [&edit](wizengine::terrain::HeightField& f) {
-            return !wizengine::terrain::applyEdit(f, edit).empty();
-        },
-        // 記録は高さ・穴・重みを組で戻すので、描画も当たり判定も両方。
-        TerrainRecord::None, TerrainChanged::Both);
+    // 1 段は格子（rect が空でない）と散布物の配置（hasScatter）の片方か両方を
+    // 持つ（散布 → 彫るのストロークは両方）。持っている方を全部戻し、どちらかが
+    // 戻れば成功。戻す操作そのものは記録しない（Redo は作らない）。applyEdit が
+    // 空を返す = 解像度が違う格子など、当てられない記録（取り出したまま捨てる）。
+    bool gridOk = false;
+    if (!edit.rect.empty()) {
+        gridOk = editTerrainField(
+            edit.rect,
+            [&edit](wizengine::terrain::HeightField& f) {
+                return !wizengine::terrain::applyEdit(f, edit).empty();
+            },
+            // 記録は高さ・穴・重みを組で戻すので、描画も当たり判定も両方。
+            TerrainRecord::None, TerrainChanged::Both);
+        if (!gridOk) {
+            LOGW("scene", "terrain: an undo record (resolution %d) does not fit the current grid "
+                          "- discarded", edit.resolution);
+        }
+    }
+    const bool scatterOk = restoreScatter(edit);
     // ステータスは結果が分かってから 1 回だけ。
-    if (!ok) {
-        LOGW("scene", "terrain: an undo record (resolution %d) does not fit the current grid "
-                      "- discarded", edit.resolution);
+    if (!gridOk && !scatterOk) {
         editor_.setStatus("テレインの編集を取り消せませんでした");
         return;
     }

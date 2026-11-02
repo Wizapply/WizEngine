@@ -1,5 +1,6 @@
 // テレインの筆のストローク（PHYSICS スレッド）: 開始・1 パスぶんのスタンプの
-// 適用・終了（Undo 1 段 + 当たり判定の張り直し 1 回）。
+// 適用（散布の道具のぶんは stampScatter = SceneTerrainScatter.cpp へ振り分ける）・
+// 終了（Undo 1 段 + 当たり判定の張り直し 1 回）。
 // 格子の書き換えは editTerrainField（コピーオンライト）の 1 か所を通り、
 // ストロークの「変更前」もそこで育てる（TerrainRecord::Stroke）。入力（レイ →
 // ローカルのスタンプ）は呼び手が組む。
@@ -26,20 +27,24 @@ void Scene::beginTerrainStroke() {
 
 void Scene::stampTerrain(std::vector<wizengine::terrain::BrushStamp>& stamps) {
     if (!terrainStroke_.active || stamps.empty()) return;
+    // 高さの上限は今のテレインの値をここで入れる（呼び手に渡させない = 渡し忘れが無い。
+    // terrain_ を書くのはこのスレッドだけなのでロック不要）。散布の道具も
+    // brushStampUsable が見るので、振り分けより先に入れる。
+    for (wizengine::terrain::BrushStamp& s : stamps) s.maxHeight = terrain_.height;
+    // 散布の道具のスタンプは配置へ（格子の関数は散布の道具では何もしない = 下の
+    // 格子の書き換えは残りの道具のぶんだけ）。
+    stampScatter(stamps);
     const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
     if (!field) return;
     const auto t0 = std::chrono::steady_clock::now();
     // このパスで書き換えうる範囲（全スタンプの和）。格子のコピーは 1 パスに 1 回。
-    // 高さの上限は今のテレインの値をここで入れる（呼び手に渡させない = 渡し忘れが無い。
-    // terrain_ を書くのはこのスレッドだけなのでロック不要）。
     // 何を書き換えるか: 塗り・消し（brushPaintsWeights）は重みだけ、他の道具は
     // 高さ・穴。1 パスに両方が混ざれば Both（描画のスプラットとチャンク、
     // 当たり判定の張り直し）。数えるのは当たる（矩形が空でない）スタンプの道具だけ
     // （弾かれたスタンプの分まで描画や当たり判定を作り直さない）。
     wizengine::terrain::GridRect rect;
     unsigned parts = 0;
-    for (wizengine::terrain::BrushStamp& s : stamps) {
-        s.maxHeight = terrain_.height;
+    for (const wizengine::terrain::BrushStamp& s : stamps) {
         const wizengine::terrain::GridRect r = wizengine::terrain::stampRect(*field, s);
         if (r.empty()) continue;
         rect = rect.united(r);
@@ -80,6 +85,14 @@ void Scene::endTerrainStroke() {
         const auto t0 = std::chrono::steady_clock::now();
         rebuildTerrainBody();
         std::snprintf(collision, sizeof(collision), ", collision %.1f ms", elapsedMs(t0));
+    }
+    // 散布のスタンプを当てたストロークは、その計算の時間を 1 行（配置が変わらなくても
+    // 出す = 間隔で詰まって置けないときの重さも見る）。
+    if (done.scatterStamps > 0) {
+        LOGI("scene", "scatter stroke: %d stamps, +%zu / -%zu instances, %.1f ms total, "
+                      "max %.2f ms",
+             done.scatterStamps, done.scatterAdded, done.scatterRemoved, done.scatterMs,
+             done.scatterMaxMs);
     }
     // ログは格子を書き換えたストロークだけ（1 パスの時間を見るため）。
     if (cells.empty()) return;

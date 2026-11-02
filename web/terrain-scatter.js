@@ -3,7 +3,8 @@
 // 送信・送った値の守りは terrain-rows.js の共通部品。app.js・terrain.js・terrain-rows.js
 // の後ろ（terrain-brush.js の後ろ）に読む古典スクリプトで、それらのトップレベル
 // （sceneData / indexedFields / buildIndexedRows / fillIndexedRows）をそのまま使う。
-// ここの関数もグローバルのままにする（terrain.js の renderTerrainSection が名前で使うため）。
+// ここの関数もグローバルのままにする（terrain.js の renderTerrainSection と terrain-brush.js の
+// 原型の選択が名前で使うため）。
 
   // 原型の欄の表（作りは terrain-rows.js の冒頭）。欄のキー = サーバーの
   // terrain.scatter.prototypes[i] と scatter{...} のキー。範囲（倍率・幹の寸法）は
@@ -30,19 +31,30 @@
   const TERRAIN_SCATTER_FIELDS = indexedFields(TERRAIN_SCATTER_ROWS);
   const TERRAIN_SCATTER_TIP = '原型はこのテレインの .terrain に保存され、どのシーンでも同じ';
 
-  // 原型の表示名（i = 0 始まりの原型の番号）。名前の付け方はサーバーが持つ
-  // （/scene の terrain.scatter.prototypes[i].label = ステータスの文と同じ名前）。
-  function terrainPrototypeLabel(i) {
-    const s = sceneData && sceneData.terrain && sceneData.terrain.scatter;
-    const p = ((s && s.prototypes) || [])[i];
+  // 原型の一覧（scatter = サーバーの terrain.scatter。無ければ空）。散布物から
+  // 原型の配列を取り出すのはここだけ。
+  function terrainScatterPrototypes(scatter) {
+    return (scatter && scatter.prototypes) || [];
+  }
+  // 今の /scene（sceneData.terrain.scatter）の原型の一覧。terrain-brush.js の 🌲 の
+  // 原型の選択が使う。
+  function currentScatterPrototypes() {
+    const t = sceneData && sceneData.terrain;
+    return terrainScatterPrototypes(t && t.scatter);
+  }
+  // 原型の表示名（protos = terrainScatterPrototypes の配列、i = 0 始まりの原型の
+  // 番号）。名前の付け方はサーバーが持つ（prototypes[i].label = ステータスの文と
+  // 同じ名前）。
+  function terrainPrototypeLabel(protos, i) {
+    const p = protos[i];
     return (p && p.label) || '';
   }
   // 原型の欄と配置の数（scatter = サーバーの terrain.scatter。無ければ欄を空にする）。
   // 行の数は原型の数（サーバーの配列の長さ）、配置の上限もサーバーの max。
   function renderTerrainScatterSection(scatter) {
-    const protos = (scatter && scatter.prototypes) || [];
+    const protos = terrainScatterPrototypes(scatter);
     buildIndexedRows('edScatterProtos', protos.length, TERRAIN_SCATTER_ROWS,
-                     terrainPrototypeLabel, 'scatter', {
+                     (i) => terrainPrototypeLabel(protos, i), 'scatter', {
       tip: TERRAIN_SCATTER_TIP,
       onRebuild: () => {
         const head = document.getElementById('edScatterHead');

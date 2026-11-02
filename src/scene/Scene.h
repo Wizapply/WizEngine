@@ -890,6 +890,21 @@ private:
     // Clear のとき）。張り直し待ちの印も消えるので、呼び手が先に読んでおく。
     // SceneTerrainSculpt.cpp。
     void abortTerrainStroke();
+    // 散布の筆（SceneTerrainScatter.cpp、PHYSICS thread）。stampTerrain が先頭で呼ぶ:
+    // stamps のうち散布の道具（brushScatters）のものだけを scatterStamp で今の配置の
+    // コピーへ当て、変わればストロークの「変更前」に配置を写して（growScatter）
+    // 差し替える（筆の 1 パス = 同じ格子なのでメッシュも当たり判定も作り直さない）。
+    // ストロークが開いていなければ何もしない。上限に当たったらストロークに 1 回
+    // だけステータスで知らせる。
+    void stampScatter(const std::vector<wizengine::terrain::BrushStamp>& stamps);
+    // 取り消しの記録の配置を書き戻す（applyScatterEdit、ファイルの dirty を立てる）。
+    // 配置を記録していない・テレインの格子が無いときは何もせず false。
+    bool restoreScatter(const wizengine::terrain::TerrainEdit& edit);
+    // 散布物だけを next へ差し替える（格子は field のまま、ファイルの dirty を立てる。
+    // 原型の編集・筆・取り消しの共通の口）。brushPass = 筆の 1 パス（系の選び直しを
+    // 省く = publishTerrainField の同じ名前の引数）。
+    void publishTerrainScatter(const std::shared_ptr<const wizengine::terrain::HeightField>& field,
+                               wizengine::terrain::TerrainScatter&& next, bool brushPass);
     // ---- テレインの描画の同期（SceneTerrainRender.cpp、RENDER thread）------
     // テレインの見た目を反映する。applyToRenderer が objectsMutex_ の中で dirty と
     // 値を取り出し、**ロックを外してから**呼ぶ（メッシュ化とアップロード・
@@ -995,6 +1010,16 @@ private:
         int passes = 0;       // 格子を実際に書き換えたパスの数
         int stamps = 0;       // そのパスのスタンプの総数
         double passMs = 0.0;  // そのパスの所要時間の合計
+        // 散布の筆（stampScatter）: 上限（kMaxScatterInstances）の知らせを出したか
+        // （ストロークに 1 回）。配置を書き換えたかは before.hasScatter が持つ。
+        bool scatterCapped = false;
+        // 散布のスタンプの計測（endTerrainStroke のログ）: 当てたスタンプの数・
+        // 足した / 消した配置の数・scatterStamp の時間の合計と 1 スタンプの最大。
+        int scatterStamps = 0;
+        std::size_t scatterAdded = 0;
+        std::size_t scatterRemoved = 0;
+        double scatterMs = 0.0;
+        double scatterMaxMs = 0.0;
     };
     TerrainStroke terrainStroke_;
     // 高さ格子の実体。作り直すたびに新しい物へ差し替える（中身は書き換え
