@@ -170,7 +170,13 @@ void Scene::editTerrainLayer(int index, const nlohmann::json& patch) {
     }
     const std::string label = terrainLayerLabel(std::size_t(index));
     wt::TerrainLayers layers = terrainLayers_;
-    layers[std::size_t(index)] = layerPatchFromJson(patch, layers[std::size_t(index)]);
+    std::string badKey;
+    layers[std::size_t(index)] = layerPatchFromJson(patch, layers[std::size_t(index)], &badKey);
+    // 型の合わないキーがあれば何も適用しない（黙って「変わっていません」にしない）。
+    if (!badKey.empty()) {
+        editor_.setStatus(terrainPatchTypeStatus(label, badKey));
+        return;
+    }
     // 検査で消されたパスは適用しない（黙ってテクスチャ無しにしない）。
     const wt::TerrainLayer asked = layers[std::size_t(index)];
     sanitizeTerrainLayers(layers, "browser");

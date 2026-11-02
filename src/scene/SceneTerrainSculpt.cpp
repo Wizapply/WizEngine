@@ -86,6 +86,12 @@ void Scene::endTerrainStroke() {
         rebuildTerrainBody();
         std::snprintf(collision, sizeof(collision), ", collision %.1f ms", elapsedMs(t0));
     }
+    // 🌲 を当てたのに 1 本も置けなかったストロークは 1 回知らせる（密度 0・小さな筆・
+    // 間隔で詰まった場合。上限に当たったときは上限の知らせを残す）。
+    if (done.scatterTried && done.scatterAdded == 0 && !done.scatterCapped) {
+        editor_.setStatus("このストロークでは 1 本も置けませんでした（密度か半径を大きくするか、"
+                          "間隔を小さくしてください）");
+    }
     // 散布のスタンプを当てたストロークは、その計算の時間を 1 行（配置が変わらなくても
     // 出す = 間隔で詰まって置けないときの重さも見る）。
     if (done.scatterStamps > 0) {

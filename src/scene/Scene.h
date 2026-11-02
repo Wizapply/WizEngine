@@ -716,10 +716,13 @@ private:
     // 何も出さない（記録も積まない）。テレインが無ければ何もせず false。
     // changed = mutate が書き換えるもの（高さ・穴 = Shape、重み = Paint、両方 =
     // Both）。描画と当たり判定の作り直しをそれに絞る。
+    // scatter = 格子と同じ publish で差し替える散布物（取り消しが格子と配置を 1 回で
+    // 戻すため。null = 今のまま）。mutate が false なら差し替えない。
     bool editTerrainField(
         const wizengine::terrain::GridRect& rect,
         const std::function<bool(wizengine::terrain::HeightField&)>& mutate,
-        TerrainRecord record, TerrainChanged changed);
+        TerrainRecord record, TerrainChanged changed,
+        std::shared_ptr<const wizengine::terrain::TerrainScatter> scatter = nullptr);
     // 生成した高さ（gen の格子値）を今の格子へ入れる（穴・形は今のまま。Undo は
     // 1 段、ファイルの dirty を立てる）。形が今の格子と食い違えば入れずに false
     // （what = 何の格子か、英語の LOGW に出す。例 "generated"）。
@@ -846,14 +849,15 @@ private:
     void newTerrain(const std::string& base);
     // 塗り分けの層 index（0〜kSplatChannels-1）を patch（{texture?, tile?}、送られた
     // キーだけ）で変える。sanitizeTerrainLayers を通し、変われば publish（ファイルの
-    // dirty。Undo の対象にはしない）。結果はステータス。格子のあるテレインだけ
-    // （Missing は呼び手が断る）。
+    // dirty。Undo の対象にはしない）。型の合わないキーがあれば何も変えない。結果は
+    // ステータス。格子のあるテレインだけ（Missing は呼び手が断る）。
     void editTerrainLayer(int index, const nlohmann::json& patch);
     // 散布物の原型 index（0〜kMaxScatterPrototypes-1）を patch（{file?, scale?,
     // trunkRadius?, trunkHeight?, collide?}、送られたキーだけ）で変える
-    // （SceneTerrainScatter.cpp）。sanitizeScatter を通し、変われば publish（ファイルの
-    // dirty。Undo の対象にはしない = 筆のストローク中でも閉じない）。結果は
-    // ステータス。格子のあるテレインだけ（Missing は呼び手が断る）。
+    // （SceneTerrainScatter.cpp）。その原型だけ sanitizeScatterPrototype を通し、
+    // 変われば publish（ファイルの dirty。Undo の対象にはしない = 筆のストローク中
+    // でも閉じない）。型の合わないキーがあれば何も変えない。結果はステータス。
+    // 格子のあるテレインだけ（Missing は呼び手が断る）。
     void editTerrainPrototype(int index, const nlohmann::json& patch);
     // 名前のファイルに差し替える（名前は一覧の綴り）。一覧に無い・使えない
     // （読込と同じ判定）なら何も変えない。
@@ -910,14 +914,17 @@ private:
     // ストロークが開いていなければ何もしない。上限に当たったらストロークに 1 回
     // だけステータスで知らせる。
     void stampScatter(const std::vector<wizengine::terrain::BrushStamp>& stamps);
-    // 取り消しの記録の配置を書き戻す（applyScatterEdit、ファイルの dirty を立てる）。
-    // 配置を記録していない・テレインの格子が無いときは何もせず false。
-    bool restoreScatter(const wizengine::terrain::TerrainEdit& edit);
+    // 取り消しの記録の配置を今の散布物へ当てた新しい実体を返す（applyScatterEdit。
+    // publish はしない = 呼び手の undoTerrain が格子と 1 回の publish にまとめる）。
+    // 配置を記録していなければ nullptr。
+    std::shared_ptr<const wizengine::terrain::TerrainScatter> undoneScatter(
+        const wizengine::terrain::TerrainEdit& edit);
     // 散布物だけを next へ差し替える（格子は field のまま、ファイルの dirty を立てる。
-    // 原型の編集・筆・取り消しの共通の口）。brushPass = 筆の 1 パス（系の選び直しを
-    // 省く = publishTerrainField の同じ名前の引数）。
+    // 原型の編集・筆・取り消し（格子を戻せなかったとき）の共通の口）。brushPass =
+    // 筆の 1 パス（系の選び直しを省く = publishTerrainField の同じ名前の引数）。
     void publishTerrainScatter(const std::shared_ptr<const wizengine::terrain::HeightField>& field,
-                               wizengine::terrain::TerrainScatter&& next, bool brushPass);
+                               std::shared_ptr<const wizengine::terrain::TerrainScatter> next,
+                               bool brushPass);
     // ---- テレインの描画の同期（SceneTerrainRender.cpp、RENDER thread）------
     // テレインの見た目を反映する。applyToRenderer が objectsMutex_ の中で dirty と
     // 値を取り出し、**ロックを外してから**呼ぶ（メッシュ化とアップロード・
@@ -1026,6 +1033,9 @@ private:
         // 散布の筆（stampScatter）: 上限（kMaxScatterInstances）の知らせを出したか
         // （ストロークに 1 回）。配置を書き換えたかは before.hasScatter が持つ。
         bool scatterCapped = false;
+        // 🌲（BrushTool::Scatter）のスタンプを当てた（⌫ は数えない）。end で 1 本も
+        // 置けていなければ知らせる。
+        bool scatterTried = false;
         // 散布のスタンプの計測（endTerrainStroke のログ）: 当てたスタンプの数・
         // 足した / 消した配置の数・scatterStamp の時間の合計と 1 スタンプの最大。
         int scatterStamps = 0;

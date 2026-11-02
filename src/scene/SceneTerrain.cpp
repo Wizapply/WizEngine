@@ -234,7 +234,8 @@ std::string Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
 bool Scene::editTerrainField(
     const wizengine::terrain::GridRect& rect,
     const std::function<bool(wizengine::terrain::HeightField&)>& mutate,
-    TerrainRecord record, TerrainChanged changed) {
+    TerrainRecord record, TerrainChanged changed,
+    std::shared_ptr<const wizengine::terrain::TerrainScatter> scatter) {
     // 筆以外の書き換え（取り消し・生成）はストロークを先に終える: ストロークの
     // 記録の後ろに積む / ストロークごと取り消す、の順序にする。
     if (record != TerrainRecord::Stroke) endTerrainStroke();
@@ -256,7 +257,7 @@ bool Scene::editTerrainField(
     publishTerrainField(terrain_,
                         std::make_shared<const wizengine::terrain::HeightField>(std::move(copy)),
                         TerrainHistory::Keep, TerrainFileState::Dirty, rect,
-                        record == TerrainRecord::Stroke, nullptr, changed);
+                        record == TerrainRecord::Stroke, nullptr, changed, std::move(scatter));
     return true;
 }
 
@@ -312,27 +313,40 @@ void Scene::undoTerrain() {
         return;
     }
     // 1 段は格子（rect が空でない）と散布物の配置（hasScatter）の片方か両方を
-    // 持つ（散布 → 彫るのストロークは両方）。持っている方を全部戻し、どちらかが
-    // 戻れば成功。戻す操作そのものは記録しない（Redo は作らない）。applyEdit が
-    // 空を返す = 解像度が違う格子など、当てられない記録（取り出したまま捨てる）。
+    // 持つ（散布 → 彫るのストロークは両方）。持っている方を 1 回の publish で戻す
+    // （格子を戻す editTerrainField に配置も渡す）。戻す操作そのものは記録しない
+    // （Redo は作らない）。applyEdit が空を返す = 解像度が違う格子など、当てられない
+    // 記録（取り出したまま捨てる）。格子が無ければ何も戻さない（配置も作らない =
+    // 下の配置だけの publish でテレインを外さない）。
+    const std::shared_ptr<const wizengine::terrain::HeightField> field = terrainField();
+    std::shared_ptr<const wizengine::terrain::TerrainScatter> scatter =
+        field ? undoneScatter(edit) : nullptr;
+    const bool hasGrid = !edit.rect.empty();
     bool gridOk = false;
-    if (!edit.rect.empty()) {
+    if (field && hasGrid) {
         gridOk = editTerrainField(
             edit.rect,
             [&edit](wizengine::terrain::HeightField& f) {
                 return !wizengine::terrain::applyEdit(f, edit).empty();
             },
             // 記録は高さ・穴・重みを組で戻すので、描画も当たり判定も両方。
-            TerrainRecord::None, TerrainChanged::Both);
+            TerrainRecord::None, TerrainChanged::Both, scatter);
         if (!gridOk) {
             LOGW("scene", "terrain: an undo record (resolution %d) does not fit the current grid "
                           "- discarded", edit.resolution);
         }
     }
-    const bool scatterOk = restoreScatter(edit);
-    // ステータスは結果が分かってから 1 回だけ。
-    if (!gridOk && !scatterOk) {
+    // 格子を戻せなかった（か格子を持たない）記録の配置は、配置だけ差し替える。
+    const bool scatterOnly = scatter && !gridOk;
+    if (scatterOnly) publishTerrainScatter(field, std::move(scatter), false);
+    // ステータスは結果が分かってから 1 回だけ（格子が無いときもここ）。
+    if (!gridOk && !scatterOnly) {
         editor_.setStatus("テレインの編集を取り消せませんでした");
+        return;
+    }
+    // 格子と配置の両方を持つ記録で格子だけ戻せなかった = 一部だけ。
+    if (hasGrid && !gridOk) {
+        editor_.setStatus("テレインの編集を一部だけ取り消しました（コンソール参照）");
         return;
     }
     editor_.setStatus("テレインの編集を取り消しました");
