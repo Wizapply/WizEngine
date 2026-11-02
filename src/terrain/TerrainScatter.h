@@ -39,9 +39,11 @@ constexpr float kScatterTrunkMax = 100.0f;
 // 原型 1 つ（モデルと幹の当たり判定の寸法）。
 struct ScatterPrototype {
     std::string file;           // モデル（assets/ 相対のパス）。空 = 代役で描く
-    float scale = 1.0f;         // モデルの倍率
-    float trunkRadius = 0.25f;  // 幹の半径 (m、倍率 1 のとき)
-    float trunkHeight = 2.0f;   // 幹の高さ (m、倍率 1 のとき)
+    // モデルの見た目の倍率（モデルの単位 → m の換算にも使う）。幹の寸法には
+    // 掛からない（scatterTrunk）。
+    float scale = 1.0f;
+    float trunkRadius = 0.25f;  // 幹の半径 (m。配置の倍率だけが掛かる)
+    float trunkHeight = 2.0f;   // 幹の高さ (m。配置の倍率だけが掛かる)
     bool collide = false;       // 幹に当たり判定を付けるか
 
     bool operator==(const ScatterPrototype& o) const {
@@ -92,6 +94,26 @@ double scatterLocalZ(const HeightField& field, double v);
 // 格子のローカルの (x, z) → 正規化座標。空の格子・有限でない座標・格子の
 // 水平な範囲（境界を含む）の外は false で u / v は触らない。
 bool scatterUvAt(const HeightField& field, double x, double z, double& u, double& v);
+
+// 配置 1 つの幹（立てた円柱）。座標は格子のローカル（field と同じ）。
+// 幹は鉛直（ローカルの Y 向き）に立て、足元 ground から高さ height ぶん伸びる。
+// 軸が X の円柱（描画の単位円柱・物理の円柱部品）で描く・当てる側は、Z まわりに
+// 90° 回して X を Y へ向ける（代役の描画も幹の当たり判定もこれに従う）。
+struct ScatterTrunk {
+    double x = 0.0, z = 0.0;  // 配置の位置（scatterLocalX / Z）
+    double ground = 0.0;      // その点の地表の高さ（heightAt）= 配置の足元
+    double radius = 0.0;      // 幹の半径 (m) = 原型の trunkRadius × 配置の倍率
+    double height = 0.0;      // 幹の高さ (m) = 原型の trunkHeight × 配置の倍率
+    // 幹の中心の高さ。
+    double centerY() const { return ground + 0.5 * height; }
+};
+// 配置 inst（原型 proto）の幹を out に書く。足元が穴・格子の外（solidAt が false）
+// なら false で out は触らない。幹の寸法の規則はここ 1 か所（描画の代役と幹の
+// 当たり判定が同じ値を使う）。原型の倍率（モデルの見た目）は幹に掛けない。
+bool scatterTrunk(const HeightField& field, const ScatterPrototype& proto,
+                  const ScatterInstance& inst, ScatterTrunk& out);
+// 配置のモデルの見た目の倍率（原型の倍率 × 配置の倍率）。
+double scatterModelScale(const ScatterPrototype& proto, const ScatterInstance& inst);
 
 // 原型の数値を範囲へ丸める（有限でない値は既定値、倍率は kScatterScaleMin〜
 // kScatterScaleMax、幹は 0〜kScatterTrunkMax）。パスは触らない。

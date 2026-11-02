@@ -139,6 +139,23 @@ bool scatterUvAt(const HeightField& field, double x, double z, double& u, double
     return true;
 }
 
+bool scatterTrunk(const HeightField& field, const ScatterPrototype& proto,
+                  const ScatterInstance& inst, ScatterTrunk& out) {
+    const double x = scatterLocalX(field, inst.u);
+    const double z = scatterLocalZ(field, inst.v);
+    if (!field.solidAt(x, z)) return false;  // 穴・格子の外・空の格子・NaN
+    out.x = x;
+    out.z = z;
+    out.ground = field.heightAt(x, z);
+    out.radius = double(proto.trunkRadius) * double(inst.scale);
+    out.height = double(proto.trunkHeight) * double(inst.scale);
+    return true;
+}
+
+double scatterModelScale(const ScatterPrototype& proto, const ScatterInstance& inst) {
+    return double(proto.scale) * double(inst.scale);
+}
+
 ScatterPrototype clampScatterPrototype(ScatterPrototype p) {
     const ScatterPrototype d;
     p.scale = float(clampOr(p.scale, kScatterScaleMin, kScatterScaleMax, d.scale));

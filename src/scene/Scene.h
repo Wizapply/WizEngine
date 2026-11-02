@@ -239,6 +239,17 @@ public:
     // ポインタとフレームも見ること。スレッドの扱いは terrainField() と同じ（末端
     // ロック terrainFieldMutex_）。
     std::shared_ptr<const wizengine::terrain::TerrainScatter> terrainScatter() const;
+    // 高さ格子・テレインの姿勢（文書の pos + euler。描画の変換は
+    // toFilament(pose) = テレイン本体と同じ）・散布物の 3 つを 1 回のロックで組で
+    // 返す（散布物を地表に載せて描く側用）。objects のロックを持たない呼び手
+    // （HTTP・物理）が terrainField と terrainScatter を別々に取ると、新しい散布物と
+    // 古い格子の組を一瞬見ることがあるが、この口ならどの呼び手でも組がずれない
+    // （RENDER の applyToRenderer の中は objects のロックを持つので、別々に取っても
+    // ずれない）。散布物は terrainScatter() と同じく null にならない。スレッドの
+    // 扱いは terrainField() と同じ（末端ロック terrainFieldMutex_）。
+    std::shared_ptr<const wizengine::terrain::HeightField> terrainFieldAndScatter(
+        BodyTransform& pose,
+        std::shared_ptr<const wizengine::terrain::TerrainScatter>& scatter) const;
     // テレインの当たり判定のボディ（rebuildTerrainBody）は自前の接触の相手の
     // ゴースト 1 個（PhysicsWorld::setTerrain が返す番号。GameObject ではない =
     // boxes_ に入らず、選択・掴み・イベントの対象にならない）。以下 2 つは
@@ -862,8 +873,10 @@ private:
 
     // 高さ格子とテレインの姿勢（terrainPose_）を terrainFieldMutex_ の中で組で
     // 写す（ロックは自分で取る = 末端のロック）。姿勢だけ要る呼び手もこれを使う。
+    // scatter を渡せば散布物も同じロックの中で写す。
     std::shared_ptr<const wizengine::terrain::HeightField> copyTerrainFieldAndPose(
-        BodyTransform& pose) const;
+        BodyTransform& pose,
+        std::shared_ptr<const wizengine::terrain::TerrainScatter>* scatter = nullptr) const;
 
     // テレインの当たり判定（自前の接触。PhysicsWorld::setTerrain）を今の高さ
     // 格子で張り直す。テレインが無ければ接触を止めるだけ（ゴーストは

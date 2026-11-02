@@ -479,9 +479,11 @@ std::shared_ptr<const wizengine::terrain::TerrainScatter> Scene::terrainScatter(
 }
 
 std::shared_ptr<const wizengine::terrain::HeightField> Scene::copyTerrainFieldAndPose(
-    BodyTransform& pose) const {
+    BodyTransform& pose,
+    std::shared_ptr<const wizengine::terrain::TerrainScatter>* scatter) const {
     std::lock_guard<std::mutex> fl(terrainFieldMutex_);
     pose = terrainPose_;
+    if (scatter) *scatter = terrainScatter_;
     return terrainField_;
 }
 
@@ -495,6 +497,12 @@ std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainField(
                                                             p.qy, p.qz);
     }
     return field;
+}
+
+std::shared_ptr<const wizengine::terrain::HeightField> Scene::terrainFieldAndScatter(
+    BodyTransform& pose,
+    std::shared_ptr<const wizengine::terrain::TerrainScatter>& scatter) const {
+    return copyTerrainFieldAndPose(pose, &scatter);
 }
 
 // ---- ギズモの移動 / 回転（PHYSICS thread）----------------------------------

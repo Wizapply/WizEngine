@@ -39,6 +39,7 @@
 #include "components/TerrainComponent.h"
 #include "components/VehicleComponent.h"
 #include "components/PrefabComponent.h"
+#include "components/ScatterComponent.h"
 #include "physics/PhysicsTuning.h"
 #include "physics/PhysicsWorld.h"
 #include "render/Renderer.h"
@@ -452,6 +453,8 @@ int run(int argc, char** argv) {
     scene.addComponent(std::move(vehicleOwner));
     // プレハブ（見た目の部品）の描画。車両の車輪姿勢は VehicleComponent から。
     scene.addComponent(std::make_unique<PrefabComponent>(vehicleComp));
+    // テレインの散布物（木や小物）の描画。
+    scene.addComponent(std::make_unique<ScatterComponent>());
 
     PerfStats stats;
     stats.substeps.store(scene.substeps());

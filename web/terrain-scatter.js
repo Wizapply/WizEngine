@@ -15,15 +15,15 @@
               placeholder: 'models/tree.glb',
               tip: 'モデル（assets/ からの相対パス。空 = 代役の幹と冠で描く）' },
       scale: { id: 'edScatterScale', kind: 'num', cls: 'layerNum', step: '0.1',
-               tip: '倍率（モデルの大きさ。配置ごとのばらつきはこれに掛かる）' },
+               tip: '倍率（モデルの見た目と単位の換算。幹には掛からない。配置ごとのばらつきはこれに掛かる）' },
     } },
     { label: '幹', fields: {
       collide: { id: 'edScatterCollide', kind: 'bool', cls: 'layerCheck', text: '当たり判定',
                  tip: '幹の当たり判定（鉛直の円柱 1 本）' },
       trunkRadius: { id: 'edScatterTrunkR', kind: 'num', cls: 'layerNum', step: '0.05',
-                     tip: '幹の半径（m）' },
+                     tip: '幹の半径（m。配置ごとの大きさだけが掛かる）' },
       trunkHeight: { id: 'edScatterTrunkH', kind: 'num', cls: 'layerNum', step: '0.5',
-                     tip: '幹の高さ（m）' },
+                     tip: '幹の高さ（m。配置ごとの大きさだけが掛かる）' },
     } },
   ];
   // キーで欄を引くための一覧（TERRAIN_SCATTER_ROWS から作る写し。欄を足すのは
