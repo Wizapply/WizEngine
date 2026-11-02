@@ -231,6 +231,14 @@ public:
     // setTerrainFrame で姿勢のまま渡す）。スレッドの扱いは terrainField() と同じ。
     std::shared_ptr<const wizengine::terrain::HeightField> terrainField(
         wizengine::terrain::TerrainFrame* frame) const;
+    // テレインの散布物（.terrain の TREE。読み取り専用、null にはならない = テレインが
+    // 無ければ既定）。格子と同じく差し替えるたびに新しく作るので、受け取った
+    // shared_ptr はそのまま別スレッドで読み続けてよく、散布物の中身（原型・配置の
+    // (u, v)）が変わったかはポインタの比較で分かる。置いた結果（ワールドの位置・
+    // 高さ）は格子と置き場所にもよるので、それを使う側は格子（terrainField）の
+    // ポインタとフレームも見ること。スレッドの扱いは terrainField() と同じ（末端
+    // ロック terrainFieldMutex_）。
+    std::shared_ptr<const wizengine::terrain::TerrainScatter> terrainScatter() const;
     // テレインの当たり判定のボディ（rebuildTerrainBody）は自前の接触の相手の
     // ゴースト 1 個（PhysicsWorld::setTerrain が返す番号。GameObject ではない =
     // boxes_ に入らず、選択・掴み・イベントの対象にならない）。以下 2 つは
@@ -657,13 +665,19 @@ private:
     // Shape なら描画のチャンクを作り直して当たり判定を張り直し、Paint なら描画の
     // スプラットの矩形だけ送り直す。changedCells が空（格子の丸ごとの差し替え）は
     // どちらも全体。
+    // scatter = 散布物（.terrain の TREE。呼び手が sanitizeScatter 済み）。
+    // **terrainScatter_ を差し替えるのはここだけ**で、規則は layers と同じ（渡されれば
+    // それ、null なら格子が無くなるか別のテレインになるときは既定、それ以外は今の
+    // まま）。中身が今と同じなら差し替えない（ポインタを見る側に変化を知らせない）。
     void publishTerrainField(const wizengine::editor::TerrainDesc& desc,
                              std::shared_ptr<const wizengine::terrain::HeightField> field,
                              TerrainHistory history, TerrainFileState file,
                              const wizengine::terrain::GridRect& changedCells = {},
                              bool brushPass = false,
                              const wizengine::terrain::TerrainLayers* layers = nullptr,
-                             TerrainChanged changed = TerrainChanged::Both);
+                             TerrainChanged changed = TerrainChanged::Both,
+                             std::shared_ptr<const wizengine::terrain::TerrainScatter> scatter =
+                                 nullptr);
     // publishTerrainField の中（objectsMutex_ の下）: 渡された file と格子の有無
     // （on / missing）から terrainFile_ を決める。
     void settleTerrainFileState(TerrainFileState file, bool on, bool missing);
@@ -728,8 +742,9 @@ private:
     void loadTerrainField(const wizengine::editor::TerrainDesc& doc);
     // name のファイルを読み、使えるなら desc.position に置いた格子を返して、desc の
     // data / guid / size / resolution / height を読んだ値で埋める（位置と表面は
-    // そのまま）。layers にはファイルの層（sanitizeTerrainLayers 済み）を入れる。
-    // **使えないファイル**は null と英語の reason（desc と layers は触らない）:
+    // そのまま）。layers にはファイルの層（sanitizeTerrainLayers 済み）、scatter には
+    // ファイルの散布物（sanitizeScatter 済み）を入れる。
+    // **使えないファイル**は null と英語の reason（desc・layers・scatter は触らない）:
     //   * 読めない（壊れている・形式が違う）
     //   * 背番号が全部 0（背番号での解決と食い違う）
     //   * 形が clampTerrain を通すと変わる（解像度 2048・size 5000 など。エディタの
@@ -738,7 +753,8 @@ private:
     // loadTerrainField と openTerrain が使う。
     std::shared_ptr<const wizengine::terrain::HeightField> readTerrainFile(
         const std::string& name, wizengine::editor::TerrainDesc& desc,
-        wizengine::terrain::TerrainLayers& layers, std::string& reason) const;
+        wizengine::terrain::TerrainLayers& layers, wizengine::terrain::TerrainScatter& scatter,
+        std::string& reason) const;
     // 旧属性 <terrain texture tile>（legacy）を層 0 へ取り込む唯一の口
     // （setTerrainFromDocument の全経路が読込の後に呼ぶ）。読めているテレインで、
     // 旧属性にテクスチャがあり、層 0 のテクスチャが空のときだけ取り込んで
@@ -800,7 +816,8 @@ private:
     // 名前、Missing は文書の名前（無ければ背番号）で呼ぶ。PHYSICS スレッドか
     // objectsMutex_ を持って呼ぶ。
     std::string terrainMissingText() const;
-    // /scene のテレイン部分（hasTerrain / terrain / terrainDirty / terrainMissing /
+    // /scene のテレイン部分（hasTerrain / terrain（+ layers / scatter）/ terrainDirty /
+    // terrainMissing /
     // terrainOpen / terrainFiles / heightmapFiles）。
     // hierarchyJson（objectsMutex_ を持った HTTP スレッド）から呼ぶ。
     nlohmann::json terrainJson() const;
@@ -821,6 +838,12 @@ private:
     // dirty。Undo の対象にはしない）。結果はステータス。格子のあるテレインだけ
     // （Missing は呼び手が断る）。
     void editTerrainLayer(int index, const nlohmann::json& patch);
+    // 散布物の原型 index（0〜kMaxScatterPrototypes-1）を patch（{file?, scale?,
+    // trunkRadius?, trunkHeight?, collide?}、送られたキーだけ）で変える
+    // （SceneTerrainScatter.cpp）。sanitizeScatter を通し、変われば publish（ファイルの
+    // dirty。Undo の対象にはしない = 筆のストローク中でも閉じない）。結果は
+    // ステータス。格子のあるテレインだけ（Missing は呼び手が断る）。
+    void editTerrainPrototype(int index, const nlohmann::json& patch);
     // 名前のファイルに差し替える（名前は一覧の綴り）。一覧に無い・使えない
     // （読込と同じ判定）なら何も変えない。
     void openTerrain(const std::string& name);
@@ -980,6 +1003,14 @@ private:
     // これを持ったまま他のロックを取らない）が守る - 車輪のレイが物理
     // スレッドから毎ステップ引くので、objectsMutex_ とは分けてある。
     std::shared_ptr<const wizengine::terrain::HeightField> terrainField_;
+    // 散布物（.terrain の TREE）。格子と同じく作り直すたびに新しい物へ差し替え、
+    // 同じ terrainFieldMutex_ の下。書くのは publishTerrainField だけで、読むのは
+    // どのスレッドも terrainScatter() を通す（物理スレッドも直接読まない）。
+    std::shared_ptr<const wizengine::terrain::TerrainScatter> terrainScatter_ =
+        defaultTerrainScatter();
+    // 既定の散布物（原型は全部既定・配置なし）の唯一の実体（SceneTerrain.cpp）。
+    // 初期値と publishTerrainField の「既定へ戻す」が同じポインタを使う。
+    static std::shared_ptr<const wizengine::terrain::TerrainScatter> defaultTerrainScatter();
     // テレインのフレーム（terrain_ の pos + euler。格子は原点基準）。格子と
     // 組で読むので同じ terrainFieldMutex_ の下。書くのは publishTerrainField。
     BodyTransform terrainPose_{0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0};

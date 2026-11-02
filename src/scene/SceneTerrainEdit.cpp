@@ -45,6 +45,14 @@ bool refuseWhileMissing(EditorState& editor, bool missing, const char* what) {
     return true;
 }
 
+// 番号付きの部分更新（layer{index,...} / scatter{index,...}）の index: arg が
+// オブジェクトで、index が 0〜count-1 の整数ならその値、それ以外は -1。
+int indexArg(const nlohmann::json& arg, int count) {
+    const double index = arg.is_object() ? ed::jsonNumber(arg, "index", -1.0) : -1.0;
+    if (!(index >= 0.0 && index < double(count) && index == std::floor(index))) return -1;
+    return int(index);
+}
+
 }  // namespace
 
 // ---- 新規・開く・名前の変更 ---------------------------------------------------
@@ -68,9 +76,10 @@ void Scene::openTerrain(const std::string& name) {
     refreshTerrainFiles();
     const std::string file = terrainLibrary_->resolve(name, wt::TerrainGuid{}).file;
     ed::TerrainDesc desc = terrain_;  // 位置と表面は今のもの
-    wt::TerrainLayers layers;         // 層は開くファイルのもの
+    wt::TerrainLayers layers;         // 層と散布物は開くファイルのもの
+    wt::TerrainScatter scatter;
     std::string reason = "terrain '" + name + "' is not in the list";
-    auto field = file.empty() ? nullptr : readTerrainFile(file, desc, layers, reason);
+    auto field = file.empty() ? nullptr : readTerrainFile(file, desc, layers, scatter, reason);
     if (!field) {
         LOGW("scene", "terrain: cannot open '%s': %s", name.c_str(), reason.c_str());
         editor_.setStatus("テレイン " + name + " を開けません（コンソール参照）");
@@ -78,7 +87,8 @@ void Scene::openTerrain(const std::string& name) {
     }
     editor_.setStatus("テレイン " + desc.data + " を開きました");
     publishTerrainField(desc, std::move(field), TerrainHistory::Clear,
-                        TerrainFileState::Saved, {}, false, &layers);
+                        TerrainFileState::Saved, {}, false, &layers, TerrainChanged::Both,
+                        std::make_shared<const wt::TerrainScatter>(std::move(scatter)));
     selectSceneItem(EditorState::SelKind::Terrain);
 }
 
@@ -173,8 +183,8 @@ void Scene::editTerrainLayer(int index, const nlohmann::json& patch) {
             case wt::LayerImage::Normal: what = "法線マップ"; break;
             case wt::LayerImage::Mask: what = "マスク"; break;
         }
-        editor_.setStatus(label + " の" + what + "の画像は assets/ からの相対パス（" +
-                          std::to_string(wt::kMaxLayerPathBytes) + " バイトまで）で指定してください");
+        editor_.setStatus(label + " の" + what + "の画像は " + terrainPathRuleText() +
+                          "で指定してください");
         return;
     }
     if (layers == terrainLayers_) {
@@ -306,7 +316,8 @@ bool Scene::applyTerrainFileOp(const nlohmann::json& a) {
 // ファイルの分岐（applyTerrainFileOp）と enabled(+name) のあとは、Missing
 // （ファイルが無い・読めない）なら断る（refuseWhileMissing。ファイルの分岐の
 // import / export も同じ口で断る）。そのあとはキーで
-// 分岐: layer{index,...}（塗り分けの層）/ generate{seed,...}・autopaint{...}
+// 分岐: layer{index,...}（塗り分けの層）/ scatter{index,...}（散布物の原型）/
+// generate{seed,...}・autopaint{...}
 // （どちらも同じメッセージの部分更新を先に当てる）/ undo /
 // それ以外は部分更新。モードによらず受ける（名前の変更もシミュレート中に受ける）。
 // delete と duplicate だけはエディタモードのみ（deleteTerrain / duplicate 分岐が断る）。
@@ -341,15 +352,27 @@ void Scene::applyTerrainOp(const EditorState::Op& op) {
     // 塗り分けの層: layer{index, texture?, tile?, normal?, mask?, roughness?, metallic?,
     // normalScale?}。部分更新へは落とさない。
     if (const auto it = a.find("layer"); it != a.end()) {
-        const double index = it->is_object() ? ed::jsonNumber(*it, "index", -1.0) : -1.0;
-        if (!(index >= 0.0 && index < double(wt::kSplatChannels) &&
-              index == std::floor(index))) {
+        const int index = indexArg(*it, wt::kSplatChannels);
+        if (index < 0) {
             editor_.setStatus(
                 "層の指定が正しくありません（layer は {index, texture, tile, normal, mask, "
                 "roughness, metallic, normalScale}、index は層の番号）");
             return;
         }
-        editTerrainLayer(int(index), *it);
+        editTerrainLayer(index, *it);
+        return;
+    }
+    // 散布物の原型: scatter{index, file?, scale?, trunkRadius?, trunkHeight?, collide?}。
+    // 層と同じく部分更新へは落とさない。
+    if (const auto it = a.find("scatter"); it != a.end()) {
+        const int index = indexArg(*it, wt::kMaxScatterPrototypes);
+        if (index < 0) {
+            editor_.setStatus(
+                "原型の指定が正しくありません（scatter は {index, file, scale, trunkRadius, "
+                "trunkHeight, collide}、index は原型の番号）");
+            return;
+        }
+        editTerrainPrototype(index, *it);
         return;
     }
     // generate / autopaint / undo は形がおかしくても部分更新へ落とさない（成功に見せない）。
