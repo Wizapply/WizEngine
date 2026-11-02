@@ -386,6 +386,7 @@ set(WIZ_TERRAIN_SOURCES
     src/terrain/TerrainFile.cpp
     src/terrain/TerrainLibrary.cpp
     src/terrain/TerrainNoise.cpp
+    src/terrain/TerrainScatter.cpp
     src/terrain/TerrainUndo.cpp)
 
 add_executable(wizengine

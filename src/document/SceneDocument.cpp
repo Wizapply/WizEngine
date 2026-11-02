@@ -1,5 +1,6 @@
 #include "document/SceneDocument.h"
 
+#include "core/MathConstants.h"
 #include "vehicle/FormulaXml.h"
 #include "vehicle/VehicleXml.h"
 
@@ -16,7 +17,6 @@ namespace wizengine {
 namespace editor {
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
 double toDegrees(double radians) { return radians * 180.0 / kPi; }
 double toRadians(double degrees) { return degrees * kPi / 180.0; }
 

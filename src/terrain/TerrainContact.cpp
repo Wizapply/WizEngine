@@ -5,12 +5,13 @@
 
 #include <Eigen/Geometry>
 
+#include "core/MathConstants.h"
+
 namespace wizengine {
 namespace terrain {
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
 // 円柱の 1 つの端のリムの点数。
 constexpr int kCylinderRimPoints = 12;
 // 箱の面サンプルの上限（各面 k x k）。

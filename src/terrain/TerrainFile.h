@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "terrain/HeightField.h"
+#include "terrain/TerrainScatter.h"
 
 // テレインの保存ファイル（assets/terrains/<名前>.terrain）とバイト列の往復、
 // そしてテレインの背番号（TerrainGuid）。
@@ -41,7 +42,18 @@
 //          読める）。tile でレコードが終わる古い形式は、法線から後ろを既定と
 //          みなす（法線の欄からの途中で尽きたら壊れた節）。全部の層が既定なら
 //          書かない。無ければ全層既定。
-//     未知の tag は読み飛ばす（後の段階で TREE / GRAS を足す）。
+//     TREE（版 1）: 散布物（TerrainScatter.h）。u32 protoCount のあと、原型ごとに
+//          u32 recordBytes / u16 fileLen + UTF-8 のパス（モデル。assets/ 相対）/
+//          f32 scale / f32 trunkRadius / f32 trunkHeight / u8 collide（0 以外 = 当てる）。
+//          続けて u32 instanceCount / u32 instanceStride（版 1 は 17）と、配置ごとに
+//          f32 u / f32 v / f32 yaw（ラジアン）/ f32 scale / u8 prototype（stride
+//          バイトずつ）。読むのは先頭の min(protoCount, kMaxScatterPrototypes) 原型で、
+//          残りの原型とレコード・配置の後ろの知らない欄は recordBytes / stride で
+//          飛ばす。stride が 17 未満・instanceCount が kMaxScatterInstances を
+//          超える・配置が節の外へはみ出すのは壊れた節。値の検査（パスの関所・
+//          範囲）は呼び手。TerrainScatter::empty() なら書かない。無ければ既定。
+//     未知の tag は読み飛ばす（後の段階で GRAS を足す）。
+//     壊れた知っている節があれば、ファイルごと読めない。
 //
 // 位置（中心・baseY）はファイルに入れない（シーンの XML が持つ）。decode が
 // 返す格子は**原点中心・baseY 0**で、呼び手が HeightField::withGeometry で
@@ -138,15 +150,19 @@ inline const char* layerImageName(LayerImage image) {
     return "texture";
 }
 using TerrainLayers = std::array<TerrainLayer, kSplatChannels>;
-// LAYR のパスの長さの上限（バイト）。超える層は書かず、読みは壊れた節とみなす。
-constexpr std::size_t kMaxLayerPathBytes = 1024;
+// .terrain に書くパス（層の画像・散布物のモデル）の長さの上限（バイト）。
+// 超えるものは書かず、読みは壊れた節とみなす。
+constexpr std::size_t kMaxTerrainPathBytes = 1024;
+// LAYR のパスの長さの上限（kMaxTerrainPathBytes の別名）。
+constexpr std::size_t kMaxLayerPathBytes = kMaxTerrainPathBytes;
 
 // decode / readFile の結果。field は原点中心・baseY 0（上の注意）。
 struct TerrainFileData {
     HeightField field;
     float height = 0.0f;  // 高さの上限 (m)
     TerrainGuid guid;
-    TerrainLayers layers;  // LAYR が無ければ全層既定
+    TerrainLayers layers;    // LAYR が無ければ全層既定
+    TerrainScatter scatter;  // TREE が無ければ既定（値は検査していない）
 };
 
 // 失敗の理由（reason）はすべて英語（コンソールのログへ流れるため）。
@@ -159,13 +175,15 @@ bool readHeader(const std::filesystem::path& path, TerrainFileHeader& out,
                 std::string& reason);
 
 // 格子 → バイト列。field が空・height が正の有限値でない・層のパス（色・
-// 法線・マスクのどれか）が kMaxLayerPathBytes を超えるなら false。
+// 法線・マスクのどれか）か原型のモデルのパスが kMaxTerrainPathBytes を超える・
+// 配置が kMaxScatterInstances を超えるなら false。
 // 高さは [0, height] の外の値を端に丸めて量子化して保存する（呼び手が範囲内に
 // 保つ前提。範囲外の値は読み戻すと端の値になる）。layers は LAYR 節に書く
-// （全層既定 = 書かない）。層を渡し忘れて黙って消さないよう、既定引数は持たない。
+// （全層既定 = 書かない）。scatter は TREE 節に書く（empty() = 書かない）。
+// 層・散布物を渡し忘れて黙って消さないよう、既定引数は持たない。
 bool encode(const HeightField& field, float height, const TerrainGuid& guid,
             std::vector<uint8_t>& out, std::string& reason,
-            const TerrainLayers& layers);
+            const TerrainLayers& layers, const TerrainScatter& scatter);
 // バイト列 → 格子。壊れた入力は理由付きで false（落ちない・見出しの数だけを
 // 信じて大きな確保をしない）。
 bool decode(const uint8_t* data, std::size_t size, TerrainFileData& out,
@@ -173,10 +191,10 @@ bool decode(const uint8_t* data, std::size_t size, TerrainFileData& out,
 
 // ファイルへ書く。同じフォルダの一時ファイルに書いてから置き換えるので、
 // 途中で失敗しても元のファイルは壊れない。親フォルダが無ければ作る。
-// layers は encode と同じ（既定引数は持たない）。
+// layers / scatter は encode と同じ（既定引数は持たない）。
 bool writeFile(const std::filesystem::path& path, const HeightField& field,
                float height, const TerrainGuid& guid, std::string& reason,
-               const TerrainLayers& layers);
+               const TerrainLayers& layers, const TerrainScatter& scatter);
 bool readFile(const std::filesystem::path& path, TerrainFileData& out,
               std::string& reason);
 

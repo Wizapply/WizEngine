@@ -310,7 +310,9 @@ bool Scene::saveTerrainData(const std::string& sceneName, std::string& written,
     // 書き換えない）。ファイルが無ければ必ず書く。
     const std::filesystem::path path = terrainLibrary_->pathFor(terrain_.data);
     if (!terrainDirty() && fileExists(path)) return true;
-    if (!wt::writeFile(path, *field, float(terrain_.height), guid, reason, terrainLayers_))
+    // 散布物はまだ Scene が持たないので既定を渡す（E2 で Scene の散布物に差し替える）。
+    if (!wt::writeFile(path, *field, float(terrain_.height), guid, reason, terrainLayers_,
+                       wt::TerrainScatter{}))
         return false;
     terrainFile_ = TerrainFileState::Saved;  // 保存の成功（publish の外で書く唯一の場所）
     refreshTerrainFiles();

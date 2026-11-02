@@ -22,10 +22,12 @@ constexpr char kTagHeights[4] = {'H', 'G', 'H', 'T'};
 constexpr char kTagHoles[4] = {'H', 'O', 'L', 'E'};
 constexpr char kTagSplat[4] = {'S', 'P', 'L', 'T'};
 constexpr char kTagLayers[4] = {'L', 'A', 'Y', 'R'};
+constexpr char kTagScatter[4] = {'T', 'R', 'E', 'E'};
 constexpr uint32_t kHeightsVersion = 1;
 constexpr uint32_t kHolesVersion = 1;
 constexpr uint32_t kSplatVersion = 1;
 constexpr uint32_t kLayersVersion = 1;
+constexpr uint32_t kScatterVersion = 1;
 constexpr std::size_t kSectionHeaderBytes = 16;
 constexpr uint8_t kHoleByte = 0;     // HOLE 節: 穴
 constexpr uint8_t kSolidByte = 255;  // HOLE 節: 中身
@@ -53,7 +55,7 @@ float getF32(const uint8_t* p) {
     return f;
 }
 
-// ---- 文字列（u16 の長さ + UTF-8。長さの上限は kMaxLayerPathBytes）----
+// ---- 文字列（u16 の長さ + UTF-8。長さの上限は kMaxTerrainPathBytes）----
 using StringLength = uint16_t;                         // 長さの欄の型
 constexpr std::size_t kStringLengthBytes = sizeof(StringLength);  // 長さの欄の大きさ
 void putString(std::vector<uint8_t>& out, const std::string& s) {
@@ -71,9 +73,9 @@ bool getString(const uint8_t* p, std::size_t avail, std::string& out, std::size_
         return false;
     }
     const std::size_t len = getLE<StringLength>(p);
-    if (len > kMaxLayerPathBytes) {
+    if (len > kMaxTerrainPathBytes) {
         reason = "string length " + std::to_string(len) + " exceeds " +
-                 std::to_string(kMaxLayerPathBytes);
+                 std::to_string(kMaxTerrainPathBytes);
         return false;
     }
     if (stringBytes(len) > avail) {
@@ -136,7 +138,7 @@ struct SectionRef {
 
 // 知っている節。
 struct Sections {
-    SectionRef heights, holes, splat, layers;
+    SectionRef heights, holes, splat, layers, scatter;
 };
 
 // 節を辿って知っている節を拾う。未知の節は読み飛ばす。
@@ -149,7 +151,8 @@ bool scanSections(const uint8_t* data, std::size_t size, uint32_t count, Section
     } known[] = {{kTagHeights, kHeightsVersion, &out.heights},
                  {kTagHoles, kHolesVersion, &out.holes},
                  {kTagSplat, kSplatVersion, &out.splat},
-                 {kTagLayers, kLayersVersion, &out.layers}};
+                 {kTagLayers, kLayersVersion, &out.layers},
+                 {kTagScatter, kScatterVersion, &out.scatter}};
     std::size_t offset = kTerrainHeaderBytes;
     for (uint32_t s = 0; s < count; ++s) {
         if (size - offset < kSectionHeaderBytes) {
@@ -193,61 +196,211 @@ bool scanSections(const uint8_t* data, std::size_t size, uint32_t count, Section
     return true;
 }
 
+// 節・レコードの中身を前から順に読む（読めた位置から先へ進む。足りなければ
+// false で位置は動かない）。理由の文は呼び手が付ける（文字列だけは getString の
+// 理由を渡す）。
+class RecordReader {
+public:
+    RecordReader() = default;
+    RecordReader(const uint8_t* data, std::size_t size) : p_(data), left_(size) {}
+
+    bool u8(uint8_t& v) {
+        if (left_ < sizeof(uint8_t)) return false;
+        v = *p_;
+        advance(sizeof(uint8_t));
+        return true;
+    }
+    bool u32(uint32_t& v) {
+        if (left_ < sizeof(uint32_t)) return false;
+        v = getLE<uint32_t>(p_);
+        advance(sizeof(uint32_t));
+        return true;
+    }
+    bool f32(float& f) {
+        if (left_ < sizeof(float)) return false;
+        f = getF32(p_);
+        advance(sizeof(float));
+        return true;
+    }
+    bool str(std::string& s, std::string& reason) {
+        std::size_t used = 0;
+        if (!getString(p_, left_, s, used, reason)) return false;
+        advance(used);
+        return true;
+    }
+    // 続く n バイトを別の読み手として切り出し、その後ろへ進む。
+    bool take(std::size_t n, RecordReader& out) {
+        if (n > left_) return false;
+        out = RecordReader(p_, n);
+        advance(n);
+        return true;
+    }
+    std::size_t remaining() const { return left_; }
+    bool atEnd() const { return left_ == 0; }
+
+private:
+    void advance(std::size_t n) {
+        p_ += n;
+        left_ -= n;
+    }
+    const uint8_t* p_ = nullptr;
+    std::size_t left_ = 0;
+};
+
 // LAYR 節の中身 → 層（形式は TerrainFile.h）。
 bool decodeLayers(const SectionRef& sec, TerrainLayers& out, std::string& reason) {
-    const uint8_t* p = sec.payload;
-    std::size_t left = std::size_t(sec.length);
-    if (left < 4) {
+    RecordReader in(sec.payload, std::size_t(sec.length));
+    uint32_t count = 0;
+    if (!in.u32(count)) {
         reason = "LAYR section is too short";
         return false;
     }
-    const uint32_t count = getLE<uint32_t>(p);
-    p += 4;
-    left -= 4;
     TerrainLayers layers;
     for (uint32_t k = 0; k < count; ++k) {
         const std::string what = "LAYR record " + std::to_string(k);
-        const uint32_t recordBytes = left >= 4 ? getLE<uint32_t>(p) : 0;
-        if (left < 4 || recordBytes > left - 4) {
+        uint32_t recordBytes = 0;
+        RecordReader rec;
+        if (!in.u32(recordBytes) || !in.take(recordBytes, rec)) {
             reason = what + " runs past end of section";
             return false;
         }
-        p += 4;
-        left -= 4;
-        if (k < uint32_t(kSplatChannels)) {
-            TerrainLayer& layer = layers[k];
-            std::size_t at = 0;  // レコードの中の読んだ位置
-            auto readString = [&](std::string& s) {
-                std::size_t used = 0;
-                if (!getString(p + at, recordBytes - at, s, used, reason)) {
-                    reason = what + ": " + reason;
-                    return false;
-                }
-                at += used;
-                return true;
-            };
-            auto readF32 = [&](float& f) {
-                if (recordBytes - at < sizeof(float)) {
-                    reason = what + " is too short (" + std::to_string(recordBytes) + " bytes)";
-                    return false;
-                }
-                f = getF32(p + at);
-                at += sizeof(float);
-                return true;
-            };
-            if (!readString(layer.texture) || !readF32(layer.tile)) return false;
-            // tile で終わる古い形式は、法線から後ろを既定のままにする。
-            if (at < recordBytes &&
-                (!readString(layer.normal) || !readString(layer.mask) ||
-                 !readF32(layer.roughness) || !readF32(layer.metallic) ||
-                 !readF32(layer.normalScale))) {
+        if (k >= uint32_t(kSplatChannels)) continue;  // 知らない層は飛ばす
+        TerrainLayer& layer = layers[k];
+        auto readString = [&](std::string& s) {
+            if (!rec.str(s, reason)) {
+                reason = what + ": " + reason;
                 return false;
             }
+            return true;
+        };
+        auto readF32 = [&](float& f) {
+            if (!rec.f32(f)) {
+                reason = what + " is too short (" + std::to_string(recordBytes) + " bytes)";
+                return false;
+            }
+            return true;
+        };
+        if (!readString(layer.texture) || !readF32(layer.tile)) return false;
+        // tile で終わる古い形式は、法線から後ろを既定のままにする。
+        if (!rec.atEnd() &&
+            (!readString(layer.normal) || !readString(layer.mask) ||
+             !readF32(layer.roughness) || !readF32(layer.metallic) ||
+             !readF32(layer.normalScale))) {
+            return false;
         }
-        p += recordBytes;  // 知らない欄・知らない層は飛ばす
-        left -= recordBytes;
+        // レコードの後ろの知らない欄は読まずに捨てる（rec ごと飛ばした）。
     }
     out = std::move(layers);
+    return true;
+}
+
+// ---- TREE 節（形式は TerrainFile.h）。書く側と読む側をここに並べる ----
+
+// TREE 節の配置 1 つのバイト数（版 1。stride がこれより大きければ後ろを飛ばす）。
+constexpr uint32_t kScatterInstanceBytes = 4 * sizeof(float) + sizeof(uint8_t);
+
+// 原型 1 つのレコードのバイト数（recordBytes の値。モデルのパス + f32 scale /
+// trunkRadius / trunkHeight + u8 collide）。encodeScatter が書く順と揃える。
+std::size_t protoRecordBytes(const ScatterPrototype& p) {
+    return stringBytes(p.file) + 3 * sizeof(float) + sizeof(uint8_t);
+}
+
+// TREE 節の中身のバイト数（u32 protoCount + 原型ごとに u32 recordBytes + レコード、
+// u32 instanceCount + u32 instanceStride + 配置）。
+std::size_t scatterSectionBytes(const TerrainScatter& scatter) {
+    std::size_t bytes = sizeof(uint32_t);
+    for (const ScatterPrototype& p : scatter.prototypes)
+        bytes += sizeof(uint32_t) + protoRecordBytes(p);
+    return bytes + 2 * sizeof(uint32_t) + scatter.instances.size() * kScatterInstanceBytes;
+}
+
+// TREE 節（見出し・中身・詰め物）を out の末尾へ書く。パスの長さと配置の数は
+// 呼び手（encode）が確かめてある。
+void encodeScatter(std::vector<uint8_t>& out, const TerrainScatter& scatter) {
+    beginSection(out, kTagScatter, kScatterVersion, uint64_t(scatterSectionBytes(scatter)));
+    putLE<uint32_t>(out, uint32_t(kMaxScatterPrototypes));
+    for (const ScatterPrototype& p : scatter.prototypes) {
+        putLE<uint32_t>(out, uint32_t(protoRecordBytes(p)));  // recordBytes
+        putString(out, p.file);
+        putF32(out, p.scale);
+        putF32(out, p.trunkRadius);
+        putF32(out, p.trunkHeight);
+        out.push_back(p.collide ? uint8_t(1) : uint8_t(0));
+    }
+    putLE<uint32_t>(out, uint32_t(scatter.instances.size()));
+    putLE<uint32_t>(out, kScatterInstanceBytes);  // instanceStride
+    for (const ScatterInstance& i : scatter.instances) {
+        putF32(out, i.u);
+        putF32(out, i.v);
+        putF32(out, i.yaw);
+        putF32(out, i.scale);
+        out.push_back(i.prototype);
+    }
+    padTo8(out);
+}
+
+// TREE 節の中身 → 散布物（形式は TerrainFile.h）。値の検査はしない（呼び手）。
+bool decodeScatter(const SectionRef& sec, TerrainScatter& out, std::string& reason) {
+    RecordReader in(sec.payload, std::size_t(sec.length));
+    uint32_t protoCount = 0;
+    if (!in.u32(protoCount)) {
+        reason = "TREE section is too short";
+        return false;
+    }
+    TerrainScatter scatter;
+    for (uint32_t k = 0; k < protoCount; ++k) {
+        const std::string what = "TREE prototype " + std::to_string(k);
+        uint32_t recordBytes = 0;
+        RecordReader rec;
+        if (!in.u32(recordBytes) || !in.take(recordBytes, rec)) {
+            reason = what + " runs past end of section";
+            return false;
+        }
+        if (k >= uint32_t(kMaxScatterPrototypes)) continue;  // 知らない原型は飛ばす
+        ScatterPrototype& p = scatter.prototypes[k];
+        if (!rec.str(p.file, reason)) {
+            reason = what + ": " + reason;
+            return false;
+        }
+        uint8_t collide = 0;
+        if (!rec.f32(p.scale) || !rec.f32(p.trunkRadius) || !rec.f32(p.trunkHeight) ||
+            !rec.u8(collide)) {
+            reason = what + " is too short (" + std::to_string(recordBytes) + " bytes)";
+            return false;
+        }
+        p.collide = collide != 0;
+    }
+    uint32_t count = 0;
+    uint32_t stride = 0;
+    if (!in.u32(count) || !in.u32(stride)) {
+        reason = "TREE section ends before the instance count";
+        return false;
+    }
+    if (stride < kScatterInstanceBytes) {
+        reason = "TREE instance stride " + std::to_string(stride) + " is smaller than " +
+                 std::to_string(kScatterInstanceBytes);
+        return false;
+    }
+    if (count > uint32_t(kMaxScatterInstances)) {
+        reason = "TREE instance count " + std::to_string(count) + " exceeds " +
+                 std::to_string(kMaxScatterInstances);
+        return false;
+    }
+    if (uint64_t(count) * uint64_t(stride) > uint64_t(in.remaining())) {
+        reason = "TREE instances run past end of section";
+        return false;
+    }
+    scatter.instances.resize(count);
+    for (ScatterInstance& i : scatter.instances) {
+        RecordReader rec;
+        in.take(stride, rec);  // 長さは上で確かめた
+        rec.f32(i.u);
+        rec.f32(i.v);
+        rec.f32(i.yaw);
+        rec.f32(i.scale);
+        rec.u8(i.prototype);  // stride の後ろの知らない欄は rec ごと飛ばす
+    }
+    out = std::move(scatter);
     return true;
 }
 
@@ -334,7 +487,8 @@ bool readHeader(const std::filesystem::path& path, TerrainFileHeader& out,
 }
 
 bool encode(const HeightField& field, float height, const TerrainGuid& guid,
-            std::vector<uint8_t>& out, std::string& reason, const TerrainLayers& layers) {
+            std::vector<uint8_t>& out, std::string& reason, const TerrainLayers& layers,
+            const TerrainScatter& scatter) {
     if (!field.valid()) {
         reason = "height field is empty";
         return false;
@@ -351,6 +505,18 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
                 return false;
             }
         }
+    }
+    for (const ScatterPrototype& p : scatter.prototypes) {
+        if (p.file.size() > kMaxTerrainPathBytes) {
+            reason = "scatter prototype model path is longer than " +
+                     std::to_string(kMaxTerrainPathBytes) + " bytes";
+            return false;
+        }
+    }
+    if (scatter.instances.size() > std::size_t(kMaxScatterInstances)) {
+        reason = "scatter has " + std::to_string(scatter.instances.size()) +
+                 " instances (max " + std::to_string(kMaxScatterInstances) + ")";
+        return false;
     }
     const std::size_t res = std::size_t(field.resolution());
     const bool holes = field.anyHoles();
@@ -373,6 +539,8 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
     std::size_t layerBytes = sizeof(uint32_t);
     for (const TerrainLayer& l : layers) layerBytes += sizeof(uint32_t) + layerRecordBytes(l);
 
+    const bool scattered = !scatter.empty();
+
     // 節ごとに見出し + 中身 + 8 バイト境界までの詰め物（最大 7）。
     auto sectionBytes = [](std::size_t payload) {
         return kSectionHeaderBytes + alignUp8(payload);
@@ -380,14 +548,16 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
     std::vector<uint8_t> buf;
     buf.reserve(kTerrainHeaderBytes + sectionBytes(heightBytes) +
                 (holes ? sectionBytes(res * res) : 0) + (splat ? sectionBytes(splatBytes) : 0) +
-                (layered ? sectionBytes(layerBytes) : 0));
+                (layered ? sectionBytes(layerBytes) : 0) +
+                (scattered ? sectionBytes(scatterSectionBytes(scatter)) : 0));
     buf.insert(buf.end(), kMagic, kMagic + 4);
     putLE<uint32_t>(buf, kTerrainFileVersion);
     putLE<uint32_t>(buf, uint32_t(res));
     putF32(buf, field.size());
     putF32(buf, height);
     buf.insert(buf.end(), guid.bytes.begin(), guid.bytes.end());
-    putLE<uint32_t>(buf, 1u + (holes ? 1u : 0u) + (splat ? 1u : 0u) + (layered ? 1u : 0u));
+    putLE<uint32_t>(buf, 1u + (holes ? 1u : 0u) + (splat ? 1u : 0u) + (layered ? 1u : 0u) +
+                             (scattered ? 1u : 0u));
     for (int k = 0; k < 2; ++k) putLE<uint32_t>(buf, 0);  // reserved（見出しを 48 バイトに）
 
     beginSection(buf, kTagHeights, kHeightsVersion, uint64_t(heightBytes));
@@ -427,6 +597,8 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
         }
         padTo8(buf);
     }
+
+    if (scattered) encodeScatter(buf, scatter);
     out = std::move(buf);
     return true;
 }
@@ -468,6 +640,8 @@ bool decode(const uint8_t* data, std::size_t size, TerrainFileData& out,
     }
     TerrainLayers layers;
     if (sections.layers.found && !decodeLayers(sections.layers, layers, reason)) return false;
+    TerrainScatter scatter;
+    if (sections.scatter.found && !decodeScatter(sections.scatter, scatter, reason)) return false;
 
     // HGHT の中身は RAW16 のハイトマップと同じ。見出しの解像度の格子へ直接戻す
     // （標本の配列を作らない。長さは上で確かめた）。
@@ -490,6 +664,7 @@ bool decode(const uint8_t* data, std::size_t size, TerrainFileData& out,
     out.height = header.height;
     out.guid = header.guid;
     out.layers = std::move(layers);
+    out.scatter = std::move(scatter);
     return true;
 }
 
@@ -558,9 +733,10 @@ bool readFileBytes(const std::filesystem::path& path, uintmax_t maxBytes,
 }
 
 bool writeFile(const std::filesystem::path& path, const HeightField& field, float height,
-               const TerrainGuid& guid, std::string& reason, const TerrainLayers& layers) {
+               const TerrainGuid& guid, std::string& reason, const TerrainLayers& layers,
+               const TerrainScatter& scatter) {
     std::vector<uint8_t> bytes;
-    if (!encode(field, height, guid, bytes, reason, layers)) return false;
+    if (!encode(field, height, guid, bytes, reason, layers, scatter)) return false;
     return writeFileBytes(path, bytes, reason);
 }
 
