@@ -12,8 +12,9 @@
   // kind は値の扱い: text = パス（前後の空白を落として送る）、num = 数（空 =
   // 送らない）、numOrNull = 数か null（空 = null = テレイン全体の値に従う）。
   // 層の欄は決め事として範囲（min / max）を持たない: サーバーが丸め（1 か所）、
-  // 空は全体に従う。Inspector の固定の欄（粗さなど）の下限は別の仕組みで、
-  // サーバーの limits を data-limit で受ける（app.js の applyFieldLimits）。
+  // 空は全体に従う。Inspector の固定の欄（粗さなど）と筆の欄の範囲は別の仕組みで、
+  // サーバーの limits を下限は data-limit、上限は data-limit-max で受ける（app.js の
+  // applyFieldLimits）。
   const TERRAIN_LAYER_ROWS = [
     { label: null, fields: {
       texture: { id: 'edTerrainLayerTex', kind: 'text', cls: 'layerPath',

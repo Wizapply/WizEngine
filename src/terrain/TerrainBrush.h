@@ -46,13 +46,18 @@ inline bool brushScatters(BrushTool tool) {
     return tool == BrushTool::Scatter || tool == BrushTool::Unscatter;
 }
 
-// 筆の値の範囲（丸めは clampBrush の 1 か所。ブラウザの min / max は表示用）。
+// 筆の値の範囲（丸めは clampBrush の 1 か所。ブラウザは /scene の limits で
+// 受けたこの範囲で筆の欄を丸めて書き戻す）。
 constexpr double kBrushMinRadius = 0.1;    // m
 constexpr double kBrushMaxRadius = 500.0;  // m
+constexpr double kBrushMinStrength = 0.0;
 constexpr double kBrushMaxStrength = 100.0;
 constexpr double kBrushMaxDt = 0.1;        // s
+constexpr double kBrushMinDensity = 0.0;      // 個/m²（散布）
 constexpr double kBrushMaxDensity = 10.0;     // 個/m²（散布）
+constexpr double kBrushMinSpacing = 0.0;      // m（散布の配置どうしの間隔）
 constexpr double kBrushMaxSpacing = 500.0;    // m（散布の配置どうしの間隔）
+constexpr double kBrushMinScaleJitter = 0.0;  // 倍率のばらつき（散布）
 constexpr double kBrushMaxScaleJitter = 1.0;  // 倍率のばらつき（散布）
 
 // スタンプ 1 個（格子の座標の線分 1 本）。単位:

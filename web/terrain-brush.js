@@ -13,7 +13,8 @@
 // density, spacing, scaleJitter}（x, y は映像の NDC。後ろの 4 つは 🌲 散布の欄）。
 // phase は hover（輪だけ）/ begin / move / end。値の既定値・
 // 丸めと「エディタモード × エディタカメラ」の守りはサーバー（TerrainComponent
-// と terrain::clampBrush）が持つ。入力欄の min / max は表示用。
+// と terrain::clampBrush）が持つ。入力欄の min / max はサーバーの limits から
+// 入り、確定した値をその範囲へ丸めて欄に書き戻す（clampBrushFieldsToRange）。
 //
 // app.js との分担: 押していない間の hover は app.js の HOVER_MS のタイマーが
 // sendBrushHover を呼び、映像から出たときの輪の消去も app.js の pointerleave。
@@ -292,10 +293,31 @@
     brushTool = next;
     renderTerrainBar();
   }
-  // 筆の欄の確定（onchange）。範囲の丸めはサーバー。覚えるのは数の入っている
-  // 欄だけ。層・原型の選択肢がまだ無い（一覧が届く前・塗れる層が無い）ときは、
-  // 覚えた値を消さずに残す（次に選択肢ができたらそれを選ぶ）。
+  // 筆の数の欄の値を欄の min / max（サーバーの limits から applyFieldLimits が
+  // 入れたもの）に丸めて欄に書き戻す。サーバーも同じ範囲で丸めるが、黙って
+  // 丸めると欄と localStorage には打った値が残り、送った値と効いている値が
+  // 食い違って見えるため。範囲がまだ入っていない端（limits が届く前）は丸めない。
+  // 空の欄・数でない欄は触らない（空 = サーバーの既定値）。
+  function clampBrushFieldsToRange() {
+    for (const key in BRUSH_FIELDS) {
+      const el = document.getElementById(BRUSH_FIELDS[key]);
+      if (!el || el.type !== 'number' || el.value === '') continue;
+      const v = parseFloat(el.value);
+      if (!Number.isFinite(v)) continue;
+      const lo = parseFloat(el.min);
+      const hi = parseFloat(el.max);
+      let c = v;
+      if (Number.isFinite(hi) && c > hi) c = hi;
+      if (Number.isFinite(lo) && c < lo) c = lo;
+      if (c !== v) el.value = String(c);
+    }
+  }
+  // 筆の欄の確定（onchange）。範囲を超えた値は先に欄の範囲へ丸めて書き戻す
+  // （clampBrushFieldsToRange）。覚えるのは数の入っている欄だけ。層・原型の
+  // 選択肢がまだ無い（一覧が届く前・塗れる層が無い）ときは、覚えた値を消さずに
+  // 残す（次に選択肢ができたらそれを選ぶ）。
   function applyBrushValues() {
+    clampBrushFieldsToRange();
     brushValues = readFields(BRUSH_FIELDS);
     const store = Object.assign({}, brushValues);
     const saved = loadStoredJson(BRUSH_STORE) || {};

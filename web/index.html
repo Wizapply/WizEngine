@@ -1488,26 +1488,30 @@
         <!-- 🌲 散布の欄（🌲 を選んでいる間だけ出す = terrain-brush.js の
              renderTerrainBar）。原型の選択肢と名前は /scene の terrain.scatter から
              terrain-brush.js が作る（値は 0 始まりの原型の番号）。数の欄が空なら
-             サーバーの既定値で、範囲の丸めもサーバー。 -->
+             サーバーの既定値。範囲の持ち主はサーバーで、下限・上限は /scene の
+             limits から data-limit / data-limit-max で入る（app.js の applyFieldLimits）。
+             範囲を超えた値は terrain-brush.js が欄に書き戻す。 -->
         <span id="tbScatter" hidden>
           <select id="tbProto" class="strSel" onchange="applyBrushValues()"
                   title="🌲 で置く原型（Inspector の『散布物の原型』の番号）"></select>
           <label title="密度（1 m² あたりの個数）">密度
-            <input id="tbDensity" type="number" min="0" step="0.01"
-                   placeholder="既定" onchange="applyBrushValues()"></label>
+            <input id="tbDensity" type="number" data-limit="brushDensityMin"
+                   data-limit-max="brushDensityMax" step="0.01" placeholder="既定" onchange="applyBrushValues()"></label>
           <label title="配置どうしの最小の間隔 (m)">間隔
-            <input id="tbSpacing" type="number" min="0" step="0.5"
-                   placeholder="既定" onchange="applyBrushValues()"></label>
-          <label title="大きさのばらつき（0 = そろえる。範囲はサーバーが丸めます）">ばらつき
-            <input id="tbJitter" type="number" min="0" step="0.05"
-                   placeholder="既定" onchange="applyBrushValues()"></label>
+            <input id="tbSpacing" type="number" data-limit="brushSpacingMin"
+                   data-limit-max="brushSpacingMax" step="0.5" placeholder="既定" onchange="applyBrushValues()"></label>
+          <label title="大きさのばらつき（0 = そろえる。範囲を超えた値は範囲の端へ丸めます）">ばらつき
+            <input id="tbJitter" type="number" data-limit="brushScaleJitterMin"
+                   data-limit-max="brushScaleJitterMax" step="0.05" placeholder="既定" onchange="applyBrushValues()"></label>
         </span>
         <span class="gzSep"></span>
         <label title="筆の半径 (m)">半径
-          <input id="tbRadius" type="number" min="0.1" max="500" step="0.5"
+          <input id="tbRadius" type="number" data-limit="brushRadiusMin"
+                 data-limit-max="brushRadiusMax" step="0.5"
                  placeholder="既定" onchange="applyBrushValues()"></label>
         <label title="筆の強さ（盛り上げ・掘り下げは m/s、平らに・なだらか・塗るは 1/s）">強さ
-          <input id="tbStrength" type="number" min="0" max="100" step="0.1"
+          <input id="tbStrength" type="number" data-limit="brushStrengthMin"
+                 data-limit-max="brushStrengthMax" step="0.1"
                  placeholder="既定" onchange="applyBrushValues()"></label>
         <span class="gzSep"></span>
         <button onclick="undoTerrain()"

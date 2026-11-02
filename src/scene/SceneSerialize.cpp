@@ -127,9 +127,13 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     j["limits"] = {{"roughnessMin", ed::kRoughnessMin},
                    {"brushRadiusMin", wizengine::terrain::kBrushMinRadius},
                    {"brushRadiusMax", wizengine::terrain::kBrushMaxRadius},
+                   {"brushStrengthMin", wizengine::terrain::kBrushMinStrength},
                    {"brushStrengthMax", wizengine::terrain::kBrushMaxStrength},
+                   {"brushDensityMin", wizengine::terrain::kBrushMinDensity},
                    {"brushDensityMax", wizengine::terrain::kBrushMaxDensity},
+                   {"brushSpacingMin", wizengine::terrain::kBrushMinSpacing},
                    {"brushSpacingMax", wizengine::terrain::kBrushMaxSpacing},
+                   {"brushScaleJitterMin", wizengine::terrain::kBrushMinScaleJitter},
                    {"brushScaleJitterMax", wizengine::terrain::kBrushMaxScaleJitter}};
     j["modal"] = modalFrequencies();
     j["gizmo"] = ed::toJson(editor_.gizmo());

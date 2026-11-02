@@ -31,8 +31,9 @@
     }
   }
   // 番号付きの欄 id にサーバーの値 v を入れる（送信待ちの間は触らない）。
+  // 守りを今のテレインのものにする（syncTerrainFieldSent）のは呼び手
+  // （fillIndexedRows の先頭で 1 回）。
   function setIndexedField(id, v) {
-    syncTerrainFieldSent();
     const sent = terrainFieldSent[id];
     if (sent) {
       if (sent.value !== v && Date.now() < sent.until) return;
@@ -55,8 +56,8 @@
   // フォーカスがある間は作り直さない（打っている途中の値を消さない）。Missing の
   // 無効化は外側の fieldset が新しい行にも効く。labelFn(i) = 番号 i の表示名、
   // key = 送る JSON のキー（layer / scatter）。opts:
-  //   tip      見出しと欄のツールチップの後ろに付ける文
-  //   fieldTip (field) => 欄のツールチップの後ろの文（無ければ tip）
+  //   tip      見出しと欄のツールチップの後ろに付ける文（無ければ付けない）
+  //   fieldTip (field) => 欄のツールチップの後ろの文（無ければ tip。空なら付けない）
   //   onRebuild() 作り直す直前に呼ぶ（見出しのツールチップ・行の控えの初期化）
   //   onRow(i, r, row) 行を 1 つ作るたびに呼ぶ（r = ROWS の要素、row = 行の要素）
   function buildIndexedRows(boxId, count, rows, labelFn, key, opts) {
@@ -64,6 +65,10 @@
     if (!box || box.childElementCount === count) return;
     if (box.contains(document.activeElement)) return;
     const o = opts || {};
+    // ツールチップ = 本文 + 「。」+ 後ろの文。後ろの文が無い（空）なら「。」も
+    // 付けない。
+    const tipOf = (head, tail) => tail ? head + '。' + tail : head;
+    const tip = o.tip || '';
     if (o.onRebuild) o.onRebuild();
     box.textContent = '';
     for (let i = 0; i < count; i++) {
@@ -75,13 +80,14 @@
         row.className = 'edRow layerRow';
         const label = document.createElement('span');
         label.textContent = r.label || name;
-        label.title = name + '。' + o.tip;
+        label.title = tipOf(name, tip);
         row.appendChild(label);
         for (const field in r.fields) {
           const spec = r.fields[field];
           const input = document.createElement('input');
           input.id = spec.id + i;
-          input.title = name + ' の' + spec.tip + '。' + (o.fieldTip ? o.fieldTip(field) : o.tip);
+          input.title = tipOf(name + ' の' + spec.tip,
+                              (o.fieldTip ? o.fieldTip(field) : tip) || '');
           // 送るときは行の fields で欄を引く（キーは ROWS 全体で一意）。
           input.onchange = () => sendIndexedField(key, r.fields, i, field);
           if (spec.kind === 'bool') {
@@ -146,10 +152,16 @@
     // （番号付きの欄とは独立）。
     flushTerrain();
     send('edit.terrain', { [key]: item });
+    // チェックは押したあともフォーカスが残り、フォーカス中の欄は setField が
+    // 触らないので、サーバーが断った・テレインが替わったときもポーリングで
+    // 正しい状態に戻らない。送ったらフォーカスを外す（Space で切り替えた
+    // ときもフォーカスが外れるが、それは受け入れる）。
+    if (spec.kind === 'bool') el.blur();
   }
   // 番号付きの欄にサーバーの値を入れる（items = サーバーの配列。順 = 番号）。
   // パスは文字列、数は丸めて、null・無い値は空の欄、チェックは真偽。
   function fillIndexedRows(fields, items) {
+    syncTerrainFieldSent();
     items.forEach((item, i) => {
       for (const field in fields) {
         const spec = fields[field];

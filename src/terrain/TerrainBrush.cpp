@@ -242,12 +242,12 @@ BrushTool brushToolFromName(const std::string& name, BrushTool fallback) {
 BrushStamp clampBrush(BrushStamp s) {
     // std::clamp / std::max は NaN をそのまま返す = NaN は残る（ヘッダの約束）。
     s.radius = std::clamp(s.radius, kBrushMinRadius, kBrushMaxRadius);
-    s.strength = std::clamp(s.strength, 0.0, kBrushMaxStrength);
+    s.strength = std::clamp(s.strength, kBrushMinStrength, kBrushMaxStrength);
     s.dt = std::clamp(s.dt, 0.0, kBrushMaxDt);
     s.maxHeight = std::max(s.maxHeight, 0.0);
-    s.density = std::clamp(s.density, 0.0, kBrushMaxDensity);
-    s.spacing = std::clamp(s.spacing, 0.0, kBrushMaxSpacing);
-    s.scaleJitter = std::clamp(s.scaleJitter, 0.0, kBrushMaxScaleJitter);
+    s.density = std::clamp(s.density, kBrushMinDensity, kBrushMaxDensity);
+    s.spacing = std::clamp(s.spacing, kBrushMinSpacing, kBrushMaxSpacing);
+    s.scaleJitter = std::clamp(s.scaleJitter, kBrushMinScaleJitter, kBrushMaxScaleJitter);
     // layer / prototype は丸めない（範囲外は brushStampUsable が弾く = 別の層を
     // 塗らない・別の原型を置かない）。
     return s;

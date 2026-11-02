@@ -21,9 +21,9 @@
       collide: { id: 'edScatterCollide', kind: 'bool', cls: 'layerCheck', text: '当たり判定',
                  tip: '幹の当たり判定（鉛直の円柱 1 本）' },
       trunkRadius: { id: 'edScatterTrunkR', kind: 'num', cls: 'layerNum', step: '0.05',
-                     tip: '幹の半径（m。配置ごとの大きさだけが掛かる）' },
+                     tip: '幹の半径（m、倍率 1 のとき。配置ごとのばらつきだけが掛かる）' },
       trunkHeight: { id: 'edScatterTrunkH', kind: 'num', cls: 'layerNum', step: '0.5',
-                     tip: '幹の高さ（m。配置ごとの大きさだけが掛かる）' },
+                     tip: '幹の高さ（m、倍率 1 のとき。配置ごとのばらつきだけが掛かる）' },
     } },
   ];
   // キーで欄を引くための一覧（TERRAIN_SCATTER_ROWS から作る写し。欄を足すのは
@@ -62,7 +62,13 @@
       },
     });
     fillIndexedRows(TERRAIN_SCATTER_FIELDS, protos);
+    // 原型が 1 つも無い（テレインが無い・サーバーが scatter を送らない）ときは
+    // 見出しと配置の数も出さない（見出しだけ残さない）。
+    const empty = protos.length === 0;
+    const head = document.getElementById('edScatterHead');
+    if (head) head.hidden = empty;
     const countEl = document.getElementById('edScatterCount');
+    if (countEl) countEl.hidden = empty;
     if (countEl) {
       const count = scatter && Number.isFinite(scatter.count) ? scatter.count : 0;
       const max = scatter && Number.isFinite(scatter.max) ? scatter.max : 0;
