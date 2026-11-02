@@ -547,12 +547,16 @@
   .edRow .coneNum { max-width: 26%; }
   /* テレインの塗り分けの層: 層ごとに 3 行（層 N = テクスチャ / タイル、法線 =
      パス / 強さ、マスク = パス / 粗さ / 金属）。行の見出し・パス・数・数の 4 列を
-     全行でそろえ、数の欄が縦に並ぶ（数が 1 つの行は最後の列が空く）。 */
+     全行でそろえ、数の欄が縦に並ぶ（数が 1 つの行は最後の列が空く）。散布物の
+     原型の行（原型 N = モデル / 倍率、幹 = 当たり判定 / 半径 / 高さ）も同じ作り
+     （terrain-rows.js の buildIndexedRows）。 */
   .layerGroup { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
   .edRow.layerRow {
     display: grid; grid-template-columns: 40px 1fr 54px 54px; gap: 4px;
   }
   .edRow.layerRow > span { font-size: 11px; white-space: nowrap; }
+  /* 散布物の原型の「幹」の行のチェック（横の文字ごと 1 つの label）。パスの列に入る。 */
+  .edRow .layerCheck { font-size: 11px; white-space: nowrap; }
   .edRow .layerPath, .edRow .layerNum { max-width: none; }
   .edRow .layerNum { padding: 3px 4px; }
   /* マスクのある層は粗さ・金属の数字を使わない（マスクが勝つ）。打てるが薄く。 */

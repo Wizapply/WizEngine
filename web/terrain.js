@@ -3,10 +3,11 @@
 // sceneData など）をそのまま使う。ここの関数もグローバルのままにする
 // （index.html の onchange= と app.js の renderEditor などが名前で呼ぶため）。
 // 番号付きの欄の共通部品は terrain-rows.js、層の欄は terrain-layers.js、1 回きりの道具は
-// terrain-tools.js、ファイルの操作は terrain-files.js、筆は terrain-brush.js（どれもこの
-// 後ろに読む）。
-// 描き直し（renderTerrainSection）は後ろの renderTerrainLayers（terrain-layers.js）と
-// buildTerrainAutoPaintRows / terrainAutoPaintDefaults（terrain-tools.js）を呼ぶ。
+// terrain-tools.js、ファイルの操作は terrain-files.js、筆は terrain-brush.js、散布物の
+// 原型の欄は terrain-scatter.js（どれもこの後ろに読む）。
+// 描き直し（renderTerrainSection）は後ろの renderTerrainLayers（terrain-layers.js）・
+// buildTerrainAutoPaintRows / terrainAutoPaintDefaults（terrain-tools.js）・
+// renderTerrainScatterSection（terrain-scatter.js）を呼ぶ。
 
   // ---- テレイン（選択オブジェクトの secTerrain 節）---------------------------
   // テレインはシーンに 1 つのオブジェクト。Objects 一覧の Terrain 行で選ぶと
@@ -148,6 +149,8 @@
     set('rot', 'edTerrainRZ', round2(r.z));
     // 塗り分けの層（.terrain の LAYR。サーバーの terrain.layers の順 = 層の番号）。
     renderTerrainLayers(t.layers || []);
+    // 散布物の原型と配置の数（.terrain の TREE。サーバーの terrain.scatter）。
+    renderTerrainScatterSection(t.scatter);
     // 自動塗りの行（層の数と既定の帯はサーバーの値。欄の値はこのブラウザが持つ）。
     buildTerrainAutoPaintRows(terrainAutoPaintDefaults());
     if (t.color) set('color', 'edTerrainColor', t.color);

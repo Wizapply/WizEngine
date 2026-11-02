@@ -34,10 +34,14 @@ server reads it from at runtime (everything the program loads lives under
 - `terrain-brush.js` — the terrain brush toolbar (`#terrainBar`) and the
   brush pointer input over the video (loaded right after `terrain-files.js`
   and uses the helpers of `app.js` and `terrain.js`; same classic-script rules)
+- `terrain-scatter.js` — the scatter prototype rows of the terrain section
+  (field table and redraw, placement count) (loaded last, after
+  `terrain-brush.js`, and uses the helpers of `app.js`, `terrain.js` and
+  `terrain-rows.js`; same classic-script rules)
 
   Script order at the end of `index.html`: `app.js` → `terrain.js` →
   `terrain-rows.js` → `terrain-layers.js` → `terrain-tools.js` → `terrain-files.js` →
-  `terrain-brush.js`. Statements that run at load time must not touch a
+  `terrain-brush.js` → `terrain-scatter.js`. Statements that run at load time must not touch a
   later file (its `const` / `let` is not defined yet), and a top-level
   `const` / `let` name must not appear in two files.
 

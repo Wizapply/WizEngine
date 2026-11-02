@@ -796,6 +796,12 @@
              terrain-layers.js の buildTerrainLayerRows が作る（ツールチップもそこ）。 -->
         <div id="edTerrainLayersHead" class="edLabel">塗り分けの層（テクスチャ / 法線 / マスク）</div>
         <div id="edTerrainLayers"></div>
+        <!-- 散布物の原型（モデル / 倍率と幹の当たり判定・寸法）と配置の数。値は
+             .terrain が持つ（どのシーンで開いても同じ）。行は原型の数だけ
+             terrain-scatter.js の renderTerrainScatterSection が作る（ツールチップもそこ）。 -->
+        <div id="edScatterHead" class="edLabel">散布物の原型（モデル / 幹）</div>
+        <div id="edScatterProtos"></div>
+        <div id="edScatterCount" class="edHint"></div>
         <!-- 自動塗り（傾きと高さの帯で全体の塗りを作り直す。取り消しは 1 段）。
              行は層の数だけ terrain-tools.js の buildTerrainAutoPaintRows が作る。
              欄の値はボタンを押したときにだけ送る（テレインには覚えず、変えたときにこのブラウザに記憶。空 =
@@ -1636,5 +1642,6 @@
 <script src="terrain-tools.js"></script>
 <script src="terrain-files.js"></script>
 <script src="terrain-brush.js"></script>
+<script src="terrain-scatter.js"></script>
 </body>
 </html>
