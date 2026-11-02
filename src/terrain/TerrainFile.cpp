@@ -237,6 +237,9 @@ public:
     }
     std::size_t remaining() const { return left_; }
     bool atEnd() const { return left_ == 0; }
+    // n 個のレコードが残りに収まりうるか（どのレコードも先頭に u32 の
+    // recordBytes を持つ）。細工した巨大な数で読み始める前に断るため。
+    bool recordsFit(uint32_t n) const { return n <= left_ / sizeof(uint32_t); }
 
 private:
     void advance(std::size_t n) {
@@ -255,27 +258,32 @@ bool decodeLayers(const SectionRef& sec, TerrainLayers& out, std::string& reason
         reason = "LAYR section is too short";
         return false;
     }
+    if (!in.recordsFit(count)) {
+        reason = "LAYR record count " + std::to_string(count) + " exceeds the section";
+        return false;
+    }
     TerrainLayers layers;
     for (uint32_t k = 0; k < count; ++k) {
-        const std::string what = "LAYR record " + std::to_string(k);
+        // 文は失敗したときだけ作る（レコードごとに確保しない）。
+        auto what = [k] { return "LAYR record " + std::to_string(k); };
         uint32_t recordBytes = 0;
         RecordReader rec;
         if (!in.u32(recordBytes) || !in.take(recordBytes, rec)) {
-            reason = what + " runs past end of section";
+            reason = what() + " runs past end of section";
             return false;
         }
         if (k >= uint32_t(kSplatChannels)) continue;  // 知らない層は飛ばす
         TerrainLayer& layer = layers[k];
         auto readString = [&](std::string& s) {
             if (!rec.str(s, reason)) {
-                reason = what + ": " + reason;
+                reason = what() + ": " + reason;
                 return false;
             }
             return true;
         };
         auto readF32 = [&](float& f) {
             if (!rec.f32(f)) {
-                reason = what + " is too short (" + std::to_string(recordBytes) + " bytes)";
+                reason = what() + " is too short (" + std::to_string(recordBytes) + " bytes)";
                 return false;
             }
             return true;
@@ -347,25 +355,30 @@ bool decodeScatter(const SectionRef& sec, TerrainScatter& out, std::string& reas
         reason = "TREE section is too short";
         return false;
     }
+    if (!in.recordsFit(protoCount)) {
+        reason = "TREE record count " + std::to_string(protoCount) + " exceeds the section";
+        return false;
+    }
     TerrainScatter scatter;
     for (uint32_t k = 0; k < protoCount; ++k) {
-        const std::string what = "TREE prototype " + std::to_string(k);
+        // 文は失敗したときだけ作る（レコードごとに確保しない）。
+        auto what = [k] { return "TREE prototype " + std::to_string(k); };
         uint32_t recordBytes = 0;
         RecordReader rec;
         if (!in.u32(recordBytes) || !in.take(recordBytes, rec)) {
-            reason = what + " runs past end of section";
+            reason = what() + " runs past end of section";
             return false;
         }
         if (k >= uint32_t(kMaxScatterPrototypes)) continue;  // 知らない原型は飛ばす
         ScatterPrototype& p = scatter.prototypes[k];
         if (!rec.str(p.file, reason)) {
-            reason = what + ": " + reason;
+            reason = what() + ": " + reason;
             return false;
         }
         uint8_t collide = 0;
         if (!rec.f32(p.scale) || !rec.f32(p.trunkRadius) || !rec.f32(p.trunkHeight) ||
             !rec.u8(collide)) {
-            reason = what + " is too short (" + std::to_string(recordBytes) + " bytes)";
+            reason = what() + " is too short (" + std::to_string(recordBytes) + " bytes)";
             return false;
         }
         p.collide = collide != 0;
@@ -392,13 +405,15 @@ bool decodeScatter(const SectionRef& sec, TerrainScatter& out, std::string& reas
     }
     scatter.instances.resize(count);
     for (ScatterInstance& i : scatter.instances) {
+        // 長さは上で確かめたが、戻り値は捨てずに 1 つの ok で受ける。
+        // stride の後ろの知らない欄は rec ごと飛ばす。
         RecordReader rec;
-        in.take(stride, rec);  // 長さは上で確かめた
-        rec.f32(i.u);
-        rec.f32(i.v);
-        rec.f32(i.yaw);
-        rec.f32(i.scale);
-        rec.u8(i.prototype);  // stride の後ろの知らない欄は rec ごと飛ばす
+        const bool ok = in.take(stride, rec) && rec.f32(i.u) && rec.f32(i.v) &&
+                        rec.f32(i.yaw) && rec.f32(i.scale) && rec.u8(i.prototype);
+        if (!ok) {
+            reason = "TREE instance record runs past end of section";
+            return false;
+        }
     }
     out = std::move(scatter);
     return true;
@@ -499,9 +514,9 @@ bool encode(const HeightField& field, float height, const TerrainGuid& guid,
     }
     for (const TerrainLayer& l : layers) {
         for (const LayerImage image : kLayerImages) {
-            if (layerImagePath(l, image).size() > kMaxLayerPathBytes) {
+            if (layerImagePath(l, image).size() > kMaxTerrainPathBytes) {
                 reason = std::string("layer ") + layerImageName(image) + " path is longer than " +
-                         std::to_string(kMaxLayerPathBytes) + " bytes";
+                         std::to_string(kMaxTerrainPathBytes) + " bytes";
                 return false;
             }
         }

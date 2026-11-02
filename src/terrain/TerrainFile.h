@@ -153,8 +153,6 @@ using TerrainLayers = std::array<TerrainLayer, kSplatChannels>;
 // .terrain に書くパス（層の画像・散布物のモデル）の長さの上限（バイト）。
 // 超えるものは書かず、読みは壊れた節とみなす。
 constexpr std::size_t kMaxTerrainPathBytes = 1024;
-// LAYR のパスの長さの上限（kMaxTerrainPathBytes の別名）。
-constexpr std::size_t kMaxLayerPathBytes = kMaxTerrainPathBytes;
 
 // decode / readFile の結果。field は原点中心・baseY 0（上の注意）。
 struct TerrainFileData {
