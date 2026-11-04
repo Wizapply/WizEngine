@@ -334,8 +334,9 @@ private:
     // セル (i, j) の 2 三角形とレイの交差（片面）。t の範囲 [tMin, tMax]。
     bool hitCell(int i, int j, const Vec3& o, const Vec3& d, double tMin,
                  double tMax, double& tOut, Vec3& normalOut) const;
-    // (x, z) を含むセル (i, j)（floor、範囲外は端へ丸める）とセル内の (u, w)。
-    // x / z は有限であること。
+    // (x, z) を含むセル (i, j)（floor、範囲外は端へ丸める）。x / z は有限であること。
+    void cellIndex(double x, double z, int& i, int& j) const;
+    // 上のセル (i, j) とセル内の (u, w)。x / z は有限であること。
     void locate(double x, double z, int& i, int& j, double& u, double& w) const;
     // 指定のセル (i, j) から見た (x, z) の (u, w)。locate と同じ式なので、
     // 同じ点なら同じ値になる（対角線の判定 w >= u が食い違わない）。

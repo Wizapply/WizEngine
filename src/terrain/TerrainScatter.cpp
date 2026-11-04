@@ -193,7 +193,8 @@ std::size_t pruneScatterInstances(TerrainScatter& s) {
                        [&](const ScatterInstance& i) {
                            const bool usable =
                                unit(i.u) && unit(i.v) && std::isfinite(i.scale) &&
-                               i.scale > 0.0f && std::isfinite(i.yaw) &&
+                               i.scale >= kScatterScaleMin && i.scale <= kScatterScaleMax &&
+                               std::isfinite(i.yaw) &&
                                int(i.prototype) < kMaxScatterPrototypes;
                            return !usable;
                        }),

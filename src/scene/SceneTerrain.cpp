@@ -184,15 +184,9 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
     // 無い・格子の全体の差し替え・散布物の差し替え・ストローク中に飛ばしたぶんと、一部の
     // 書き換えなら形（Shape）が幹の足元のセルに掛かったときだけ（幹の足元の高さと穴の
     // 有無が変わる）。筆のストローク中は印だけ立てる（endTerrainStroke が 1 回組む）。
-    bool trunkStale = !on || (fieldChanged && !partial) || scatterChanged || scatterBodyPending;
-    if (!trunkStale && partial && shapeChanged) {
-        // field は差し替えで move 済みなので、今の格子を散布物と組で取り直す。
-        BodyTransform unused;
-        std::shared_ptr<const wizengine::terrain::TerrainScatter> nowScatter;
-        const std::shared_ptr<const wizengine::terrain::HeightField> nowField =
-            copyTerrainFieldAndPose(unused, &nowScatter);
-        trunkStale = wizengine::terrain::scatterTouches(*nowScatter, *nowField, changedCells);
-    }
+    const bool trunkStale = !on || (fieldChanged && !partial) || scatterChanged ||
+                            scatterBodyPending ||
+                            (partial && shapeChanged && terrainShapeTouchesTrunks(changedCells));
     if (!trunkStale) return;
     if (terrainStroke_.active) terrainStroke_.scatterBodyStale = true;
     else rebuildScatterBody();

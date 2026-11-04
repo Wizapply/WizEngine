@@ -109,9 +109,9 @@ void ScatterComponent::place(wizengine::Renderer& r, const Slot& s, const wt::He
     const float diameter = float(2.0 * t.radius);
     const Eigen::Quaterniond upright = wt::scatterTrunkUpright();
     r.setBoxTransform(
-        s.id, frame * mat4f::translation(float3{float(t.x), float(t.centerY()), float(t.z)}) *
-                  toFilament(BodyTransform{0.0, 0.0, 0.0, upright.w(), upright.x(), upright.y(),
-                                           upright.z()}) *
+        s.id, frame *
+                  toFilament(BodyTransform{t.x, t.centerY(), t.z, upright.w(), upright.x(),
+                                           upright.y(), upright.z()}) *
                   mat4f::scaling(float3{float(t.height), diameter, diameter}));
     // 冠: 幹の上端の少し上に、配置の倍率に比例した直径の球（幹と同じく原型の
     // 倍率 = モデルの見た目には左右されない）。

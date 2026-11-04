@@ -243,10 +243,9 @@ bool HeightField::solidAt(double x, double z) const {
 }
 
 bool HeightField::cellAt(double x, double z, int& i, int& j) const {
-    // contains は NaN / 無限大・空の格子で false（locate に有限でない値を渡さない）。
+    // contains は NaN / 無限大・空の格子で false（cellIndex に有限でない値を渡さない）。
     if (!contains(x, z)) return false;
-    double u = 0.0, w = 0.0;
-    locate(x, z, i, j, u, w);
+    cellIndex(x, z, i, j);
     return true;
 }
 
@@ -264,13 +263,17 @@ void HeightField::cellLocal(double x, double z, int i, int j, double& u,
     w = fz - j;
 }
 
-void HeightField::locate(double x, double z, int& i, int& j, double& u,
-                         double& w) const {
+void HeightField::cellIndex(double x, double z, int& i, int& j) const {
     // 範囲外は端へ丸める（縁の高さが外へ続いているとみなす）。
     const double fx = std::clamp((x - minX_) / cell_, 0.0, double(resolution_));
     const double fz = std::clamp((z - minZ_) / cell_, 0.0, double(resolution_));
     i = std::min(int(std::floor(fx)), resolution_ - 1);
     j = std::min(int(std::floor(fz)), resolution_ - 1);
+}
+
+void HeightField::locate(double x, double z, int& i, int& j, double& u,
+                         double& w) const {
+    cellIndex(x, z, i, j);
     cellLocal(x, z, i, j, u, w);
 }
 

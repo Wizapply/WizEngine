@@ -33,6 +33,9 @@ Files the scene loads at runtime, copied next to the executable by the build.
   `assets/*.gltf`（`assets/` の直下）だけなので、`assets/` 直下に置いて
   `file="tree.glb"` のように指定する（`assets/models/` などの下位フォルダは
   除外されないので、そこに置いたときは `git add` に混ぜないよう注意）。
+  読むのは実行フォルダの `build/assets/` なので、`assets/` に置いたら次のビルドが
+  要る。散布のモデルは読めなかったパスを起動し直すまで読み直さないので、
+  **モデルを置いてからパスを入れる**。
 
 ## Layout
 
