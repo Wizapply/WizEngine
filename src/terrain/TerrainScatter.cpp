@@ -156,6 +156,27 @@ double scatterModelScale(const ScatterPrototype& proto, const ScatterInstance& i
     return double(proto.scale) * double(inst.scale);
 }
 
+const ScatterPrototype* scatterCollidingPrototype(const TerrainScatter& s,
+                                                  const ScatterInstance& inst) {
+    // 番号を検査する前の値でも原型の配列を読み越さない。
+    if (int(inst.prototype) >= kMaxScatterPrototypes) return nullptr;
+    const ScatterPrototype& proto = s.prototypes[inst.prototype];
+    if (!proto.collide || !(proto.trunkRadius > 0.0f) || !(proto.trunkHeight > 0.0f)) return nullptr;
+    return &proto;
+}
+
+bool scatterTouches(const TerrainScatter& s, const HeightField& field, const GridRect& cells) {
+    if (cells.empty()) return false;
+    // 余白は足さない: stampRect の矩形は書き換えたサンプルを角に持つセルを全部含む。
+    for (const ScatterInstance& inst : s.instances) {
+        if (!scatterCollidingPrototype(s, inst)) continue;
+        int i = 0, j = 0;
+        if (!field.cellAt(scatterLocalX(field, inst.u), scatterLocalZ(field, inst.v), i, j)) continue;
+        if (i >= cells.i0 && i < cells.i1 && j >= cells.j0 && j < cells.j1) return true;
+    }
+    return false;
+}
+
 ScatterPrototype clampScatterPrototype(ScatterPrototype p) {
     const ScatterPrototype d;
     p.scale = float(clampOr(p.scale, kScatterScaleMin, kScatterScaleMax, d.scale));

@@ -266,6 +266,10 @@ public:
     // セル）。範囲外・空の格子・有限でない座標は false。テレインの接触検出
     // （TerrainContact）が点ごとに見る。穴は isSolidCell が受け持つ。
     bool solidAt(double x, double z) const;
+    // (x, z) を含むセル (i, j)（穴でも返す。セルの選び方は solidAt と同じ）。
+    // contains が false（範囲外・空の格子・有限でない座標）なら false で
+    // i / j は触らない。
+    bool cellAt(double x, double z, int& i, int& j) const;
 
     // 地表のワールド Y。描画・衝突と同じ 2 三角形の平面で補間する（セル内で
     // 区分線形 = 格子点では格子値そのもの）。**範囲外は端へ丸めた点の高さ**

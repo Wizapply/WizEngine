@@ -238,12 +238,16 @@ bool HeightField::isSolidCell(int i, int j) const {
 }
 
 bool HeightField::solidAt(double x, double z) const {
+    int i = 0, j = 0;
+    return cellAt(x, z, i, j) && isSolidCell(i, j);
+}
+
+bool HeightField::cellAt(double x, double z, int& i, int& j) const {
     // contains は NaN / 無限大・空の格子で false（locate に有限でない値を渡さない）。
     if (!contains(x, z)) return false;
-    int i = 0, j = 0;
     double u = 0.0, w = 0.0;
     locate(x, z, i, j, u, w);
-    return isSolidCell(i, j);
+    return true;
 }
 
 Vec3 HeightField::vertexWorld(int i, int j) const {
