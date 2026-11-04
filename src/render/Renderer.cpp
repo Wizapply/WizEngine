@@ -32,8 +32,19 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
     // Vulkan backend (its handle structs are large); 128 MiB is where the
     // warning stops for this scene. The cost is just that much reserved
     // memory - trim it if the scene ever shrinks.
+    //
+    // perFrameCommandsSizeMB: 1 フレームの描画の命令の入れ物。既定の 2 MiB では
+    // テレインの散布物の代役 4096 本（レンダラブル 8192 個）で 1976 KiB / 2048 KiB
+    // （約 247 B / 個）まで埋まった。Engine.h は不足を「Debug は停止、それ以外は
+    // 未定義の動作」とするので、8 MiB = その 4 倍の余裕を持たせる。
+    // perRenderPassArenaSizeMB: 上の命令の入れ物を含む親（既定 3 MiB）。命令の
+    // 入れ物 + 1 MiB 以上が必須で、余りの 1 MiB を足して 10 MiB。増えるのは計 7 MiB。
+    // ログの "Command Arena" とこの設定名の 1 対 1 はソースが無く未確定（ライブラリの
+    // 文字列と Engine.h の図からほぼ確実）。
     Engine::Config engineConfig = {};
     engineConfig.driverHandleArenaSizeMB = 128;
+    engineConfig.perFrameCommandsSizeMB = 8;
+    engineConfig.perRenderPassArenaSizeMB = 10;
     engine_ = Engine::Builder().config(&engineConfig).build();
 
     renderer_ = engine_->createRenderer();

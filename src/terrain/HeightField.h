@@ -266,6 +266,10 @@ public:
     // セル）。範囲外・空の格子・有限でない座標は false。テレインの接触検出
     // （TerrainContact）が点ごとに見る。穴は isSolidCell が受け持つ。
     bool solidAt(double x, double z) const;
+    // (x, z) を含むセル (i, j)（穴でも返す。セルの選び方は solidAt と同じ）。
+    // contains が false（範囲外・空の格子・有限でない座標）なら false で
+    // i / j は触らない。
+    bool cellAt(double x, double z, int& i, int& j) const;
 
     // 地表のワールド Y。描画・衝突と同じ 2 三角形の平面で補間する（セル内で
     // 区分線形 = 格子点では格子値そのもの）。**範囲外は端へ丸めた点の高さ**
@@ -330,8 +334,9 @@ private:
     // セル (i, j) の 2 三角形とレイの交差（片面）。t の範囲 [tMin, tMax]。
     bool hitCell(int i, int j, const Vec3& o, const Vec3& d, double tMin,
                  double tMax, double& tOut, Vec3& normalOut) const;
-    // (x, z) を含むセル (i, j)（floor、範囲外は端へ丸める）とセル内の (u, w)。
-    // x / z は有限であること。
+    // (x, z) を含むセル (i, j)（floor、範囲外は端へ丸める）。x / z は有限であること。
+    void cellIndex(double x, double z, int& i, int& j) const;
+    // 上のセル (i, j) とセル内の (u, w)。x / z は有限であること。
     void locate(double x, double z, int& i, int& j, double& u, double& w) const;
     // 指定のセル (i, j) から見た (x, z) の (u, w)。locate と同じ式なので、
     // 同じ点なら同じ値になる（対角線の判定 w >= u が食い違わない）。

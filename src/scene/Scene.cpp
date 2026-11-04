@@ -1124,6 +1124,7 @@ void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
     // 後に置くと setTerrain の LOGI（proxy を持つボディの数）が実数になり、
     // 安全網で粗く当たる物の警告も実体を見て出せる。
     terrainPhysId_ = PhysicsWorld::kInvalidId;
+    forgetScatterBody();  // 幹のボディも古い系のもの
     for (std::size_t i = 0; i < boxes_.size(); ++i) {
         GameObject& obj = boxes_[i];
         // 消えたオブジェクトも番号は捨てる（古い系の番号を持ったままだと、
@@ -1137,6 +1138,7 @@ void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
         if (obj.alive) rebuildBody(i);
     }
     rebuildTerrainBody();
+    rebuildScatterBody();  // テレインの後（接触の報告をテレインの番号に寄せる）
     if (simulating) {
         restoreAuthoredPoses();
         buildJoints();

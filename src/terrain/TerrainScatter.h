@@ -6,6 +6,9 @@
 #include <string>
 #include <vector>
 
+#include <Eigen/Geometry>
+
+#include "core/MathConstants.h"
 #include "terrain/HeightField.h"
 
 // テレインの散布物（木や小物）の値型と、置き場所の座標の換算・値の検査、
@@ -28,9 +31,9 @@ struct BrushStamp;  // TerrainBrush.h（scatterStamp が参照で受けるだけ
 constexpr int kMaxScatterPrototypes = 8;
 // 配置の数の上限（描画と当たり判定の重さの安全弁）。
 constexpr int kMaxScatterInstances = 4096;
-// 原型の倍率の範囲（clampScatterPrototype が丸める。配置の倍率は丸めず、
-// pruneScatterInstances が 0 以下・有限でないものを落とすだけ）。下限は散布の
-// 筆（scatterStamp）が作る配置の倍率の下限にも使う。
+// 倍率の範囲。原型の倍率は clampScatterPrototype が丸める。配置の倍率は丸めず、
+// pruneScatterInstances が範囲の外・有限でないものを落とす。下限は散布の筆
+// （scatterStamp）が作る配置の倍率の下限にも使う。
 constexpr float kScatterScaleMin = 0.01f;
 constexpr float kScatterScaleMax = 100.0f;
 // 幹の半径・高さの上限 (m)。下限は 0。
@@ -106,7 +109,18 @@ struct ScatterTrunk {
     double height = 0.0;      // 幹の高さ (m) = 原型の trunkHeight × 配置の倍率
     // 幹の中心の高さ。
     double centerY() const { return ground + 0.5 * height; }
+
+    // 厳密な比較（scatterTrunk は同じ入力から同じ値を出す）。
+    bool operator==(const ScatterTrunk& o) const {
+        return x == o.x && z == o.z && ground == o.ground && radius == o.radius &&
+               height == o.height;
+    }
+    bool operator!=(const ScatterTrunk& o) const { return !(*this == o); }
 };
+// 軸が X の円柱を Y へ立てる回転（上の Z まわり 90°）の唯一の定義。
+inline Eigen::Quaterniond scatterTrunkUpright() {
+    return Eigen::Quaterniond(Eigen::AngleAxisd(0.5 * kPi, Eigen::Vector3d::UnitZ()));
+}
 // 配置 inst（原型 proto）の幹を out に書く。足元が穴・格子の外（solidAt が false）
 // なら false で out は触らない。幹の寸法の規則はここ 1 か所（描画の代役と幹の
 // 当たり判定が同じ値を使う）。原型の倍率（モデルの見た目）は幹に掛けない。
@@ -114,13 +128,24 @@ bool scatterTrunk(const HeightField& field, const ScatterPrototype& proto,
                   const ScatterInstance& inst, ScatterTrunk& out);
 // 配置のモデルの見た目の倍率（原型の倍率 × 配置の倍率）。
 double scatterModelScale(const ScatterPrototype& proto, const ScatterInstance& inst);
+// 配置 inst が幹の当たり判定を持つ原型を指していれば、その原型（s の中を指す）。
+// 原型の番号が範囲外・collide でない・幹の半径か高さが 0 以下なら nullptr。
+// 「幹の当たり判定を持つ配置」の規則はここ 1 か所。原型の値で見る。配置の倍率は
+// pruneScatterInstances 済み（kScatterScaleMin〜kScatterScaleMax）が前提。
+const ScatterPrototype* scatterCollidingPrototype(const TerrainScatter& s,
+                                                  const ScatterInstance& inst);
+// 幹の当たり判定を持つ配置（scatterCollidingPrototype）のうち、足元のセル
+// （HeightField::cellAt。穴でも数える）が cells（セル単位）の中にあるものが
+// 1 つでもあるか。cells が空なら false。
+bool scatterTouches(const TerrainScatter& s, const HeightField& field, const GridRect& cells);
 
 // 原型の数値を範囲へ丸める（有限でない値は既定値、倍率は kScatterScaleMin〜
 // kScatterScaleMax、幹は 0〜kScatterTrunkMax）。パスは触らない。
 ScatterPrototype clampScatterPrototype(ScatterPrototype p);
 // 使えない配置を落とす: u / v が有限でないか [0, 1] の外・倍率が有限でないか
-// 0 以下・向きが有限でない・原型の番号が範囲外。そのあと kMaxScatterInstances を
-// 超えるぶんを後ろから切る。戻り値は落とした数（切ったぶんを含む）。
+// kScatterScaleMin〜kScatterScaleMax の外・向きが有限でない・原型の番号が範囲外。
+// そのあと kMaxScatterInstances を超えるぶんを後ろから切る。戻り値は落とした数
+// （切ったぶんを含む）。
 std::size_t pruneScatterInstances(TerrainScatter& s);
 
 // 散布の筆の安全弁: 円 1 個の目標の個数の上限と、スタンプ 1 個で試す場所の数の
