@@ -893,6 +893,18 @@ private:
     // テレインの接触を止めて番号を手放す（番号は先に手放す）。例外は外へ
     // 出さない（LOGE）。
     void releaseTerrainContact();
+    // 散布物の幹の当たり判定（SceneTerrainScatterBody.cpp、すべて PHYSICS thread。
+    // objectsMutex_ を持たずに呼ぶこと）。幹は 1 個の固定ボディの複合形状で、ボディの
+    // 姿勢 = テレインのフレーム、形の位置 = 格子のローカル。
+    // 今のボディを退場させて番号を手放す（無ければ何もしない）。
+    void releaseScatterBody();
+    // 今の格子と散布物で組み直す（前のボディは退場）。当たる幹が無ければボディを
+    // 作らない。接触の報告はテレインの番号に寄せる（setAlias）。シミュレート中に幹が
+    // 増減したら全ボディを起こす（眠った物が消えた幹の上に浮いたまま残らないように）。
+    // 例外は投げない: 失敗は中で捕まえて LOGE とステータスに出し、幹なしで続ける。
+    void rebuildScatterBody();
+    // テレインのフレームが変わった: ボディを置き直すだけ（形は作り直さない）。
+    void placeScatterBody(const BodyTransform& pose);
     // テレインがあるのに形の記録（proxy）を持たない動くボディ
     // （PhysicsWorld::terrainContactShape が BoundingBox = 安全網の AABB で
     // 粗く当たる物）を LOGW 1 行で名前付きで知らせる。顔ぶれが前回と同じなら
@@ -1027,6 +1039,8 @@ private:
         // ストローク中に publishTerrainField が飛ばした当たり判定の張り直しが
         // ある（end か、Clear で捨てたときの publish が張る）。
         bool collisionStale = false;
+        // 同じく散布物の幹の組み直しを飛ばした（end か、Clear の publish が組む）。
+        bool scatterBodyStale = false;
         int passes = 0;       // 格子を実際に書き換えたパスの数
         int stamps = 0;       // そのパスのスタンプの総数
         double passMs = 0.0;  // そのパスの所要時間の合計
@@ -1071,6 +1085,9 @@ private:
     // ゴーストは PhysicsWorld の持ち物で、張り直しでも同じ番号が返る。
     // 物理スレッド専用。
     std::size_t terrainPhysId_ = PhysicsWorld::kInvalidId;
+    // 散布物の幹の当たり判定のボディの番号。当たる幹が無ければ kInvalidId。
+    // 物理スレッド専用。
+    std::size_t scatterPhysId_ = PhysicsWorld::kInvalidId;
     // テレインの 2 つの警告の「前回知らせた内容」（繰り返さないため）。物理スレッド専用。
     std::string terrainPassThroughWarned_;
     std::string terrainCombineWarned_;

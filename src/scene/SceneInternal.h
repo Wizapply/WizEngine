@@ -13,6 +13,7 @@
 //   SceneTerrainFile.cpp: テレインと文書・.terrain・ブラウザの JSON との出入り
 //   SceneTerrainPaint.cpp: 塗り分けの道具（自動塗り）
 //   SceneTerrainScatter.cpp: 散布物（木や小物）のサーバー側の操作
+//   SceneTerrainScatterBody.cpp: 散布物の幹の当たり判定のボディ
 
 #include "scene/Scene.h"
 #include "scene/SceneConfig.h"
@@ -71,13 +72,24 @@ namespace scene_detail {
 // 同じ名前で書いてある。
 inline constexpr const char* kMouseEventAsset = "pickup";
 
+// SceneMath の四元数を Chrono の四元数へ。
+inline chrono::ChQuaternion<> toChrono(const scenemath::Quat& q) {
+    return chrono::ChQuaternion<>(q.w(), q.x(), q.y(), q.z());
+}
+
+// BodyTransform の回転と位置を Chrono の型へ。
+inline chrono::ChQuaternion<> toChrono(const BodyTransform& t) {
+    return chrono::ChQuaternion<>(t.qw, t.qx, t.qy, t.qz);
+}
+inline chrono::ChVector3d chronoPos(const BodyTransform& t) {
+    return chrono::ChVector3d(t.px, t.py, t.pz);
+}
+
 // エディタの回転（オイラー角・度）を Chrono の四元数へ。順序の定義は
 // SceneMath.h に 1 か所だけ置いてある（インスペクタの数字・ギズモの回転・
 // 物理に渡す姿勢が食い違わないように）。
 inline chrono::ChQuaternion<> quatFromEuler(const ed::Vec3d& degrees) {
-    const scenemath::Quat q =
-        scenemath::quatFromEulerDegrees(degrees.x, degrees.y, degrees.z);
-    return chrono::ChQuaternion<>(q.w(), q.x(), q.y(), q.z());
+    return toChrono(scenemath::quatFromEulerDegrees(degrees.x, degrees.y, degrees.z));
 }
 
 // エディタの JointKind を PhysicsWorld の enum へ。

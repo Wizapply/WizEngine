@@ -466,8 +466,8 @@ void Scene::rebuildGroundBody() {
 
 void Scene::groundBodyPose(ChVector3d& center, ChQuaternion<>& rot) const {
     const BodyTransform p = placementPose(ground_.position, ground_.rotation);
-    rot = ChQuaternion<>(p.qw, p.qx, p.qy, p.qz);
-    center = ChVector3d(p.px, p.py, p.pz) + rot.Rotate(ChVector3d(0, -0.5, 0));
+    rot = toChrono(p);
+    center = chronoPos(p) + rot.Rotate(ChVector3d(0, -0.5, 0));
 }
 
 void Scene::placeGroundBody() {

@@ -67,6 +67,7 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
                                 std::shared_ptr<const wizengine::terrain::TerrainScatter> scatter) {
     // ストローク中に飛ばした張り直し（Clear はストロークを捨てるので先に読む）。
     const bool collisionPending = terrainStroke_.collisionStale;
+    const bool scatterBodyPending = terrainStroke_.scatterBodyStale;
     if (history == TerrainHistory::Clear) abortTerrainStroke();
     // terrain_ / hasTerrain_ / terrainField_ を書くのはこのスレッドだけ（読むのにロック不要）。
     const bool had = hasTerrain_;
@@ -107,6 +108,7 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
     std::shared_ptr<const wizengine::terrain::TerrainScatter> nextScatter =
         nextFileOwned(std::move(scatter), sameFile, defaultTerrainScatter());
     if (nextScatter && *nextScatter == *terrainScatter()) nextScatter.reset();
+    const bool scatterChanged = nextScatter != nullptr;  // 下で move する
     {
         // 格子の差し替えと dirty は同じロックの中で: 描画スレッドは dirty を
         // 見たのと同じロックの中で格子を取り出すので、「新しい dirty と古い
@@ -150,13 +152,14 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
         editor_.clearSel();
     }
 
-    // 接触の側のフレーム（作り直しの rebuildTerrainBody も当て直す）。
-    if (poseChanged) physics_.setTerrainFrame(ChVector3d(pose.px, pose.py, pose.pz),
-                                              ChQuaternion<>(pose.qw, pose.qx, pose.qy,
-                                                             pose.qz));
+    // 接触の側のフレーム（作り直しの rebuildTerrainBody も当て直す）と幹のボディ。
+    if (poseChanged) {
+        physics_.setTerrainFrame(chronoPos(pose), toChrono(pose));
+        placeScatterBody(pose);
+    }
 
     // テレインの有無は系の種類を変えうる（kTerrainForcesCore）。作り直したら
-    // テレインの当たり判定もそこで組み直し済みなので、二重に張らない。
+    // テレインの当たり判定と幹もそこで組み直し済みなので、二重に張らない。
     // 省くのは筆の 1 パス（brushPass）だけ: 同じ形の格子の中身を書き換えるだけで
     // テレインの有無は変わらず、1 パスごとにここを通る。それ以外は必ず判定する
     // （全消しなど、テレインの有無が変わらなくてもこの判定で系を選び直す呼び手がいる）。
@@ -173,9 +176,26 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
         on && terrainPhysId_ == PhysicsWorld::kInvalidId && !terrainBackendWarned_;
     // 重みだけの書き換え（Paint）は当たり判定に関わらないので張り直さない。
     const bool collisionChanged = fieldChanged && (!partial || shapeChanged);
-    if (!(collisionChanged || retryFailed || collisionPending)) return;
-    if (terrainStroke_.active) terrainStroke_.collisionStale = true;
-    else rebuildTerrainBody();
+    if (collisionChanged || retryFailed || collisionPending) {
+        if (terrainStroke_.active) terrainStroke_.collisionStale = true;
+        else rebuildTerrainBody();
+    }
+    // 幹（テレイン本体の後 = 接触の報告を今の番号に寄せる）。組み直すのは、テレインが
+    // 無い・格子の全体の差し替え・散布物の差し替え・ストローク中に飛ばしたぶんと、一部の
+    // 書き換えなら形（Shape）が幹の足元のセルに掛かったときだけ（幹の足元の高さと穴の
+    // 有無が変わる）。筆のストローク中は印だけ立てる（endTerrainStroke が 1 回組む）。
+    bool trunkStale = !on || (fieldChanged && !partial) || scatterChanged || scatterBodyPending;
+    if (!trunkStale && partial && shapeChanged) {
+        // field は差し替えで move 済みなので、今の格子を散布物と組で取り直す。
+        BodyTransform unused;
+        std::shared_ptr<const wizengine::terrain::TerrainScatter> nowScatter;
+        const std::shared_ptr<const wizengine::terrain::HeightField> nowField =
+            copyTerrainFieldAndPose(unused, &nowScatter);
+        trunkStale = wizengine::terrain::scatterTouches(*nowScatter, *nowField, changedCells);
+    }
+    if (!trunkStale) return;
+    if (terrainStroke_.active) terrainStroke_.scatterBodyStale = true;
+    else rebuildScatterBody();
 }
 
 std::string Scene::reshapeTerrain(const ed::TerrainDesc& next, bool keepShape,
@@ -413,8 +433,7 @@ void Scene::rebuildTerrainBodyUnguarded() {
         // フレームは格子と組（PhysicsWorld が作り直されても当て直す）。
         BodyTransform pose;
         copyTerrainFieldAndPose(pose);
-        physics_.setTerrainFrame(ChVector3d(pose.px, pose.py, pose.pz),
-                                 ChQuaternion<>(pose.qw, pose.qx, pose.qy, pose.qz));
+        physics_.setTerrainFrame(chronoPos(pose), toChrono(pose));
     }
     if (id == PhysicsWorld::kInvalidId) {
         // Multicore（kTerrainForcesCore = false のとき）など。前の格子で
@@ -431,6 +450,7 @@ void Scene::rebuildTerrainBodyUnguarded() {
         return;
     }
     terrainPhysId_ = id;
+    physics_.setAlias(scatterPhysId_, terrainPhysId_);  // 幹の接触はテレインの番号で報告
     terrainBackendWarned_ = false;  // 張れた = 次に張れなくなったら知らせ直す
 }
 
