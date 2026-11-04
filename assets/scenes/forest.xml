@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- テレインの散布物（木）の見本シーン。地形と木の配置は data の名前の
+     assets/terrains/forest.terrain が持つ（配置は TREE 節）。車と物の水平の位置は
+     terrain.xml と同じで、高さはこの地形に合わせた。木は車の開始位置より東の丘に
+     集まっている。
+
+     木の当たり判定は幹の円柱だけ（枝や葉には当たらない）。箱・球などの剛体と
+     車体の箱は幹に当たるが、車輪のレイは幹に当たらない（車輪は幹を通り抜ける）。
+     背の高い幹には車体の箱が当たって止まるが、背の低い幹（幹の高さは配置の倍率で
+     変わる）は車体の下を抜けて当たらない。足元が穴の配置は幹の当たり判定を持たない。
+
+     木のモデルは同梱していない。原型にモデルを指定しない / ファイルが無いときは
+     代役（円柱の幹 + 球の冠）で描く。モデルの置き方は assets/README.md。 -->
+<wizengine model="forest" version="4">
+  <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60" envelope="0.002"
+          recovery="0.2" friction="0.6" restitution="0" lineardamping="0.15"
+          angulardamping="0.6" sleeping="true" integrator="euler" solver="bb" combine="min"
+          contact="nsc"/>
+  <visual>
+    <quality shadowMap="2048" cascades="3" shadow="pcf" contactShadows="false" msaa="4"
+             taa="false" fxaa="true"/>
+    <postprocess enabled="true" ssao="true" ssaoIntensity="1" bloom="0.04" ssr="false" dof="0"
+                 dofBlur="1" vignette="0.2"/>
+    <exposure aperture="16" shutter="125" sensitivity="100"/>
+    <grading tonemap="aces" contrast="1.05" saturation="1.05" temperature="0" tint="0"/>
+  </visual>
+  <asset>
+    <event name="pickup">
+      <node id="1" type="onGrab" pos="40 40" target="-1"/>
+      <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+      <wire from="1" to="2"/>
+    </event>
+    <event name="follow_car" file="events/follow_car.xml"/>
+    <formula name="tire_mf">
+      <node id="1" type="in" name="kappa" pos="40 40"/>
+      <node id="2" type="in" name="alpha" pos="40 100"/>
+      <node id="3" type="in" name="fz" pos="40 160"/>
+      <node id="4" type="in" name="mu" pos="40 220"/>
+      <node id="5" type="in" name="v" pos="40 280"/>
+      <node id="6" type="in" name="bx" pos="40 340"/>
+      <node id="7" type="in" name="cx" pos="40 400"/>
+      <node id="8" type="in" name="ex" pos="40 460"/>
+      <node id="9" type="in" name="by" pos="40 520"/>
+      <node id="10" type="in" name="cy" pos="40 580"/>
+      <node id="11" type="in" name="ey" pos="40 640"/>
+      <node id="12" type="in" name="relax" pos="40 700"/>
+      <node id="13" type="in" name="fxLo" pos="40 760"/>
+      <node id="14" type="in" name="fxHi" pos="40 820"/>
+      <node id="15" type="in" name="fyLo" pos="40 880"/>
+      <node id="16" type="in" name="fyHi" pos="40 940"/>
+      <node id="17" type="mul" pos="260 190"/>
+      <node id="18" type="magic" pos="260 40"/>
+      <node id="19" type="mul" pos="460 40"/>
+      <node id="20" type="magic" pos="260 520"/>
+      <node id="21" type="mul" pos="460 520"/>
+      <node id="22" type="neg" pos="620 520"/>
+      <node id="23" type="ellipse" pos="780 280"/>
+      <node id="24" type="clamp" pos="960 200"/>
+      <node id="25" type="clamp" pos="960 360"/>
+      <node id="26" type="div" pos="620 700"/>
+      <node id="27" type="lag" pos="1140 200"/>
+      <node id="28" type="lag" pos="1140 360"/>
+      <node id="29" type="out" name="fx" pos="1320 200"/>
+      <node id="30" type="out" name="fy" pos="1320 360"/>
+      <wire from="4" to="17"/>
+      <wire from="3" to="17" port="1"/>
+      <wire from="1" to="18"/>
+      <wire from="6" to="18" port="1"/>
+      <wire from="7" to="18" port="2"/>
+      <wire from="8" to="18" port="3"/>
+      <wire from="17" to="19"/>
+      <wire from="18" to="19" port="1"/>
+      <wire from="2" to="20"/>
+      <wire from="9" to="20" port="1"/>
+      <wire from="10" to="20" port="2"/>
+      <wire from="11" to="20" port="3"/>
+      <wire from="17" to="21"/>
+      <wire from="20" to="21" port="1"/>
+      <wire from="21" to="22"/>
+      <wire from="19" to="23"/>
+      <wire from="22" to="23" port="1"/>
+      <wire from="17" to="23" port="2"/>
+      <wire from="23" to="24"/>
+      <wire from="13" to="24" port="1"/>
+      <wire from="14" to="24" port="2"/>
+      <wire from="23" fromPort="1" to="25"/>
+      <wire from="15" to="25" port="1"/>
+      <wire from="16" to="25" port="2"/>
+      <wire from="12" to="26"/>
+      <wire from="5" to="26" port="1"/>
+      <wire from="24" to="27"/>
+      <wire from="26" to="27" port="1"/>
+      <wire from="25" to="28"/>
+      <wire from="26" to="28" port="1"/>
+      <wire from="27" to="29"/>
+      <wire from="28" to="30"/>
+    </formula>
+    <formula name="tire_air">
+      <node id="1" type="in" name="ratio" pos="40 40"/>
+      <node id="2" type="in" name="p0" pos="40 160"/>
+      <node id="3" type="const" params="1" pos="40 280"/>
+      <node id="4" type="div" pos="260 40"/>
+      <node id="5" type="sub" pos="420 40"/>
+      <node id="6" type="mul" pos="580 40"/>
+      <node id="7" type="neg" pos="420 160"/>
+      <node id="8" type="max" pos="740 40"/>
+      <node id="9" type="out" name="pressure" pos="900 40"/>
+      <wire from="3" to="4"/>
+      <wire from="1" to="4" port="1"/>
+      <wire from="4" to="5"/>
+      <wire from="3" to="5" port="1"/>
+      <wire from="5" to="6"/>
+      <wire from="2" to="6" port="1"/>
+      <wire from="2" to="7"/>
+      <wire from="6" to="8"/>
+      <wire from="7" to="8" port="1"/>
+      <wire from="8" to="9"/>
+    </formula>
+    <prefab name="dumbbell">
+      <part name="bar" type="cylinder" pos="0 0 0" euler="0 0 0" size="1.3 0.12 0.12"
+            rgba="0.55 0.57 0.6 1" roughness="0.35" metallic="1"/>
+      <part name="weightL" type="sphere" pos="-0.65 0 0" euler="0 0 0" size="0.6 0.6 0.6"
+            rgba="0.85 0.3 0.55 1" collide="true"/>
+      <part name="weightR" type="sphere" pos="0.65 0 0" euler="0 0 0" size="0.6 0.6 0.6"
+            rgba="0.85 0.3 0.55 1" collide="true"/>
+    </prefab>
+  </asset>
+  <worldbody>
+    <environment hdr="studio.hdr" intensity="30000" skybox="false"/>
+    <ground enabled="false" size="10" visual="8" texture="textures/ground.png" tile="2"
+            rgba="1 1 1 1" roughness="0.9" metallic="0"/>
+    <terrain data="forest" guid="5570958d270ae6cfb3fff4c64acf8927" pos="0 0.05 0"
+             rgba="0.55 0.68 0.42 1" roughness="0.9" metallic="0"/>
+    <light name="sun" type="directional" pos="0 30 0" euler="50 -35 0" diffuse="1 0.97 0.92 1"
+           intensity="100000" falloff="25" inner="25" cutoff="35" castshadow="true"/>
+    <light name="sky" type="directional" pos="0 25 0" euler="30 150 0" diffuse="0.8 0.87 1 1"
+           intensity="20000" falloff="25" inner="25" cutoff="35" castshadow="false"/>
+    <camera name="cam0" target="0 5 -20" azimuth="-70" elevation="20" radius="60" active="true"/>
+    <camera name="cam1" target="-25 3.5 -30" azimuth="-20" elevation="15" radius="11"
+            active="true"/>
+    <camera name="cam2" target="0 1 0" azimuth="37.8152" elevation="65.8901" radius="10"
+            active="false"/>
+    <camera name="cam3" target="0 1 0" azimuth="37.8152" elevation="19.4806" radius="12"
+            active="false"/>
+    <camera name="cam4" target="0 1 0" azimuth="37.8152" elevation="19.4806" radius="12"
+            active="false"/>
+    <body name="car" pos="-25 4.1 -28" euler="0 0 0" fixed="false">
+      <geom type="box" size="0.7 0.25 2.1" mass="1400" rgba="0.85 0.2 0.15 1"/>
+      <event name="follow_car"/>
+      <vehicle ticks="10" brake="2500" drag="0.7" steerRate="4" steerSpeed="12" tcs="0.25"
+               pedalRate="6">
+        <engine torque="300" idle="900" max="6500" inertia="0.25" friction="0.03"
+                frictionConst="10"/>
+        <clutch torque="500" engage="1300" full="2200"/>
+        <gearbox ratios="3.6 2.1 1.4 1 0.8" reverse="3.4" final="3.9" efficiency="0.92"
+                 up="5800" down="2300" time="0.25" automatic="true"/>
+        <center type="open" bias="0.5" stiffness="20" lock="300"/>
+        <axle z="1.3" y="-0.15" track="1.7" steer="32" ackermann="1" driven="false" brake="1"
+              handbrake="0" diff="open" stiffness="20" lock="300">
+          <tire radius="0.42" width="0.3" inertia="1.8" mu="1.2" bx="12" cx="1.65" ex="0.97"
+                by="12" cy="1.4" ey="-1" relax="0.15" rolling="0.015" rays="9" formula="tire_mf"
+                soft="true" stiffness="60000" damping="0.2" segments="28" rows="4"
+                iterations="3" pressure="320000" pressureFormula="tire_air"/>
+          <suspension rest="0.35" travel="0.25" stiffness="35000" bump="3500" rebound="4500"
+                      antiroll="6000"/>
+        </axle>
+        <axle z="-1.3" y="-0.15" track="1.7" steer="0" ackermann="1" driven="true" brake="0.65"
+              handbrake="1" diff="lsd" stiffness="20" lock="250">
+          <tire radius="0.42" width="0.3" inertia="1.8" mu="1.2" bx="12" cx="1.65" ex="0.97"
+                by="12" cy="1.4" ey="-1" relax="0.15" rolling="0.015" rays="9" formula="tire_mf"
+                soft="true" stiffness="60000" damping="0.2" segments="28" rows="4"
+                iterations="3" pressure="320000" pressureFormula="tire_air"/>
+          <suspension rest="0.35" travel="0.25" stiffness="35000" bump="3500" rebound="4500"
+                      antiroll="6000"/>
+        </axle>
+      </vehicle>
+    </body>
+    <body name="slider0" pos="8 6.39 -28" euler="0 0 0" fixed="false">
+      <geom type="box" size="0.3 0.3 0.3" mass="20" rgba="0.8 0.36 0.18 1" friction="0.1"/>
+    </body>
+    <body name="slider1" pos="12 6.66 -30" euler="0 0 0" fixed="false">
+      <geom type="box" size="0.3 0.3 0.3" mass="20" rgba="0.82 0.46 0.16 1" friction="0.1"/>
+    </body>
+    <body name="slider2" pos="0 5.91 -20" euler="0 0 0" fixed="false">
+      <geom type="box" size="0.3 0.3 0.3" mass="20" rgba="0.76 0.42 0.2 1" friction="0.1"/>
+    </body>
+    <body name="sticker" pos="5 6.65 -15" euler="0 0 0" fixed="false">
+      <geom type="box" size="0.3 0.3 0.3" mass="20" rgba="0.45 0.45 0.5 1"/>
+    </body>
+    <body name="ball0" pos="2 6.6 -10" euler="0 0 0" fixed="false">
+      <geom type="sphere" size="0.35" mass="5" rgba="0.29 0.56 0.85 1"/>
+    </body>
+    <body name="ball1" pos="0 6.45 -5" euler="0 0 0" fixed="false">
+      <geom type="sphere" size="0.35" mass="5" rgba="0.29 0.56 0.85 1"/>
+    </body>
+    <body name="ball2" pos="-3 5.72 -18" euler="0 0 0" fixed="false">
+      <geom type="sphere" size="0.35" mass="5" rgba="0.95 0.85 0.2 1"/>
+    </body>
+    <body name="ball3" pos="10 7.05 -20" euler="0 0 0" fixed="false">
+      <geom type="sphere" size="0.35" mass="5" rgba="0.95 0.85 0.2 1"/>
+    </body>
+    <body name="softball" pos="5 7.05 -10" euler="0 0 0" fixed="false">
+      <geom type="sphere" size="0.4" mass="3" rgba="0.3 0.75 0.45 1"/>
+      <soft res="4" stiffness="4000" damping="0.3" shear="1" bend="0.5" iterations="2"/>
+    </body>
+    <body name="dumbbell" pos="4 6.17 -24" euler="0 90 0" fixed="false" mass="10">
+      <prefab name="dumbbell"/>
+    </body>
+  </worldbody>
+  <events>
+    <event name="pickup"/>
+  </events>
+</wizengine>
