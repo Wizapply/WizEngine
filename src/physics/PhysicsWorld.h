@@ -430,6 +430,7 @@ private:
                     const BodyOptions& options);
     // 破断の判定（step の末尾）。
     void checkJointBreaks();
+    void logStepDiagnostics(double dt);  // 診断ログ（step の積分の直後）
     // Multicore 用の手計算のモータ・ばね（step の先頭。下の JointRec::Manual）。
     void applyManualJoints(double dt);
     // ボディへ角力積（ワールド座標）を与える（固定・粒子には何もしない）。
