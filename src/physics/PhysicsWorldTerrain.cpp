@@ -6,6 +6,7 @@
 #include <chrono/collision/ChCollisionInfo.h>
 #include <chrono/collision/ChCollisionModel.h>
 #include <chrono/core/ChMatrix33.h>
+#include <chrono/geometry/ChGeometry.h>
 #include <chrono/physics/ChBody.h>
 #include <chrono/physics/ChContactContainer.h>
 #include <chrono/physics/ChContactMaterialNSC.h>

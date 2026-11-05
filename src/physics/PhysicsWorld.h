@@ -122,10 +122,9 @@ public:
     void wakeAll();
     std::size_t sleepingCount() const;
 
-    // Add a box body. density in kg/m^3; fixed=true makes it static. Returns id.
-    // Sphere body - rolls, unlike a box. Radius in metres.
     using ExtraShape = wizengine::physics::ExtraShape;
 
+    // Sphere body - rolls, unlike a box. Radius in metres.
     std::size_t addSphere(double radius, double density,
                           const chrono::ChVector3d& pos,
                           const chrono::ChQuaternion<>& rot, bool fixed,
@@ -147,6 +146,7 @@ public:
     // the same on both backends and across Chrono versions.
     void setDamping(double linearPerSecond, double angularPerSecond);
 
+    // Add a box body. density in kg/m^3; fixed=true makes it static. Returns id.
     std::size_t addBox(double sx, double sy, double sz, double density,
                        const chrono::ChVector3d& pos,
                        const chrono::ChQuaternion<>& rot, bool fixed,
@@ -306,7 +306,7 @@ public:
     std::size_t addJoint(JointType type, std::size_t bodyA, std::size_t bodyB,
                          const chrono::ChVector3d& anchor,
                          const chrono::ChVector3d& axis, double distance);
-    // リミット・モータ・ばね・破断・ギア比まで含めた指定（上の JointSpec）。
+    // リミット・モータ・ばね・破断・ギア比まで含めた指定（PhysicsTypes.h の JointSpec）。
     std::size_t addJoint(const JointSpec& spec);
     // シミュレート開始のたびに作り直すので、まとめて捨てる口だけ用意する。
     void removeAllJoints();
@@ -402,7 +402,7 @@ private:
     // 眠りの計時を今からにする（置き直し・固定解除・新規・wakeAll）。
     void resetSleepTimer(chrono::ChBody& b);
     // 衝突系が既に初期化済みなら、いま足したボディの衝突モデルを登録する
-    // （Chrono 9 は自動でやらない。詳細は .cpp）。
+    // （Chrono 9 は自動でやらない。詳細は PhysicsWorldRegistry.cpp の bindCollision）。
     void bindCollision(const std::shared_ptr<chrono::ChBody>& body);
     // 追加の当たり形状を本体に足す（AddBody の前に呼ぶ）。
     void attachExtraShapes(chrono::ChBody& body, const std::vector<ExtraShape>& extras,
@@ -461,8 +461,8 @@ private:
     std::size_t representative(std::size_t id) const;
 
     // ---- 固定物どうしの衝突ペアを作らせない（Core = Bullet のみ）----------
-    // 理由と仕組みは .cpp の StaticPairFilter の注記。Bullet の型を見せない
-    // ためにここでは前方宣言だけ。
+    // 理由と仕組みは PhysicsWorldStaticPairs.cpp の先頭の注記（フィルタの定義は
+    // PhysicsWorldInternal.h）。Bullet の型を見せないためにここでは前方宣言だけ。
     struct StaticPairFilter;
     // 新しい系の Bullet ワールドにフィルタを付ける（createSystem から。
     // Multicore では外したまま）。
@@ -478,7 +478,7 @@ private:
     // 解放された Bullet 側の実体のアドレスを集合に残さない。
     void forgetStaticPairs(chrono::ChBody& body);
 
-    // ---- テレインの内部（中身は .cpp。Eigen と terrain の型を見せない）------
+    // ---- テレインの内部（中身は PhysicsWorldInternal.h。Eigen と terrain の型を見せない）--
     struct TerrainProxyRec;   // ボディ 1 個の形の記録 + 点ごとの反力キャッシュ
     struct TerrainState;      // 格子・ゴースト・材質・判定の設定
     struct TerrainCallback;   // ChSystem::CustomCollisionCallback
@@ -543,9 +543,9 @@ private:
     std::vector<std::size_t> alias_;
     std::vector<SoftBody> softBodies_;
     // bodies_ と並ぶ: テレインに当たる形の記録（無ければ null = テレインの
-    // 接触の対象外）。shared_ptr なのは型を .cpp に閉じるため。反力キャッシュは
-    // 記録のときに 1 回だけ確保し、以後は再確保しない（アドレスを Chrono の
-    // 接触へ渡すため）。
+    // 接触の対象外）。shared_ptr なのは型の中身を PhysicsWorldInternal.h に閉じる
+    // ため（ここは前方宣言だけ）。反力キャッシュは記録のときに 1 回だけ確保し、
+    // 以後は再確保しない（アドレスを Chrono の接触へ渡すため）。
     std::vector<std::shared_ptr<TerrainProxyRec>> terrainProxies_;
     // テレインのフレーム（setTerrainFrame）。単位なら変換を省く。
     chrono::ChVector3d terrainFrameOrigin_{0, 0, 0};

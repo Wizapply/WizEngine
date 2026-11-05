@@ -204,7 +204,8 @@ struct ExtraShape {
     chrono::ChQuaternion<> rot{1.0, 0.0, 0.0, 0.0};
 };
 
-// add* / addCable が作れなかったときに返す番号。
+// physId やケーブル番号が無いことを表す値（add* / addCable / setTerrain が
+// 作れなかったとき、テレインが無いときの terrainBodyId など）。
 constexpr std::size_t kInvalidId = static_cast<std::size_t>(-1);
 
 // PhysicsWorld::addSoftBody への指定。

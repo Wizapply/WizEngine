@@ -4,6 +4,7 @@
 #include "core/Log.h"
 #include "core/MathConstants.h"
 
+#include <chrono/collision/ChCollisionModel.h>
 #include <chrono/physics/ChBody.h>
 #include <chrono/physics/ChBodyEasy.h>
 

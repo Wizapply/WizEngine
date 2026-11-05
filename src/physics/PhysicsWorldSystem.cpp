@@ -412,7 +412,7 @@ void PhysicsWorld::setCollisionTolerances(double envelope, double margin) {
 #ifdef WIZ_USE_MULTICORE
     // The multicore collision system keeps the envelope in its settings.
     if (auto* mc = dynamic_cast<ChSystemMulticore*>(sys_.get())) {
-        // Never go below the floor value - see the note in the constructor.
+        // Never go below the floor value - see the note in createSystem.
         mc->GetSettings()->collision.collision_envelope =
             std::max(envelope, kMulticoreMinEnvelope);
         return;

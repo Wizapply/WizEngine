@@ -168,7 +168,7 @@ void PhysicsWorld::setBodyPose(std::size_t id, const ChVector3d& pos,
     setLinVel(bodies_[id].get(), ChVector3d(0, -wakeSpeed, 0), 0);
 }
 
-// ---- エディタ用 -----------------------------------------------------------
+// ---- 置き直し・固定・角力積 -------------------------------------------------
 
 void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
                              const ChQuaternion<>& rot) {

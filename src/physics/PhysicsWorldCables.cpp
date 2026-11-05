@@ -5,7 +5,9 @@
 #include "physics/ChronoCompat.h"
 
 #include <chrono/physics/ChBody.h>
+#include <chrono/physics/ChLinkBase.h>
 #ifdef WIZ_HAVE_FEA
+#include <chrono/collision/ChCollisionSystem.h>
 #include <chrono/fea/ChBeamSectionCable.h>
 #include <chrono/fea/ChBuilderBeam.h>
 #include <chrono/fea/ChContactSurfaceNodeCloud.h>
