@@ -49,6 +49,10 @@ public:
     // 全部忘れる（系の作り直し）。受け手の一覧は残す。
     void clear();
     void addListener(PhysicsPart* part) { parts_.push_back(part); }
+    // 受け手の一覧はここ 1 つなので、窓口が出す出来事もここから配る。
+    void notifySystemRecreated() {
+        for (PhysicsPart* part : parts_) part->onSystemRecreated();
+    }
 
     const std::shared_ptr<chrono::ChBody>& body(std::size_t id) const { return bodies_[id]; }
     const std::vector<std::shared_ptr<chrono::ChBody>>& all() const { return bodies_; }
@@ -66,6 +70,11 @@ public:
     // members を 1 つのグループにする（root が代表番号）。
     void defineGroup(std::size_t root, std::vector<std::size_t> members);
     bool isGroupMember(std::size_t id) const { return groupIndex(id) != kInvalidId; }
+    // id がグループの代表番号か。
+    bool isGroupRoot(std::size_t id) const {
+        const std::size_t g = groupIndex(id);
+        return g != kInvalidId && groups_[g].root == id;
+    }
     // グループの員ならその代表番号、それ以外はそのまま。
     std::size_t representative(std::size_t id) const {
         const std::size_t g = groupIndex(id);
@@ -78,9 +87,7 @@ public:
     }
     // 代表番号ならグループの全員（代表が先頭）、それ以外は id だけ。
     BodyRange members(std::size_t id) const {
-        const std::size_t g = groupIndex(id);
-        if (g != kInvalidId && groups_[g].root == id) return BodyRange(groups_[g].members);
-        return BodyRange(id);
+        return isGroupRoot(id) ? BodyRange(groups_[groupIndex(id)].members) : BodyRange(id);
     }
 
 private:

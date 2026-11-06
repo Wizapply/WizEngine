@@ -392,21 +392,13 @@ public:
 
 private:
     // 追加したボディを名簿へ登録し、窓口が持つ配列にも席を作る。mat と options は
-    // 名簿の受け手へそのまま伝える（配列へ書くのは finishBody）。
+    // 名簿の受け手へそのまま伝える（受け手が onBodyAdded で自分の配列へ書く）。
     void registerBody(const std::shared_ptr<chrono::ChBody>& body,
                       const std::shared_ptr<chrono::ChContactMaterial>& mat,
-                      const BodyOptions& options);
-    // 眠りの計時を今からにする（置き直し・固定解除・新規・wakeAll）。
-    void resetSleepTimer(chrono::ChBody& b);
+                      const BodyOptions& options, bool allowSleeping);
     // 追加の当たり形状を本体に足す（AddBody の前に呼ぶ）。
     void attachExtraShapes(chrono::ChBody& body, const std::vector<ExtraShape>& extras,
                            const std::shared_ptr<chrono::ChContactMaterial>& mat);
-    // ボディの物性を決める材質（指定が無ければ共有の mat_）。NSC / SMC の
-    // どちらの材質になるかは接触の種類（PhysicsSystem::contact）で決まる。
-    std::shared_ptr<chrono::ChContactMaterial> materialFor(const BodyOptions& o);
-    std::shared_ptr<chrono::ChContactMaterial> makeMaterial() const;
-    // シーン設定と合成した値を材質へ書く（負 = シーン設定）。
-    void applySurface(chrono::ChContactMaterial& m, const BodyOptions& o) const;
     // Chrono の系を（作り直しも含めて）組む。コンストラクタと recreate が呼ぶ。
     void createSystem();
     // 本当に系から外す（Core。Multicore は退避だけ）。disableBody から。
@@ -418,17 +410,15 @@ private:
     // 一度 Remove して入れ直し、Multicore の衝突系は Remove が未実装で
     // 例外を投げる（ソフトボディの粒子も同じ順序）。
     void prepareBody(chrono::ChBody& body, const BodyOptions& options);
-    // AddBody の後: 逆引き登録・材質とオプションの記録。
+    // AddBody の後: 名簿へ登録し、定常荷重を付ける。
     void finishBody(const std::shared_ptr<chrono::ChBody>& body,
                     const std::shared_ptr<chrono::ChContactMaterial>& mat,
-                    const BodyOptions& options);
+                    const BodyOptions& options, bool allowSleeping);
     // 破断の判定（step の末尾）。
     void checkJointBreaks();
     void logStepDiagnostics(double dt);  // 診断ログ（step の積分の直後）
     // Multicore 用の手計算のモータ・ばね（step の先頭。下の JointRec::Manual）。
     void applyManualJoints(double dt);
-    // ボディへ角力積（ワールド座標）を与える（固定・粒子には何もしない）。
-    void applyAngularImpulse(std::size_t id, const chrono::ChVector3d& impulse);
 
     // ---- ソフトボディの内部 ----------------------------------------------
     struct SoftBody {
@@ -495,23 +485,12 @@ private:
     // 他のメンバより先に宣言する = 系は他のメンバ（ジョイント・テレイン・荷重など）が
     // 全部壊れた後に壊れる。
     std::unique_ptr<Parts> p_;
-    std::shared_ptr<chrono::ChContactMaterial> mat_;  // NSC か SMC（PhysicsSystem::contact）
-    double smcYoung_ = 2.0e7;
-    double smcPoisson_ = 0.3;
     // 荷重コンテナ（ChLoad。Core のみ）。ジョイント（ブッシュ）とボディの
     // 定常荷重で分けてある - ジョイントは停止で全部捨てるため。
     std::shared_ptr<chrono::ChLoadContainer> jointLoads_;
     std::shared_ptr<chrono::ChLoadContainer> bodyLoads_;
     // 名簿の番号と並ぶ: そのボディの定常荷重（無ければ空）。
     std::vector<std::vector<std::shared_ptr<chrono::ChLoadBase>>> loadsOf_;
-    // シーン設定の値（専用材質を持つボディの「シーン任せ」の欄を解くため）。
-    float friction_ = 0.6f;
-    float restitution_ = 0.0f;
-    float rolling_ = 0.0f;
-    float spinning_ = 0.0f;
-    // 名簿の番号と並ぶ: 専用の材質（共有なら nullptr）とオプション。
-    std::vector<std::shared_ptr<chrono::ChContactMaterial>> mats_;
-    std::vector<BodyOptions> options_;
     std::vector<SoftBody> softBodies_;  // root の昇順（softOfRoot が二分探索で引く）
     // 名簿の番号と並ぶ: テレインに当たる形の記録（無ければ null = テレインの
     // 接触の対象外）。shared_ptr なのは型の中身を PhysicsWorldInternal.h に閉じる
@@ -580,8 +559,4 @@ private:
     bool diagNanReported_ = false;
     double linearDamping_ = 0.0;
     double angularDamping_ = 0.0;
-    bool sleepingEnabled_ = false;
-    float sleepSeconds_ = 1.0f;
-    float sleepMinLinVel_ = 0.02f;
-    float sleepMinAngVel_ = 0.02f;
 };

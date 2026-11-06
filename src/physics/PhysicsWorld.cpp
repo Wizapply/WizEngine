@@ -1,4 +1,4 @@
-// PhysicsWorld の窓口: 構築・1 ステップの順番・全体を起こす・機能の有無。
+// PhysicsWorld の窓口: 構築・1 ステップの順番・全体を起こす・機能の有無・眠りと材質の中継。
 
 #include "physics/PhysicsWorldInternal.h"
 
@@ -45,10 +45,7 @@ PhysicsWorld::PhysicsWorld(PhysicsBackend backend, ContactMethod contact)
 PhysicsWorld::~PhysicsWorld() = default;
 
 void PhysicsWorld::wakeAll() {
-    for (auto& b : p_->bodies.all()) {
-        wakeUp(b.get(), 0);
-        resetSleepTimer(*b);
-    }
+    p_->sleeping.wakeAll();
     // テレインの反力キャッシュも捨てる（シミュレートの開始・Reset で呼ばれる。
     // 前回の走行の最後の反力で次の走行の最初のステップを始めない）。
     for (std::size_t i = 0; i < terrainProxies_.size(); ++i) forgetTerrainContacts(i);
@@ -71,7 +68,7 @@ void PhysicsWorld::step(double dt) {
         const ChVector3d g = p_->system.sys()->GetGravitationalAcceleration();
         if (g.Length2() > 0.0) {
             for (std::size_t i = 0; i < p_->bodies.count(); ++i) {
-                if (options_[i].gravity || !p_->bodies.active(i)) continue;
+                if (p_->materials.options(i).gravity || !p_->bodies.active(i)) continue;
                 auto& b = p_->bodies.body(i);
                 if (b->IsFixed() || p_->bodies.isGroupMember(i)) continue;
                 if (b->IsSleeping()) continue;
@@ -122,4 +119,33 @@ void PhysicsWorld::step(double dt) {
             setAngVel(b.get(), getAngVel(b.get(), 0) * angScale, 0);
         }
     }
+}
+
+// ---- 眠り --------------------------------------------------------------------
+
+void PhysicsWorld::setSleepingEnabled(bool enabled, float seconds,
+                                      float minLinVel, float minAngVel) {
+    p_->sleeping.setEnabled(enabled, seconds, minLinVel, minAngVel);
+}
+
+std::size_t PhysicsWorld::sleepingCount() const { return p_->sleeping.count(); }
+
+// ---- 接触の材質（シーン設定を変えたらテレインの材質も書き直す）--------------
+
+void PhysicsWorld::setSmcDefaults(double young, double poisson) {
+    if (p_->materials.setSmcDefaults(young, poisson)) refreshTerrainMaterials();
+}
+
+bool PhysicsWorld::setBodySurface(std::size_t id, const BodyOptions& options) {
+    return p_->materials.setBodySurface(id, options);
+}
+
+void PhysicsWorld::setSurfaceMaterial(float friction, float restitution) {
+    p_->materials.setSurfaceMaterial(friction, restitution);
+    refreshTerrainMaterials();
+}
+
+void PhysicsWorld::setRollingFriction(float rolling, float spinning) {
+    p_->materials.setRollingFriction(rolling, spinning);
+    refreshTerrainMaterials();
 }

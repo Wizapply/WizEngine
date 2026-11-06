@@ -47,8 +47,8 @@ void PhysicsWorld::applyManualJoints(double dt) {
                 const double denom = invMassOf(a) + invMassOf(b);
                 if (want != vrel && denom > 0.0) {
                     const double impulse = (want - vrel) / denom;  // B に +、A に -
-                    applyForce(m.b, axisW * (impulse / dt), dt);
-                    applyForce(m.a, axisW * (-impulse / dt), dt);
+                    p_->motion.applyForce(m.b, axisW * (impulse / dt), dt);
+                    p_->motion.applyForce(m.a, axisW * (-impulse / dt), dt);
                     m.lastForce = std::max(m.lastForce, std::fabs(impulse / dt));
                 }
             } else {
@@ -64,8 +64,8 @@ void PhysicsWorld::applyManualJoints(double dt) {
                 const double denom = invInertiaAbout(a, axisW) + invInertiaAbout(b, axisW);
                 if (want != wrel && denom > 0.0) {
                     const double impulse = (want - wrel) / denom;  // 角力積。B に +、A に -
-                    applyAngularImpulse(m.b, axisW * impulse);
-                    applyAngularImpulse(m.a, axisW * (-impulse));
+                    p_->motion.applyAngularImpulse(m.b, axisW * impulse);
+                    p_->motion.applyAngularImpulse(m.a, axisW * (-impulse));
                     m.lastTorque = std::max(m.lastTorque, std::fabs(impulse / dt));
                 }
             }
@@ -75,15 +75,15 @@ void PhysicsWorld::applyManualJoints(double dt) {
             case Kind::Torque: {
                 // A に +τ、B に -τ（Chrono のモータと同じく body1 を回す向き）。
                 const ChVector3d L = axisW * (m.target * dt);
-                applyAngularImpulse(m.a, L);
-                applyAngularImpulse(m.b, -L);
+                p_->motion.applyAngularImpulse(m.a, L);
+                p_->motion.applyAngularImpulse(m.b, -L);
                 m.lastTorque = std::fabs(m.target);
                 break;
             }
             case Kind::Force: {
                 const ChVector3d F = axisW * m.target;
-                applyForce(m.a, F, dt);
-                applyForce(m.b, -F, dt);
+                p_->motion.applyForce(m.a, F, dt);
+                p_->motion.applyForce(m.b, -F, dt);
                 m.lastForce = std::fabs(m.target);
                 break;
             }
@@ -97,8 +97,8 @@ void PhysicsWorld::applyManualJoints(double dt) {
                 const double vrel = (bodyPointVelocity(m.b, p2) - bodyPointVelocity(m.a, p1)).Dot(dir);
                 // 正 = 縮める向き（伸びているか、離れつつあるとき）。
                 const double f = m.k * (len - m.rest) + m.c * vrel;
-                applyForceAtPoint(m.a, dir * f, p1, dt);
-                applyForceAtPoint(m.b, dir * (-f), p2, dt);
+                p_->motion.applyForceAtPoint(m.a, dir * f, p1, dt);
+                p_->motion.applyForceAtPoint(m.b, dir * (-f), p2, dt);
                 m.lastForce = std::fabs(f);
                 break;
             }
@@ -112,8 +112,8 @@ void PhysicsWorld::applyManualJoints(double dt) {
                 const double wrel = (getAngVel(b.get(), 0) - getAngVel(a.get(), 0)).Dot(axisW);
                 const double tau = m.k * angle + m.c * wrel;  // B を戻す向きの大きさ
                 const ChVector3d L = axisW * (tau * dt);
-                applyAngularImpulse(m.b, -L);
-                applyAngularImpulse(m.a, L);
+                p_->motion.applyAngularImpulse(m.b, -L);
+                p_->motion.applyAngularImpulse(m.a, L);
                 m.lastTorque = std::fabs(tau);
                 break;
             }

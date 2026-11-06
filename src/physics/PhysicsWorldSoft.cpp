@@ -24,7 +24,7 @@ using namespace wizengine::physics::compat;
 // softBodies_ は root の昇順（番号は増える一方で、addSoftBody が末尾に足す）なので
 // 二分探索で引く。剛体と代表でない粒子は名簿の判定で先に落ちる（探索しない）。
 const PhysicsWorld::SoftBody* PhysicsWorld::softOfRoot(std::size_t id) const {
-    if (!p_->bodies.isGroupMember(id) || p_->bodies.representative(id) != id) return nullptr;
+    if (!p_->bodies.isGroupRoot(id)) return nullptr;
     const auto it = std::lower_bound(
         softBodies_.begin(), softBodies_.end(), id,
         [](const SoftBody& s, std::size_t root) { return s.root < root; });
@@ -81,7 +81,7 @@ std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec,
     const double volume = (4.0 / 3.0) * wizengine::kPi * radius * radius * radius;
     const double density = std::max(spec.particleMass, 1e-9) / volume;
     // 物性は粒子全部で 1 個の材質を共有する（専用が要るときだけ作る）。
-    const auto mat = materialFor(spec.options);
+    const auto mat = p_->materials.materialFor(spec.options);
     // 粒子のレイヤは家族番号で決まるので、剛体レイヤは付けない（nocollide と
     // 重力だけ効かせる）。
     BodyOptions particleOpts = spec.options;
@@ -105,7 +105,7 @@ std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec,
         }
         prepareBody(*b, particleOpts);
         p_->system.sys()->AddBody(b);
-        finishBody(b, mat, particleOpts);
+        finishBody(b, mat, particleOpts, /*allowSleeping*/ false);
         const std::size_t id = p_->bodies.count() - 1;
         particles.push_back(id);
         // テレインの接触: 粒子ごとに半径 radius の球（1 点接触 = round。材質は

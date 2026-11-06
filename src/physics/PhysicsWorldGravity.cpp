@@ -10,7 +10,7 @@ using namespace wizengine::physics::compat;
 
 void PhysicsWorld::setBodyGravity(std::size_t id, bool enabled) {
     if (id >= p_->bodies.count()) return;
-    options_[id].gravity = enabled;
+    p_->materials.setGravityEnabled(id, enabled);
     if (SoftBody* soft = softOfRoot(id)) {
         for (const std::size_t p : p_->bodies.members(soft->root)) {
             setUseGravity(p_->bodies.body(p).get(), enabled, 0);

@@ -149,12 +149,9 @@ void PhysicsWorld::prepareBody(ChBody& body, const BodyOptions& options) {
 
 void PhysicsWorld::finishBody(const std::shared_ptr<chrono::ChBody>& body,
                               const std::shared_ptr<chrono::ChContactMaterial>& mat,
-                              const BodyOptions& options) {
-    registerBody(body, mat, options);
-    const std::size_t id = p_->bodies.count() - 1;
-    mats_[id] = (mat == mat_) ? nullptr : mat;
-    options_[id] = options;
-    attachBodyLoads(id, options);
+                              const BodyOptions& options, bool allowSleeping) {
+    registerBody(body, mat, options, allowSleeping);
+    attachBodyLoads(p_->bodies.count() - 1, options);
 }
 
 void PhysicsWorld::attachExtraShapes(ChBody& body, const std::vector<ExtraShape>& extras,
@@ -205,7 +202,7 @@ std::size_t PhysicsWorld::addSphere(double radius, double density,
                                     const ChQuaternion<>& rot, bool fixed,
                                     const std::vector<ExtraShape>& extras,
                                     const BodyOptions& options) {
-    const auto mat = materialFor(options);
+    const auto mat = p_->materials.materialFor(options);
     auto b = chrono_types::make_shared<ChBodyEasySphere>(
         radius, density, /*visualize*/ true, /*collide*/ true, mat);
     attachExtraShapes(*b, extras, mat);
@@ -213,14 +210,10 @@ std::size_t PhysicsWorld::addSphere(double radius, double density,
     b->SetRot(rot);
     b->SetFixed(fixed);
     b->EnableCollision(true);
-    allowSleeping(b.get(), sleepingEnabled_, 0);
-    if (sleepingEnabled_) {
-        b->SetSleepTime(sleepSeconds_);
-        setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
-    }
+    p_->sleeping.applyTo(*b);
     prepareBody(*b, options);
     p_->system.sys()->AddBody(b);
-    finishBody(b, mat, options);
+    finishBody(b, mat, options, /*allowSleeping*/ true);
     const std::size_t id = p_->bodies.count() - 1;
     {
         // テレインの接触用の形の記録（本体の球 + 追加の当たり形状）。
@@ -240,7 +233,7 @@ std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density
                                  const ChQuaternion<>& rot, bool fixed,
                                  const std::vector<ExtraShape>& extras,
                                  const BodyOptions& options) {
-    const auto mat = materialFor(options);
+    const auto mat = p_->materials.materialFor(options);
     auto b = chrono_types::make_shared<ChBodyEasyBox>(
         sx, sy, sz, density, /*visualize*/ true, /*collide*/ true, mat);
     attachExtraShapes(*b, extras, mat);
@@ -248,14 +241,10 @@ std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density
     b->SetRot(rot);
     b->SetFixed(fixed);
     b->EnableCollision(true);
-    allowSleeping(b.get(), sleepingEnabled_, 0);
-    if (sleepingEnabled_) {
-        b->SetSleepTime(sleepSeconds_);
-        setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
-    }
+    p_->sleeping.applyTo(*b);
     prepareBody(*b, options);
     p_->system.sys()->AddBody(b);
-    finishBody(b, mat, options);
+    finishBody(b, mat, options, /*allowSleeping*/ true);
     const std::size_t id = p_->bodies.count() - 1;
     {
         // テレインの接触用の形の記録（本体の箱 + 追加の当たり形状）。
@@ -299,7 +288,7 @@ std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertice
     }
     if (tris.empty()) return kInvalidId;
 
-    const auto mat = materialFor(options);
+    const auto mat = p_->materials.materialFor(options);
     auto b = chrono_types::make_shared<ChBody>();
     const double m = std::max(mass, 1e-3);
     b->SetMass(m);
@@ -319,14 +308,10 @@ std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertice
     b->SetRot(rot);
     b->SetFixed(fixed);
     b->EnableCollision(true);
-    allowSleeping(b.get(), sleepingEnabled_, 0);
-    if (sleepingEnabled_) {
-        b->SetSleepTime(sleepSeconds_);
-        setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
-    }
+    p_->sleeping.applyTo(*b);
     prepareBody(*b, options);
     p_->system.sys()->AddBody(b);
-    finishBody(b, mat, options);
+    finishBody(b, mat, options, /*allowSleeping*/ true);
     const std::size_t id = p_->bodies.count() - 1;
     if (!fixed) {
         LOGW("physics", "triangle-mesh body is not fixed - concave mesh vs mesh "
@@ -358,7 +343,7 @@ std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
                                    const ChQuaternion<>& rot, bool fixed,
                                    const std::vector<ExtraShape>& extras,
                                    const BodyOptions& options, bool terrainContact) {
-    const auto mat = materialFor(options);
+    const auto mat = p_->materials.materialFor(options);
     auto b = chrono_types::make_shared<ChBody>();
     const double m = std::max(mass, 1e-3);
     b->SetMass(m);
@@ -389,14 +374,10 @@ std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
     b->SetRot(rot);
     b->SetFixed(fixed);
     if (!extras.empty()) b->EnableCollision(true);
-    allowSleeping(b.get(), sleepingEnabled_, 0);
-    if (sleepingEnabled_) {
-        b->SetSleepTime(sleepSeconds_);
-        setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
-    }
+    p_->sleeping.applyTo(*b);
     prepareBody(*b, options);
     p_->system.sys()->AddBody(b);
-    finishBody(b, mat, options);
+    finishBody(b, mat, options, /*allowSleeping*/ true);
     const std::size_t id = p_->bodies.count() - 1;
     if (terrainContact && !extras.empty()) {
         // テレインの接触: 追加の当たり形状（箱・球・円柱）だけ。extras が空の
@@ -413,7 +394,7 @@ std::size_t PhysicsWorld::addConvexHull(
     const ChVector3d& pos, const ChQuaternion<>& rot,
     const std::vector<ExtraShape>& extras, ChVector3d* hullCenter,
     const BodyOptions& options) {
-    const auto mat = materialFor(options);
+    const auto mat = p_->materials.materialFor(options);
     // 凸包の体積重心を先に求める。ChBodyEasyConvexHull は内部で同じ計算を
     // して頂点をここへ寄せる（ボディの原点 = 重心）ので、呼び出し側が
     // 見た目を同じだけずらせるように返す。Chrono と同じ道具（Bullet の
@@ -470,14 +451,10 @@ std::size_t PhysicsWorld::addConvexHull(
     b->SetRot(rot);
     b->SetFixed(false);
     b->EnableCollision(true);
-    allowSleeping(b.get(), sleepingEnabled_, 0);
-    if (sleepingEnabled_) {
-        b->SetSleepTime(sleepSeconds_);
-        setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
-    }
+    p_->sleeping.applyTo(*b);
     prepareBody(*b, options);
     p_->system.sys()->AddBody(b);
-    finishBody(b, mat, options);
+    finishBody(b, mat, options, /*allowSleeping*/ true);
     const std::size_t id = p_->bodies.count() - 1;
     {
         // テレインの接触: Chrono が当たり形状にした凸包の頂点そのもの

@@ -14,16 +14,15 @@ using namespace wizengine::physics::compat;
 
 void PhysicsWorld::registerBody(const std::shared_ptr<chrono::ChBody>& body,
                                 const std::shared_ptr<chrono::ChContactMaterial>& mat,
-                                const BodyOptions& options) {
-    mats_.push_back(nullptr);  // finishBody が専用材質なら書く
-    options_.push_back(BodyOptions{});
+                                const BodyOptions& options, bool allowSleeping) {
     loadsOf_.emplace_back();
     terrainProxies_.emplace_back();  // 形の記録は add* が後から書く（無ければ対象外）
-    p_->bodies.add(body, wizengine::physics::BodyAddInfo{options, mat});
+    const std::size_t id =
+        p_->bodies.add(body, wizengine::physics::BodyAddInfo{options, mat, allowSleeping});
     // 走行中に足した固定ボディ（テレインの作り直し・プレハブの固定部品など）:
     // 登録の時点でできた固定どうしのペアを消す。
     if (body->IsFixed()) updateStaticPairs(*body);
-    resetSleepTimer(*body);  // 新規ボディの計時は 0 = 最初のステップで眠る
+    p_->sleeping.resetTimer(id);  // 新規ボディの計時は 0 = 最初のステップで眠る
 }
 
 void PhysicsWorld::setAlias(std::size_t id, std::size_t owner) {

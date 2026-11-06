@@ -20,12 +20,15 @@ struct BodyAddInfo {
     const BodyOptions& options;
     // そのボディが使う材質。共有なら共有のもの。null = 材質なし（ゴースト）。
     std::shared_ptr<chrono::ChContactMaterial> material;
+    bool allowSleeping;  // false = 眠らない（ソフトボディの粒子）
 };
 
 class PhysicsPart {
 public:
     virtual ~PhysicsPart() = default;
 
+    // 新しい系に基本設定（重力・反復回数・スレッド数）を当てた後、荷重コンテナと
+    // ソルバの設定の前（初回の構築でも呼ばれる）。名簿は空。
     virtual void onSystemRecreated() {}
     virtual void onBodyAdded(std::size_t id, const BodyAddInfo& info) {
         (void)id;

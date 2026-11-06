@@ -80,7 +80,7 @@ std::size_t PhysicsWorld::addCable(const CableSpec& spec) {
         // 節点ごとの球（半径 = ケーブルの半径）。材質は剛体と同じ流儀。
         // 面はメッシュを知っている必要がある: コンストラクタで渡し、
         // AddContactSurface でも結び直される。
-        auto mat = materialFor(spec.options);
+        auto mat = p_->materials.materialFor(spec.options);
         auto surf = chrono_types::make_shared<fea::ChContactSurfaceNodeCloud>(mat, mesh.get());
         mesh->AddContactSurface(surf);
         // 留め先のボディの内側にある節点は入れない（端の節点はボディの中心に

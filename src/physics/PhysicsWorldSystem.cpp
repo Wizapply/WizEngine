@@ -26,8 +26,6 @@ void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     brokenPending_.clear();
     cables_.clear();
     p_->bodies.clear();
-    mats_.clear();
-    options_.clear();
     loadsOf_.clear();
     softBodies_.clear();
     // テレインのゴーストとコールバックは系と一緒に消える。Scene が作り直した
@@ -61,14 +59,9 @@ void PhysicsWorld::createSystem() {
 
     p_->system.applyBaseSettings();
 
-    // Sleeping is off until the Scene enables it (see setSleepingEnabled).
-    // Note: Chrono::Multicore does not support sleeping - the call is harmless
-    // there, but sleepingCount() will simply stay at 0.
-    allowSleeping(p_->system.sys().get(), sleepingEnabled_, 0);
-
-    mat_ = makeMaterial();
-    // No bounce: even a little restitution keeps settled boxes micro-bouncing.
-    applySurface(*mat_, BodyOptions{});
+    // 眠りと共有の材質（受け手は Parts のコンストラクタ。互いの順番には依存しない）。
+    // 荷重コンテナと許容差・ソルバの設定より前。
+    p_->bodies.notifySystemRecreated();
 
     // 荷重コンテナ（ChLoad）。Core だけが積分に取り込むので、そちらでだけ作る。
 #ifdef WIZ_HAVE_LOADS

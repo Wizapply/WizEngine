@@ -165,7 +165,7 @@ auto getLinVel(T* b, long) -> decltype(b->GetPos_dt()) {
     return b->GetPos_dt();
 }
 
-// 眠りの計時のやり直しに使う 2 つ（PhysicsWorld::resetSleepTimer）。項目ごとの時計
+// 眠りの計時のやり直しに使う 2 つ（Sleeping::resetTimer）。項目ごとの時計
 // ChObj::SetChTime と ChBody::TrySleeping は Chrono 9.0 にあるが、無い版では
 // 何もしない（そのときは計時のやり直しが効かないだけで、動作は従来どおり）。
 template <typename T>

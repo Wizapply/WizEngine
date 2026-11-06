@@ -118,8 +118,8 @@ PhysicsWorld::TerrainProxyRec* PhysicsWorld::terrainFallbackRec(std::size_t id) 
 void PhysicsWorld::refreshTerrainMaterials() {
     if (!terrain_ || !terrain_->matRound || !terrain_->matFlat) return;
     TerrainState& t = *terrain_;
-    applySurface(*t.matRound, t.options);
-    applySurface(*t.matFlat, t.options);
+    p_->materials.applySurface(*t.matRound, t.options);
+    p_->materials.applySurface(*t.matFlat, t.options);
     // 多点で触れる形には転がり・スピン摩擦を効かせない（SMC の材質には欄が無い）。
     if (auto* n = dynamic_cast<ChContactMaterialNSC*>(t.matFlat.get())) {
         n->SetRollingFriction(0.0f);
@@ -150,15 +150,15 @@ std::size_t PhysicsWorld::setTerrain(std::shared_ptr<const wterrain::HeightField
         // EnableCollision は呼ばない = Bullet に登録されない。
         ghost->AddCollisionModel(chrono_types::make_shared<ChCollisionModel>());
         p_->system.sys()->AddBody(ghost);
-        registerBody(ghost, nullptr, BodyOptions{});
+        registerBody(ghost, nullptr, BodyOptions{}, /*allowSleeping*/ true);
         t.ghost = p_->bodies.count() - 1;
     }
     t.field = std::move(field);
     t.contactTerrain = wterrain::ContactTerrain(*t.field);
     t.options = terrainOptions;
     if (!t.matRound || !t.matFlat) {
-        t.matRound = makeMaterial();
-        t.matFlat = makeMaterial();
+        t.matRound = p_->materials.make();
+        t.matFlat = p_->materials.make();
     }
     refreshTerrainMaterials();
 
@@ -295,7 +295,7 @@ void PhysicsWorld::collectTerrainContacts(ChSystem& sys) {
         }
 
         std::fill(rec->now.begin(), rec->now.end(), char(0));
-        const auto& bodyMat = mats_[i] ? mats_[i] : mat_;
+        const auto& bodyMat = p_->materials.materialOf(i);
         for (const wterrain::Contact& c : t.contacts) {
             if (c.pointId < 0 || std::size_t(c.pointId) >= rec->cache.size()) continue;
             const std::size_t pid = std::size_t(c.pointId);

@@ -4,13 +4,11 @@
 // 担当ごとに分けたので、2 つ以上のファイルが使う型と小さな関数をここに 1 か所で
 // 持つ。公開 API は PhysicsWorld.h。他のファイルからは含めないこと。
 //
-//   PhysicsWorld.cpp             : 構築・1 ステップの順番・全体を起こす・機能の有無
+//   PhysicsWorld.cpp             : 構築・1 ステップの順番・全体を起こす・機能の有無・眠りと材質の中継
 //   PhysicsWorldSystem.cpp       : 系を組む順番と系の設定の中継（本体は PhysicsSystem）
 //   PhysicsWorldRegistry.cpp     : ボディの登録と退場の順番（名簿は BodyRegistry）
 //   PhysicsWorldBodies.cpp       : ボディの組み立て・形の記録の作成
-//   PhysicsWorldMotion.cpp       : 力・速度・質量・姿勢・固定
-//   PhysicsWorldSleeping.cpp     : 眠りの設定と計時
-//   PhysicsWorldMaterials.cpp    : 共有 / 専用の材質
+//   PhysicsWorldMotion.cpp       : 運動の中継・ソフトボディの置き直しの分岐・固定（本体は BodyMotion）
 //   PhysicsWorldLoads.cpp        : 定常荷重
 //   PhysicsWorldGravity.cpp      : ボディ別の重力オフ
 //   PhysicsWorldDamping.cpp      : 減衰の設定
