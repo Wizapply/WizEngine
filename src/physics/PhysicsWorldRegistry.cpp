@@ -55,9 +55,9 @@ std::size_t PhysicsWorld::bodyCount() const {
 
 void PhysicsWorld::disableBody(std::size_t id) {
     if (id >= p_->bodies.count() || !p_->bodies.active(id)) return;
-    // テレインのゴーストは PhysicsWorld の持ち物: 系から外すと、直前の
+    // テレインのゴーストは TerrainContact の持ち物: 系から外すと、直前の
     // ステップの接触が外れたボディを指したまま残るので、外さずに接触だけ止める。
-    if (terrain_ && id == terrain_->ghost) {
+    if (p_->terrain.isGhost(id)) {
         clearTerrain();
         return;
     }

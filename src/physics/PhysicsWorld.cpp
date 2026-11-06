@@ -29,7 +29,7 @@ PhysicsFeatures physicsFeatures() {
 }
 
 PhysicsWorld::PhysicsWorld(PhysicsBackend backend, ContactMethod contact)
-    : p_(std::make_unique<Parts>(*this, backend, contact)) {
+    : p_(std::make_unique<Parts>(backend, contact)) {
     createSystem();
 }
 
@@ -39,9 +39,7 @@ PhysicsWorld::~PhysicsWorld() = default;
 
 void PhysicsWorld::wakeAll() {
     p_->sleeping.wakeAll();
-    // テレインの反力キャッシュも捨てる（シミュレートの開始・Reset で呼ばれる。
-    // 前回の走行の最後の反力で次の走行の最初のステップを始めない）。
-    for (std::size_t i = 0; i < terrainProxies_.size(); ++i) forgetTerrainContacts(i);
+    p_->bodies.events().wakeAll();
     // Waking from outside ManageSleepingBodies() changes how many bodies the
     // solver has to handle, and Chrono only rebuilds that layout in Setup().
     // Without this the "woken" bodies can stay out of the solve - i.e. they
@@ -74,10 +72,10 @@ void PhysicsWorld::setSleepingEnabled(bool enabled, float seconds,
 
 std::size_t PhysicsWorld::sleepingCount() const { return p_->sleeping.count(); }
 
-// ---- 接触の材質（シーン設定を変えたらテレインの材質も書き直す）--------------
+// ---- 接触の材質 --------------------------------------------------------------
 
 void PhysicsWorld::setSmcDefaults(double young, double poisson) {
-    if (p_->materials.setSmcDefaults(young, poisson)) refreshTerrainMaterials();
+    p_->materials.setSmcDefaults(young, poisson);
 }
 
 bool PhysicsWorld::setBodySurface(std::size_t id, const BodyOptions& options) {
@@ -86,12 +84,42 @@ bool PhysicsWorld::setBodySurface(std::size_t id, const BodyOptions& options) {
 
 void PhysicsWorld::setSurfaceMaterial(float friction, float restitution) {
     p_->materials.setSurfaceMaterial(friction, restitution);
-    refreshTerrainMaterials();
 }
 
 void PhysicsWorld::setRollingFriction(float rolling, float spinning) {
     p_->materials.setRollingFriction(rolling, spinning);
-    refreshTerrainMaterials();
+}
+
+// ---- テレイン（起こすのは窓口。TerrainContact は起こす必要だけを返す）--------
+
+std::size_t PhysicsWorld::setTerrain(std::shared_ptr<const wizengine::terrain::HeightField> field,
+                                     const BodyOptions& terrainOptions) {
+    if (!field) {
+        clearTerrain();
+        return kInvalidId;
+    }
+    const std::size_t id = p_->terrain.set(std::move(field), terrainOptions);
+    if (id != kInvalidId) wakeAll();
+    return id;
+}
+
+void PhysicsWorld::setTerrainFrame(const chrono::ChVector3d& origin,
+                                   const chrono::ChQuaternion<>& rot) {
+    if (p_->terrain.setFrame(origin, rot)) wakeAll();
+}
+
+void PhysicsWorld::clearTerrain() {
+    if (p_->terrain.clearField()) wakeAll();
+}
+
+bool PhysicsWorld::hasTerrain() const { return p_->terrain.hasTerrain(); }
+
+std::size_t PhysicsWorld::terrainBodyId() const { return p_->terrain.bodyId(); }
+
+bool PhysicsWorld::hasTerrainProxy(std::size_t id) const { return p_->terrain.hasProxy(id); }
+
+PhysicsWorld::TerrainContactShape PhysicsWorld::terrainContactShape(std::size_t id) const {
+    return p_->terrain.contactShape(id);
 }
 
 // ---- 重力オフ・減衰・接触の報告 ----------------------------------------------

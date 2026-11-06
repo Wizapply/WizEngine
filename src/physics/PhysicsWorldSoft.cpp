@@ -135,7 +135,7 @@ void PhysicsWorld::placeSoftBody(SoftBody& soft, const ChVector3d& pos,
         b->SetRot(rot);
         b->ForceToRest();
         wakeUp(b.get(), 0);
-        forgetTerrainContacts(particles[i]);
+        p_->bodies.events().bodyPlaced(particles[i]);
     }
 }
 

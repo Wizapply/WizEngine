@@ -14,20 +14,11 @@
 #include "physics/PhysicsWorld.h"
 #include "physics/Sleeping.h"
 #include "physics/StaticPairs.h"
+#include "physics/TerrainContact.h"
 #include "physics/VelocityDamping.h"
 
 struct PhysicsWorld::Parts {
-    // 窓口が持つ形の記録の配列に席を作って書く。T8 で TerrainContact に置き換える。
-    struct TerrainProxyBridge : public wizengine::physics::PhysicsPart {
-        explicit TerrainProxyBridge(PhysicsWorld& w) : world(w) {}
-        void onBodyAdded(std::size_t id, const wizengine::physics::BodyAddInfo& info) override {
-            world.terrainProxies_.emplace_back();
-            if (info.proxy) world.setTerrainProxy(id, *info.proxy);
-        }
-        PhysicsWorld& world;
-    };
-
-    Parts(PhysicsWorld& world, PhysicsBackend backend, ContactMethod contact)
+    Parts(PhysicsBackend backend, ContactMethod contact)
         : staticPairs(system, bodies),  // 参照を覚えるだけ（中身に触るのは attach から）
           system(backend, contact),
           bodies(system),
@@ -39,15 +30,15 @@ struct PhysicsWorld::Parts {
           gravity(system, bodies),
           damping(bodies),
           diag(system, bodies),
-          terrainProxyBridge(world) {
+          terrain(system, bodies, materials) {
         // 出来事の受け手はここで登録する。受け手どうしは順番に依存しない
         // （それぞれ自分の状態と Chrono の別々の部分だけを触る）。
-        bodies.addListener(&sleeping);
-        bodies.addListener(&materials);
-        bodies.addListener(&loads);
-        bodies.addListener(&gravity);
-        bodies.addListener(&staticPairs);
-        bodies.addListener(&terrainProxyBridge);
+        bodies.events().add(&sleeping);
+        bodies.events().add(&materials);
+        bodies.events().add(&loads);
+        bodies.events().add(&gravity);
+        bodies.events().add(&staticPairs);
+        bodies.events().add(&terrain);
     }
 
     // system より先に宣言する = 系より後に壊れる（Bullet のペアキャッシュがフィルタを
@@ -63,5 +54,6 @@ struct PhysicsWorld::Parts {
     wizengine::physics::GravityOverride gravity;
     wizengine::physics::VelocityDamping damping;
     wizengine::physics::Diagnostics diag;
-    TerrainProxyBridge terrainProxyBridge;
+    // system より先に壊れる。系が持ち続けるコールバックはデストラクタが切り離す。
+    wizengine::physics::TerrainContact terrain;
 };

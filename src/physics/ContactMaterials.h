@@ -39,8 +39,8 @@ public:
 
     void setSurfaceMaterial(float friction, float restitution);
     void setRollingFriction(float rolling, float spinning);
-    // 材質を書き直したら true（NSC では覚えるだけで false）。
-    bool setSmcDefaults(double young, double poisson);
+    // SMC の系なら材質を書き直す（NSC では覚えるだけ）。
+    void setSmcDefaults(double young, double poisson);
     // 物性を実行中に書き換える（意味は PhysicsWorld::setBodySurface の宣言）。
     bool setBodySurface(std::size_t id, const BodyOptions& options);
 
@@ -48,7 +48,7 @@ public:
     void onBodyAdded(std::size_t id, const BodyAddInfo& info) override;
 
 private:
-    // 共有の材質と専用の材質を今のシーン設定で書き直す。
+    // 共有の材質と専用の材質を今のシーン設定で書き直し、受け手へ伝える。
     void reapplyAll();
 
     PhysicsSystem& system_;

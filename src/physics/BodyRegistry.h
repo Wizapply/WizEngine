@@ -48,14 +48,8 @@ public:
     void retire(std::size_t id);
     // 全部忘れる（系の作り直し）。受け手の一覧は残す。
     void clear();
-    void addListener(PhysicsPart* part) { parts_.push_back(part); }
-    // 受け手の一覧はここ 1 つなので、窓口が出す出来事もここから配る。
-    void notifySystemRecreated() {
-        for (PhysicsPart* part : parts_) part->onSystemRecreated();
-    }
-    void notifyBodyFixedChanged(std::size_t id) {
-        for (PhysicsPart* part : parts_) part->onBodyFixedChanged(id);
-    }
+    // 出来事の受け手の一覧（ここ 1 つ）。窓口と担当が出す出来事もここから配る。
+    PhysicsEvents& events() { return events_; }
 
     const std::shared_ptr<chrono::ChBody>& body(std::size_t id) const { return bodies_[id]; }
     const std::vector<std::shared_ptr<chrono::ChBody>>& all() const { return bodies_; }
@@ -117,7 +111,7 @@ private:
     // 子ボディ → 持ち主（setAlias）。kInvalidId = 無し。接触の報告にだけ効く。
     std::vector<std::size_t> alias_;
     std::vector<Group> groups_;
-    std::vector<PhysicsPart*> parts_;  // 出来事の受け手（持たない）
+    PhysicsEvents events_;
 };
 
 }  // namespace physics

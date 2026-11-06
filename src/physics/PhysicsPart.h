@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <vector>
 
 #include "physics/PhysicsTypes.h"
 
@@ -45,6 +46,37 @@ public:
     virtual void onBodyPlaced(std::size_t id) { (void)id; }
     virtual void onWakeAll() {}
     virtual void onMaterialsChanged() {}
+};
+
+// 出来事の受け手の一覧と、配る処理。受け手を持たない（壊さない）。
+class PhysicsEvents {
+public:
+    void add(PhysicsPart* part) { parts_.push_back(part); }
+
+    void systemRecreated() {
+        for (PhysicsPart* part : parts_) part->onSystemRecreated();
+    }
+    void bodyAdded(std::size_t id, const BodyAddInfo& info) {
+        for (PhysicsPart* part : parts_) part->onBodyAdded(id, info);
+    }
+    void bodyRetiring(std::size_t id) {
+        for (PhysicsPart* part : parts_) part->onBodyRetiring(id);
+    }
+    void bodyFixedChanged(std::size_t id) {
+        for (PhysicsPart* part : parts_) part->onBodyFixedChanged(id);
+    }
+    void bodyPlaced(std::size_t id) {
+        for (PhysicsPart* part : parts_) part->onBodyPlaced(id);
+    }
+    void wakeAll() {
+        for (PhysicsPart* part : parts_) part->onWakeAll();
+    }
+    void materialsChanged() {
+        for (PhysicsPart* part : parts_) part->onMaterialsChanged();
+    }
+
+private:
+    std::vector<PhysicsPart*> parts_;
 };
 
 }  // namespace physics

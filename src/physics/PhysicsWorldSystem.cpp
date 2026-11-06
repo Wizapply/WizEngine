@@ -27,11 +27,9 @@ void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     cables_.clear();
     p_->bodies.clear();
     softBodies_.clear();
-    // テレインのゴーストとコールバックは系と一緒に消える。Scene が作り直した
-    // あとに setTerrain を呼び直す。
-    terrainProxies_.clear();
-    terrain_.reset();
-    terrainCallback_.reset();
+    // clear がコールバックの持ち主を切り離し、ゴーストの番号は状態ごと捨てる
+    // （フレームは残す）。Scene が作り直したあとに setTerrain を呼び直す。
+    p_->terrain.clear();
     jointLoads_.reset();
     p_->loads.clear();
     p_->diag.restart();
@@ -48,18 +46,14 @@ void PhysicsWorld::createSystem() {
     p_->staticPairs.attach();
 
     // テレインの自前の接触（Core のみ）。setTerrain が呼ばれるまでは何もしない
-    // （collectTerrainContacts の先頭で戻る）= 呼ばないシーンの挙動は変わらない。
-    terrainCallback_.reset();
-    if (p_->system.backend() != PhysicsBackend::Multicore) {
-        terrainCallback_ = std::make_shared<TerrainCallback>(this);
-        p_->system.sys()->RegisterCustomCollisionCallback(terrainCallback_);
-    }
+    // （TerrainContact::collectContacts の先頭で戻る）= 呼ばないシーンの挙動は変わらない。
+    p_->terrain.attach();
 
     p_->system.applyBaseSettings();
 
     // 眠りと共有の材質（受け手は Parts のコンストラクタ。互いの順番には依存しない）。
     // 荷重コンテナと許容差・ソルバの設定より前。
-    p_->bodies.notifySystemRecreated();
+    p_->bodies.events().systemRecreated();
 
     // 荷重コンテナ（ChLoad）。積分に取り込む系でだけ作る。
     // 系へ足す順（ジョイント用 → ボディ用）は残差を足す順なので変えない。

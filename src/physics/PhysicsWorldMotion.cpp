@@ -53,7 +53,7 @@ void PhysicsWorld::setBodyPose(std::size_t id, const ChVector3d& pos,
         return;
     }
     p_->motion.drop(id, pos, rot);
-    forgetTerrainContacts(id);  // 置き直した = 前の場所での反力は使わない
+    p_->bodies.events().bodyPlaced(id);
 }
 
 void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
@@ -64,7 +64,7 @@ void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
         return;
     }
     p_->motion.place(id, pos, rot);
-    forgetTerrainContacts(id);  // 置き直した = 前の場所での反力は使わない
+    p_->bodies.events().bodyPlaced(id);
 }
 
 void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
@@ -78,7 +78,7 @@ void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
             p_->bodies.body(p)->SetFixed(fixed);
             if (fixed) p_->bodies.body(p)->ForceToRest();
             else wakeUp(p_->bodies.body(p).get(), 0);
-            p_->bodies.notifyBodyFixedChanged(p);
+            p_->bodies.events().bodyFixedChanged(p);
         }
         return;
     }
@@ -89,7 +89,7 @@ void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
         wakeUp(p_->bodies.body(id).get(), 0);
         p_->sleeping.resetTimer(id);  // 固定を外した直後に眠らせない
     }
-    p_->bodies.notifyBodyFixedChanged(id);
+    p_->bodies.events().bodyFixedChanged(id);
 }
 
 bool PhysicsWorld::bodyFixed(std::size_t id) const {

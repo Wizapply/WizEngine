@@ -58,14 +58,14 @@ void ContactMaterials::reapplyAll() {
     for (std::size_t i = 0; i < mats_.size(); ++i) {
         if (mats_[i]) applySurface(*mats_[i], options_[i]);
     }
+    bodies_.events().materialsChanged();
 }
 
-bool ContactMaterials::setSmcDefaults(double young, double poisson) {
+void ContactMaterials::setSmcDefaults(double young, double poisson) {
     smcYoung_ = young;
     smcPoisson_ = poisson;
-    if (system_.contact() != ContactMethod::SMC) return false;
+    if (system_.contact() != ContactMethod::SMC) return;
     reapplyAll();
-    return true;
 }
 
 bool ContactMaterials::setBodySurface(std::size_t id, const BodyOptions& options) {

@@ -339,9 +339,9 @@ set(WIZ_PHYSICS_SOURCES
     src/physics/PhysicsWorldRegistry.cpp
     src/physics/PhysicsWorldSoft.cpp
     src/physics/PhysicsWorldSystem.cpp
-    src/physics/PhysicsWorldTerrain.cpp
     src/physics/Sleeping.cpp
     src/physics/StaticPairs.cpp
+    src/physics/TerrainContact.cpp
     src/physics/VelocityDamping.cpp)
 set(WIZ_RENDER_SOURCES
     src/render/EnvironmentLoader.cpp
