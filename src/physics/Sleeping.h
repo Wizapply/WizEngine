@@ -26,6 +26,8 @@ public:
     void setEnabled(bool enabled, float seconds, float minLinVel, float minAngVel);
     // 作ったボディへ今の設定を当てる（系へ追加する前に呼ぶ）。
     void applyTo(chrono::ChBody& body) const;
+    // allow = false のボディは眠らせない。それ以外は applyTo と同じ。
+    void configure(chrono::ChBody& body, bool allow) const;
     // 眠りの計時を今からにする（置き直し・固定解除・新規・全体を起こすとき）。
     void resetTimer(std::size_t id);
     // 全部のボディを起こして計時をやり直す。

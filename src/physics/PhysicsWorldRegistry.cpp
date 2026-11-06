@@ -1,20 +1,48 @@
-// ボディの登録と退場の順番（名簿と、まだ窓口が持つ配列を揃える）。
+// ボディの追加の中継（本体は BodyFactory）と退場の順番（名簿は BodyRegistry）。
 
 #include "physics/PhysicsWorldInternal.h"
 
 #include <chrono/physics/ChBody.h>
 
-#include <memory>
+std::size_t PhysicsWorld::addSphere(double radius, double density,
+                                    const chrono::ChVector3d& pos,
+                                    const chrono::ChQuaternion<>& rot, bool fixed,
+                                    const std::vector<ExtraShape>& extras,
+                                    const BodyOptions& options) {
+    return p_->factory.addSphere(radius, density, pos, rot, fixed, extras, options);
+}
 
-void PhysicsWorld::registerBody(const std::shared_ptr<chrono::ChBody>& body,
-                                const std::shared_ptr<chrono::ChContactMaterial>& mat,
-                                const BodyOptions& options, bool allowSleeping) {
-    terrainProxies_.emplace_back();  // 形の記録は add* が後から書く（無ければ対象外）
-    const std::size_t id =
-        p_->bodies.add(body, wizengine::physics::BodyAddInfo{options, mat, allowSleeping});
-    // 固定ボディは resetTimer が何もしないので、通知の中の固定物のペアの更新
-    // （固定ボディだけ）との前後には依存しない。
-    p_->sleeping.resetTimer(id);  // 新規ボディの計時は 0 = 最初のステップで眠る
+std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density,
+                                 const chrono::ChVector3d& pos,
+                                 const chrono::ChQuaternion<>& rot, bool fixed,
+                                 const std::vector<ExtraShape>& extras,
+                                 const BodyOptions& options) {
+    return p_->factory.addBox(sx, sy, sz, density, pos, rot, fixed, extras, options);
+}
+
+std::size_t PhysicsWorld::addTriangleMesh(const std::vector<chrono::ChVector3d>& vertices,
+                                          const std::vector<std::array<int, 3>>& triangles,
+                                          double mass, const chrono::ChVector3d& pos,
+                                          const chrono::ChQuaternion<>& rot, bool fixed,
+                                          const std::vector<ExtraShape>& extras,
+                                          const BodyOptions& options) {
+    return p_->factory.addTriangleMesh(vertices, triangles, mass, pos, rot, fixed, extras, options);
+}
+
+std::size_t PhysicsWorld::addFrame(double mass, const chrono::ChVector3d& pos,
+                                   const chrono::ChQuaternion<>& rot, bool fixed,
+                                   const std::vector<ExtraShape>& extras,
+                                   const BodyOptions& options, bool terrainContact) {
+    return p_->factory.addFrame(mass, pos, rot, fixed, extras, options, terrainContact);
+}
+
+std::size_t PhysicsWorld::addConvexHull(const std::vector<chrono::ChVector3d>& points,
+                                        double mass, const chrono::ChVector3d& pos,
+                                        const chrono::ChQuaternion<>& rot,
+                                        const std::vector<ExtraShape>& extras,
+                                        chrono::ChVector3d* hullCenter,
+                                        const BodyOptions& options) {
+    return p_->factory.addConvexHull(points, mass, pos, rot, extras, hullCenter, options);
 }
 
 void PhysicsWorld::setAlias(std::size_t id, std::size_t owner) {

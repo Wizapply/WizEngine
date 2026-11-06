@@ -3,6 +3,7 @@
 // PhysicsWorld の担当の入れ物（窓口の pimpl）。PhysicsWorld*.cpp だけが使う。
 // 宣言の逆順に壊れる: 名簿（ChBody への参照）を手放してから系を壊す。
 
+#include "physics/BodyFactory.h"
 #include "physics/BodyLoads.h"
 #include "physics/BodyMotion.h"
 #include "physics/BodyRegistry.h"
@@ -16,17 +17,29 @@
 #include "physics/VelocityDamping.h"
 
 struct PhysicsWorld::Parts {
-    Parts(PhysicsBackend backend, ContactMethod contact)
+    // 窓口が持つ形の記録の配列に席を作って書く。T8 で TerrainContact に置き換える。
+    struct TerrainProxyBridge : public wizengine::physics::PhysicsPart {
+        explicit TerrainProxyBridge(PhysicsWorld& w) : world(w) {}
+        void onBodyAdded(std::size_t id, const wizengine::physics::BodyAddInfo& info) override {
+            world.terrainProxies_.emplace_back();
+            if (info.proxy) world.setTerrainProxy(id, *info.proxy);
+        }
+        PhysicsWorld& world;
+    };
+
+    Parts(PhysicsWorld& world, PhysicsBackend backend, ContactMethod contact)
         : staticPairs(system, bodies),  // 参照を覚えるだけ（中身に触るのは attach から）
           system(backend, contact),
           bodies(system),
           sleeping(system, bodies),
           motion(bodies, sleeping),
           materials(system, bodies),
+          factory(system, bodies, sleeping, materials),
           loads(system, bodies),
           gravity(system, bodies),
           damping(bodies),
-          diag(system, bodies) {
+          diag(system, bodies),
+          terrainProxyBridge(world) {
         // 出来事の受け手はここで登録する。受け手どうしは順番に依存しない
         // （それぞれ自分の状態と Chrono の別々の部分だけを触る）。
         bodies.addListener(&sleeping);
@@ -34,6 +47,7 @@ struct PhysicsWorld::Parts {
         bodies.addListener(&loads);
         bodies.addListener(&gravity);
         bodies.addListener(&staticPairs);
+        bodies.addListener(&terrainProxyBridge);
     }
 
     // system より先に宣言する = 系より後に壊れる（Bullet のペアキャッシュがフィルタを
@@ -44,8 +58,10 @@ struct PhysicsWorld::Parts {
     wizengine::physics::Sleeping sleeping;
     wizengine::physics::BodyMotion motion;
     wizengine::physics::ContactMaterials materials;
+    wizengine::physics::BodyFactory factory;
     wizengine::physics::BodyLoads loads;
     wizengine::physics::GravityOverride gravity;
     wizengine::physics::VelocityDamping damping;
     wizengine::physics::Diagnostics diag;
+    TerrainProxyBridge terrainProxyBridge;
 };

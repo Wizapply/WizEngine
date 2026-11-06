@@ -13,6 +13,9 @@ class ChContactMaterial;
 }
 
 namespace wizengine {
+namespace terrain {
+struct BodyProxy;
+}
 namespace physics {
 
 // ボディを名簿に足したときに渡す内容。
@@ -21,6 +24,8 @@ struct BodyAddInfo {
     // そのボディが使う材質。共有なら共有のもの。null = 材質なし（ゴースト）。
     std::shared_ptr<chrono::ChContactMaterial> material;
     bool allowSleeping;  // false = 眠らない（ソフトボディの粒子）
+    // テレインの接触に使う形の記録（通知の間だけ有効）。null = 記録なし。
+    const wizengine::terrain::BodyProxy* proxy = nullptr;
 };
 
 class PhysicsPart {

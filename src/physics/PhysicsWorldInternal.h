@@ -6,8 +6,7 @@
 //
 //   PhysicsWorld.cpp             : 構築・1 ステップの順番・全体を起こす・機能の有無・小さな担当の中継
 //   PhysicsWorldSystem.cpp       : 系を組む順番と系の設定の中継（本体は PhysicsSystem）
-//   PhysicsWorldRegistry.cpp     : ボディの登録と退場の順番（名簿は BodyRegistry）
-//   PhysicsWorldBodies.cpp       : ボディの組み立て・形の記録の作成
+//   PhysicsWorldRegistry.cpp     : ボディの追加の中継（本体は BodyFactory）と退場の順番（名簿は BodyRegistry）
 //   PhysicsWorldMotion.cpp       : 運動の中継・ソフトボディの置き直しの分岐・固定（本体は BodyMotion）
 //   PhysicsWorldSoft.cpp         : ソフトボディ
 //   PhysicsWorldTerrain.cpp      : テレインの接触
@@ -21,6 +20,8 @@
 #include "physics/PhysicsParts.h"
 #include "physics/PhysicsWorld.h"
 #include "physics/ChronoCompat.h"
+#include "physics/ChronoMath.h"
+#include "physics/TerrainConvert.h"
 #include "terrain/HeightField.h"
 #include "terrain/TerrainContact.h"
 
@@ -33,27 +34,10 @@
 #include <memory>
 #include <vector>
 
-// +Z をこの向きに合わせる回転。ChLinkLockRevolute はリンク座標系の Z 軸まわり
-// に回り、ChLinkLockPrismatic は Z 軸方向にスライドするので、ユーザーが指定した
-// ワールド軸をリンクの Z に持ってくる必要がある。
-// Chrono のベクトル演算子は版ごとに名前が違うので、成分計算で書いてある。
-inline chrono::ChQuaternion<> quatFromZAxis(const chrono::ChVector3d& axis) {
-    double ax = axis.x(), ay = axis.y(), az = axis.z();
-    const double n = std::sqrt(ax * ax + ay * ay + az * az);
-    if (n < 1e-9) return chrono::ChQuaternion<>(1, 0, 0, 0);
-    ax /= n;
-    ay /= n;
-    az /= n;
-
-    const double c = az;  // dot((0,0,1), axis)
-    if (c < -0.999999) {  // 真後ろ: X 軸まわりに 180 度
-        return chrono::ChQuaternion<>(0, 1, 0, 0);
-    }
-    // 最短回転。cross((0,0,1), axis) = (-ay, ax, 0)
-    chrono::ChQuaternion<> q(1.0 + c, -ay, ax, 0.0);
-    q.Normalize();
-    return q;
-}
+// 窓口の実装（グローバルの名前空間）から担当の部品をそのまま呼ぶための別名。
+using wizengine::physics::quatFromZAxis;
+using wizengine::physics::toTerrainMat;
+using wizengine::physics::toTerrainVec;
 
 // ---- テレインの自前の接触（型と小道具）---------------------------------------
 namespace wterrain = wizengine::terrain;
@@ -71,18 +55,6 @@ inline wterrain::ContactParams terrainContactParams() {
     p.maxPerBody = 16;
     p.faceSamples = 0;
     return p;
-}
-
-inline wterrain::Vec3 toTerrainVec(const chrono::ChVector3d& v) {
-    return wterrain::Vec3(v.x(), v.y(), v.z());
-}
-
-inline wterrain::Mat3 toTerrainMat(const chrono::ChMatrix33<>& r) {
-    wterrain::Mat3 m;
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) m(i, j) = r(i, j);
-    }
-    return m;
 }
 
 // ボディ 1 個の形の記録と、点ごとの反力キャッシュ（Chrono の

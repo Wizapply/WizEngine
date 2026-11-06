@@ -391,27 +391,10 @@ public:
     TerrainContactShape terrainContactShape(std::size_t id) const;
 
 private:
-    // 追加したボディを名簿へ登録し、窓口が持つ配列にも席を作る。mat と options は
-    // 名簿の受け手へそのまま伝える（受け手が onBodyAdded で自分の配列へ書く）。
-    void registerBody(const std::shared_ptr<chrono::ChBody>& body,
-                      const std::shared_ptr<chrono::ChContactMaterial>& mat,
-                      const BodyOptions& options, bool allowSleeping);
-    // 追加の当たり形状を本体に足す（AddBody の前に呼ぶ）。
-    void attachExtraShapes(chrono::ChBody& body, const std::vector<ExtraShape>& extras,
-                           const std::shared_ptr<chrono::ChContactMaterial>& mat);
     // Chrono の系を（作り直しも含めて）組む。コンストラクタと recreate が呼ぶ。
     void createSystem();
     // 本当に系から外す（Core。Multicore は退避だけ）。disableBody から。
     void detachBody(std::size_t id);
-    // AddBody の**前**に呼ぶ: 衝突レイヤ（ファミリ）と重力オフ。ファミリは
-    // 衝突系に登録する前に決めておく - 登録後に変えると Bullet はモデルを
-    // 一度 Remove して入れ直し、Multicore の衝突系は Remove が未実装で
-    // 例外を投げる（ソフトボディの粒子も同じ順序）。
-    void prepareBody(chrono::ChBody& body, const BodyOptions& options);
-    // AddBody の後: 名簿へ登録する（定常荷重は BodyLoads が通知で付ける）。
-    void finishBody(const std::shared_ptr<chrono::ChBody>& body,
-                    const std::shared_ptr<chrono::ChContactMaterial>& mat,
-                    const BodyOptions& options, bool allowSleeping);
     // 破断の判定（step の末尾）。
     void checkJointBreaks();
     // ジョイントごとの反力をログへ（診断が NaN を見つけたステップに step から）。
@@ -443,7 +426,7 @@ private:
     struct TerrainProxyRec;   // ボディ 1 個の形の記録 + 点ごとの反力キャッシュ
     struct TerrainState;      // 格子・ゴースト・材質・判定の設定
     struct TerrainCallback;   // ChSystem::CustomCollisionCallback
-    // id のボディの形を記録する（add* の最後から）。
+    // id のボディの形を記録する（追加の通知から。Parts::TerrainProxyBridge）。
     void setTerrainProxy(std::size_t id, const wizengine::terrain::BodyProxy& proxy);
     // id の「前のステップに接触した」印と反力キャッシュを 0 に戻す（置き直し・
     // wakeAll。前回の走行の反力で次の最初のステップを始めないため）。

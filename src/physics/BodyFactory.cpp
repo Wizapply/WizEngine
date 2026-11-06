@@ -1,7 +1,15 @@
 // ボディの組み立て: 形ごとの追加・追加の当たり形状・形の記録の作成。
 
-#include "physics/PhysicsWorldInternal.h"
+#include "physics/BodyFactory.h"
+#include "physics/BodyRegistry.h"
+#include "physics/ChronoCompat.h"
+#include "physics/ChronoMath.h"
+#include "physics/ContactMaterials.h"
+#include "physics/PhysicsSystem.h"
+#include "physics/Sleeping.h"
+#include "physics/TerrainConvert.h"
 #include "core/Log.h"
+#include "terrain/TerrainContact.h"
 
 #include <chrono/collision/ChCollisionModel.h>
 #ifdef WIZ_HAVE_COLLISION_SHAPES
@@ -19,6 +27,8 @@
 #include <chrono/geometry/ChTriangleMeshConnected.h>
 #include <chrono/physics/ChBody.h>
 #include <chrono/physics/ChBodyEasy.h>
+#include <chrono/physics/ChContactMaterial.h>
+#include <chrono/physics/ChSystem.h>
 
 #include <algorithm>
 #include <array>
@@ -31,14 +41,19 @@
 using namespace chrono;
 using namespace wizengine::physics::compat;
 
+namespace wterrain = wizengine::terrain;
+
+namespace wizengine {
+namespace physics {
+
 namespace {
 
 // 追加の当たり形状（attachExtraShapes が実際に足す形と同じもの）を proxy へ。
 // 箱は各辺の長さ、球は x = 直径、円柱は x = 長さ（軸 X）・y = 直径。
-void appendExtraProxies(const std::vector<PhysicsWorld::ExtraShape>& extras,
+void appendExtraProxies(const std::vector<ExtraShape>& extras,
                         wterrain::BodyProxy& proxy) {
 #ifdef WIZ_HAVE_COLLISION_SHAPES
-    for (const PhysicsWorld::ExtraShape& s : extras) {
+    for (const ExtraShape& s : extras) {
         wterrain::ShapeProxy sp;
         sp.position = toTerrainVec(s.pos);
         sp.rotation = toTerrainMat(ChMatrix33<>(s.rot));
@@ -117,9 +132,8 @@ wterrain::ShapeProxy pointsShapeProxy(const std::vector<ChVector3d>& pts) {
     return sp;
 }
 
-}  // namespace
-
-void PhysicsWorld::prepareBody(ChBody& body, const BodyOptions& options) {
+// AddBody の**前**に呼ぶ: 衝突レイヤ（ファミリ）と重力オフ。
+void prepareBody(ChBody& body, const BodyOptions& options) {
     // 衝突レイヤ（ファミリ 0〜7）。レイヤ 0 で除外無しなら既定のまま触らない。
     // 衝突系へ登録する前（AddBody の前）に呼ぶこと - 登録後の変更は Bullet が
     // モデルを Remove / Add し直し、Multicore の衝突系は Remove が未実装で
@@ -147,14 +161,9 @@ void PhysicsWorld::prepareBody(ChBody& body, const BodyOptions& options) {
     if (!options.gravity) setUseGravity(&body, false, 0);
 }
 
-void PhysicsWorld::finishBody(const std::shared_ptr<chrono::ChBody>& body,
-                              const std::shared_ptr<chrono::ChContactMaterial>& mat,
-                              const BodyOptions& options, bool allowSleeping) {
-    registerBody(body, mat, options, allowSleeping);
-}
-
-void PhysicsWorld::attachExtraShapes(ChBody& body, const std::vector<ExtraShape>& extras,
-                                     const std::shared_ptr<ChContactMaterial>& mat) {
+// 追加の当たり形状を本体に足す（AddBody の前に呼ぶ）。
+void attachExtraShapes(ChBody& body, const std::vector<ExtraShape>& extras,
+                       const std::shared_ptr<ChContactMaterial>& mat) {
     if (extras.empty()) return;
     static bool warned = false;
     static bool warnedCylinder = false;
@@ -196,12 +205,21 @@ void PhysicsWorld::attachExtraShapes(ChBody& body, const std::vector<ExtraShape>
     }
 }
 
-std::size_t PhysicsWorld::addSphere(double radius, double density,
-                                    const ChVector3d& pos,
-                                    const ChQuaternion<>& rot, bool fixed,
-                                    const std::vector<ExtraShape>& extras,
-                                    const BodyOptions& options) {
-    const auto mat = p_->materials.materialFor(options);
+}  // namespace
+
+std::size_t BodyFactory::finish(const std::shared_ptr<ChBody>& body, const BodyAddInfo& info) {
+    sleeping_.configure(*body, info.allowSleeping);
+    prepareBody(*body, info.options);
+    system_.sys()->AddBody(body);
+    return bodies_.add(body, info);
+}
+
+std::size_t BodyFactory::addSphere(double radius, double density,
+                                   const ChVector3d& pos,
+                                   const ChQuaternion<>& rot, bool fixed,
+                                   const std::vector<ExtraShape>& extras,
+                                   const BodyOptions& options) {
+    const auto mat = materials_.materialFor(options);
     auto b = chrono_types::make_shared<ChBodyEasySphere>(
         radius, density, /*visualize*/ true, /*collide*/ true, mat);
     attachExtraShapes(*b, extras, mat);
@@ -209,30 +227,22 @@ std::size_t PhysicsWorld::addSphere(double radius, double density,
     b->SetRot(rot);
     b->SetFixed(fixed);
     b->EnableCollision(true);
-    p_->sleeping.applyTo(*b);
-    prepareBody(*b, options);
-    p_->system.sys()->AddBody(b);
-    finishBody(b, mat, options, /*allowSleeping*/ true);
-    const std::size_t id = p_->bodies.count() - 1;
-    {
-        // テレインの接触用の形の記録（本体の球 + 追加の当たり形状）。
-        wterrain::BodyProxy proxy;
-        wterrain::ShapeProxy sp;
-        sp.kind = wterrain::ShapeProxy::Kind::Sphere;
-        sp.radius = radius;
-        proxy.shapes.push_back(sp);
-        appendExtraProxies(extras, proxy);
-        setTerrainProxy(id, proxy);
-    }
-    return id;
+    // テレインの接触用の形の記録（本体の球 + 追加の当たり形状）。
+    wterrain::BodyProxy proxy;
+    wterrain::ShapeProxy sp;
+    sp.kind = wterrain::ShapeProxy::Kind::Sphere;
+    sp.radius = radius;
+    proxy.shapes.push_back(sp);
+    appendExtraProxies(extras, proxy);
+    return finish(b, {options, mat, /*allowSleeping*/ true, &proxy});
 }
 
-std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density,
-                                 const ChVector3d& pos,
-                                 const ChQuaternion<>& rot, bool fixed,
-                                 const std::vector<ExtraShape>& extras,
-                                 const BodyOptions& options) {
-    const auto mat = p_->materials.materialFor(options);
+std::size_t BodyFactory::addBox(double sx, double sy, double sz, double density,
+                                const ChVector3d& pos,
+                                const ChQuaternion<>& rot, bool fixed,
+                                const std::vector<ExtraShape>& extras,
+                                const BodyOptions& options) {
+    const auto mat = materials_.materialFor(options);
     auto b = chrono_types::make_shared<ChBodyEasyBox>(
         sx, sy, sz, density, /*visualize*/ true, /*collide*/ true, mat);
     attachExtraShapes(*b, extras, mat);
@@ -240,30 +250,22 @@ std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density
     b->SetRot(rot);
     b->SetFixed(fixed);
     b->EnableCollision(true);
-    p_->sleeping.applyTo(*b);
-    prepareBody(*b, options);
-    p_->system.sys()->AddBody(b);
-    finishBody(b, mat, options, /*allowSleeping*/ true);
-    const std::size_t id = p_->bodies.count() - 1;
-    {
-        // テレインの接触用の形の記録（本体の箱 + 追加の当たり形状）。
-        wterrain::BodyProxy proxy;
-        wterrain::ShapeProxy sp;
-        sp.kind = wterrain::ShapeProxy::Kind::Box;
-        sp.halfExtents = wterrain::Vec3(sx * 0.5, sy * 0.5, sz * 0.5);
-        proxy.shapes.push_back(sp);
-        appendExtraProxies(extras, proxy);
-        setTerrainProxy(id, proxy);
-    }
-    return id;
+    // テレインの接触用の形の記録（本体の箱 + 追加の当たり形状）。
+    wterrain::BodyProxy proxy;
+    wterrain::ShapeProxy sp;
+    sp.kind = wterrain::ShapeProxy::Kind::Box;
+    sp.halfExtents = wterrain::Vec3(sx * 0.5, sy * 0.5, sz * 0.5);
+    proxy.shapes.push_back(sp);
+    appendExtraProxies(extras, proxy);
+    return finish(b, {options, mat, /*allowSleeping*/ true, &proxy});
 }
 
-std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertices,
-                                          const std::vector<std::array<int, 3>>& triangles,
-                                          double mass, const ChVector3d& pos,
-                                          const ChQuaternion<>& rot, bool fixed,
-                                          const std::vector<ExtraShape>& extras,
-                                          const BodyOptions& options) {
+std::size_t BodyFactory::addTriangleMesh(const std::vector<ChVector3d>& vertices,
+                                         const std::vector<std::array<int, 3>>& triangles,
+                                         double mass, const ChVector3d& pos,
+                                         const ChQuaternion<>& rot, bool fixed,
+                                         const std::vector<ExtraShape>& extras,
+                                         const BodyOptions& options) {
 #if defined(WIZ_HAVE_COLLISION_SHAPES) && defined(WIZ_HAVE_TRIMESH_SHAPE)
     if (vertices.empty() || triangles.empty()) return kInvalidId;
     auto mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
@@ -287,7 +289,7 @@ std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertice
     }
     if (tris.empty()) return kInvalidId;
 
-    const auto mat = p_->materials.materialFor(options);
+    const auto mat = materials_.materialFor(options);
     auto b = chrono_types::make_shared<ChBody>();
     const double m = std::max(mass, 1e-3);
     b->SetMass(m);
@@ -307,11 +309,7 @@ std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertice
     b->SetRot(rot);
     b->SetFixed(fixed);
     b->EnableCollision(true);
-    p_->sleeping.applyTo(*b);
-    prepareBody(*b, options);
-    p_->system.sys()->AddBody(b);
-    finishBody(b, mat, options, /*allowSleeping*/ true);
-    const std::size_t id = p_->bodies.count() - 1;
+    wterrain::BodyProxy proxy;
     if (!fixed) {
         LOGW("physics", "triangle-mesh body is not fixed - concave mesh vs mesh "
                         "collision is slow (GImpact); prefer fixed=\"true\"");
@@ -319,12 +317,10 @@ std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertice
         // 間引いて点の集合に + 追加の当たり形状。固定の物はテレインと接触を
         // 作らないので記録しない（大きな固定の器・トンネルの頂点列を持たない）。
         // 走行中に固定を外された物は安全網（AABB）になる。
-        wterrain::BodyProxy proxy;
         proxy.shapes.push_back(pointsShapeProxy(decimatePoints(vertices, kTerrainMaxProxyPoints)));
         appendExtraProxies(extras, proxy);
-        setTerrainProxy(id, proxy);
     }
-    return id;
+    return finish(b, {options, mat, /*allowSleeping*/ true, fixed ? nullptr : &proxy});
 #else
     (void)vertices; (void)triangles; (void)mass; (void)pos; (void)rot; (void)fixed;
     (void)extras; (void)options;
@@ -338,11 +334,11 @@ std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertice
 #endif
 }
 
-std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
-                                   const ChQuaternion<>& rot, bool fixed,
-                                   const std::vector<ExtraShape>& extras,
-                                   const BodyOptions& options, bool terrainContact) {
-    const auto mat = p_->materials.materialFor(options);
+std::size_t BodyFactory::addFrame(double mass, const ChVector3d& pos,
+                                  const ChQuaternion<>& rot, bool fixed,
+                                  const std::vector<ExtraShape>& extras,
+                                  const BodyOptions& options, bool terrainContact) {
+    const auto mat = materials_.materialFor(options);
     auto b = chrono_types::make_shared<ChBody>();
     const double m = std::max(mass, 1e-3);
     b->SetMass(m);
@@ -373,27 +369,21 @@ std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
     b->SetRot(rot);
     b->SetFixed(fixed);
     if (!extras.empty()) b->EnableCollision(true);
-    p_->sleeping.applyTo(*b);
-    prepareBody(*b, options);
-    p_->system.sys()->AddBody(b);
-    finishBody(b, mat, options, /*allowSleeping*/ true);
-    const std::size_t id = p_->bodies.count() - 1;
+    wterrain::BodyProxy proxy;
     if (terrainContact && !extras.empty()) {
         // テレインの接触: 追加の当たり形状（箱・球・円柱）だけ。extras が空の
         // フレームは当たり判定が無いので、テレインにも当たらない。
-        wterrain::BodyProxy proxy;
         appendExtraProxies(extras, proxy);
-        if (!proxy.shapes.empty()) setTerrainProxy(id, proxy);
     }
-    return id;
+    return finish(b, {options, mat, /*allowSleeping*/ true, proxy.shapes.empty() ? nullptr : &proxy});
 }
 
-std::size_t PhysicsWorld::addConvexHull(
+std::size_t BodyFactory::addConvexHull(
     const std::vector<ChVector3d>& points, double mass,
     const ChVector3d& pos, const ChQuaternion<>& rot,
     const std::vector<ExtraShape>& extras, ChVector3d* hullCenter,
     const BodyOptions& options) {
-    const auto mat = p_->materials.materialFor(options);
+    const auto mat = materials_.materialFor(options);
     // 凸包の体積重心を先に求める。ChBodyEasyConvexHull は内部で同じ計算を
     // して頂点をここへ寄せる（ボディの原点 = 重心）ので、呼び出し側が
     // 見た目を同じだけずらせるように返す。Chrono と同じ道具（Bullet の
@@ -450,27 +440,22 @@ std::size_t PhysicsWorld::addConvexHull(
     b->SetRot(rot);
     b->SetFixed(false);
     b->EnableCollision(true);
-    p_->sleeping.applyTo(*b);
-    prepareBody(*b, options);
-    p_->system.sys()->AddBody(b);
-    finishBody(b, mat, options, /*allowSleeping*/ true);
-    const std::size_t id = p_->bodies.count() - 1;
-    {
-        // テレインの接触: Chrono が当たり形状にした凸包の頂点そのもの
-        // （GetMesh = 体積重心へ寄せた後 = ボディローカル。ChBodyEasyConvexHull が
-        // 衝突形状に渡す points_reduced と同じ列）。寄せる前の点を使うなら
-        // 「p − center」になるが、こちらは Chrono の形と完全に一致する。
-        // 凸包が作れなかった（点が 4 個未満・退化 = 頂点が空）ときは Chrono 側にも
-        // 凸包の当たり形状が無いので、記録しない（テレインにも当てない）。
-        // 追加の当たり形状は attachExtraShapes と同じ置き場（ボディ原点 = 重心
-        // 基準。寄せる前の原点基準ではない）なので、そのまま足す。
-        std::vector<ChVector3d> hullPts;
-        if (const auto mesh = b->GetMesh()) hullPts = mesh->GetCoordsVertices();
-        wterrain::BodyProxy proxy;
-        if (!hullPts.empty())
-            proxy.shapes.push_back(pointsShapeProxy(decimatePoints(hullPts, kTerrainMaxProxyPoints)));
-        appendExtraProxies(extras, proxy);
-        if (!proxy.shapes.empty()) setTerrainProxy(id, proxy);
-    }
-    return id;
+    // テレインの接触: Chrono が当たり形状にした凸包の頂点そのもの
+    // （GetMesh = 体積重心へ寄せた後 = ボディローカル。ChBodyEasyConvexHull が
+    // 衝突形状に渡す points_reduced と同じ列）。寄せる前の点を使うなら
+    // 「p − center」になるが、こちらは Chrono の形と完全に一致する。
+    // 凸包が作れなかった（点が 4 個未満・退化 = 頂点が空）ときは Chrono 側にも
+    // 凸包の当たり形状が無いので、記録しない（テレインにも当てない）。
+    // 追加の当たり形状は attachExtraShapes と同じ置き場（ボディ原点 = 重心
+    // 基準。寄せる前の原点基準ではない）なので、そのまま足す。
+    std::vector<ChVector3d> hullPts;
+    if (const auto mesh = b->GetMesh()) hullPts = mesh->GetCoordsVertices();
+    wterrain::BodyProxy proxy;
+    if (!hullPts.empty())
+        proxy.shapes.push_back(pointsShapeProxy(decimatePoints(hullPts, kTerrainMaxProxyPoints)));
+    appendExtraProxies(extras, proxy);
+    return finish(b, {options, mat, /*allowSleeping*/ true, proxy.shapes.empty() ? nullptr : &proxy});
 }
+
+}  // namespace physics
+}  // namespace wizengine

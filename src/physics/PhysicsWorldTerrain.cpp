@@ -37,7 +37,9 @@ ChVector3d fromTerrainVec(const wterrain::Vec3& v) {
 //   材質 = AddContact(物の材質, round ? 転がりあり : 転がり・スピン 0)。
 // ゴーストは空の衝突モデルを持つ固定ボディで、EnableCollision を呼ばない =
 // Bullet に登録されない（StaticPairFilter の集合にも入らない: bulletKeyOf が
-// null）。AddBody と registerBody は通す（接触の相手の変数・逆引きに要る）。
+// null）。AddBody と名簿の登録は通す（接触の相手の変数・逆引きに要る）。
+// 追加のときに BodyFactory::finish は通さない（元から追加時の眠りの設定と
+// prepareBody を通っていない）。固定なので眠らない。
 
 void PhysicsWorld::setTerrainProxy(std::size_t id, const wterrain::BodyProxy& proxy) {
     if (id >= terrainProxies_.size()) return;
@@ -150,8 +152,8 @@ std::size_t PhysicsWorld::setTerrain(std::shared_ptr<const wterrain::HeightField
         // EnableCollision は呼ばない = Bullet に登録されない。
         ghost->AddCollisionModel(chrono_types::make_shared<ChCollisionModel>());
         p_->system.sys()->AddBody(ghost);
-        registerBody(ghost, nullptr, BodyOptions{}, /*allowSleeping*/ true);
-        t.ghost = p_->bodies.count() - 1;
+        t.ghost = p_->bodies.add(
+            ghost, wizengine::physics::BodyAddInfo{BodyOptions{}, nullptr, /*allowSleeping*/ true});
     }
     t.field = std::move(field);
     t.contactTerrain = wterrain::ContactTerrain(*t.field);

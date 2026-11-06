@@ -29,7 +29,7 @@ PhysicsFeatures physicsFeatures() {
 }
 
 PhysicsWorld::PhysicsWorld(PhysicsBackend backend, ContactMethod contact)
-    : p_(std::make_unique<Parts>(backend, contact)) {
+    : p_(std::make_unique<Parts>(*this, backend, contact)) {
     createSystem();
 }
 
