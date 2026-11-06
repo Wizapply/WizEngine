@@ -4,23 +4,17 @@
 // 担当ごとに分けたので、2 つ以上のファイルが使う型と小さな関数をここに 1 か所で
 // 持つ。公開 API は PhysicsWorld.h。他のファイルからは含めないこと。
 //
-//   PhysicsWorld.cpp             : 構築・1 ステップの順番・全体を起こす・機能の有無・眠りと材質の中継
+//   PhysicsWorld.cpp             : 構築・1 ステップの順番・全体を起こす・機能の有無・小さな担当の中継
 //   PhysicsWorldSystem.cpp       : 系を組む順番と系の設定の中継（本体は PhysicsSystem）
 //   PhysicsWorldRegistry.cpp     : ボディの登録と退場の順番（名簿は BodyRegistry）
 //   PhysicsWorldBodies.cpp       : ボディの組み立て・形の記録の作成
 //   PhysicsWorldMotion.cpp       : 運動の中継・ソフトボディの置き直しの分岐・固定（本体は BodyMotion）
-//   PhysicsWorldLoads.cpp        : 定常荷重
-//   PhysicsWorldGravity.cpp      : ボディ別の重力オフ
-//   PhysicsWorldDamping.cpp      : 減衰の設定
 //   PhysicsWorldSoft.cpp         : ソフトボディ
-//   PhysicsWorldContacts.cpp     : 接触の報告
-//   PhysicsWorldStaticPairs.cpp  : 固定物どうしの衝突ペアを作らせない
 //   PhysicsWorldTerrain.cpp      : テレインの接触
 //   PhysicsWorldJoints.cpp       : ジョイント
 //   PhysicsWorldJointsManual.cpp : Multicore 用の手計算のジョイント
 //   PhysicsWorldCables.cpp       : FEA ケーブル
 //   PhysicsWorldModal.cpp        : モーダル解析
-//   PhysicsWorldDiag.cpp         : 診断ログ
 //
 // using namespace はここに書かない（各 .cpp に書く）。
 
@@ -30,9 +24,6 @@
 #include "terrain/HeightField.h"
 #include "terrain/TerrainContact.h"
 
-#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
-#include <chrono/collision/bullet/BulletCollision/CollisionDispatch/cbtCollisionWorld.h>
-#endif
 #include <chrono/core/ChMatrix33.h>
 #include <chrono/physics/ChContactMaterial.h>
 #include <chrono/physics/ChSystem.h>
@@ -40,8 +31,6 @@
 #include <array>
 #include <cmath>
 #include <memory>
-#include <unordered_set>
-#include <utility>
 #include <vector>
 
 // +Z をこの向きに合わせる回転。ChLinkLockRevolute はリンク座標系の Z 軸まわり
@@ -133,42 +122,3 @@ struct PhysicsWorld::TerrainCallback : public chrono::ChSystem::CustomCollisionC
     }
     PhysicsWorld* world = nullptr;
 };
-
-// 固定物どうしの衝突ペアを作らせないフィルタ。理由と仕組みは
-// PhysicsWorldStaticPairs.cpp の注記。
-#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
-struct PhysicsWorld::StaticPairFilter : public cbtOverlapFilterCallback {
-    std::unordered_set<const void*> statics;  // 固定ボディの ChCollisionModelBullet*
-    cbtCollisionWorld* world = nullptr;       // 付けている衝突ワールド（null = 無効）
-    bool ready = false;  // 衝突系の初期化後に集合を作った（それまでは実体が無い）
-
-    bool isStatic(const cbtBroadphaseProxy* p) const {
-        const auto* o = static_cast<const cbtCollisionObject*>(p->m_clientObject);
-        return o && statics.count(o->getUserPointer()) != 0;
-    }
-    bool needBroadphaseCollision(cbtBroadphaseProxy* p0, cbtBroadphaseProxy* p1) const override {
-        // 既定の判定（衝突ファミリの group / mask）はそのまま残す。
-        bool collides = (p0->m_collisionFilterGroup & p1->m_collisionFilterMask) != 0;
-        collides = collides && (p1->m_collisionFilterGroup & p0->m_collisionFilterMask);
-        if (!collides) return false;
-        return !(isStatic(p0) && isStatic(p1));
-    }
-    // 既にある固定どうしのペアを消す。消した数を返す。
-    std::size_t purge() {
-        if (!world) return 0;
-        cbtOverlappingPairCache* cache = world->getPairCache();
-        cbtBroadphasePairArray& pairs = cache->getOverlappingPairArray();
-        std::vector<std::pair<cbtBroadphaseProxy*, cbtBroadphaseProxy*>> doomed;
-        for (int i = 0; i < pairs.size(); ++i) {
-            if (isStatic(pairs[i].m_pProxy0) && isStatic(pairs[i].m_pProxy1)) {
-                doomed.emplace_back(pairs[i].m_pProxy0, pairs[i].m_pProxy1);
-            }
-        }
-        // 走査中に消すと配列が詰まるので、集めてから消す。
-        for (const auto& d : doomed) cache->removeOverlappingPair(d.first, d.second, world->getDispatcher());
-        return doomed.size();
-    }
-};
-#else
-struct PhysicsWorld::StaticPairFilter {};
-#endif

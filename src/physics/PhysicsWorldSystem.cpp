@@ -26,7 +26,6 @@ void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     brokenPending_.clear();
     cables_.clear();
     p_->bodies.clear();
-    loadsOf_.clear();
     softBodies_.clear();
     // テレインのゴーストとコールバックは系と一緒に消える。Scene が作り直した
     // あとに setTerrain を呼び直す。
@@ -34,9 +33,8 @@ void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     terrain_.reset();
     terrainCallback_.reset();
     jointLoads_.reset();
-    bodyLoads_.reset();
-    diagSteps_ = 0;
-    diagNanReported_ = false;
+    p_->loads.clear();
+    p_->diag.restart();
     p_->system.destroy(backend, contact);
     createSystem();
     LOGI("physics", "world recreated: backend=%s contact=%s", backendName(), contactName());
@@ -47,7 +45,7 @@ void PhysicsWorld::createSystem() {
     p_->system.create();
 
     // 固定物どうしのペアを作らせないフィルタ（Core のみ。Multicore では外す）。
-    attachStaticPairFilter();
+    p_->staticPairs.attach();
 
     // テレインの自前の接触（Core のみ）。setTerrain が呼ばれるまでは何もしない
     // （collectTerrainContacts の先頭で戻る）= 呼ばないシーンの挙動は変わらない。
@@ -63,15 +61,15 @@ void PhysicsWorld::createSystem() {
     // 荷重コンテナと許容差・ソルバの設定より前。
     p_->bodies.notifySystemRecreated();
 
-    // 荷重コンテナ（ChLoad）。Core だけが積分に取り込むので、そちらでだけ作る。
+    // 荷重コンテナ（ChLoad）。積分に取り込む系でだけ作る。
+    // 系へ足す順（ジョイント用 → ボディ用）は残差を足す順なので変えない。
 #ifdef WIZ_HAVE_LOADS
-    if (p_->system.backend() != PhysicsBackend::Multicore) {
+    if (p_->system.integratesLoads()) {
         jointLoads_ = chrono_types::make_shared<ChLoadContainer>();
-        bodyLoads_ = chrono_types::make_shared<ChLoadContainer>();
         p_->system.sys()->Add(jointLoads_);
-        p_->system.sys()->Add(bodyLoads_);
     }
 #endif
+    p_->loads.createContainer();
 
     p_->system.applySolverSettings();
 }

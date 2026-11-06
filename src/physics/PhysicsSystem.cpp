@@ -145,6 +145,8 @@ void PhysicsSystem::setMaterialCombine(CombineMode mode) {
          mode == CombineMode::Average ? "average" : mode == CombineMode::Max ? "max" : "min");
 }
 
+void PhysicsSystem::doStep(double dt) { sys_->DoStepDynamics(dt); }
+
 void PhysicsSystem::destroy(PhysicsBackend backend, ContactMethod contact) {
     backend_ = backend;
     contact_ = contact;

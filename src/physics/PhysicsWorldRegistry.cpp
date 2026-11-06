@@ -3,25 +3,17 @@
 #include "physics/PhysicsWorldInternal.h"
 
 #include <chrono/physics/ChBody.h>
-#ifdef WIZ_HAVE_LOADS
-#include <chrono/physics/ChLoadContainer.h>
-#endif
 
 #include <memory>
-
-using namespace chrono;
-using namespace wizengine::physics::compat;
 
 void PhysicsWorld::registerBody(const std::shared_ptr<chrono::ChBody>& body,
                                 const std::shared_ptr<chrono::ChContactMaterial>& mat,
                                 const BodyOptions& options, bool allowSleeping) {
-    loadsOf_.emplace_back();
     terrainProxies_.emplace_back();  // 形の記録は add* が後から書く（無ければ対象外）
     const std::size_t id =
         p_->bodies.add(body, wizengine::physics::BodyAddInfo{options, mat, allowSleeping});
-    // 走行中に足した固定ボディ（テレインの作り直し・プレハブの固定部品など）:
-    // 登録の時点でできた固定どうしのペアを消す。
-    if (body->IsFixed()) updateStaticPairs(*body);
+    // 固定ボディは resetTimer が何もしないので、通知の中の固定物のペアの更新
+    // （固定ボディだけ）との前後には依存しない。
     p_->sleeping.resetTimer(id);  // 新規ボディの計時は 0 = 最初のステップで眠る
 }
 
@@ -46,13 +38,9 @@ void PhysicsWorld::disableBody(std::size_t id) {
         soft->active = false;
         for (const std::size_t p : p_->bodies.members(soft->root)) {
             if (p == id) continue;  // 代表は下の通常経路で
-            forgetStaticPairs(*p_->bodies.body(p));  // 衝突モデルを手放す前に
             p_->bodies.retire(p);
         }
     }
-    // 固定物の集合から先に外す（retire の EnableCollision(false) で Bullet 側の
-    // 実体が解放され、そのアドレスが別のボディに使い回されうるため）。
-    forgetStaticPairs(*p_->bodies.body(id));
     p_->bodies.retire(id);
     // Core では本当に系から外す（B の 18）。粒子も同じ。
     if (SoftBody* soft = softOfRoot(id)) {
@@ -71,24 +59,7 @@ void PhysicsWorld::detachBody(std::size_t id) {
     if (p_->system.backend() == PhysicsBackend::Multicore || id >= p_->bodies.count()) return;
     auto& b = p_->bodies.body(id);
     if (!b->GetSystem()) return;  // 既に外れている
-    // 定常荷重を先に外す（ボディの変数が系から消えた後に荷重が残ると、
-    // 古いオフセットへ書き込む）。
-#ifdef WIZ_HAVE_LOADS
-    if (bodyLoads_ && !loadsOf_[id].empty()) {
-        bool removed = true;
-        for (auto& l : loadsOf_[id]) removed = removeLoadFrom(bodyLoads_.get(), l, 0) && removed;
-        if (!removed) {
-            // Remove の無い版: 全部捨てて、残っている物のぶんを入れ直す。
-            clearLoads(bodyLoads_.get(), 0);
-            for (std::size_t i = 0; i < loadsOf_.size(); ++i) {
-                if (i == id || !p_->bodies.active(i)) continue;
-                for (auto& l : loadsOf_[i]) bodyLoads_->Add(l);
-            }
-        }
-        loadsOf_[id].clear();
-    }
-#endif
-    forgetStaticPairs(*b);  // RemoveBody が衝突モデルを手放す前に
+    p_->staticPairs.forget(*b);  // RemoveBody が衝突モデルを手放す前に
     p_->system.sys()->RemoveBody(b);
 }
 

@@ -53,6 +53,9 @@ public:
     void notifySystemRecreated() {
         for (PhysicsPart* part : parts_) part->onSystemRecreated();
     }
+    void notifyBodyFixedChanged(std::size_t id) {
+        for (PhysicsPart* part : parts_) part->onBodyFixedChanged(id);
+    }
 
     const std::shared_ptr<chrono::ChBody>& body(std::size_t id) const { return bodies_[id]; }
     const std::vector<std::shared_ptr<chrono::ChBody>>& all() const { return bodies_; }
