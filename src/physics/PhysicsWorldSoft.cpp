@@ -21,21 +21,18 @@ using namespace wizengine::physics::compat;
 
 // ---- ソフトボディ -----------------------------------------------------------
 
-std::size_t PhysicsWorld::representative(std::size_t id) const {
-    if (id >= softOf_.size() || softOf_[id] == kNoSoft) return id;
-    return softBodies_[softOf_[id]].root;
-}
-
+// softBodies_ は root の昇順（番号は増える一方で、addSoftBody が末尾に足す）なので
+// 二分探索で引く。剛体と代表でない粒子は名簿の判定で先に落ちる（探索しない）。
 const PhysicsWorld::SoftBody* PhysicsWorld::softOfRoot(std::size_t id) const {
-    if (id >= softOf_.size() || softOf_[id] == kNoSoft) return nullptr;
-    const SoftBody& s = softBodies_[softOf_[id]];
-    return s.root == id ? &s : nullptr;
+    if (!p_->bodies.isGroupMember(id) || p_->bodies.representative(id) != id) return nullptr;
+    const auto it = std::lower_bound(
+        softBodies_.begin(), softBodies_.end(), id,
+        [](const SoftBody& s, std::size_t root) { return s.root < root; });
+    return (it != softBodies_.end() && it->root == id) ? &*it : nullptr;
 }
 
 PhysicsWorld::SoftBody* PhysicsWorld::softOfRoot(std::size_t id) {
-    if (id >= softOf_.size() || softOf_[id] == kNoSoft) return nullptr;
-    SoftBody& s = softBodies_[softOf_[id]];
-    return s.root == id ? &s : nullptr;
+    return const_cast<SoftBody*>(static_cast<const PhysicsWorld*>(this)->softOfRoot(id));
 }
 
 bool PhysicsWorld::isSoftBody(std::size_t id) const {
@@ -44,7 +41,7 @@ bool PhysicsWorld::isSoftBody(std::size_t id) const {
 
 std::size_t PhysicsWorld::softParticleCount(std::size_t id) const {
     const SoftBody* s = softOfRoot(id);
-    return s ? s->particles.size() : 0;
+    return s ? p_->bodies.members(s->root).size() : 0;
 }
 
 void PhysicsWorld::softParticlePositions(std::size_t id,
@@ -52,9 +49,9 @@ void PhysicsWorld::softParticlePositions(std::size_t id,
     out.clear();
     const SoftBody* s = softOfRoot(id);
     if (!s) return;
-    out.reserve(s->particles.size() * 3);
-    for (const std::size_t p : s->particles) {
-        const ChVector3d v = bodies_[p]->GetPos();
+    out.reserve(p_->bodies.members(s->root).size() * 3);
+    for (const std::size_t p : p_->bodies.members(s->root)) {
+        const ChVector3d v = p_->bodies.body(p)->GetPos();
         out.push_back(float(v.x()));
         out.push_back(float(v.y()));
         out.push_back(float(v.z()));
@@ -90,6 +87,8 @@ std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec,
     BodyOptions particleOpts = spec.options;
     particleOpts.layer = 0;
 
+    std::vector<std::size_t> particles;
+    particles.reserve(spec.rest.size());
     bool familyOk = true;
     for (std::size_t i = 0; i < spec.rest.size(); ++i) {
         auto b = chrono_types::make_shared<ChBodyEasySphere>(
@@ -105,11 +104,10 @@ std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec,
             if (!applyNoSelfCollision(&*model, family)) familyOk = false;
         }
         prepareBody(*b, particleOpts);
-        sys_->AddBody(b);
+        p_->system.sys()->AddBody(b);
         finishBody(b, mat, particleOpts);
-        const std::size_t id = bodies_.size() - 1;
-        softOf_[id] = softIndex;
-        soft.particles.push_back(id);
+        const std::size_t id = p_->bodies.count() - 1;
+        particles.push_back(id);
         // テレインの接触: 粒子ごとに半径 radius の球（1 点接触 = round。材質は
         // 球と同じ「転がりあり」= 平らな床と粒子の接触と同じ扱い）。
         wterrain::BodyProxy proxy;
@@ -119,7 +117,8 @@ std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec,
         proxy.shapes.push_back(sp);
         setTerrainProxy(id, proxy);
     }
-    soft.root = soft.particles.front();
+    soft.root = particles.front();
+    p_->bodies.defineGroup(soft.root, std::move(particles));
     softBodies_.push_back(std::move(soft));
     if (!familyOk && softIndex == 0) {
         LOGW("physics",
@@ -134,13 +133,14 @@ std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec,
 
 void PhysicsWorld::placeSoftBody(SoftBody& soft, const ChVector3d& pos,
                                  const ChQuaternion<>& rot) {
-    for (std::size_t i = 0; i < soft.particles.size(); ++i) {
-        auto& b = bodies_[soft.particles[i]];
+    const auto particles = p_->bodies.members(soft.root);
+    for (std::size_t i = 0; i < particles.size(); ++i) {
+        auto& b = p_->bodies.body(particles[i]);
         b->SetPos(pos + rot.Rotate(soft.rest[i]));
         b->SetRot(rot);
         b->ForceToRest();
         wakeUp(b.get(), 0);
-        forgetTerrainContacts(soft.particles[i]);
+        forgetTerrainContacts(particles[i]);
     }
 }
 
@@ -148,14 +148,15 @@ void PhysicsWorld::placeSoftBody(SoftBody& soft, const ChVector3d& pos,
 // 回転は静止形状との相関行列の極分解（SVD で U V^T）= 最小二乗の回転。
 // 選択の当たり判定・ギズモ・引っぱり線・保存される姿勢がこれを使う。
 BodyTransform PhysicsWorld::softTransform(const SoftBody& soft) const {
-    const std::size_t n = soft.particles.size();
+    const auto particles = p_->bodies.members(soft.root);
+    const std::size_t n = particles.size();
     ChVector3d c(0, 0, 0);
-    for (const std::size_t p : soft.particles) c += bodies_[p]->GetPos();
+    for (const std::size_t p : particles) c += p_->bodies.body(p)->GetPos();
     c *= 1.0 / double(n);
 
     Eigen::Matrix3d A = Eigen::Matrix3d::Zero();
     for (std::size_t i = 0; i < n; ++i) {
-        const ChVector3d p = bodies_[soft.particles[i]]->GetPos() - c;
+        const ChVector3d p = p_->bodies.body(particles[i])->GetPos() - c;
         const ChVector3d q = soft.rest[i] - soft.restCentroid;
         const Eigen::Vector3d pv(p.x(), p.y(), p.z());
         const Eigen::Vector3d qv(q.x(), q.y(), q.z());
@@ -186,12 +187,13 @@ BodyTransform PhysicsWorld::softTransform(const SoftBody& soft) const {
 // 位置はステップ開始時の値、速度は直しながら読む。
 void PhysicsWorld::solveSoftSprings(SoftBody& soft, double dt) {
     if (!soft.active || dt <= 0.0 || soft.springs.empty()) return;
-    const std::size_t n = soft.particles.size();
+    const auto particles = p_->bodies.members(soft.root);
+    const std::size_t n = particles.size();
     std::vector<ChVector3d> pos(n), vel(n);
     std::vector<double> invMass(n, 0.0);
     bool anyFree = false;
     for (std::size_t i = 0; i < n; ++i) {
-        const auto& b = bodies_[soft.particles[i]];
+        const auto& b = p_->bodies.body(particles[i]);
         pos[i] = b->GetPos();
         vel[i] = getLinVel(b.get(), 0);
         const double m = b->GetMass();
@@ -222,6 +224,6 @@ void PhysicsWorld::solveSoftSprings(SoftBody& soft, double dt) {
     }
     for (std::size_t i = 0; i < n; ++i) {
         if (invMass[i] <= 0.0) continue;
-        setLinVel(bodies_[soft.particles[i]].get(), vel[i], 0);
+        setLinVel(p_->bodies.body(particles[i]).get(), vel[i], 0);
     }
 }

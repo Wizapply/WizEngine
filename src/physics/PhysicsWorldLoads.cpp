@@ -1,6 +1,6 @@
 // ボディの定常荷重（力・トルク）。
 
-#include "physics/PhysicsWorld.h"
+#include "physics/PhysicsParts.h"
 #include "core/Log.h"
 #include "physics/ChronoCompat.h"
 
@@ -23,14 +23,14 @@ void PhysicsWorld::attachBodyLoads(std::size_t id, const BodyOptions& options) {
     if (!hasForce && !hasTorque) return;
     static bool warned = false;
 #ifdef WIZ_HAVE_LOADS
-    if (backend_ == PhysicsBackend::Multicore || !bodyLoads_) {
+    if (p_->system.backend() == PhysicsBackend::Multicore || !bodyLoads_) {
         if (!warned) {
             warned = true;
             LOGW("physics", "constant body loads need the core backend - ignored");
         }
         return;
     }
-    auto& body = bodies_[id];
+    auto& body = p_->bodies.body(id);
     if (hasForce) {
         auto f = chrono_types::make_shared<ChLoadBodyForce>(body, options.force,
                                                             /*local_force*/ false, VNULL,

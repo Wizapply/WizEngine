@@ -1,6 +1,6 @@
 // 眠り: 設定と計時。
 
-#include "physics/PhysicsWorld.h"
+#include "physics/PhysicsParts.h"
 #include "physics/ChronoCompat.h"
 
 #include <chrono/physics/ChBody.h>
@@ -15,11 +15,11 @@ void PhysicsWorld::setSleepingEnabled(bool enabled, float seconds,
     sleepMinLinVel_ = minLinVel;
     sleepMinAngVel_ = minAngVel;
 
-    allowSleeping(sys_.get(), enabled, 0);
-    for (std::size_t i = 0; i < bodies_.size(); ++i) {
-        auto& b = bodies_[i];
+    allowSleeping(p_->system.sys().get(), enabled, 0);
+    for (std::size_t i = 0; i < p_->bodies.count(); ++i) {
+        auto& b = p_->bodies.body(i);
         // ソフトボディの粒子は常に起きている（addSoftBody 参照）。
-        if (softOf_[i] != kNoSoft) {
+        if (p_->bodies.isGroupMember(i)) {
             allowSleeping(b.get(), false, 0);
             continue;
         }
@@ -35,9 +35,9 @@ void PhysicsWorld::setSleepingEnabled(bool enabled, float seconds,
 
 std::size_t PhysicsWorld::sleepingCount() const {
     std::size_t n = 0;
-    for (std::size_t i = 0; i < bodies_.size(); ++i) {
-        if (!active_[i]) continue;  // 退場済みは数えない
-        if (bodies_[i]->IsSleeping()) ++n;
+    for (std::size_t i = 0; i < p_->bodies.count(); ++i) {
+        if (!p_->bodies.active(i)) continue;  // 退場済みは数えない
+        if (p_->bodies.body(i)->IsSleeping()) ++n;
     }
     return n;
 }
@@ -53,7 +53,7 @@ std::size_t PhysicsWorld::sleepingCount() const {
 void PhysicsWorld::resetSleepTimer(ChBody& b) {
     if (!sleepingEnabled_ || !b.IsSleepingAllowed() || b.IsFixed() || b.IsSleeping()) return;
     // 項目の時計は Update() でしか進まないので、作ったばかりのボディは 0。
-    setItemTime(&b, sys_->GetChTime(), 0);
+    setItemTime(&b, p_->system.sys()->GetChTime(), 0);
     const ChVector3d v = getLinVel(&b, 0);
     setLinVel(&b, ChVector3d(1e6, 0, 0), 0);
     trySleeping(&b, 0);  // 速度が大きい = 眠れない = sleep_starttime を今にする

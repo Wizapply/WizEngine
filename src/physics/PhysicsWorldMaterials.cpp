@@ -1,6 +1,6 @@
 // 接触の材質: 共有の材質とボディ専用の材質。
 
-#include "physics/PhysicsWorld.h"
+#include "physics/PhysicsParts.h"
 #include "physics/ChronoCompat.h"
 
 #include <chrono/physics/ChBody.h>
@@ -11,7 +11,7 @@ using namespace chrono;
 using namespace wizengine::physics::compat;
 
 // ---- 接触の物性 -------------------------------------------------------------
-// 材質は contact_ で NSC / SMC のどちらか。共通の欄（摩擦・反発）は基底に、
+// 材質は接触の種類（PhysicsSystem::contact）で NSC / SMC のどちらか。共通の欄（摩擦・反発）は基底に、
 // 転がり・スピン・粘着は NSC に、ヤング率・ポアソン比・付着は SMC にある。
 
 void PhysicsWorld::applySurface(ChContactMaterial& m, const BodyOptions& o) const {
@@ -29,7 +29,7 @@ void PhysicsWorld::applySurface(ChContactMaterial& m, const BodyOptions& o) cons
 }
 
 std::shared_ptr<ChContactMaterial> PhysicsWorld::makeMaterial() const {
-    if (contact_ == ContactMethod::SMC) {
+    if (p_->system.contact() == ContactMethod::SMC) {
         return chrono_types::make_shared<ChContactMaterialSMC>();
     }
     return chrono_types::make_shared<ChContactMaterialNSC>();
@@ -48,7 +48,7 @@ std::shared_ptr<ChContactMaterial> PhysicsWorld::materialFor(const BodyOptions& 
 void PhysicsWorld::setSmcDefaults(double young, double poisson) {
     smcYoung_ = young;
     smcPoisson_ = poisson;
-    if (contact_ != ContactMethod::SMC) return;
+    if (p_->system.contact() != ContactMethod::SMC) return;
     applySurface(*mat_, BodyOptions{});
     for (std::size_t i = 0; i < mats_.size(); ++i) {
         if (mats_[i]) applySurface(*mats_[i], options_[i]);
@@ -57,7 +57,7 @@ void PhysicsWorld::setSmcDefaults(double young, double poisson) {
 }
 
 bool PhysicsWorld::setBodySurface(std::size_t id, const BodyOptions& options) {
-    if (id >= bodies_.size()) return false;
+    if (id >= p_->bodies.count()) return false;
     const bool custom = options.friction >= 0.0f || options.restitution >= 0.0f ||
                         options.rolling >= 0.0f || options.cohesion != 0.0f;
     // 物性以外（レイヤ・重力）は options_ に写すだけ。レイヤは衝突モデルの
@@ -69,7 +69,7 @@ bool PhysicsWorld::setBodySurface(std::size_t id, const BodyOptions& options) {
     cur.cohesion = options.cohesion;
     if (SoftBody* soft = softOfRoot(id)) {
         bool ok = true;
-        for (const std::size_t p : soft->particles) {
+        for (const std::size_t p : p_->bodies.members(soft->root)) {
             if (mats_[p]) applySurface(*mats_[p], cur);
             else if (custom) ok = false;
             options_[p].friction = cur.friction;

@@ -1,6 +1,6 @@
 // FEA ケーブル。
 
-#include "physics/PhysicsWorld.h"
+#include "physics/PhysicsParts.h"
 #include "core/Log.h"
 #include "physics/ChronoCompat.h"
 
@@ -32,7 +32,7 @@ using namespace wizengine::physics::compat;
 std::size_t PhysicsWorld::addCable(const CableSpec& spec) {
 #ifdef WIZ_HAVE_FEA
     static bool warnedBackend = false;
-    if (backend_ == PhysicsBackend::Multicore) {
+    if (p_->system.backend() == PhysicsBackend::Multicore) {
         if (!warnedBackend) {
             warnedBackend = true;
             LOGW("physics", "cable: needs the core backend (Chrono::Multicore has no FEA) - "
@@ -42,7 +42,7 @@ std::size_t PhysicsWorld::addCable(const CableSpec& spec) {
     }
     auto endOk = [&](CableSpec::End end, std::size_t id, const char* which) {
         if (end != CableSpec::End::Body) return true;
-        if (id >= bodies_.size() || !active_[id] || softOf_[id] != kNoSoft) {
+        if (id >= p_->bodies.count() || !p_->bodies.active(id) || p_->bodies.isGroupMember(id)) {
             LOGW("physics", "cable: end %s refers to a missing or soft body (%zu) - skipped",
                  which, id);
             return false;
@@ -100,11 +100,11 @@ std::size_t PhysicsWorld::addCable(const CableSpec& spec) {
         }
     }
     setMeshGravity(mesh.get(), true, 0);
-    sys_->Add(mesh);
+    p_->system.sys()->Add(mesh);
     // 衝突系が初期化済みなら登録する（ボディと同じ理由: Chrono 9 は後から
     // 足した物を BindAll で拾わない）。
     if (spec.collide) {
-        auto coll = sys_->GetCollisionSystem();
+        auto coll = p_->system.sys()->GetCollisionSystem();
         if (coll && coll->IsInitialized()) coll->BindItem(mesh);
     }
 
@@ -116,16 +116,16 @@ std::size_t PhysicsWorld::addCable(const CableSpec& spec) {
         }
         if (end != CableSpec::End::Body) return;
         auto link = chrono_types::make_shared<WizNodeFrameLink>();
-        link->Initialize(node, bodies_[id]);
-        sys_->AddLink(link);
+        link->Initialize(node, p_->bodies.body(id));
+        p_->system.sys()->AddLink(link);
         rec.links.push_back(link);
-        wakeUp(bodies_[id].get(), 0);
+        wakeUp(p_->bodies.body(id).get(), 0);
     };
     attach(rec.nodes.front(), spec.endA, spec.bodyA);
     attach(rec.nodes.back(), spec.endB, spec.bodyB);
     rec.valid = true;
     cables_.push_back(std::move(rec));
-    sys_->Setup();
+    p_->system.sys()->Setup();
     LOGI("physics", "cable #%zu: %d elements, %zu nodes, length %.2f m, young %.3g Pa, "
                     "collide %d",
          cables_.size() - 1, n, cables_.back().nodes.size(), length, spec.young,
@@ -146,11 +146,11 @@ void PhysicsWorld::removeAllCables() {
 #ifdef WIZ_HAVE_FEA
     if (cables_.empty()) return;
     for (auto& c : cables_) {
-        for (auto& l : c.links) sys_->RemoveLink(l);
-        if (c.mesh) removeMeshFrom(sys_.get(), c.mesh, 0);
+        for (auto& l : c.links) p_->system.sys()->RemoveLink(l);
+        if (c.mesh) removeMeshFrom(p_->system.sys().get(), c.mesh, 0);
     }
     cables_.clear();
-    sys_->Setup();
+    p_->system.sys()->Setup();
 #endif
 }
 

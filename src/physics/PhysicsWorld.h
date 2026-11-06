@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -31,9 +30,6 @@ struct BodyProxy;
 }
 }
 
-// True when this build can actually use PhysicsBackend::Multicore.
-bool multicoreAvailable();
-
 PhysicsFeatures physicsFeatures();
 
 // Physics engine: owns the Chrono system (gravity, collision, contact material).
@@ -42,13 +38,14 @@ class PhysicsWorld {
 public:
     explicit PhysicsWorld(PhysicsBackend backend = PhysicsBackend::Core,
                           ContactMethod contact = ContactMethod::NSC);
+    ~PhysicsWorld();
 
     // "core" or "multicore" - what actually got created.
     const char* backendName() const;
-    PhysicsBackend backend() const { return backend_; }
+    PhysicsBackend backend() const;
     // "nsc" or "smc".
     const char* contactName() const;
-    ContactMethod contactMethod() const { return contact_; }
+    ContactMethod contactMethod() const;
 
     // 系をまるごと作り直す（B の自動切替）。ボディ・ジョイント・ケーブルは
     // 全部消える（番号も無効になる）ので、呼び出し側（Scene）が作り直す。
@@ -262,7 +259,7 @@ public:
     bool setIntegrator(const std::string& name);
     bool setSolver(const std::string& name);
     // いま実際に使っているソルバ名（bb に戻したときはそれが分かる）。
-    const std::string& solverName() const { return solverName_; }
+    const std::string& solverName() const;
     // 2 材質の合成（min = Chrono の既定 / average / max）。
     void setMaterialCombine(CombineMode mode);
 
@@ -394,21 +391,18 @@ public:
     TerrainContactShape terrainContactShape(std::size_t id) const;
 
 private:
-    // Either a ChSystemNSC (serial core) or a ChSystemMulticoreNSC, chosen at
-    // build time by WIZ_USE_MULTICORE. Everything above this class is unaware
-    // of which one is in use.
-    // 追加したボディを逆引きマップにも登録する（activeContactPairs 用）。
-    void registerBody(const std::shared_ptr<chrono::ChBody>& body);
+    // 追加したボディを名簿へ登録し、窓口が持つ配列にも席を作る。mat と options は
+    // 名簿の受け手へそのまま伝える（配列へ書くのは finishBody）。
+    void registerBody(const std::shared_ptr<chrono::ChBody>& body,
+                      const std::shared_ptr<chrono::ChContactMaterial>& mat,
+                      const BodyOptions& options);
     // 眠りの計時を今からにする（置き直し・固定解除・新規・wakeAll）。
     void resetSleepTimer(chrono::ChBody& b);
-    // 衝突系が既に初期化済みなら、いま足したボディの衝突モデルを登録する
-    // （Chrono 9 は自動でやらない。詳細は PhysicsWorldRegistry.cpp の bindCollision）。
-    void bindCollision(const std::shared_ptr<chrono::ChBody>& body);
     // 追加の当たり形状を本体に足す（AddBody の前に呼ぶ）。
     void attachExtraShapes(chrono::ChBody& body, const std::vector<ExtraShape>& extras,
                            const std::shared_ptr<chrono::ChContactMaterial>& mat);
     // ボディの物性を決める材質（指定が無ければ共有の mat_）。NSC / SMC の
-    // どちらの材質になるかは contact_ で決まる。
+    // どちらの材質になるかは接触の種類（PhysicsSystem::contact）で決まる。
     std::shared_ptr<chrono::ChContactMaterial> materialFor(const BodyOptions& o);
     std::shared_ptr<chrono::ChContactMaterial> makeMaterial() const;
     // シーン設定と合成した値を材質へ書く（負 = シーン設定）。
@@ -438,15 +432,13 @@ private:
 
     // ---- ソフトボディの内部 ----------------------------------------------
     struct SoftBody {
-        std::size_t root = 0;                   // 代表 = 最初の粒子の physId
-        std::vector<std::size_t> particles;     // 粒子の physId（root が先頭）
+        std::size_t root = 0;                   // 代表 = 最初の粒子の physId（粒子の列は名簿のグループ）
         std::vector<chrono::ChVector3d> rest;   // 静止位置（ローカル）
         chrono::ChVector3d restCentroid;        // rest の重心
         std::vector<SoftBodySpec::Spring> springs;
         int iterations = 2;
         bool active = true;
     };
-    static constexpr std::size_t kNoSoft = static_cast<std::size_t>(-1);
     // ばねを解いて粒子の速度を書き換える（step の先頭）。
     void solveSoftSprings(SoftBody& soft, double dt);
     // 粒子群に当てはめた剛体姿勢（重心 + 最小二乗の回転）。
@@ -457,8 +449,6 @@ private:
     // その番号が代表するソフトボディ（代表番号でなければ nullptr）。
     const SoftBody* softOfRoot(std::size_t id) const;
     SoftBody* softOfRoot(std::size_t id);
-    // 粒子ならその属するソフトボディの代表番号、剛体ならそのまま。
-    std::size_t representative(std::size_t id) const;
 
     // ---- 固定物どうしの衝突ペアを作らせない（Core = Bullet のみ）----------
     // 理由と仕組みは PhysicsWorldStaticPairs.cpp の先頭の注記（フィルタの定義は
@@ -497,52 +487,33 @@ private:
     // コールバックの本体（DoStepDynamics の衝突判定の末尾）。
     void collectTerrainContacts(chrono::ChSystem& sys);
 
-    // sys_ より先に宣言する = sys_（Bullet のペアキャッシュがこれを指す）より
+    // 担当の入れ物（Chrono の系と名簿。中身は PhysicsParts.h）。
+    struct Parts;
+    // p_ より先に宣言する = p_ の持つ系（Bullet のペアキャッシュがこれを指す）より
     // 後に壊れる。
     std::shared_ptr<StaticPairFilter> staticPairs_;
-    std::shared_ptr<chrono::ChSystem> sys_;
-    std::shared_ptr<chrono::ChContactMaterial> mat_;  // NSC か SMC（contact_）
-    ContactMethod contact_ = ContactMethod::NSC;
+    // 他のメンバより先に宣言する = 系は他のメンバ（ジョイント・テレイン・荷重など）が
+    // 全部壊れた後に壊れる。
+    std::unique_ptr<Parts> p_;
+    std::shared_ptr<chrono::ChContactMaterial> mat_;  // NSC か SMC（PhysicsSystem::contact）
     double smcYoung_ = 2.0e7;
     double smcPoisson_ = 0.3;
     // 荷重コンテナ（ChLoad。Core のみ）。ジョイント（ブッシュ）とボディの
     // 定常荷重で分けてある - ジョイントは停止で全部捨てるため。
     std::shared_ptr<chrono::ChLoadContainer> jointLoads_;
     std::shared_ptr<chrono::ChLoadContainer> bodyLoads_;
-    // bodies_ と並ぶ: そのボディの定常荷重（無ければ空）。
+    // 名簿の番号と並ぶ: そのボディの定常荷重（無ければ空）。
     std::vector<std::vector<std::shared_ptr<chrono::ChLoadBase>>> loadsOf_;
-    // recreate で当て直すための設定の控え。
-    double envelope_ = 0.002;
-    double margin_ = 0.001;
-    double recoverySpeed_ = 0.2;
-    double contactTolerance_ = 1e-3;
-    int threads_ = 0;
-    int iterations_ = 150;
-    chrono::ChVector3d gravity_{0.0, -9.81, 0.0};
-    CombineMode combine_ = CombineMode::Min;
-    std::string solverName_ = "bb";
-    std::string integratorName_ = "euler";
     // シーン設定の値（専用材質を持つボディの「シーン任せ」の欄を解くため）。
     float friction_ = 0.6f;
     float restitution_ = 0.0f;
     float rolling_ = 0.0f;
     float spinning_ = 0.0f;
-    std::vector<std::shared_ptr<chrono::ChBody>> bodies_;
-    // bodies_ と並ぶ: 専用の材質（共有なら nullptr）とオプション。
+    // 名簿の番号と並ぶ: 専用の材質（共有なら nullptr）とオプション。
     std::vector<std::shared_ptr<chrono::ChContactMaterial>> mats_;
     std::vector<BodyOptions> options_;
-    // 接触コールバックが返す ChBody* から physId への逆引き。ボディは
-    // 削除されない（disableBody は退場させるだけ）ので、追加時に足すだけ。
-    std::unordered_map<const chrono::ChBody*, std::size_t> bodyIndex_;
-    // disableBody() で退場させたボディは false。番号は詰めない。
-    std::vector<bool> active_;
-    // bodies_ と並ぶ: この番号の粒子が属するソフトボディ（softBodies_ の
-    // 位置）。剛体は kNoSoft。
-    std::vector<std::size_t> softOf_;
-    // 子ボディ → 持ち主（setAlias）。kNoSoft = 無し。接触ペアの報告にだけ効く。
-    std::vector<std::size_t> alias_;
-    std::vector<SoftBody> softBodies_;
-    // bodies_ と並ぶ: テレインに当たる形の記録（無ければ null = テレインの
+    std::vector<SoftBody> softBodies_;  // root の昇順（softOfRoot が二分探索で引く）
+    // 名簿の番号と並ぶ: テレインに当たる形の記録（無ければ null = テレインの
     // 接触の対象外）。shared_ptr なのは型の中身を PhysicsWorldInternal.h に閉じる
     // ため（ここは前方宣言だけ）。反力キャッシュは記録のときに 1 回だけ確保し、
     // 以後は再確保しない（アドレスを Chrono の接触へ渡すため）。
@@ -607,7 +578,6 @@ private:
     std::vector<CableRec> cables_;
     int diagSteps_ = 0;  // 診断ログ用のステップ数（removeAllJoints で 0 に）
     bool diagNanReported_ = false;
-    PhysicsBackend backend_ = PhysicsBackend::Core;
     double linearDamping_ = 0.0;
     double angularDamping_ = 0.0;
     bool sleepingEnabled_ = false;

@@ -1,6 +1,6 @@
 // Multicore 用の手計算のジョイント（モータ・ばね・可動範囲）。
 
-#include "physics/PhysicsWorld.h"
+#include "physics/PhysicsParts.h"
 #include "physics/ChronoCompat.h"
 
 #include <chrono/physics/ChBody.h>
@@ -30,9 +30,9 @@ void PhysicsWorld::applyManualJoints(double dt) {
     for (JointRec& j : joints_) {
         JointRec::Manual& m = j.manual;
         if (j.broken || (m.kind == Kind::None && !m.limited)) continue;
-        if (m.a >= bodies_.size() || m.b >= bodies_.size()) continue;
-        auto& a = bodies_[m.a];
-        auto& b = bodies_[m.b];
+        if (m.a >= p_->bodies.count() || m.b >= p_->bodies.count()) continue;
+        auto& a = p_->bodies.body(m.a);
+        auto& b = p_->bodies.body(m.b);
         const ChVector3d axisW = a->GetRot().Rotate(m.axisLocalA);
 
         // ---- 可動範囲（速度レベルの片側拘束。接触の解き方と同じ）----

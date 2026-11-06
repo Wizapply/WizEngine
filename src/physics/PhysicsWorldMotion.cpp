@@ -1,6 +1,6 @@
 // ボディの運動: 力・速度・質量・姿勢・固定。
 
-#include "physics/PhysicsWorld.h"
+#include "physics/PhysicsParts.h"
 #include "physics/ChronoCompat.h"
 
 #include <chrono/physics/ChBody.h>
@@ -21,16 +21,16 @@ constexpr double kWakeSpeed = 0.1;
 
 void PhysicsWorld::setBodyVelocity(std::size_t id, const ChVector3d& linear,
                                    const ChVector3d& angular) {
-    if (id >= bodies_.size()) return;
+    if (id >= p_->bodies.count()) return;
     if (SoftBody* soft = softOfRoot(id)) {
         // 粒子群には並進だけ（回転は粒子の配置が決める）。
-        for (const std::size_t p : soft->particles) {
-            if (bodies_[p]->IsFixed()) continue;
-            setLinVel(bodies_[p].get(), linear, 0);
+        for (const std::size_t p : p_->bodies.members(soft->root)) {
+            if (p_->bodies.body(p)->IsFixed()) continue;
+            setLinVel(p_->bodies.body(p).get(), linear, 0);
         }
         return;
     }
-    auto& b = bodies_[id];
+    auto& b = p_->bodies.body(id);
     if (b->IsFixed()) return;  // 固定ボディの速度は「動く床」になるので触らない
     wakeUp(b.get(), 0);
     setLinVel(b.get(), linear, 0);
@@ -39,21 +39,21 @@ void PhysicsWorld::setBodyVelocity(std::size_t id, const ChVector3d& linear,
 
 void PhysicsWorld::applyForce(std::size_t id, const ChVector3d& force,
                               double dt) {
-    if (id >= bodies_.size()) return;
+    if (id >= p_->bodies.count()) return;
     if (SoftBody* soft = softOfRoot(id)) {
         // 全体の質量で速度変化を出し、全粒子へ同じだけ足す（剛体に力を
         // 掛けたときと同じ並進になる）。
         const double total = bodyMass(id);
         if (total <= 0.0) return;
         const ChVector3d dv = force * (dt / total);
-        for (const std::size_t p : soft->particles) {
-            auto& pb = bodies_[p];
+        for (const std::size_t p : p_->bodies.members(soft->root)) {
+            auto& pb = p_->bodies.body(p);
             if (pb->IsFixed()) continue;
             setLinVel(pb.get(), getLinVel(pb.get(), 0) + dv, 0);
         }
         return;
     }
-    auto& b = bodies_[id];
+    auto& b = p_->bodies.body(id);
     const double mass = b->GetMass();
     // 固定ボディには掛けない（applyForceAtPoint と同じ）。固定の物は位置を
     // 積分しないので速度を足しても動かないが、**足した速度は残る**。Multicore
@@ -72,25 +72,25 @@ void PhysicsWorld::applyForce(std::size_t id, const ChVector3d& force,
 }
 
 chrono::ChVector3d PhysicsWorld::bodyVelocity(std::size_t id) const {
-    if (id >= bodies_.size()) return chrono::ChVector3d(0, 0, 0);
+    if (id >= p_->bodies.count()) return chrono::ChVector3d(0, 0, 0);
     if (const SoftBody* soft = softOfRoot(id)) {
         ChVector3d v(0, 0, 0);
-        for (const std::size_t p : soft->particles) v += getLinVel(bodies_[p].get(), 0);
-        return v * (1.0 / double(soft->particles.size()));
+        for (const std::size_t p : p_->bodies.members(soft->root)) v += getLinVel(p_->bodies.body(p).get(), 0);
+        return v * (1.0 / double(p_->bodies.members(soft->root).size()));
     }
-    return getLinVel(bodies_[id].get(), 0);
+    return getLinVel(p_->bodies.body(id).get(), 0);
 }
 
 void PhysicsWorld::applyForceAtPoint(std::size_t id, const ChVector3d& force,
                                      const ChVector3d& point, double dt) {
-    if (id >= bodies_.size()) return;
+    if (id >= p_->bodies.count()) return;
     if (isSoftBody(id)) {
         // ソフトボディに「点」の力は無い（回転は粒子の配置が決める）。
         // 並進だけ全体へ。
         applyForce(id, force, dt);
         return;
     }
-    auto& b = bodies_[id];
+    auto& b = p_->bodies.body(id);
     const double mass = b->GetMass();
     if (mass <= 0.0 || b->IsFixed()) return;
     if (b->IsSleeping()) wakeUp(b.get(), 0);
@@ -110,36 +110,36 @@ void PhysicsWorld::applyForceAtPoint(std::size_t id, const ChVector3d& force,
 }
 
 chrono::ChVector3d PhysicsWorld::bodyAngularVelocity(std::size_t id) const {
-    if (id >= bodies_.size()) return chrono::ChVector3d(0, 0, 0);
+    if (id >= p_->bodies.count()) return chrono::ChVector3d(0, 0, 0);
     if (isSoftBody(id)) return chrono::ChVector3d(0, 0, 0);
-    return getAngVel(bodies_[id].get(), 0);
+    return getAngVel(p_->bodies.body(id).get(), 0);
 }
 
 chrono::ChVector3d PhysicsWorld::bodyPointVelocity(
     std::size_t id, const chrono::ChVector3d& point) const {
-    if (id >= bodies_.size()) return chrono::ChVector3d(0, 0, 0);
+    if (id >= p_->bodies.count()) return chrono::ChVector3d(0, 0, 0);
     if (isSoftBody(id)) return bodyVelocity(id);
-    const auto& b = bodies_[id];
+    const auto& b = p_->bodies.body(id);
     const ChVector3d r = point - b->GetPos();
     return getLinVel(b.get(), 0) + getAngVel(b.get(), 0).Cross(r);
 }
 
 double PhysicsWorld::bodyMass(std::size_t id) const {
-    if (id >= bodies_.size()) return 0.0;
+    if (id >= p_->bodies.count()) return 0.0;
     if (const SoftBody* soft = softOfRoot(id)) {
         double total = 0.0;
-        for (const std::size_t p : soft->particles) total += bodies_[p]->GetMass();
+        for (const std::size_t p : p_->bodies.members(soft->root)) total += p_->bodies.body(p)->GetMass();
         return total;
     }
-    return bodies_[id]->GetMass();
+    return p_->bodies.body(id)->GetMass();
 }
 
 BodyTransform PhysicsWorld::bodyTransform(std::size_t id) const {
     // 番号は系の作り直し（recreate）で全部無効になる。古い番号で呼ばれても
     // 落ちないよう、範囲外は単位姿勢を返す（他の bodyXxx と同じ守り）。
-    if (id >= bodies_.size()) return BodyTransform{0, 0, 0, 1, 0, 0, 0};
+    if (id >= p_->bodies.count()) return BodyTransform{0, 0, 0, 1, 0, 0, 0};
     if (const SoftBody* soft = softOfRoot(id)) return softTransform(*soft);
-    const auto& b = bodies_[id];
+    const auto& b = p_->bodies.body(id);
     const ChVector3d p = b->GetPos();
     const ChQuaternion<> q = b->GetRot();
     return {p.x(), p.y(), p.z(), q.e0(), q.e1(), q.e2(), q.e3()};
@@ -152,10 +152,10 @@ void PhysicsWorld::setBodyPose(std::size_t id, const ChVector3d& pos,
         placeSoftBody(*soft, pos, rot);
         return;
     }
-    bodies_[id]->SetPos(pos);
-    bodies_[id]->SetRot(rot);
-    bodies_[id]->ForceToRest();  // zero linear + angular velocity and accel
-    wakeUp(bodies_[id].get(), 0);  // a re-dropped body must not stay asleep
+    p_->bodies.body(id)->SetPos(pos);
+    p_->bodies.body(id)->SetRot(rot);
+    p_->bodies.body(id)->ForceToRest();  // zero linear + angular velocity and accel
+    wakeUp(p_->bodies.body(id).get(), 0);  // a re-dropped body must not stay asleep
     forgetTerrainContacts(id);     // 置き直した = 前の場所での反力は使わない
 
     // ...and it must not fall straight back asleep. Chrono only refreshes a
@@ -165,19 +165,19 @@ void PhysicsWorld::setBodyPose(std::size_t id, const ChVector3d& pos,
     // to speed it up. A small initial downward velocity resets that timer.
     const double wakeSpeed =
         std::max(kWakeSpeed, 3.0 * static_cast<double>(sleepMinLinVel_));
-    setLinVel(bodies_[id].get(), ChVector3d(0, -wakeSpeed, 0), 0);
+    setLinVel(p_->bodies.body(id).get(), ChVector3d(0, -wakeSpeed, 0), 0);
 }
 
 // ---- 置き直し・固定・角力積 -------------------------------------------------
 
 void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
                              const ChQuaternion<>& rot) {
-    if (id >= bodies_.size()) return;
+    if (id >= p_->bodies.count()) return;
     if (SoftBody* soft = softOfRoot(id)) {
         placeSoftBody(*soft, pos, rot);
         return;
     }
-    auto& b = bodies_[id];
+    auto& b = p_->bodies.body(id);
     b->SetPos(pos);
     b->SetRot(rot);
     b->ForceToRest();
@@ -189,41 +189,41 @@ void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
 }
 
 void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
-    if (id >= bodies_.size()) return;
+    if (id >= p_->bodies.count()) return;
     // 固定するときは速度も捨てる（ForceToRest）。走行中に固定された物が
     // 速度を持ったままだと、Multicore の接触拘束がそれを「動く床」として
     // 上の物へ伝え続ける（applyForce の注記と同じ理屈）。
     if (SoftBody* soft = softOfRoot(id)) {
         // 全粒子を固定 = 形を保ったまま動かない土台になる。
-        for (const std::size_t p : soft->particles) {
-            bodies_[p]->SetFixed(fixed);
-            if (fixed) bodies_[p]->ForceToRest();
-            else wakeUp(bodies_[p].get(), 0);
-            if (active_[p]) updateStaticPairs(*bodies_[p]);  // 固定物どうしのペア
+        for (const std::size_t p : p_->bodies.members(soft->root)) {
+            p_->bodies.body(p)->SetFixed(fixed);
+            if (fixed) p_->bodies.body(p)->ForceToRest();
+            else wakeUp(p_->bodies.body(p).get(), 0);
+            if (p_->bodies.active(p)) updateStaticPairs(*p_->bodies.body(p));  // 固定物どうしのペア
         }
         return;
     }
-    bodies_[id]->SetFixed(fixed);
+    p_->bodies.body(id)->SetFixed(fixed);
     if (fixed) {
-        bodies_[id]->ForceToRest();
+        p_->bodies.body(id)->ForceToRest();
     } else {
-        wakeUp(bodies_[id].get(), 0);
-        resetSleepTimer(*bodies_[id]);  // 固定を外した直後に眠らせない
+        wakeUp(p_->bodies.body(id).get(), 0);
+        resetSleepTimer(*p_->bodies.body(id));  // 固定を外した直後に眠らせない
     }
     // 固定物どうしのペア: 固定にしたら掃除、外したら作り直させる。
-    if (active_[id]) updateStaticPairs(*bodies_[id]);
+    if (p_->bodies.active(id)) updateStaticPairs(*p_->bodies.body(id));
 }
 
 bool PhysicsWorld::bodyFixed(std::size_t id) const {
-    if (id >= bodies_.size()) return false;
+    if (id >= p_->bodies.count()) return false;
     // ソフトボディは代表粒子で代表させる（setBodyFixed は全粒子を揃えて
     // 固定するので、代表を見れば足りる）。
-    return bodies_[id]->IsFixed();
+    return p_->bodies.body(id)->IsFixed();
 }
 
 void PhysicsWorld::applyAngularImpulse(std::size_t id, const ChVector3d& impulse) {
-    if (id >= bodies_.size() || isSoftBody(id)) return;
-    auto& b = bodies_[id];
+    if (id >= p_->bodies.count() || isSoftBody(id)) return;
+    auto& b = p_->bodies.body(id);
     if (b->IsFixed()) return;
     if (b->IsSleeping()) wakeUp(b.get(), 0);
     const ChQuaternion<> q = b->GetRot();

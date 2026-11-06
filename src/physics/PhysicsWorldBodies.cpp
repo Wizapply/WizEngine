@@ -150,8 +150,8 @@ void PhysicsWorld::prepareBody(ChBody& body, const BodyOptions& options) {
 void PhysicsWorld::finishBody(const std::shared_ptr<chrono::ChBody>& body,
                               const std::shared_ptr<chrono::ChContactMaterial>& mat,
                               const BodyOptions& options) {
-    registerBody(body);
-    const std::size_t id = bodies_.size() - 1;
+    registerBody(body, mat, options);
+    const std::size_t id = p_->bodies.count() - 1;
     mats_[id] = (mat == mat_) ? nullptr : mat;
     options_[id] = options;
     attachBodyLoads(id, options);
@@ -219,9 +219,9 @@ std::size_t PhysicsWorld::addSphere(double radius, double density,
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
     prepareBody(*b, options);
-    sys_->AddBody(b);
+    p_->system.sys()->AddBody(b);
     finishBody(b, mat, options);
-    const std::size_t id = bodies_.size() - 1;
+    const std::size_t id = p_->bodies.count() - 1;
     {
         // テレインの接触用の形の記録（本体の球 + 追加の当たり形状）。
         wterrain::BodyProxy proxy;
@@ -254,9 +254,9 @@ std::size_t PhysicsWorld::addBox(double sx, double sy, double sz, double density
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
     prepareBody(*b, options);
-    sys_->AddBody(b);
+    p_->system.sys()->AddBody(b);
     finishBody(b, mat, options);
-    const std::size_t id = bodies_.size() - 1;
+    const std::size_t id = p_->bodies.count() - 1;
     {
         // テレインの接触用の形の記録（本体の箱 + 追加の当たり形状）。
         wterrain::BodyProxy proxy;
@@ -325,9 +325,9 @@ std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertice
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
     prepareBody(*b, options);
-    sys_->AddBody(b);
+    p_->system.sys()->AddBody(b);
     finishBody(b, mat, options);
-    const std::size_t id = bodies_.size() - 1;
+    const std::size_t id = p_->bodies.count() - 1;
     if (!fixed) {
         LOGW("physics", "triangle-mesh body is not fixed - concave mesh vs mesh "
                         "collision is slow (GImpact); prefer fixed=\"true\"");
@@ -395,9 +395,9 @@ std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
     prepareBody(*b, options);
-    sys_->AddBody(b);
+    p_->system.sys()->AddBody(b);
     finishBody(b, mat, options);
-    const std::size_t id = bodies_.size() - 1;
+    const std::size_t id = p_->bodies.count() - 1;
     if (terrainContact && !extras.empty()) {
         // テレインの接触: 追加の当たり形状（箱・球・円柱）だけ。extras が空の
         // フレームは当たり判定が無いので、テレインにも当たらない。
@@ -476,9 +476,9 @@ std::size_t PhysicsWorld::addConvexHull(
         setSleepLimits(b.get(), sleepMinLinVel_, sleepMinAngVel_, 0);
     }
     prepareBody(*b, options);
-    sys_->AddBody(b);
+    p_->system.sys()->AddBody(b);
     finishBody(b, mat, options);
-    const std::size_t id = bodies_.size() - 1;
+    const std::size_t id = p_->bodies.count() - 1;
     {
         // テレインの接触: Chrono が当たり形状にした凸包の頂点そのもの
         // （GetMesh = 体積重心へ寄せた後 = ボディローカル。ChBodyEasyConvexHull が

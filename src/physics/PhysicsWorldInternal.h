@@ -5,8 +5,8 @@
 // 持つ。公開 API は PhysicsWorld.h。他のファイルからは含めないこと。
 //
 //   PhysicsWorld.cpp             : 構築・1 ステップの順番・全体を起こす・機能の有無
-//   PhysicsWorldSystem.cpp       : Chrono の系と設定
-//   PhysicsWorldRegistry.cpp     : ボディの名簿（番号の登録・別名・退場）
+//   PhysicsWorldSystem.cpp       : 系を組む順番と系の設定の中継（本体は PhysicsSystem）
+//   PhysicsWorldRegistry.cpp     : ボディの登録と退場の順番（名簿は BodyRegistry）
 //   PhysicsWorldBodies.cpp       : ボディの組み立て・形の記録の作成
 //   PhysicsWorldMotion.cpp       : 力・速度・質量・姿勢・固定
 //   PhysicsWorldSleeping.cpp     : 眠りの設定と計時
@@ -26,6 +26,7 @@
 //
 // using namespace はここに書かない（各 .cpp に書く）。
 
+#include "physics/PhysicsParts.h"
 #include "physics/PhysicsWorld.h"
 #include "physics/ChronoCompat.h"
 #include "terrain/HeightField.h"
@@ -126,7 +127,7 @@ struct PhysicsWorld::TerrainState {
 };
 
 // ChSystem::ComputeCollisions の末尾（Bullet の接触を足した後）から呼ばれる。
-// PhysicsWorld が sys_ を持つので、系より先に world が消えることはない。
+// PhysicsWorld が系を持つ（p_）ので、系より先に world が消えることはない。
 struct PhysicsWorld::TerrainCallback : public chrono::ChSystem::CustomCollisionCallback {
     explicit TerrainCallback(PhysicsWorld* w) : world(w) {}
     void OnCustomCollision(chrono::ChSystem* sys) override {

@@ -319,8 +319,10 @@ set(WIZ_CORE_SOURCES
     src/core/Trash.cpp
     src/core/Versions.cpp)
 set(WIZ_PHYSICS_SOURCES
+    src/physics/BodyRegistry.cpp
     src/physics/MeshCollision.cpp
     src/physics/ModelImport.cpp
+    src/physics/PhysicsSystem.cpp
     src/physics/PhysicsWorld.cpp
     src/physics/PhysicsWorldBodies.cpp
     src/physics/PhysicsWorldCables.cpp

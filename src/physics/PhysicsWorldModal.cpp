@@ -1,6 +1,6 @@
 // モーダル解析（固有振動数）。
 
-#include "physics/PhysicsWorld.h"
+#include "physics/PhysicsParts.h"
 #include "physics/ChronoCompat.h"
 
 #ifdef WIZ_HAVE_MODAL
@@ -25,7 +25,7 @@ using namespace wizengine::physics::compat;
 bool PhysicsWorld::modalFrequencies(int count, std::vector<double>& hz, std::string& why) {
     hz.clear();
 #ifdef WIZ_HAVE_MODAL
-    if (backend_ == PhysicsBackend::Multicore) {
+    if (p_->system.backend() == PhysicsBackend::Multicore) {
         why = "modal analysis needs the core backend";
         return false;
     }
@@ -34,10 +34,10 @@ bool PhysicsWorld::modalFrequencies(int count, std::vector<double>& hz, std::str
         return false;
     }
     try {
-        sys_->Setup();
-        sys_->Update();
+        p_->system.sys()->Setup();
+        p_->system.sys()->Update();
         ChSparseMatrix M, K, Cq;
-        if (!systemMatrices(sys_.get(), M, K, Cq, 0)) {
+        if (!systemMatrices(p_->system.sys().get(), M, K, Cq, 0)) {
             why = "this Chrono has no system matrix accessors";
             return false;
         }
