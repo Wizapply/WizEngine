@@ -1,34 +1,28 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdlib>
 #include <string>
 
 // AI によるシーン自動構築（src/autogen/）の接続設定。
 //
-// 置き場所の考え方は CPU コアの指定と同じ: どの API にどのモデルでつなぐかは
-// シーンの中身ではなく**実行環境の設定**なので、SceneConfig.h にもシーン文書
-// にも置かず、exe 引数と環境変数で渡す。
+// どの API にどのモデルでつなぐかはシーンの中身ではなく**実行環境の設定**
+// なので、起動設定 config.json の "ai" 節が持つ（app/AppConfig が読んで
+// ここへ詰める。キーの一覧と既定値は同梱の config.json）:
 //
-//   LLM（OpenAI 互換の Chat Completions。OpenAI / Azure 互換ゲートウェイ /
-//   Ollama / LM Studio / vLLM / llama.cpp server など）
-//     --llm-url URL      WIZ_LLM_URL      既定 https://api.openai.com/v1
-//                                         （/chat/completions はこちらが足す）
-//     --llm-model NAME   WIZ_LLM_MODEL    必須（既定なし - 提供元ごとに違うため）
-//     （キー）           WIZ_LLM_API_KEY → OPENAI_API_KEY の順。ローカルの
-//                                         サーバーなら無くてよい
-//   3D モデル生成（Meshy 互換の Text to 3D）
-//     --meshy-url URL    WIZ_MESHY_URL    既定 https://api.meshy.ai
-//                                         （/openapi/v2/text-to-3d はこちらが足す）
-//     --meshy-refine     WIZ_MESHY_REFINE=1  テクスチャ付け（refine）まで回す
-//     （キー）           WIZ_MESHY_API_KEY → MESHY_API_KEY の順。無ければ
-//                                         モデル生成は使わない（箱・球で組む）
-//   共通
-//     --ai-max-meshes N  WIZ_AI_MAX_MESHES  1 回の生成で作るモデルの上限（既定 4）
-//     （CA）             WIZ_AI_CA_FILE   HTTPS の検証に使う CA 束（社内プロキシ等）
+//   "ai": {
+//     "llm":   { "url", "model", "apiKey", "temperature", "timeoutSec",
+//                "repairs", "maxSceneKB" },      ... OpenAI 互換 Chat Completions
+//                                                   （OpenAI / Ollama / LM Studio /
+//                                                   vLLM / llama.cpp server など）
+//     "meshy": { "url", "apiKey", "refine", "artStyle", "aiModel",
+//                "targetPolycount", "pollSec", "timeoutSec", "maxDownloadMB" },
+//     "maxMeshes", "caFile", "generatedDir"
+//   }
 //
-// **API キーは exe 引数では受けない**（プロセス一覧やシェルの履歴に残るため）。
-// 環境変数だけ。ブラウザにも送らない（/scene に出すのは「設定済みか」だけ）。
+// **API キー**は config.json の apiKey に書くか、空のままにして環境変数で
+// 渡す（WIZ_LLM_API_KEY → OPENAI_API_KEY、WIZ_MESHY_API_KEY → MESHY_API_KEY の
+// 順。config.json に書いた値が優先）。キーを書いた config.json はリポジトリに
+// 入れないこと。ブラウザには送らない（/scene に出すのは「設定済みか」だけ）。
 namespace wizengine {
 namespace autogen {
 
@@ -72,31 +66,8 @@ struct AiConfig {
     bool meshyConfigured() const { return !meshyUrl.empty() && !meshyKey.empty(); }
 };
 
-// 環境変数から読む（exe 引数はこのあと applyAiArg で上書きする）。
-AiConfig aiConfigFromEnvironment();
-
-// exe 引数 1 個を解釈する。自分の引数なら true（値を取る引数は next() で
-// 次の値をもらう）。知らない引数は false を返して main の解析に任せる。
-template <typename NextFn>
-bool applyAiArg(AiConfig& cfg, const std::string& arg, NextFn&& next) {
-    if (arg == "--llm-url") {
-        cfg.llmUrl = next("--llm-url");
-    } else if (arg == "--llm-model") {
-        cfg.llmModel = next("--llm-model");
-    } else if (arg == "--meshy-url") {
-        cfg.meshyUrl = next("--meshy-url");
-    } else if (arg == "--meshy-refine") {
-        cfg.meshyRefine = true;
-    } else if (arg == "--ai-max-meshes") {
-        const std::string v = next("--ai-max-meshes");
-        if (!v.empty()) cfg.maxMeshes = std::atoi(v.c_str());
-        if (cfg.maxMeshes < 0) cfg.maxMeshes = 0;
-        if (cfg.maxMeshes > 16) cfg.maxMeshes = 16;
-    } else {
-        return false;
-    }
-    return true;
-}
+// config.json に API キーが無いとき、環境変数から補う（上の順）。
+void fillAiKeysFromEnvironment(AiConfig& cfg);
 
 }  // namespace autogen
 }  // namespace wizengine

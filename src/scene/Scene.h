@@ -14,6 +14,7 @@
 
 #include <math/vec3.h>
 
+#include "scene/SceneSystemConfig.h"
 #include "scene/BoxController.h"
 #include "scene/CameraObject.h"
 #include "scene/EditorState.h"
@@ -70,17 +71,13 @@ struct BrushStamp;
 // boxes_ の「構造」を触るときだけ objectsMutex_ を取る。物理スレッドは唯一の
 // 書き手なので読むときは取らなくてよいが、他のスレッドは必ず lockObjects()。
 
-// Which physics backend the scene wants (SceneConfig.h の kBackend。CMake が
-// Multicore 無しなら Core に落ちる); main constructs the PhysicsWorld from it.
-PhysicsBackend scenePhysicsBackend();
-
 class Scene {
 public:
-    // maxCameras はカメラスロットの数（0 = SceneConfig.h の kMaxCameras）。
-    // exe 引数 --max-cameras から来る。ページ・受け口はこの数だけ用意され、
-    // エディタの「カメラを追加」もこの数まで（1〜16 に丸める）。
+    // sys は実行環境の設定（config.json の "scene" / "physics"。
+    // scene/SceneSystemConfig.h）。カメラのスロット数（1〜16 に丸める）・
+    // エディタカメラ・起動時のシーンとモード・休止・バックエンドの選び方。
     Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
-          std::size_t maxCameras = 0);
+          SceneSystemConfig sys = {});
     // .cpp で定義する（テレインの窓口と Undo を前方宣言の型の unique_ptr で
     // 持つため。完全な型が見える所で壊す）。
     ~Scene();
@@ -88,7 +85,7 @@ public:
     // The scene's cameras. Each one has its own Filament view and its own
     // browser endpoint; index 0 is the default camera. Input events are routed
     // to one of these (input thread); the render loop draws each in turn.
-    // スロットは kMaxCameras 個の固定プールで、エディタの追加・削除は
+    // スロットは SceneSystemConfig::maxCameras 個の固定プールで、エディタの追加・削除は
     // cameraActive の上げ下げ（エンドポイントは起動時に全部できている）。
     CameraObject& camera(std::size_t index = 0) { return *cameras_[index]; }
     std::size_t cameraCount() const { return cameras_.size(); }
@@ -179,11 +176,11 @@ public:
     std::vector<JointStat> jointStats();
 
     // ---- バックエンドの自動切替（B）------------------------------------------
-    // 既定は SceneConfig.h の kBackend（Core）。Multicore が扱えない機能
+    // 既定は SceneSystemConfig::backend（config.json、Core）。Multicore が扱えない機能
     // （FEA のケーブル・ChLoad のブッシュ / 定常荷重・直接法と MINRES・
     // HHT / Newmark・モーダル解析）を文書が使っていたら Core、無くて
-    // ソフトボディがあるかボディが多ければ Multicore（kMulticoreForSoftBodies /
-    // kMulticoreMinBodies）、どちらでもなければ既定。接触の解き方（nsc /
+    // ソフトボディがあるかボディが多ければ Multicore（multicoreForSoftBodies /
+    // multicoreMinBodies）、どちらでもなければ既定。接触の解き方（nsc /
     // smc）も系の種類なので同じ口。
     // 判定と切替はシミュレート開始・設定変更・読込のたび（syncBackend）。
     // いま何で動いていて、なぜかは backendNote（/scene と /stats に出す）。
@@ -369,7 +366,7 @@ public:
     EditorState& editor() { return editor_; }
     wizengine::editor::AppMode mode() const { return editor_.mode(); }
     // エディタ操作（モード切替・配置・ギズモ・ジョイント・保存/読込）を
-    // 受け付けるカメラ。SceneConfig.h の kEditorCamera（既定 0）。
+    // 受け付けるカメラ。SceneSystemConfig::editorCamera（既定 0）。
     std::size_t editorCamera() const;
 
     // PHYSICS thread: エディタモードの1パス（積分しない）。
@@ -978,6 +975,8 @@ private:
     std::vector<LightItem> lights_;    // 同上
 
     std::vector<GameObject> boxes_;
+    // 実行環境の設定（コンストラクタで受けて以後は読むだけ）。
+    SceneSystemConfig sys_;
     std::vector<std::unique_ptr<SceneComponent>> components_;
     EditorState editor_;
     // 地面の物理ボディ。ジョイントの「ワールド側」に使う。

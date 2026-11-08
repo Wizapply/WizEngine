@@ -476,7 +476,7 @@ GenOutcome generateScene(const AiConfig& cfg, const GenRequest& req, const GenHo
     };
 
     if (!cfg.llmConfigured()) {
-        return fail("LLM が設定されていません（--llm-model / WIZ_LLM_MODEL と --llm-url）");
+        return fail("LLM が設定されていません（config.json の ai.llm.model と ai.llm.url）");
     }
     if (req.prompt.empty()) return fail("依頼文が空です");
     if (req.mode != GenMode::New && req.currentXml.size() > cfg.llmMaxSceneBytes) {

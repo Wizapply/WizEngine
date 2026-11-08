@@ -42,7 +42,7 @@ PhysicsWorld.step(dt)
 
 **エディタ** は物理を止めて、置く・大きさを決める・ジョイントを設計する時間。
 **シミュレート** は今までどおり Chrono を回す時間。切り替えはブラウザ上部の
-2 ボタン、既定は `SceneConfig.h` の `kStartMode`（初期値 Simulate＝従来の挙動）。
+2 ボタン、既定は config.json の `scene.startMode`（初期値 simulate＝従来の挙動）。
 
 - **設計値と実体を分ける**。オブジェクトは `GameObject::desc`（`editor::BodyDesc`＝
   形・大きさ・置いた姿勢・質量・色）と、実体（`physId` = Chrono、`renderId` =
@@ -83,7 +83,7 @@ PhysicsWorld.step(dt)
   定義。保存時にオブジェクト番号を詰め、ジョイント・イベントノードの参照も
   付け替える。名前は英数字と `_ -` だけに正規化（保存先を assets/scenes に
   固定するため）。旧 `*.json`（version 1〜3）は**読み込みだけ**できる。
-- **シーンを書き換えるエディタ操作はエディタカメラ（`kEditorCamera`、既定 0）
+- **シーンを書き換えるエディタ操作はエディタカメラ（config.json の `scene.editorCamera`、既定 0）
   のページ専用**。edit.*（sim を除く）は EditorComponent が、ギズモの pick /
   drag / hover は GizmoComponent が、他のカメラからのぶんを弾く。UI 側もその
   ページ以外では Inspector タブを隠すが、**判定はサーバーが持つ**（リクエスト
@@ -102,9 +102,9 @@ PhysicsWorld.step(dt)
   (0,-1,0)」**（`scenemath::lightDirection`）。種類・影・減衰・円錐角は
   Filament のライト実体を決めるので、変更 = 実体の作り直し（`rebuild`）。
   初期 2 灯は `lightConfigs()`（方向ベクトル表記）を取り込んで編集可能に
-  している。カメラは **`kMaxCameras`（既定 5、exe 引数 `--max-cameras N` で
-  1〜16 に上書き可 - スロット数は実行環境の割り当てなので CPU コア指定と
-  同じく起動引数。main が Scene のコンストラクタへ渡す）個の固定スロット**。
+  している。カメラは **config.json の `scene.maxCameras`（既定 5、1〜16。exe 引数
+  `--max-cameras N` で上書き可 - スロット数は実行環境の割り当てなので CPU コア
+  指定と同じく起動設定。main が `SceneSystemConfig` で Scene へ渡す）個の固定スロット**。
   ページと
   WebRTC の受け口は起動時に全部できているが、**動画ビュー（スワップチェーン +
   読み戻しバッファ）は予備スロットぶんを作り置きせず、「カメラを追加」
@@ -364,7 +364,7 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   もう一度パースして loadDocument。警告は読込と同じくログ + 件数）。上限
   1MB。適用はファイルに書かない（保存は従来どおり 💾）。エディタカメラの
   ページ限定（他の edit.* と同じガード）。
-- **起動時に読むシーンは `SceneConfig.h` の `kStartupScene`**（既定
+- **起動時に読むシーンは config.json の `scene.startupScene`**（既定
   "default" = 同梱の `assets/scenes/default.xml`）。シーンの中身（配置・
   モデル・ジョイント・イベント）はコードではなく文書が持つ - 以前
   Scene.cpp にあった**格子の自動生成は廃止**した。読めなければ警告を出して
@@ -668,6 +668,47 @@ Lua を見ない: ノード → Lua ソース → LuaJIT、はエンジンの中
 - **未**: タイヤ以外（サス・エンジン曲線）の差し替え口、vec3 型、ノードの
   値のライブ表示（デバッグバッジ）。
 
+## 起動設定（`config.json` + `src/app/AppConfig.{h,cpp}`）
+
+**実行環境・システムに関わる設定はすべて `config.json`**（リポジトリ直下に
+説明付きの見本。ビルドが `build/config.json` へ**無いときだけ**コピーする =
+編集したビルド先のコピーは上書きしない）。読むのはカレントディレクトリ
+（`assets/` と同じ場所）の `config.json`、`--config <path>` で別のファイル。
+
+| 節 | 中身 |
+|---|---|
+| `server` | `mode`（web / window / stream / rtsp）・`httpPort`・`streamHost` / `streamPort`・`rtspUrl` |
+| `video` | `width` / `height`（偶数）・`fps`・`codec`（h264 / h265 / av1 / vp9）・`encoder`・`bitrate`・`gpuConvert` |
+| `cpu` | `physicsCores` / `renderCores`（"0-11" 形式）・`physicsThreads` |
+| `log` | `level`（debug / info / warn / error。環境変数 `WIZENGINE_LOG` が優先） |
+| `scene` | `startupScene`・`startMode`・`maxCameras`・`editorCamera`・`idleWhenUnwatched` |
+| `physics` | `backend`・`multicoreForSoftBodies`・`multicoreMinBodies`・`terrainForcesCore` |
+| `ai` | `llm`（url / model / apiKey / temperature / timeoutSec / repairs / maxSceneKB）・`meshy`（url / apiKey / refine / artStyle / aiModel / targetPolycount / pollSec / timeoutSec / maxDownloadMB）・`maxMeshes`・`caFile`・`generatedDir` |
+
+- **優先順位は「既定値 < config.json < exe 引数」**。既定値の定義はコードに
+  1 か所ずつ（`AppConfig.h` の構造体・`scene/SceneSystemConfig.h`・
+  `autogen/AiConfig.h`）で、同梱の config.json は同じ値を書いてあるだけ
+  （書かないキーは既定値 = 古い config.json のままでも起動する）。exe 引数は
+  従来の分（モードとポートの位置引数・`--physics-cores` など・`--max-cameras`・
+  `--codec`・`--encoder`）だけ残してある。**API キー**は config.json の apiKey が
+  空のときだけ環境変数から補う。
+- **SceneConfig.h との分担**: 「どのマシンで・どう動かすか」で変わる値が
+  config.json、物理の手触り（摩擦・減衰・反復回数・スリープ）やライトの初期
+  構成・掴みのばねといった**エンジンの既定値**は従来どおり `SceneConfig.h`
+  （コンパイル時）。Scene は実行環境の値を `SceneSystemConfig`（コンストラクタで
+  受けて `sys_` に持つ）として受け取る。`PhysicsBackend` は Chrono 抜きで読める
+  `physics/PhysicsBackend.h` に分けた。
+- **読み方はシーン文書と同じ約束**: コメント（`//` と `/* */`）可、UTF-8 の BOM
+  可。知らないキー（打ち間違い）・型違い・範囲外・不正な列挙値は**警告して
+  既定値 / 丸めた値**で続ける（起動ログの `config: ...` に全件）。`_` か `$`
+  で始まるキーは注記として読み飛ばす。**JSON として壊れているときだけ起動を
+  止める**（行と列付き。壊れた設定で黙って既定値のまま動くと、どの値が
+  効いているのか分からなくなるため）。`--config` で指定したファイルが無いときも
+  止める。カレントに config.json が無いのは既定値で起動（ログに 1 行）。
+- **値を足すとき**: 構造体にメンバ（既定値付き）→ `parseAppConfig` に 1 行
+  （`r.str / r.integer / r.number / r.boolean`、範囲と許す値を書く。読んだパスが
+  「知っているキー」になる）→ 同梱の config.json に説明付きで 1 行。
+
 ## AI によるシーン自動構築（`src/autogen/` + `components/AutoGenComponent`）
 
 依頼文（日本語でよい）から **OpenAI 互換の LLM** がシーン文書（XML）を書き、
@@ -693,17 +734,19 @@ Lua を見ない: ノード → Lua ソース → LuaJIT、はエンジンの中
   join の後に呼ぶ。Scene の破棄も係を先に壊すようにした = `~Scene()` が
   `components_.clear()`）。通信中のスレッドは待たない（終了が LLM の応答待ちで
   数分止まらないため）。
-- **接続先は実行環境の設定**（CPU コアと同じく exe 引数 + 環境変数。
-  `AiConfig.h` の冒頭に一覧）: `--llm-url`（既定 https://api.openai.com/v1、
-  Ollama なら http://127.0.0.1:11434/v1）・`--llm-model`（必須）・`--meshy-url`・
-  `--meshy-refine`・`--ai-max-meshes`。**API キーは環境変数だけ**
-  （`WIZ_LLM_API_KEY` / `OPENAI_API_KEY`、`WIZ_MESHY_API_KEY` / `MESHY_API_KEY`）。
+- **接続先は実行環境の設定 = config.json の `ai` 節**（下の「起動設定」の章。
+  キーの一覧は `AiConfig.h` の冒頭）: `ai.llm.url`（既定
+  https://api.openai.com/v1、Ollama なら http://127.0.0.1:11434/v1）・
+  `ai.llm.model`（必須。空 = 機能オフ）・`ai.meshy.url`・`ai.meshy.refine`・
+  `ai.maxMeshes` など。**API キー**は `ai.llm.apiKey` / `ai.meshy.apiKey`、空なら
+  環境変数（`WIZ_LLM_API_KEY` → `OPENAI_API_KEY`、`WIZ_MESHY_API_KEY` →
+  `MESHY_API_KEY`。`fillAiKeysFromEnvironment`）。AI 専用の exe 引数は無い。
   ブラウザへは「設定済みか」とホスト名しか出さない。
 - **HTTPS は OpenSSL 付きのビルドだけ**（CMake が OpenSSL 3 を見つけたら
   `CPPHTTPLIB_OPENSSL_SUPPORT` を**ターゲット全体**に立てる。httplib はこの
   定義で class の中身が変わるので TU ごとに立て分けると ODR 違反）。無ければ
   http:// の接続先だけ。プロキシは `HTTPS_PROXY` / `NO_PROXY`、CA は
-  `WIZ_AI_CA_FILE`。送るのは `model` と `messages` だけ（`max_tokens` /
+  `ai.caFile`。送るのは `model` と `messages` だけ（`max_tokens` /
   `temperature` / `response_format` は提供元とモデルの世代で可否が違うので
   送らない）。
 - **LLM に教えるのは文書の部分集合**（`ScenePrompt.cpp` の指示文、英語）: 箱・
@@ -871,9 +914,9 @@ Chrono の「中規模」の機能（新モジュールのリンクか設計変�
 車両 Chrono::Vehicle は自前実装があるので対象外）。**バックエンドは Scene が
 文書の中身から自動で選ぶ**（`Scene::requiredBackend` / `syncBackend` /
 `rebuildPhysicsWorld`）: ①Multicore が扱えない機能を使っていれば Core、
-②無くてソフトボディがあるかボディが `kMulticoreMinBodies`（既定 200、
+②無くてソフトボディがあるかボディが `physics.multicoreMinBodies`（config.json、既定 200、
 粒子と collide 部品も数える）以上なら Multicore、③どちらでもなければ
-`kBackend`（既定 **Core**）。見本は `assets/scenes/flexible.xml`。
+`physics.backend`（既定 **Core**）。値は `SceneSystemConfig`（Scene が持つ `sys_`）。見本は `assets/scenes/flexible.xml`。
 
 - **なぜ Core が既定か**。Core（`ChSystemNSC` + Bullet）は Chrono の全機能が
   そのまま使え（B 群は全部 Core 専用、A 群のばね / トルクモータ / 可動範囲も
@@ -1360,6 +1403,7 @@ src/
   components/    EditorComponent, GizmoComponent, PhysicsControlComponent,
                  StreamControlComponent, VehicleComponent, PrefabComponent,
                  AutoGenComponent
+  app/           起動設定（config.json の読み込み = AppConfig）
   autogen/       AI によるシーン自動構築（LLM / Meshy の HTTP クライアント・指示文・
                  配置の後始末。Chrono も Filament も知らない）
   vehicle/       車両モデルとノード式（純粋な数値ライブラリ。tests/vehicle が使う）
@@ -1379,9 +1423,10 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
   semver）と `versions.Codename`、ブラウザのサイド
   バー見出しと About 節（World タブ）がここから出る。ブラウザ側は
   `app.js` の `PRODUCT` が同じ名前を持つ（/stats のキー名を引くため）。
-- **CPU コアの固定**（`src/core/CpuAffinity.{h,cpp}`、Windows / Linux 両対応）。設定は **exe 引数**（`--physics-cores "0-11"` / `--render-cores "12-15"` /
-  `--physics-threads N`、`--help` で一覧）。**SceneConfig.h には置かない**（scene はユーザーが
-  触るシーン内容、CPU 割り当ては実行環境の設定という分離）。オプションはモードの前後
+- **CPU コアの固定**（`src/core/CpuAffinity.{h,cpp}`、Windows / Linux 両対応）。設定は **config.json の `cpu`**（`physicsCores` "0-11" / `renderCores` "12-15" /
+  `physicsThreads`）で、exe 引数（`--physics-cores` / `--render-cores` /
+  `--physics-threads`、`--help` で一覧）でも上書きできる。**SceneConfig.h には置かない**（scene はユーザーが
+  触るシーン内容、CPU 割り当ては実行環境の設定という分離）。exe 引数はモードの前後
   どこに書いてもよく、位置引数とは分けて解析される。Windows は `SetThreadAffinityMask` /
   `GetProcessAffinityMask`、Linux は `pthread_setaffinity_np` / `sched_getaffinity`。
   **Chrono::Multicore は OpenMP で解くので、呼び出し元スレッドを固定しても
@@ -1516,12 +1561,15 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
   イベントの引き寄せで同じ答えが要るため（動かすかどうかはイベントアセット
   次第）。**シーンの中身は持たない**（配置・モデル・ジョイントは
   assets/scenes/*.xml。`build()` は地面・ライト・カメラの初期化と
-  kStartupScene の読み込みだけ）。エンジン側の既定値は `SceneConfig.h`。
+  config.json の `scene.startupScene` の読み込みだけ）。エンジン側の既定値は
+  `SceneConfig.h`、実行環境の設定は `SceneSystemConfig`（config.json）。
 - `src/streaming/VideoStreamer.{h,cpp}` — GStreamer パイプライン。`OutputMode` で
   web/None（GStreamer出力なし。ブラウザへは WebRtcStreamer が担当）/ window / stream
   （RTP/UDP）/ rtsp（rtspclientsink）を切替。
 - `src/streaming/WebRtcStreamer.{h,cpp}` — GStreamer `webrtcbin` でブラウザへ WebRTC 配信。
-  コーデックは `SceneConfig.h` の `kVideoCodec`（VP8 / VP9 / H264）と `kVideoBitrate` で指定。
+  コーデック・ビットレート・解像度・fps・エンコーダ要素は config.json の `video`
+  （`codec` = h264 / h265 / av1 / vp9、`bitrate`、`encoder`。exe 引数 `--codec` /
+  `--encoder` でも上書き可）。
   VP9 は同画質で VP8 の約半分の帯域だがエンコードが重い（`cpu-used=8` で速度優先）。
   H264 は GPU エンコード（amfh264enc → mfh264enc → x264enc → openh264enc の順で自動選択、
   起動時に `h264 encoder: ...` と表示）。`h264parse config-interval=-1` で SPS/PPS を
@@ -1554,7 +1602,7 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
   → `ShapeMaterial`、描画設定 `RenderDesc` → `RenderSettings`）。Scene と
   PrefabComponent の両方が使うので Scene の私的ヘッダには置かない
   （同じ変換を 2 か所に書くと、値を足したとき片方だけ直して黙って食い違う）。
-- **視聴者がいない間は完全に休む**（web モードのみ、`SceneConfig.h` の `kIdleWhenUnwatched`）。
+- **視聴者がいない間は完全に休む**（web モードのみ、config.json の `scene.idleWhenUnwatched`）。
   `HttpServer::hasViewer()`（トークン＋ハートビート）で判定し、描画スレッドは 100ms 間隔の
   ポーリングのみ、物理スレッドも停止（アキュムレータもクリアするので復帰時に一気に進まない）。
   WebRTC のパイプラインは視聴者離脱時に破棄済みなのでエンコードも止まる。window/stream/rtsp
@@ -1663,9 +1711,9 @@ CRT を変えたときは build フォルダを削除してから再 configure�
 物理バックエンドの選択は2段構え。
 1. CMake `-DWIZ_USE_MULTICORE=ON`（既定 OFF）… Multicore モジュールを**リンクして使える
    状態にする**だけ。`find_package(Chrono COMPONENTS Multicore)` になる。
-2. `SceneConfig.h` の `kBackend`（`PhysicsBackend::Core` / `::Multicore`、既定 Core）…
+2. config.json の `physics.backend`（`core` / `multicore`、既定 core）…
    **シーンが何も要求しないときの系**。実際には Scene が文書の中身で選ぶ
-   （Core 専用機能 → Core、ソフトボディ / `kMulticoreMinBodies` 以上 → Multicore。
+   （Core 専用機能 → Core、ソフトボディ / `physics.multicoreMinBodies` 以上 → Multicore。
    上の「Chrono の B 群」の章）。
 CMake が OFF なら Multicore を選ぶ条件でも Core のまま（起動時にメッセージ）。Multicore は `ChSystemMulticoreNSC`＋APGD で設定は
 `GetSettings()` 経由。**スリープ非対応**なので `asleep` は 0 のまま。起動ログとブラウザの
@@ -1752,7 +1800,7 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   選択、初速、円柱部品と三角メッシュの当たり判定。上の「Chrono の拘束・
   物性」の章）。
 - 済: シーン文書の MuJoCo 風 XML 化（`assets/scenes/*.xml`、`/scene.xml`、
-  `kStartupScene`。上の「シーン文書（XML）」の章を参照）。
+  `scene.startupScene`。上の「シーン文書（XML）」の章を参照）。
 - 済: glTF モデルの文書化（`<asset><mesh/>` + `<geom type="mesh" mesh=...>`。
   配置も含め、シーンの中身はコードから文書へ全面移行。Scene.cpp の
   格子自動生成・kBoxModelPath プール・置物 kModelPath は廃止し、既定シーンは
@@ -1769,6 +1817,7 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   露出・トーンマップと色調整、`<geom>` / `<part>` の PBR 材質、
   `<ground roughness metallic>`、`<environment skybox>`。上の「フォトリアル
   描画」の章と `docs/photorealism.md`）。
+- 済（実機待ち）: 起動設定の config.json 化（上の「起動設定」の章）。
 - 済（実機待ち）: AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換
   Text to 3D。上の「AI によるシーン自動構築」の章）。
 - 済: ステップ3（姿勢反映）〜6（UDP配信）。

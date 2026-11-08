@@ -204,6 +204,17 @@ else()
         "files there and they will be copied next to the executable")
 endif()
 
+# 起動設定（config.json）: 実行フォルダ（assets/ と同じ場所）に**無いときだけ**
+# 同梱の config.json を置く。編集されたビルド先のコピーは上書きしない（API キーを
+# 書くのはこちら = build/ はリポジトリの外）。同梱側の新しいキーを取り込みたい
+# ときはビルド先のファイルを消して configure し直すか、手で足す（書いていない
+# キーは既定値で動くので、古いコピーのままでも起動は止まらない）。
+if(NOT EXISTS ${CMAKE_CURRENT_BINARY_DIR}/config.json)
+    file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/config.json
+         DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+    message(STATUS "WizEngine: placed config.json -> ${CMAKE_CURRENT_BINARY_DIR}/config.json")
+endif()
+
 # Web UI: the browser page and its assets are served from disk at runtime, so
 # they are copied next to the binary. Editing a file under web/ and reloading
 # the browser is enough - no rebuild needed.
@@ -311,8 +322,11 @@ endif()
 #   components/ ブラウザのコマンドを受ける SceneComponent 群
 #   vehicle/    車両モデルとノード式（純粋な数値ライブラリ。tests/vehicle が使う）
 #   terrain/    テレインの高さ格子（純粋な計算。tests/terrain が使う）
+#   app/        起動設定（config.json）の読み込み
 #   autogen/    AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換 Text to 3D。
 #               Chrono も Filament も知らない）
+set(WIZ_APP_SOURCES
+    src/app/AppConfig.cpp)
 set(WIZ_CORE_SOURCES
     src/core/AssetError.cpp
     src/core/CpuAffinity.cpp
@@ -405,6 +419,7 @@ set(WIZ_AUTOGEN_SOURCES
 
 add_executable(wizengine
     src/main.cpp
+    ${WIZ_APP_SOURCES}
     ${WIZ_CORE_SOURCES}
     ${WIZ_PHYSICS_SOURCES}
     ${WIZ_RENDER_SOURCES}

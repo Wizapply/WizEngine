@@ -163,7 +163,16 @@ cd build
 ./wizengine --help               # オプション一覧
 ```
 
-主なオプション:
+設定は実行フォルダ（`assets/` と同じ場所）の **`config.json`** にまとまっています
+（出力モード・ポート・解像度・コーデック・CPU コア・ログ・カメラ数・起動シーン・
+物理バックエンド・AI の接続先と API キー）。ビルドがリポジトリ直下の見本を
+`build/config.json` へ無いときだけコピーするので、そちらを編集してください
+（コメント付きの JSON。知らないキーや範囲外の値は起動ログに警告が出ます）。
+別のファイルは `--config <path>`。API キーを書いたファイルはリポジトリに
+入れないでください（空のままにして環境変数 `WIZ_LLM_API_KEY` /
+`WIZ_MESHY_API_KEY` でも渡せます）。
+
+次のオプションは config.json より優先されます（その回の起動だけ）:
 
 | オプション | 内容 |
 |---|---|
@@ -173,7 +182,7 @@ cd build
 | `--physics-cores "0-11"` / `--render-cores "12-15"` | 物理と描画のスレッドを CPU コアに固定 |
 | `--physics-threads N` | ソルバのスレッド数 |
 
-環境変数 `WIZENGINE_LOG=debug|info|warn|error` でログのレベルを変えられます。
+ログのレベルは config.json の `log.level`（環境変数 `WIZENGINE_LOG=debug|info|warn|error` が優先）。
 
 web モードでは `/cam0/`、`/cam1/`、… がカメラごとのページです（`/` は
 `/cam0/` へ）。1 ページを同時に見られるのは 1 ブラウザで、誰も見ていない間は
@@ -214,7 +223,7 @@ web モードでは `/cam0/`、`/cam1/`、… がカメラごとのページで�
 |---|---|
 | Scene | 再生 / リセット、カメラ・ライト・オブジェクトの一覧、選択の要約 |
 | Inspector | 選択している物の内容だけ（地面・テレインも Objects 一覧で選ぶとここに出る）。Editor Camera のページだけ |
-| World/Physics | シーン全体の設定: 重力・摩擦・ソルバ・レート・接触モデル・バックエンド表示、World（環境光・シーン全体のイベント）と描画（Editor Camera のページだけ）、配信設定 |
+| ⚙ World | シーン全体の設定: 重力・摩擦・ソルバ・レート・接触モデル・バックエンド表示、World（環境光・シーン全体のイベント）と描画（Editor Camera のページだけ）、配信設定 |
 
 Inspector は Unity と同じく「選択している物の内容」だけを出します:
 
@@ -291,7 +300,7 @@ Esc で閉じる）。
 
 シーンの中身（配置・モデル・ジョイント・イベント・ライト・カメラ・描画設定）は
 `assets/scenes/<名前>.xml` の 1 ファイルです。💾 保存で書き、タイルの
-ダブルクリックで読み、起動時は `SceneConfig.h` の `kStartupScene`（既定
+ダブルクリックで読み、起動時は config.json の `scene.startupScene`（既定
 `default`）を読みます。書式は MuJoCo（MJCF）に寄せてあります。
 
 ```xml
@@ -344,7 +353,7 @@ Esc で閉じる）。
 ### バックエンドの自動選択
 
 Chrono の系はシーンの中身で自動的に決まります。いま何で動いていて、なぜかは
-World/Physics タブの「バックエンド」と画面下の `engine` に出ます。
+World タブの「バックエンド」と画面下の `engine` に出ます。
 
 1. Multicore が扱えない機能（FEA ケーブル、ブッシュ / 定常荷重、線形・直接法
    ソルバ、HHT / Newmark、モーダル解析）を使っていれば **Core**。
@@ -355,7 +364,7 @@ World/Physics タブの「バックエンド」と画面下の `engine` に出�
 Core は Chrono の全機能が使えてスリープも効き、数十個の剛体なら Multicore より
 速いか同等です。Multicore は接触が大量に立つ場面で効きます。切り替えは
 シミュレート開始・設定変更・読込の時点で行われます。しきい値は
-`SceneConfig.h` の `kMulticoreForSoftBodies` / `kMulticoreMinBodies` です。
+config.json の `physics.multicoreForSoftBodies` / `physics.multicoreMinBodies` です。
 
 ### ジョイント
 
@@ -364,7 +373,7 @@ Core は Chrono の全機能が使えてスリープも効き、数十個の剛�
 モータ（速度・位置・力）、どの拘束にも破断（反力がしきい値を超えたら外れ、
 `onJointBreak` が発火）を付けられます。シミュレート中は反力が一覧に出ます。
 
-### World/Physics タブで選べるもの
+### World タブで選べるもの
 
 重力 3 成分、積分器（Euler / 射影 / 陰解法 / 台形則 / HHT / Newmark）、
 接触ソルバ（BB / APGD / PSOR / Jacobi / ADMM / PMINRES / MINRES と直接法の
@@ -390,7 +399,7 @@ SMC）、モーダル解析の本数。線形・直接法のソルバは接触�
 
 ## 描画
 
-World/Physics タブの「描画」節がシーンの `<visual>` を編集します（Editor Camera のページだけ）。Draft /
+World タブの「描画」節がシーンの `<visual>` を編集します（Editor Camera のページだけ）。Draft /
 Standard / Photo の 3 ボタンで一括切替、下の欄で個別調整（影の種類と解像度・
 MSAA・AO・ブルーム・反射・ビネット・被写界深度・露出・トーンマップ）。
 オブジェクトの材質（粗さ / 金属 / 反射率 / クリアコート / 自己発光）は
@@ -402,7 +411,7 @@ MSAA・AO・ブルーム・反射・ビネット・被写界深度・露出・�
 <https://polyhaven.com/hdris> などから 2k の Radiance 形式（.hdr）を 1 つ
 置いてください。無ければ一様な環境光で起動します。
 
-配信の解像度・FPS・ビットレートは World/Physics タブの Stream 節でカメラごとに
+配信の解像度・FPS・ビットレートは World タブの Stream 節でカメラごとに
 変えられます。
 
 ## 設定の場所
@@ -410,10 +419,9 @@ MSAA・AO・ブルーム・反射・ビネット・被写界深度・露出・�
 | 変えたいもの | 場所 |
 |---|---|
 | シーンの中身 | `assets/scenes/*.xml`（エディタで保存、または手で編集） |
-| 起動時のシーン・モード、カメラ数、ソルバの既定値、Multicore のしきい値 | `src/scene/SceneConfig.h` |
+| 起動時のシーン・モード、カメラ数、ポート、解像度・コーデック、CPU コア、Multicore のしきい値、AI の接続先 | `config.json`（実行フォルダ。exe 引数で一時的に上書き可） |
+| ソルバ・接触・スリープなど物理の既定値、ライトの初期構成 | `src/scene/SceneConfig.h` |
 | 製品名・版・コードネーム | `src/core/Versions.h` |
-| 配信コーデックの既定 | `src/main.cpp` 冒頭（起動時は `--codec` / `--encoder`） |
-| CPU コアの割り当て | 起動引数（`--physics-cores` など） |
 | ブラウザ UI | `web/`（ビルドが `assets/web/` へコピー。リロードで反映、再ビルド不要） |
 
 ## トラブルシューティング

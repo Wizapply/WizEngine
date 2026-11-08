@@ -832,7 +832,7 @@ inline RenderDesc renderPreset(const std::string& name) {
 // 1 台ぶんの姿勢。実体（CameraObject）と同じオービット表現のまま保存する。
 // UI が見せる「位置・向き」へは Scene.cpp が変換する（eye = target + radius *
 // 軌道ベクトル、pitch/yaw ⇄ elevation/azimuth）。active=false のスロットは
-// 「削除された」カメラ: エンドポイントは起動時に kMaxCameras ぶん作られるので、
+// 「削除された」カメラ: エンドポイントは起動時にカメラのスロット数（config.json の maxCameras）ぶん作られるので、
 // 実行中の追加・削除はこのフラグの上げ下げになる。
 struct CameraPose {
     double azimuth = 0.66;    // ラジアン（Y 軸まわり）

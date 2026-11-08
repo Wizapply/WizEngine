@@ -24,7 +24,7 @@ AutoGenComponent::AutoGenComponent(ag::AiConfig cfg) : generator_(std::move(cfg)
              c.llmModel.c_str(), c.llmUrl.c_str(),
              c.meshyConfigured() ? c.meshyUrl.c_str() : "off (no MESHY key)");
     } else {
-        LOGI("ai", "scene generation: off (set --llm-model or WIZ_LLM_MODEL to enable)");
+        LOGI("ai", "scene generation: off (set ai.llm.model in config.json to enable)");
     }
 }
 

@@ -73,9 +73,9 @@
     const editable = sceneData.mode === 'editor' && isEditorCam();
     const parts = [];
     parts.push(ai.llm ? ('LLM: ' + ai.llmModel + ' @ ' + ai.llmHost)
-                      : 'LLM: 未設定（--llm-model）');
+                      : 'LLM: 未設定（config.json の ai.llm.model）');
     parts.push(ai.meshy ? ('3D: ' + ai.meshyHost + (ai.meshyRefine ? '（テクスチャ付き）' : '（形のみ）'))
-                        : '3D: 未設定（WIZ_MESHY_API_KEY）');
+                        : '3D: 未設定（config.json の ai.meshy.apiKey）');
     if (!ai.https) parts.push('https 不可のビルド');
     conf.textContent = parts.join(' ／ ');
     conf.classList.toggle('bad', !ai.llm);

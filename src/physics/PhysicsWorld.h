@@ -1,5 +1,6 @@
 #pragma once
 
+#include "physics/PhysicsBackend.h"
 #include <chrono/physics/ChContactMaterial.h>
 #include <chrono/physics/ChSystem.h>
 
@@ -41,13 +42,8 @@ struct StepTimers {
     double update = 0.0;
 };
 
-// Which Chrono system to build on. Multicore needs a Chrono built with the
-// MULTICORE module (CMake: -DWIZ_USE_MULTICORE=ON); if that is not available
-// the world silently falls back to Core and says so on stdout.
-enum class PhysicsBackend {
-    Core,       // ChSystemNSC - serial solver, supports sleeping
-    Multicore,  // ChSystemMulticoreNSC - OpenMP solver + collision, no sleeping
-};
+// Which Chrono system to build on: PhysicsBackend（physics/PhysicsBackend.h）。
+// If Multicore is not compiled in, the world falls back to Core and says so.
 
 // True when this build can actually use PhysicsBackend::Multicore.
 bool multicoreAvailable();
