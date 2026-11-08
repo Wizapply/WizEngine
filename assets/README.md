@@ -26,6 +26,16 @@ Files the scene loads at runtime, copied next to the executable by the build.
 - `*.glb` / `*.gltf` — モデル。シーン XML の `<asset><mesh name file scale/>`
   が assets/ からの相対パスで参照する（例: `file="models/crate.glb"`）。
   どのモデルをどの剛体で使うかはシーン文書が決める。
+  テレインの散布の原型のモデルも assets/ からの相対パスで指定する（Inspector の
+  テレインの散布の欄。`.terrain` の TREE 節に入る）。モデルが無いときは代役
+  （円柱の幹 + 球の冠）で描く。1 本のモデルの目安は 2 万ポリゴン以下。
+  モデルはコミットしない: `.gitignore` が除外するのは `assets/*.glb` と
+  `assets/*.gltf`（`assets/` の直下）だけなので、`assets/` 直下に置いて
+  `file="tree.glb"` のように指定する（`assets/models/` などの下位フォルダは
+  除外されないので、そこに置いたときは `git add` に混ぜないよう注意）。
+  読むのは実行フォルダの `build/assets/` なので、`assets/` に置いたら次のビルドが
+  要る。散布のモデルは読めなかったパスを起動し直すまで読み直さないので、
+  **モデルを置いてからパスを入れる**。
 
 ## Layout
 
@@ -42,7 +52,8 @@ Files the scene loads at runtime, copied next to the executable by the build.
   層の定義（LAYR = 層ごとのテクスチャ・タイル・法線マップ・マスク・粗さ・金属・
   法線の強さ）。シーン XML の
   `<terrain data="名前">` が名前で参照する。層は .terrain が持つので、同じ
-  .terrain をどのシーンで開いても同じ見た目になる。
+  .terrain をどのシーンで開いても同じ見た目になる。散布物（TREE = 木や小物の
+  原型と配置。上限は原型 8 個・配置 4096 個）も .terrain が持つ。
 - `textures/` の塗り分けの層のテクスチャ — 各自で用意し、コミットしない
   （`.gitignore` には入っていないので、`assets/textures/` に置いたときは
   `git add` に混ぜないよう注意）。置き方:

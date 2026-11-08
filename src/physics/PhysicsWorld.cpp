@@ -2579,7 +2579,7 @@ std::size_t PhysicsWorld::addTriangleMesh(const std::vector<ChVector3d>& vertice
 std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
                                    const ChQuaternion<>& rot, bool fixed,
                                    const std::vector<ExtraShape>& extras,
-                                   const BodyOptions& options) {
+                                   const BodyOptions& options, bool terrainContact) {
     const auto mat = materialFor(options);
     auto b = chrono_types::make_shared<ChBody>();
     const double m = std::max(mass, 1e-3);
@@ -2620,7 +2620,7 @@ std::size_t PhysicsWorld::addFrame(double mass, const ChVector3d& pos,
     sys_->AddBody(b);
     finishBody(b, mat, options);
     const std::size_t id = bodies_.size() - 1;
-    if (!extras.empty()) {
+    if (terrainContact && !extras.empty()) {
         // テレインの接触: 追加の当たり形状（箱・球・円柱）だけ。extras が空の
         // フレームは当たり判定が無いので、テレインにも当たらない。
         wterrain::BodyProxy proxy;

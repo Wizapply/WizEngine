@@ -86,6 +86,8 @@ void Scene::endTerrainStroke() {
         rebuildTerrainBody();
         std::snprintf(collision, sizeof(collision), ", collision %.1f ms", elapsedMs(t0));
     }
+    // 幹も同じ（所要時間は rebuildScatterBody のログが出す）。
+    if (done.scatterBodyStale) rebuildScatterBody();
     // 🌲 を当てたのに 1 本も置けなかったストロークは 1 回知らせる（密度 0・小さな筆・
     // 間隔で詰まった場合。上限に当たったときは上限の知らせを残す）。
     if (done.scatterTried && done.scatterAdded == 0 && !done.scatterCapped) {

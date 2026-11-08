@@ -6,7 +6,6 @@
 
 #include "core/AssetError.h"
 #include "core/Log.h"
-#include "core/MathConstants.h"
 #include "render/Renderer.h"
 #include "scene/MathBridge.h"
 #include "scene/Scene.h"
@@ -108,9 +107,11 @@ void ScatterComponent::place(wizengine::Renderer& r, const Slot& s, const wt::He
     // 代役の幹: 単位円柱（軸 X・直径 1・長さ 1）を ScatterTrunk の取り決めどおり
     // Z まわり 90° で立て、（長さ, 直径, 直径）=（高さ, 2 × 半径, 2 × 半径）に伸ばす。
     const float diameter = float(2.0 * t.radius);
+    const Eigen::Quaterniond upright = wt::scatterTrunkUpright();
     r.setBoxTransform(
-        s.id, frame * mat4f::translation(float3{float(t.x), float(t.centerY()), float(t.z)}) *
-                  mat4f::rotation(float(0.5 * wizengine::kPi), float3{0.0f, 0.0f, 1.0f}) *
+        s.id, frame *
+                  toFilament(BodyTransform{t.x, t.centerY(), t.z, upright.w(), upright.x(),
+                                           upright.y(), upright.z()}) *
                   mat4f::scaling(float3{float(t.height), diameter, diameter}));
     // 冠: 幹の上端の少し上に、配置の倍率に比例した直径の球（幹と同じく原型の
     // 倍率 = モデルの見た目には左右されない）。

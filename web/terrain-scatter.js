@@ -12,7 +12,7 @@
   const TERRAIN_SCATTER_ROWS = [
     { label: null, fields: {
       file: { id: 'edScatterFile', kind: 'text', cls: 'layerPath',
-              placeholder: 'models/tree.glb',
+              placeholder: 'tree.glb',
               tip: 'モデル（assets/ からの相対パス。空 = 代役の幹と冠で描く）' },
       scale: { id: 'edScatterScale', kind: 'num', cls: 'layerNum', step: '0.1',
                tip: '倍率（モデルの見た目と単位の換算。幹には掛からない。配置ごとのばらつきはこれに掛かる）' },

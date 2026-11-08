@@ -343,10 +343,13 @@ public:
     // 自分の形を持たないボディ（geom の無い <body> = プレハブの部品だけ）。
     // 当たり判定は extras（collide 部品）だけ、質量は指定、慣性は extras の
     // 外接箱から見積もる。extras が空なら当たらないフレーム。
+    // terrainContact = false はテレインの接触の形の記録（proxy）を作らない。固定の
+    // まま使う物用（固定を解くと安全網の AABB で当たる）。
     std::size_t addFrame(double mass, const chrono::ChVector3d& pos,
                          const chrono::ChQuaternion<>& rot, bool fixed,
                          const std::vector<ExtraShape>& extras,
-                         const BodyOptions& options = BodyOptions{});
+                         const BodyOptions& options = BodyOptions{},
+                         bool terrainContact = true);
 
     // 三角メッシュそのものを当たり形状にするボディ（glTF の凹形状: 器・
     // トンネル・地形）。Bullet の三角メッシュ形状で、**固定の物に向く**
