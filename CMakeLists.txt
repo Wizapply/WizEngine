@@ -311,6 +311,8 @@ endif()
 #   components/ ブラウザのコマンドを受ける SceneComponent 群
 #   vehicle/    車両モデルとノード式（純粋な数値ライブラリ。tests/vehicle が使う）
 #   terrain/    テレインの高さ格子（純粋な計算。tests/terrain が使う）
+#   autogen/    AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換 Text to 3D。
+#               Chrono も Filament も知らない）
 set(WIZ_CORE_SOURCES
     src/core/AssetError.cpp
     src/core/CpuAffinity.cpp
@@ -362,6 +364,7 @@ set(WIZ_SCENE_SOURCES
     src/scene/SceneTerrainSculpt.cpp
     src/scene/SoftLattice.cpp)
 set(WIZ_COMPONENT_SOURCES
+    src/components/AutoGenComponent.cpp
     src/components/EditorComponent.cpp
     src/components/GizmoComponent.cpp
     src/components/PrefabComponent.cpp
@@ -391,6 +394,14 @@ set(WIZ_TERRAIN_SOURCES
     src/terrain/TerrainNoise.cpp
     src/terrain/TerrainScatter.cpp
     src/terrain/TerrainUndo.cpp)
+set(WIZ_AUTOGEN_SOURCES
+    src/autogen/AiClients.cpp
+    src/autogen/AiConfig.cpp
+    src/autogen/GlbBounds.cpp
+    src/autogen/HttpClient.cpp
+    src/autogen/ScenePrompt.cpp
+    src/autogen/SceneGenerator.cpp
+    src/autogen/SceneLayout.cpp)
 
 add_executable(wizengine
     src/main.cpp
@@ -402,7 +413,8 @@ add_executable(wizengine
     ${WIZ_SCENE_SOURCES}
     ${WIZ_COMPONENT_SOURCES}
     ${WIZ_VEHICLE_SOURCES}
-    ${WIZ_TERRAIN_SOURCES})
+    ${WIZ_TERRAIN_SOURCES}
+    ${WIZ_AUTOGEN_SOURCES})
 # ノード式の実行エンジン（LuaJIT）。無ければ C++ の参照インタプリタに落ちる。
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/LuaJIT.cmake)
 wiz_link_luajit(wizengine)
@@ -623,6 +635,30 @@ target_link_libraries(wizengine PRIVATE
 # cpp-httplib needs a thread library on every platform (header-only).
 find_package(Threads REQUIRED)
 target_link_libraries(wizengine PRIVATE Threads::Threads)
+
+# HTTPS（AI のシーン自動構築が OpenAI / Meshy を呼ぶ）。cpp-httplib は
+# OpenSSL 3.x があれば HTTPS クライアントになる。CPPHTTPLIB_OPENSSL_SUPPORT は
+# httplib の class の中身を変えるので、**ターゲット全体に**立てる（TU ごとに
+# 立て分けると ODR 違反）。見つからなければ http:// の接続先（ローカルの
+# Ollama / LM Studio など）だけ使える。Windows は -DOPENSSL_ROOT_DIR=... で
+# OpenSSL（Shining Light の Win64 OpenSSL、vcpkg、GStreamer の同梱品など）を指す。
+option(WIZ_WITH_OPENSSL "Enable HTTPS for AI scene generation (cpp-httplib + OpenSSL)" ON)
+if(WIZ_WITH_OPENSSL)
+    find_package(OpenSSL 3.0 COMPONENTS SSL Crypto)
+endif()
+if(WIZ_WITH_OPENSSL AND OpenSSL_FOUND)
+    target_compile_definitions(wizengine PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+    target_link_libraries(wizengine PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    if(WIN32)
+        # httplib が Windows の証明書ストアを読む（CertOpenSystemStore）。
+        target_link_libraries(wizengine PRIVATE crypt32)
+    endif()
+    message(STATUS "WizEngine: HTTPS for AI scene generation -> OpenSSL ${OPENSSL_VERSION}")
+else()
+    message(STATUS
+        "WizEngine: no OpenSSL 3 - AI scene generation can only reach http:// "
+        "endpoints (set OPENSSL_ROOT_DIR to enable https)")
+endif()
 
 if(UNIX AND NOT APPLE)
     target_link_libraries(wizengine PRIVATE ${CMAKE_DL_LIBS})

@@ -51,6 +51,9 @@ public:
     void setBool(const char* key, bool value);
     void setNumbers(const char* key, const double* values, std::size_t count,
                     int precision = 10);
+    // 属性を消す（無ければ何もしない）。消したら true。文書を書き換える側
+    // （AI のシーン生成が独自の属性 generate / height を取り除く）が使う。
+    bool erase(const char* key);
 
     // ---- 子要素 -----------------------------------------------------------
     void append(Element child) { children_.push_back(std::move(child)); }
@@ -60,6 +63,9 @@ public:
     Element& add(std::string name);
 
     const std::vector<Element>& children() const { return children_; }
+    // 書き換え用の子の一覧（読み込んだ文書を整えてから書き出す側が使う）。
+    // 要素を足し引きすると、取っておいた参照は無効になる（vector と同じ）。
+    std::vector<Element>& children() { return children_; }
     const Element* first(const char* name) const;
     std::vector<const Element*> all(const char* name) const;
 

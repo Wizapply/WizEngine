@@ -1645,6 +1645,9 @@
         <button onclick="toggleXmlEditor()"
                 title="シーンを XML で見る・編集して適用する"
                 >📄 XML</button>
+        <button onclick="openAiGen()"
+                title="依頼文から LLM（OpenAI 互換）と 3D 生成（Meshy 互換）でシーンを自動で組む"
+                >🤖 AI</button>
         <button onclick="importModel()"
                 title="URDF / OpenSim / ADAMS のモデルを今のシーンに足す（assets/ 相対のファイル名。Chrono::Parsers 付きビルド）"
                 >📥 取込</button>
@@ -1655,6 +1658,43 @@
       <span id="asStatus" class="xmStatus"></span>
     </div>
     <div id="assetList" class="asList"></div>
+  </div>
+  <!-- AI シーン生成（web/autogen.js）。#stage の外に置く = 映像の入力・
+       自前カーソルの対象外（普通のフォーム）。見た目は .ndBack / .ndWin の
+       流儀。生成はサーバーの専用スレッドで回り、状態は /scene の "ai"。 -->
+  <div id="aiGen" hidden>
+    <div class="ndBack" onclick="closeAiGen()" title="クリックで閉じる"></div>
+    <div class="ndWin">
+      <div class="ndHead">
+        <span class="ndTitle">🤖&#xFE0E; AI シーン生成</span>
+        <span id="aiConf" class="aiConf"></span>
+        <button onclick="closeAiGen()" title="閉じる（Esc）">✕</button>
+      </div>
+      <div class="aiBody">
+        <div class="aiRow">
+          <label><input type="radio" name="aiMode" value="new" checked> 新規
+            <span class="aiSub">（今のシーンを置き換え）</span></label>
+          <label><input type="radio" name="aiMode" value="edit"> 編集
+            <span class="aiSub">（今のシーンを直す）</span></label>
+          <label><input type="radio" name="aiMode" value="append"> 追加
+            <span class="aiSub">（今のシーンに足す）</span></label>
+        </div>
+        <div class="aiRow">
+          <label id="aiMeshesLbl"><input type="checkbox" id="aiMeshes" checked>
+            3D モデルを生成する（Meshy 互換。1 個あたり数分・有料）</label>
+        </div>
+        <textarea id="aiPrompt" spellcheck="false" rows="5"
+                  placeholder="例: 木のテーブルの上にリンゴとマグカップ。テーブルの横に椅子を 2 脚。夕方の光で。"></textarea>
+        <div class="aiRow">
+          <button id="aiGo" onclick="aiGenerate()">▶ 生成</button>
+          <button id="aiStop" onclick="aiCancel()" disabled>■ キャンセル</button>
+          <div class="aiBar"><div id="aiBarFill"></div></div>
+          <span id="aiStage" class="aiSub"></span>
+        </div>
+        <pre id="aiLog" class="aiLog"></pre>
+        <div class="ndHint">結果は「✓ 適用」と同じく現在のシーンへ反映されます（ファイルには書きません。残すなら 💾 保存）。生成したモデルは assets/generated/ に保存され、同じ説明文なら次回は再生成しません。LLM が数値を誤ることがあるので、重なった物は自動で上へ載せ直します。接続先とキーはサーバーの起動引数・環境変数で設定します（--llm-model / WIZ_LLM_API_KEY / WIZ_MESHY_API_KEY。<code>wizengine --help</code>）。</div>
+      </div>
+    </div>
   </div>
   <div id="perf">measuring...</div>
   <div id="link">connecting...</div>
@@ -1668,5 +1708,6 @@
 <script src="terrain-files.js"></script>
 <script src="terrain-brush.js"></script>
 <script src="terrain-scatter.js"></script>
+<script src="autogen.js"></script>
 </body>
 </html>

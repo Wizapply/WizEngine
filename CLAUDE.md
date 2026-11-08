@@ -668,6 +668,74 @@ Lua を見ない: ノード → Lua ソース → LuaJIT、はエンジンの中
 - **未**: タイヤ以外（サス・エンジン曲線）の差し替え口、vec3 型、ノードの
   値のライブ表示（デバッグバッジ）。
 
+## AI によるシーン自動構築（`src/autogen/` + `components/AutoGenComponent`）
+
+依頼文（日本語でよい）から **OpenAI 互換の LLM** がシーン文書（XML）を書き、
+必要な物は **Meshy 互換の Text to 3D** で .glb を作って、今のシーンへ適用する。
+入口はアセットパネルの **🤖 AI**（`web/autogen.js` のモーダル）、コマンドは
+`ai.generate {prompt, mode: new|edit|append, meshes}` / `ai.cancel`（エディタ
+モード × エディタカメラのページ専用、判定はサーバー）。状態は `/scene` の `ai`。
+
+```
+依頼文 ─► LLM ─► XML（壊れていれば・文書の警告が出れば LLM に直させる = llmRepairs 回）
+          <mesh name generate="英語の説明" height="m">  ← 生成の依頼（WizEngine 内部の印）
+       ─► Meshy: 作成を全部先に投げて並行に待つ ─► assets/generated/*.glb
+          倍率 = 頼んだ高さ ÷ モデルの高さ（GlbBounds: POSITION の min/max × ノード変換）
+       ─► SceneLayout: 動く物の重なり・床へのめり込みを真上へ載せ直す
+       ─► toXmlText ─► EditorState の Op "xml"（置き換え）/ "xml.append"（appendDocument）
+```
+
+- **`src/autogen/` は Chrono も Filament も知らない**（文書層 + HTTP だけ）。
+  ネットワークの待ちは分単位なので、エンジンのどのスレッドでも回さず、
+  `SceneGenerator` の**切り離したスレッド**で 1 件ずつ回す。適用は Op で物理
+  スレッドへ（📄 XML の「✓ 適用」と同じ経路 = Chrono を触るのは物理スレッド
+  だけ、の約束どおり）。`shutdown()` の後は結果を Scene へ渡さない（main が
+  join の後に呼ぶ。Scene の破棄も係を先に壊すようにした = `~Scene()` が
+  `components_.clear()`）。通信中のスレッドは待たない（終了が LLM の応答待ちで
+  数分止まらないため）。
+- **接続先は実行環境の設定**（CPU コアと同じく exe 引数 + 環境変数。
+  `AiConfig.h` の冒頭に一覧）: `--llm-url`（既定 https://api.openai.com/v1、
+  Ollama なら http://127.0.0.1:11434/v1）・`--llm-model`（必須）・`--meshy-url`・
+  `--meshy-refine`・`--ai-max-meshes`。**API キーは環境変数だけ**
+  （`WIZ_LLM_API_KEY` / `OPENAI_API_KEY`、`WIZ_MESHY_API_KEY` / `MESHY_API_KEY`）。
+  ブラウザへは「設定済みか」とホスト名しか出さない。
+- **HTTPS は OpenSSL 付きのビルドだけ**（CMake が OpenSSL 3 を見つけたら
+  `CPPHTTPLIB_OPENSSL_SUPPORT` を**ターゲット全体**に立てる。httplib はこの
+  定義で class の中身が変わるので TU ごとに立て分けると ODR 違反）。無ければ
+  http:// の接続先だけ。プロキシは `HTTPS_PROXY` / `NO_PROXY`、CA は
+  `WIZ_AI_CA_FILE`。送るのは `model` と `messages` だけ（`max_tokens` /
+  `temperature` / `response_format` は提供元とモデルの世代で可否が違うので
+  送らない）。
+- **LLM に教えるのは文書の部分集合**（`ScenePrompt.cpp` の指示文、英語）: 箱・
+  球・生成モデルの剛体、ライト、カメラ、地面、描画、基本のジョイント。車両・
+  テレイン・ソフトボディ・ケーブル・プレハブ・イベントのノードは書かせない
+  （数値の整合を LLM が取れず、黙って動かないシーンになるため）。編集モードは
+  今のシーンの XML を渡して「触らない物はそのまま返せ」と言う（96 KB を超える
+  シーンは断る - 途中で切った XML を渡すと壊れた文書が返る）。
+- **生成モデルのキャッシュ**は `assets/generated/index.json`（キー = 説明文 +
+  画風 + refine + モデルの FNV-1a）。同じ説明文は再生成しない（再課金しない）
+  ので、指示文にも過去の説明文を最大 40 件載せて再利用を促す。モデルはでき
+  た順に目録へ書く（後で全体が失敗しても払った分は残る）。失敗・時間切れ・
+  上限超えのモデルは**箱の代役**（頼んだ高さ × geom の半径）に差し替え、
+  シーンは必ず完成させる。
+- **重なりの後始末**（`SceneLayout`）は決定的な計算: 動く物（固定でもジョイント
+  でもない物）だけを、低い物から順に、重なった相手の上面（外接箱）へ載せ
+  直す。床の下は床の上へ。横へはずらさない。編集モードは「動かした / 新しい
+  物」だけ、追加モードは既存の物を障害物として見る。
+- **生成物は `/scene.xml` と同じ文書**なので、気に入らなければ 📄 XML で直す、
+  💾 で保存する、がそのまま使える。適用はファイルに書かない。
+- **できないこと / 効率の悪いこと**（実装しない判断）: 生成中の LLM 通信の
+  中断（キャンセルは今の通信が終わってから効く。Meshy 側で走り始めたタスクは
+  止まらず課金される）、生成モデルの凹形状の当たり判定（凸包のまま。器の中に
+  物は入らない）、レンダリング結果を見て直す視覚フィードバック（画像を LLM に
+  渡す往復は 1 回ごとに重い）、物理的に妥当な配置の保証（外接箱での後始末まで）。
+- **確認**: 文書層とパイプラインはモックの OpenAI / Meshy サーバーで結合テスト
+  済み（修正の往復・生成・リダイレクト付きダウンロード・倍率・重なり・
+  キャッシュ・追加モードの改名・Meshy 無しの代役・スレッド経由の適用）。
+  エンジン側（AutoGenComponent / main / SceneEdit の `xml.append`）は Chrono /
+  Filament の無い環境で書いたので実機でのビルド確認待ち。本物の OpenAI /
+  Meshy への接続も未確認。
+
 ## Chrono の拘束・物性（`PhysicsWorld::JointSpec` / `BodyOptions`）
 
 Chrono が持っていて WizEngine が使っていなかった機能のうち、既存の
@@ -1290,7 +1358,10 @@ src/
                  SceneComponent, PrefabDefaults, PrefabFrame, SceneMath,
                  MathBridge, RenderBridge
   components/    EditorComponent, GizmoComponent, PhysicsControlComponent,
-                 StreamControlComponent, VehicleComponent, PrefabComponent
+                 StreamControlComponent, VehicleComponent, PrefabComponent,
+                 AutoGenComponent
+  autogen/       AI によるシーン自動構築（LLM / Meshy の HTTP クライアント・指示文・
+                 配置の後始末。Chrono も Filament も知らない）
   vehicle/       車両モデルとノード式（純粋な数値ライブラリ。tests/vehicle が使う）
 tests/vehicle/   車両モデルの単体テスト（-DWIZ_BUILD_TESTS=ON で本体からも回せる）
 tests/document/  シーン文書の単体テスト（同上。Chrono も Filament も要らない）
@@ -1698,6 +1769,8 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   露出・トーンマップと色調整、`<geom>` / `<part>` の PBR 材質、
   `<ground roughness metallic>`、`<environment skybox>`。上の「フォトリアル
   描画」の章と `docs/photorealism.md`）。
+- 済（実機待ち）: AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換
+  Text to 3D。上の「AI によるシーン自動構築」の章）。
 - 済: ステップ3（姿勢反映）〜6（UDP配信）。
 - 未: ステップ7（クライアント→サーバーの入力・制御チャネル。カメラ操作を
   UDP/TCP で受けて `Renderer` にカメラ更新 API を追加）。

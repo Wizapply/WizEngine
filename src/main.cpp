@@ -40,6 +40,9 @@
 #include "components/VehicleComponent.h"
 #include "components/PrefabComponent.h"
 #include "components/ScatterComponent.h"
+#include "components/AutoGenComponent.h"
+#include "autogen/AiConfig.h"
+#include "autogen/HttpClient.h"
 #include "physics/PhysicsTuning.h"
 #include "physics/PhysicsWorld.h"
 #include "render/Renderer.h"
@@ -174,6 +177,9 @@ int run(int argc, char** argv) {
     //   --physics-threads <n>    solver worker threads (default: one per core)
     //   --max-cameras <n>        camera slots /cam0/../camN-1/ (1-16, default:
     //                            SceneConfig.h の kMaxCameras)
+    //   --llm-url / --llm-model / --meshy-url / --meshy-refine / --ai-max-meshes
+    //                            AI のシーン自動構築（src/autogen/AiConfig.h。
+    //                            API キーは環境変数だけ）
     //   --help                   print this list
     // Options first, so the positional parsing below only sees the rest.
     std::string physicsCoreSpec, renderCoreSpec;
@@ -184,6 +190,9 @@ int run(int argc, char** argv) {
     // (and thereby the GPU) within it.
     std::optional<VideoCodec> codecOverride;
     std::vector<std::string> positional;
+    // AI のシーン自動構築の接続先（環境変数が下地、exe 引数で上書き）。
+    wizengine::autogen::AiConfig aiConfig =
+        wizengine::autogen::aiConfigFromEnvironment();
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         auto next = [&](const char* what) -> std::string {
@@ -191,7 +200,9 @@ int run(int argc, char** argv) {
             LOGW("app", "%s needs a value - ignoring", what);
             return {};
         };
-        if (arg == "--physics-cores") {
+        if (wizengine::autogen::applyAiArg(aiConfig, arg, next)) {
+            // 処理済み（--llm-url など）
+        } else if (arg == "--physics-cores") {
             physicsCoreSpec = next("--physics-cores");
         } else if (arg == "--render-cores") {
             renderCoreSpec = next("--render-cores");
@@ -232,7 +243,9 @@ int run(int argc, char** argv) {
                 "[port] | rtsp [url]]\n"
                 "                 [--physics-cores SPEC] [--render-cores SPEC]\n"
                 "                 [--physics-threads N] [--max-cameras N]\n"
-                "                 [--codec CODEC] [--encoder ELEMENT]\n\n"
+                "                 [--codec CODEC] [--encoder ELEMENT]\n"
+                "                 [--llm-url URL] [--llm-model NAME] [--meshy-url URL]\n"
+                "                 [--meshy-refine] [--ai-max-meshes N]\n\n"
                 "SPEC is a core list: \"0-11\", \"0,2,4\", \"3\" or "
                 "\"0-3,8,12-13\".\n"
                 "Pinning keeps the solver and the video encoder off each "
@@ -247,7 +260,21 @@ int run(int argc, char** argv) {
                 "GStreamer "
                 "registers one\nper GPU (amfh264enc = primary, "
                 "amfh264device1enc = next, ...), so this\npicks the encoding "
-                "GPU. List them with: gst-inspect-1.0 amfcodec\n");
+                "GPU. List them with: gst-inspect-1.0 amfcodec\n"
+                "AI scene generation (the 🤖 AI button in the asset panel):\n"
+                "  --llm-url URL     OpenAI-compatible base URL (default "
+                "https://api.openai.com/v1;\n"
+                "                    e.g. http://127.0.0.1:11434/v1 for Ollama)\n"
+                "  --llm-model NAME  model name (required to enable the feature)\n"
+                "  --meshy-url URL   Meshy-compatible base URL (default "
+                "https://api.meshy.ai)\n"
+                "  --meshy-refine    also texture generated models (slower, "
+                "more credits)\n"
+                "  --ai-max-meshes N new models per run (0-16, default 4)\n"
+                "  API keys come from the environment only: WIZ_LLM_API_KEY "
+                "(or OPENAI_API_KEY)\n"
+                "  and WIZ_MESHY_API_KEY (or MESHY_API_KEY). https needs a "
+                "build with OpenSSL.\n");
             return 0;
         } else {
             positional.push_back(arg);
@@ -455,6 +482,14 @@ int run(int argc, char** argv) {
     scene.addComponent(std::make_unique<PrefabComponent>(vehicleComp));
     // テレインの散布物（木や小物）の描画。
     scene.addComponent(std::make_unique<ScatterComponent>());
+    // AI のシーン自動構築（ai.generate / ai.cancel）。/scene に状態を出す
+    // ため生ポインタも持つ（所有は Scene）。
+    auto aiOwner = std::make_unique<AutoGenComponent>(aiConfig);
+    AutoGenComponent* aiComp = aiOwner.get();
+    scene.addComponent(std::move(aiOwner));
+    if (!wizengine::net::httpsSupported()) {
+        LOGI("ai", "this build has no OpenSSL - only http:// AI endpoints can be used");
+    }
 
     PerfStats stats;
     stats.substeps.store(scene.substeps());
@@ -562,6 +597,8 @@ int run(int argc, char** argv) {
                     // at a time can view a given camera.
                     j["busy"].push_back(e->http->hasViewer());
                 }
+                // AI のシーン自動構築の状態（🤖 AI モーダルが描く）。
+                j["ai"] = aiComp->statusJson();
                 return j.dump();
             });
 
@@ -995,6 +1032,9 @@ int run(int argc, char** argv) {
 
     if (inputThread.joinable()) inputThread.join();
     if (physicsThread.joinable()) physicsThread.join();
+    // AI の生成がまだ通信中でも、以後は結果を Scene へ渡さない（スレッドは
+    // 切り離してあるので待たない）。
+    aiComp->shutdown();
     // Readbacks are asynchronous, so let the in-flight ones land before the
     // encoders and their buffers go away.
     renderer.finishPendingReadbacks();

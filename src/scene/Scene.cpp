@@ -244,7 +244,11 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
 
 // 前方宣言の型（TerrainLibrary / TerrainUndoStack）の unique_ptr を壊すので、
 // 完全な型が見えるここで定義する。
-Scene::~Scene() = default;
+// 係（コンポーネント）を**メンバより先に**壊す。メンバは宣言の逆順で
+// 壊れるので、既定のままだと editor_（components_ の後ろに宣言）が先に
+// 消え、その間に別スレッドを持つ係（AutoGenComponent の生成スレッドが
+// 結果を EditorState へ積む）が消えたものを触りうる。
+Scene::~Scene() { components_.clear(); }
 
 bool Scene::cameraRay(std::size_t cameraIndex, double ndcX, double ndcY,
                       scenemath::Basis& basis, scenemath::Vec3& dir) const {

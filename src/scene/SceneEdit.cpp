@@ -1493,6 +1493,26 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         return;
     }
 
+    // AI のシーン生成の「追加」モード（AutoGenComponent）。文書の物を今の
+    // シーンへ足す（取込と同じ appendDocument。設定・ライト・カメラは
+    // 文書にあっても使わない）。文書は生成側が正規化済み。
+    if (op.kind == "xml.append") {
+        ed::SceneDocument doc;
+        std::string error;
+        std::vector<std::string> warnings;
+        if (!ed::parseXml(a.value("text", std::string()), doc, error, &warnings)) {
+            editor_.setStatus("XML が読めません: " + error);
+            return;
+        }
+        for (const auto& w : warnings) LOGW("editor", "xml append: %s", w.c_str());
+        appendDocument(doc);
+        editor_.setStatus("AI: " + std::to_string(doc.bodies.size()) + " 個を追加しました" +
+                          (warnings.empty() ? std::string()
+                                            : "（警告 " + std::to_string(warnings.size()) +
+                                                  " 件 - コンソール参照）"));
+        return;
+    }
+
     if (op.kind == "clear") {
         removeAllCables();
         physics_.removeAllJoints();
