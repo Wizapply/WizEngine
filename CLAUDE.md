@@ -91,7 +91,7 @@ PhysicsWorld.step(dt)
   **どのカメラからでも切り替え可** - シーンの中身を書き換える操作ではなく、
   Camera 1/2 で観察しながら回す・止めるのは普通の使い方のため（エディタ
   カメラは「編集できる」カメラなだけで、モードを握ってはいない）。
-  `edit.sim`（シミュレート設定）も全カメラ可: World/Physics タブは全ページにあり、
+  `edit.sim`（シミュレート設定）も全カメラ可: World タブは全ページにあり、
   隣に並ぶ Solver / Rate は誰でも触れるので、これだけ弾くと分かりにくい。
 - **ライトとカメラもエディタで編集できる**（追加・削除・位置・向き。
   **エディタモード×エディタカメラ限定** - edit.light.* / edit.camera.* と
@@ -140,9 +140,9 @@ PhysicsWorld.step(dt)
   ボタンなので、開く側は結局 ☰ が受け持っていた）。サイドバーのヘッダは
   「ロゴ / Charon / Version 1.0.0 (WizEngine)」の表記のみで、カメラ名は映像ヘッダーが
   受け持つ。
-- ブラウザ側のタブは **Scene / Inspector / World/Physics**（`web/index.html` +
+- ブラウザ側のタブは **Scene / Inspector / World**（`web/index.html` +
   `app.js` の `renderEditor()`。Inspector の内部 id は `tabEditor` /
-  `paneEditor`、World/Physics は `tabPhysics` / `panePhysics` のまま）。
+  `paneEditor`、World は `tabPhysics` / `panePhysics` のまま）。
   **シミュレート → エディタに戻ったら、ブラウザは必ず Editor Camera の
   ページへ移る**（app.js の `followEditorCamera`。ポーリングで見た前回の
   モードとの差分で判定するので、どのページ・どの経路で戻しても同じ。開いた
@@ -172,7 +172,7 @@ PhysicsWorld.step(dt)
   窓なので、走らせる段になったら残さない。**シーン全体の設定は Physics
   タブ**: World 節（`secWorld`。環境光 = HDR・強さ・背景 = `edit.environment`
   と、シーン全体のイベントの付け外し）と描画節（`secRender`、`<visual>` =
-  `edit.render`）は、以前 Inspector に常設していたが World/Physics タブへ移した
+  `edit.render`）は、以前 Inspector に常設していたが World タブへ移した
   （Inspector は選択しているものの内容だけ、という整理）。どちらも
   エディタカメラのページ専用の edit.* を送るので、`renderEditor()` が
   そのページでだけ表示する（edit.sim と違ってサーバーは他のページからの
@@ -221,7 +221,7 @@ PhysicsWorld.step(dt)
   置いてクリックを受け、エディタモード×Editor Camera のページでだけ
   `renderEditor()` が表示する。**Inspector は「選択しているオブジェクトの
   内容」だけ**: Transform・質量・固定・色に加え、**付いているイベント
-  アセットの一覧**（付ける / 外す。シーン全体ぶんは World/Physics タブの World 節）と、ジョイント節も
+  アセットの一覧**（付ける / 外す。シーン全体ぶんは World タブの World 節）と、ジョイント節も
   選択時のみ表示し、一覧は選択が関わるものに絞る（どのジョイントにも地面でない体が
   必ずあるので、どれかを選べば必ず一覧に届く）。ギズモの数値設定（スナップ・
   刻み・グリッド）は普段隠れた `secGizmo` 節で、ツールバー右端の ⚙
@@ -247,7 +247,7 @@ PhysicsWorld.step(dt)
   scrollBy で動かすとなめらかスクロールが効かないので CSS の切替だけで
   済ませる）。シミュレート設定（重力・摩擦・反発・減衰・スリープ）・
   World（環境光とシーン全体のイベント）・描画（`<visual>`）といった
-  シーン全体の設定は World/Physics タブに置く。入力欄は 500ms ポーリングで上書きされるが、
+  シーン全体の設定は World タブに置く。入力欄は 500ms ポーリングで上書きされるが、
   **フォーカス中の欄だけは触らない**（打っている途中の数字が消えるため）。
 
 ## シーン文書（MuJoCo 風の XML）
@@ -395,7 +395,7 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   **節を書かない文書は既定値 = 従来の絵**（後処理は全部オフ、露出も
   Filament の既定と同じ f/16・1/125・ISO100、トーンマップは ACES legacy）。
 - **プリセットの定義は C++ に 1 か所**（`editor::renderPreset` の draft /
-  standard / photo）。ブラウザの World/Physics タブ「描画」のボタンは名前だけを送り
+  standard / photo）。ブラウザの World タブ「描画」のボタンは名前だけを送り
   （`edit.render` の `preset`）、続けて個別の値を上書きできる（部分更新）。
   UI 側に数値を持たせない = 画面とサーバーの食い違いが起きない。
 - **材質は `<geom>` / `<part>` の属性**（`rgba` の隣）: `roughness`
@@ -815,7 +815,7 @@ Chrono が持っていて WizEngine が使っていなかった機能のうち�
 - **ブラウザ側**: Inspector の「物性」節（摩擦・反発・転がり・粘着・レイヤ・
   当てないレイヤ・重力・初速）、ジョイント節の追加行（`renderJointForm` が
   種類に合う行だけ出す。一覧の行クリックでフォームへ読込、✎ で
-  `edit.joint.set`）、World/Physics タブの重力 X/Z・積分器・ソルバ・合成。
+  `edit.joint.set`）、World タブの重力 X/Z・積分器・ソルバ・合成。
   コマンドは edit.set の新キー（surface / layer / nocollide / gravity /
   velocity / angularVelocity）、edit.joint.add の追加キー、edit.joint.set。
 - **Multicore バックエンドでの扱い**（ソフトボディや大量の剛体のシーンで自動的に選ばれる系。下の「バックエンドの自動切替」）。
@@ -900,7 +900,7 @@ Chrono の「中規模」の機能（新モジュールのリンクか設計変�
   が地面 → 全オブジェクト（設計値から `rebuildBody`）→ シミュレート中なら
   ジョイントとケーブルの順で組み直す。判定（`requiredBackend`）は Core を
   要する理由を英文で集め、`backendNote()`（`/scene` の `engineNote`、
-  `/stats` の `engineNote`、World/Physics タブの「バックエンド」）に出す。Core を
+  `/stats` の `engineNote`、World タブの「バックエンド」）に出す。Core を
   要するのは **FEA ケーブル・ブッシュ / 定常荷重（ChLoad）・MINRES と直接法・
   HHT / Newmark・モーダル解析**。呼ぶのはシミュレート開始（`enterMode`）・
   `edit.sim`・読込 / 全消し / 取込・ジョイント / ケーブルの増減・荷重の
@@ -953,7 +953,7 @@ Chrono の「中規模」の機能（新モジュールのリンクか設計変�
 - **モーダル解析（20）**: `<option modal="N">`。シミュレート開始時に
   `PhysicsWorld::modalFrequencies` が M / K / Cq を取り出して
   `ChModalSolveUndamped`（Lanczos）で N 本の固有振動数を求め、ログ・
-  ステータス・`/scene` の `modal`（World/Physics タブに一覧）に出す。CMake の
+  ステータス・`/scene` の `modal`（World タブに一覧）に出す。CMake の
   `WIZ_WITH_CHRONO_MODAL`（`chrono_modal/ChEigenvalueSolver.h`、Chrono 9.0.0
   の API）。接触は入らないので、ケーブルのある系で意味を持つ。
 - **取込（21）**: `src/physics/ModelImport.{h,cpp}`。`edit.import {file}`
@@ -1315,7 +1315,7 @@ collide 部品の外接箱、当たり判定は collide 部品だけ）が実体
   objects / selected の `events`）をポーリングで描く。アセットは**アセット
   パネルの ⚡ タイル**（クリックでノードエディタがそのアセットに切り替わる）と
   **ノードエディタ見出しの選択**で選び、**付け外しは Inspector の「イベント」**
-  （オブジェクト＝選択中の物）と World/Physics タブの World 節（シーン全体）。ライト / カメラの
+  （オブジェクト＝選択中の物）と World タブの World 節（シーン全体）。ライト / カメラの
   Inspector は「そのライト / カメラを対象にしているノード」の読み取り専用一覧。
   **作成・削除・付ける・ノードの追加は右クリック（コンテキストメニュー）**が
   入口: アセットパネルの何もない所 =「新しいイベント」、⚡ タイルの上 =
@@ -1377,7 +1377,7 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
   `project(VERSION)` には持たせない（2 か所に書くと必ずずれる）。起動ログの
   1 行目（`Charon 1.0.0 "WizEngine"`）、`/stats` の `versions.Charon`（素の
   semver）と `versions.Codename`、ブラウザのサイド
-  バー見出しと About 節（World/Physics タブ）がここから出る。ブラウザ側は
+  バー見出しと About 節（World タブ）がここから出る。ブラウザ側は
   `app.js` の `PRODUCT` が同じ名前を持つ（/stats のキー名を引くため）。
 - **CPU コアの固定**（`src/core/CpuAffinity.{h,cpp}`、Windows / Linux 両対応）。設定は **exe 引数**（`--physics-cores "0-11"` / `--render-cores "12-15"` /
   `--physics-threads N`、`--help` で一覧）。**SceneConfig.h には置かない**（scene はユーザーが
