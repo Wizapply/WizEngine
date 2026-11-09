@@ -401,26 +401,6 @@ private:
     // Multicore 用の手計算のモータ・ばね（step の先頭。下の JointRec::Manual）。
     void applyManualJoints(double dt);
 
-    // ---- ソフトボディの内部 ----------------------------------------------
-    struct SoftBody {
-        std::size_t root = 0;                   // 代表 = 最初の粒子の physId（粒子の列は名簿のグループ）
-        std::vector<chrono::ChVector3d> rest;   // 静止位置（ローカル）
-        chrono::ChVector3d restCentroid;        // rest の重心
-        std::vector<SoftBodySpec::Spring> springs;
-        int iterations = 2;
-        bool active = true;
-    };
-    // ばねを解いて粒子の速度を書き換える（step の先頭）。
-    void solveSoftSprings(SoftBody& soft, double dt);
-    // 粒子群に当てはめた剛体姿勢（重心 + 最小二乗の回転）。
-    BodyTransform softTransform(const SoftBody& soft) const;
-    // 静止形状のまま pos / rot へ置き直す（全粒子を止める）。
-    void placeSoftBody(SoftBody& soft, const chrono::ChVector3d& pos,
-                       const chrono::ChQuaternion<>& rot);
-    // その番号が代表するソフトボディ（代表番号でなければ nullptr）。
-    const SoftBody* softOfRoot(std::size_t id) const;
-    SoftBody* softOfRoot(std::size_t id);
-
     // 担当の入れ物（Chrono の系と名簿。中身は PhysicsParts.h）。
     struct Parts;
     // 他のメンバより先に宣言する = 系は他のメンバ（ジョイント・荷重など）が
@@ -429,7 +409,6 @@ private:
     // 荷重コンテナ（ChLoad。Core のみ）。ジョイント（ブッシュ）とボディの
     // 定常荷重（BodyLoads）で分けてある - ジョイントは停止で全部捨てるため。
     std::shared_ptr<chrono::ChLoadContainer> jointLoads_;
-    std::vector<SoftBody> softBodies_;  // root の昇順（softOfRoot が二分探索で引く）
     // シミュレート中だけ存在する拘束。エディタへ戻るときに全部外す。
     struct JointRec {
         std::shared_ptr<chrono::ChLinkBase> link;   // 主拘束（ばね種類ならばね。手計算なら null）

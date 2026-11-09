@@ -41,15 +41,15 @@ BodyTransform PhysicsWorld::bodyTransform(std::size_t id) const {
     // 番号は系の作り直し（recreate）で全部無効になる。古い番号で呼ばれても
     // 落ちないよう、範囲外は単位姿勢を返す（他の bodyXxx と同じ守り）。
     if (id >= p_->bodies.count()) return BodyTransform{0, 0, 0, 1, 0, 0, 0};
-    if (const SoftBody* soft = softOfRoot(id)) return softTransform(*soft);
+    if (p_->soft.isRoot(id)) return p_->soft.transform(id);
     return p_->motion.rigidTransform(id);
 }
 
 void PhysicsWorld::setBodyPose(std::size_t id, const ChVector3d& pos,
                                const ChQuaternion<>& rot) {
-    if (SoftBody* soft = softOfRoot(id)) {
+    if (p_->soft.isRoot(id)) {
         // 静止形状のまま置き直す。粒子は眠らないので落下速度は要らない。
-        placeSoftBody(*soft, pos, rot);
+        p_->soft.place(id, pos, rot);
         return;
     }
     p_->motion.drop(id, pos, rot);
@@ -59,8 +59,8 @@ void PhysicsWorld::setBodyPose(std::size_t id, const ChVector3d& pos,
 void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
                              const ChQuaternion<>& rot) {
     if (id >= p_->bodies.count()) return;
-    if (SoftBody* soft = softOfRoot(id)) {
-        placeSoftBody(*soft, pos, rot);
+    if (p_->soft.isRoot(id)) {
+        p_->soft.place(id, pos, rot);
         return;
     }
     p_->motion.place(id, pos, rot);
@@ -72,24 +72,17 @@ void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
     // 固定するときは速度も捨てる（ForceToRest）。走行中に固定された物が
     // 速度を持ったままだと、Multicore の接触拘束がそれを「動く床」として
     // 上の物へ伝え続ける（applyForce の注記と同じ理屈）。
-    if (SoftBody* soft = softOfRoot(id)) {
-        // 全粒子を固定 = 形を保ったまま動かない土台になる。
-        for (const std::size_t p : p_->bodies.members(soft->root)) {
-            p_->bodies.body(p)->SetFixed(fixed);
-            if (fixed) p_->bodies.body(p)->ForceToRest();
-            else wakeUp(p_->bodies.body(p).get(), 0);
-            p_->bodies.events().bodyFixedChanged(p);
+    // ソフトボディは全粒子を固定 = 形を保ったまま動かない土台になる。
+    for (const std::size_t p : p_->bodies.members(id)) {
+        p_->bodies.body(p)->SetFixed(fixed);
+        if (fixed) {
+            p_->bodies.body(p)->ForceToRest();
+        } else {
+            wakeUp(p_->bodies.body(p).get(), 0);
+            p_->sleeping.resetTimer(p);  // 固定を外した直後に眠らせない（粒子は眠らないので何もしない）
         }
-        return;
+        p_->bodies.events().bodyFixedChanged(p);
     }
-    p_->bodies.body(id)->SetFixed(fixed);
-    if (fixed) {
-        p_->bodies.body(id)->ForceToRest();
-    } else {
-        wakeUp(p_->bodies.body(id).get(), 0);
-        p_->sleeping.resetTimer(id);  // 固定を外した直後に眠らせない
-    }
-    p_->bodies.events().bodyFixedChanged(id);
 }
 
 bool PhysicsWorld::bodyFixed(std::size_t id) const {

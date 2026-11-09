@@ -26,7 +26,6 @@ void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     brokenPending_.clear();
     cables_.clear();
     p_->bodies.clear();
-    softBodies_.clear();
     // clear がコールバックの持ち主を切り離し、ゴーストの番号は状態ごと捨てる
     // （フレームは残す）。Scene が作り直したあとに setTerrain を呼び直す。
     p_->terrain.clear();

@@ -56,6 +56,9 @@ public:
     // 名簿へ登録（受け手へ info が届く）。戻り値は physId。
     std::size_t finish(const std::shared_ptr<chrono::ChBody>& body, const BodyAddInfo& info);
 
+    // 半径 radius の球 1 個だけの形の記録（テレインの接触用。球とソフトボディの粒子）。
+    static wizengine::terrain::BodyProxy sphereProxy(double radius);
+
 private:
     PhysicsSystem& system_;
     BodyRegistry& bodies_;

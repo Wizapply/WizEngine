@@ -94,7 +94,6 @@ using WizRampFunction = chrono::ChFunction_Ramp;
 
 #include <algorithm>
 #include <memory>
-#include <type_traits>
 
 namespace wizengine {
 namespace physics {
@@ -556,41 +555,6 @@ bool systemMatrices(S*, chrono::ChSparseMatrix&, chrono::ChSparseMatrix&,
     return false;
 }
 #endif
-
-// 衝突ファミリ: 同じソフトボディの粒子どうしを当てない（ばねで結んだ隣が
-// 接触で押し合うと硬さが二重になる）。Chrono 9 は SetFamily +
-// DisallowCollisionsWith、旧版は SetFamilyMaskNoCollisionWithFamily。
-// どちらも無い版では粒子どうしも当たる（半径をセルより小さくしてあるので
-// 静止状態では触れない）。
-template <typename M>
-auto setNoSelfCollision(M* model, int family, int)
-    -> decltype(model->SetFamily(family), model->DisallowCollisionsWith(family),
-                void()) {
-    model->SetFamily(family);
-    model->DisallowCollisionsWith(family);
-}
-template <typename M>
-auto setNoSelfCollision(M* model, int family, long)
-    -> decltype(model->SetFamily(family),
-                model->SetFamilyMaskNoCollisionWithFamily(family), void()) {
-    model->SetFamily(family);
-    model->SetFamilyMaskNoCollisionWithFamily(family);
-}
-template <typename M>
-bool setNoSelfCollision(M*, int, ...) {
-    return false;
-}
-// 上の 2 つは void を返すので、戻り値で「できたか」を判定できるように包む。
-template <typename M>
-bool applyNoSelfCollision(M* model, int family) {
-    using R = decltype(setNoSelfCollision(model, family, 0));
-    if constexpr (std::is_same<R, bool>::value) {
-        return setNoSelfCollision(model, family, 0);
-    } else {
-        setNoSelfCollision(model, family, 0);
-        return true;
-    }
-}
 
 // ChLinkLock 系の Initialize は Chrono 9 で ChCoordsys<> から ChFrame<> に
 // 変わった。どちらでも通るように、コンパイルできるほうを選ぶ（この

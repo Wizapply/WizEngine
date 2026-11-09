@@ -13,6 +13,7 @@
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsWorld.h"
 #include "physics/Sleeping.h"
+#include "physics/SoftBodies.h"
 #include "physics/StaticPairs.h"
 #include "physics/TerrainContact.h"
 #include "physics/VelocityDamping.h"
@@ -26,6 +27,7 @@ struct PhysicsWorld::Parts {
           motion(bodies, sleeping),
           materials(system, bodies),
           factory(system, bodies, sleeping, materials),
+          soft(bodies, factory, materials),
           loads(system, bodies),
           gravity(system, bodies),
           damping(bodies),
@@ -39,6 +41,7 @@ struct PhysicsWorld::Parts {
         bodies.events().add(&gravity);
         bodies.events().add(&staticPairs);
         bodies.events().add(&terrain);
+        bodies.events().add(&soft);
     }
 
     // system より先に宣言する = 系より後に壊れる（Bullet のペアキャッシュがフィルタを
@@ -50,6 +53,7 @@ struct PhysicsWorld::Parts {
     wizengine::physics::BodyMotion motion;
     wizengine::physics::ContactMaterials materials;
     wizengine::physics::BodyFactory factory;
+    wizengine::physics::SoftBodies soft;
     wizengine::physics::BodyLoads loads;
     wizengine::physics::GravityOverride gravity;
     wizengine::physics::VelocityDamping damping;
