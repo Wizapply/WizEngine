@@ -40,7 +40,9 @@ public:
     // 全部のソフトボディのばねを解いて粒子の速度を書き換える（step の先頭）。
     void solveSprings(double dt);
 
-    void onSystemRecreated() override;
+    // 系の作り直し: 一覧を捨てる（番号が全部無効になるため）。
+    void clear();
+
     // 代表が退場したら、そのソフトボディのばねを解かない。
     void onBodyRetiring(std::size_t id) override;
 

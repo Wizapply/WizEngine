@@ -236,8 +236,7 @@ void SoftBodies::solve(SoftBody& soft, double dt) {
     }
 }
 
-void SoftBodies::onSystemRecreated() {
-    // 番号は全部無効になる（名簿も空になっている）。
+void SoftBodies::clear() {
     soft_.clear();
 }
 

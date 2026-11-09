@@ -26,6 +26,9 @@ void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     brokenPending_.clear();
     cables_.clear();
     p_->bodies.clear();
+    // ソフトボディの一覧は名簿と一緒に、系を壊す前に捨てる（途中で例外が出ても
+    // 古い代表番号が残らない = 次の add が昇順を崩さない）。
+    p_->soft.clear();
     // clear がコールバックの持ち主を切り離し、ゴーストの番号は状態ごと捨てる
     // （フレームは残す）。Scene が作り直したあとに setTerrain を呼び直す。
     p_->terrain.clear();
