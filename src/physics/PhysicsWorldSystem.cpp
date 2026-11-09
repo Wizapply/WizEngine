@@ -20,7 +20,7 @@ void PhysicsWorld::setMaterialCombine(CombineMode mode) {
 // Scene が設計値から作り直す（Scene::rebuildPhysicsWorld）。
 void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     p_->joints.clear();
-    cables_.clear();
+    p_->cables.clear();
     p_->bodies.clear();
     // ソフトボディの一覧は名簿と一緒に、系を壊す前に捨てる（途中で例外が出ても
     // 古い代表番号が残らない = 次の add が昇順を崩さない）。

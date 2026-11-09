@@ -4,12 +4,10 @@
 // 担当ごとに分けたので、2 つ以上のファイルが使う型と小さな関数をここに 1 か所で
 // 持つ。公開 API は PhysicsWorld.h。他のファイルからは含めないこと。
 //
-//   PhysicsWorld.cpp             : 構築・1 ステップの順番・全体を起こす・機能の有無・小さな担当の中継（ソフトボディの問い合わせ・ジョイントも）
+//   PhysicsWorld.cpp             : 構築・1 ステップの順番・全体を起こす・機能の有無・小さな担当の中継（ソフトボディの問い合わせ・ジョイント・ケーブル・モーダル解析も）
 //   PhysicsWorldSystem.cpp       : 系を組む順番と系の設定の中継（本体は PhysicsSystem）
 //   PhysicsWorldRegistry.cpp     : ボディの追加の中継（本体は BodyFactory）と退場の順番（名簿は BodyRegistry）
 //   PhysicsWorldMotion.cpp       : 運動の中継・ソフトボディの置き直しの分岐・固定（本体は BodyMotion / SoftBodies）
-//   PhysicsWorldCables.cpp       : FEA ケーブル
-//   PhysicsWorldModal.cpp        : モーダル解析
 //
 // using namespace はここに書かない（各 .cpp に書く）。
 

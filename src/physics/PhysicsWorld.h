@@ -12,14 +12,6 @@
 
 #include "physics/PhysicsTypes.h"
 
-namespace chrono {
-class ChLinkBase;
-namespace fea {
-class ChMesh;
-class ChNodeFEAxyzD;
-}
-}
-
 namespace wizengine {
 namespace terrain {
 class HeightField;
@@ -393,15 +385,6 @@ private:
     void detachBody(std::size_t id);
     // 担当の入れ物（Chrono の系と名簿。中身は PhysicsParts.h）。
     struct Parts;
-    // 他のメンバより先に宣言する = 系は窓口に残る他のメンバ（cables_）が
-    // 壊れた後に壊れる（ジョイント・荷重などは Parts の中で順番を持つ）。
+    // 壊れる順番（ジョイント・ケーブル・荷重など）は Parts の中で持つ。
     std::unique_ptr<Parts> p_;
-    // ケーブル（FEA メッシュ + 端の拘束）。removeAllCables でまとめて外す。
-    struct CableRec {
-        std::shared_ptr<chrono::fea::ChMesh> mesh;
-        std::vector<std::shared_ptr<chrono::fea::ChNodeFEAxyzD>> nodes;
-        std::vector<std::shared_ptr<chrono::ChLinkBase>> links;  // 端の拘束
-        bool valid = false;
-    };
-    std::vector<CableRec> cables_;
 };

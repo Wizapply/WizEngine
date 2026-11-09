@@ -1,11 +1,16 @@
-// FEA ケーブル。
+// FEA ケーブル: ANCF 梁の生成・端の留め方・接触面と、節点の位置・張力の問い合わせ。
 
-#include "physics/PhysicsParts.h"
+#include "physics/Cables.h"
 #include "core/Log.h"
+#include "physics/BodyRegistry.h"
 #include "physics/ChronoCompat.h"
+#include "physics/ContactMaterials.h"
+#include "physics/PhysicsSystem.h"
 
 #include <chrono/physics/ChBody.h>
+#include <chrono/physics/ChContactMaterial.h>
 #include <chrono/physics/ChLinkBase.h>
+#include <chrono/physics/ChSystem.h>
 #ifdef WIZ_HAVE_FEA
 #include <chrono/collision/ChCollisionSystem.h>
 #include <chrono/fea/ChBeamSectionCable.h>
@@ -24,15 +29,18 @@
 using namespace chrono;
 using namespace wizengine::physics::compat;
 
+namespace wizengine {
+namespace physics {
+
 // ---- ケーブル（FEA。B の 15）-----------------------------------------------
 // ANCF ケーブル要素を直線に並べ、端を固定点 / ボディ / 自由にする。節点の
 // 球で接触する（ChContactSurfaceNodeCloud）。Core 専用: Multicore のデータ
 // マネージャは剛体しか持たず、FEA の要素は積分に乗らない。
 
-std::size_t PhysicsWorld::addCable(const CableSpec& spec) {
+std::size_t Cables::add(const CableSpec& spec) {
 #ifdef WIZ_HAVE_FEA
     static bool warnedBackend = false;
-    if (p_->system.backend() == PhysicsBackend::Multicore) {
+    if (system_.backend() == PhysicsBackend::Multicore) {
         if (!warnedBackend) {
             warnedBackend = true;
             LOGW("physics", "cable: needs the core backend (Chrono::Multicore has no FEA) - "
@@ -42,7 +50,7 @@ std::size_t PhysicsWorld::addCable(const CableSpec& spec) {
     }
     auto endOk = [&](CableSpec::End end, std::size_t id, const char* which) {
         if (end != CableSpec::End::Body) return true;
-        if (id >= p_->bodies.count() || !p_->bodies.active(id) || p_->bodies.isGroupMember(id)) {
+        if (id >= bodies_.count() || !bodies_.active(id) || bodies_.isGroupMember(id)) {
             LOGW("physics", "cable: end %s refers to a missing or soft body (%zu) - skipped",
                  which, id);
             return false;
@@ -80,7 +88,7 @@ std::size_t PhysicsWorld::addCable(const CableSpec& spec) {
         // 節点ごとの球（半径 = ケーブルの半径）。材質は剛体と同じ流儀。
         // 面はメッシュを知っている必要がある: コンストラクタで渡し、
         // AddContactSurface でも結び直される。
-        auto mat = p_->materials.materialFor(spec.options);
+        auto mat = materials_.materialFor(spec.options);
         auto surf = chrono_types::make_shared<fea::ChContactSurfaceNodeCloud>(mat, mesh.get());
         mesh->AddContactSurface(surf);
         // 留め先のボディの内側にある節点は入れない（端の節点はボディの中心に
@@ -100,11 +108,11 @@ std::size_t PhysicsWorld::addCable(const CableSpec& spec) {
         }
     }
     setMeshGravity(mesh.get(), true, 0);
-    p_->system.sys()->Add(mesh);
+    system_.sys()->Add(mesh);
     // 衝突系が初期化済みなら登録する（ボディと同じ理由: Chrono 9 は後から
     // 足した物を BindAll で拾わない）。
     if (spec.collide) {
-        auto coll = p_->system.sys()->GetCollisionSystem();
+        auto coll = system_.sys()->GetCollisionSystem();
         if (coll && coll->IsInitialized()) coll->BindItem(mesh);
     }
 
@@ -116,16 +124,16 @@ std::size_t PhysicsWorld::addCable(const CableSpec& spec) {
         }
         if (end != CableSpec::End::Body) return;
         auto link = chrono_types::make_shared<WizNodeFrameLink>();
-        link->Initialize(node, p_->bodies.body(id));
-        p_->system.sys()->AddLink(link);
+        link->Initialize(node, bodies_.body(id));
+        system_.sys()->AddLink(link);
         rec.links.push_back(link);
-        wakeUp(p_->bodies.body(id).get(), 0);
+        wakeUp(bodies_.body(id).get(), 0);
     };
     attach(rec.nodes.front(), spec.endA, spec.bodyA);
     attach(rec.nodes.back(), spec.endB, spec.bodyB);
     rec.valid = true;
     cables_.push_back(std::move(rec));
-    p_->system.sys()->Setup();
+    system_.sys()->Setup();
     LOGI("physics", "cable #%zu: %d elements, %zu nodes, length %.2f m, young %.3g Pa, "
                     "collide %d",
          cables_.size() - 1, n, cables_.back().nodes.size(), length, spec.young,
@@ -142,23 +150,19 @@ std::size_t PhysicsWorld::addCable(const CableSpec& spec) {
 #endif
 }
 
-void PhysicsWorld::removeAllCables() {
+void Cables::removeAll() {
 #ifdef WIZ_HAVE_FEA
     if (cables_.empty()) return;
     for (auto& c : cables_) {
-        for (auto& l : c.links) p_->system.sys()->RemoveLink(l);
-        if (c.mesh) removeMeshFrom(p_->system.sys().get(), c.mesh, 0);
+        for (auto& l : c.links) system_.sys()->RemoveLink(l);
+        if (c.mesh) removeMeshFrom(system_.sys().get(), c.mesh, 0);
     }
     cables_.clear();
-    p_->system.sys()->Setup();
+    system_.sys()->Setup();
 #endif
 }
 
-std::size_t PhysicsWorld::cableCount() const {
-    return cables_.size();
-}
-
-void PhysicsWorld::cableNodePositions(std::size_t cable, std::vector<float>& out) const {
+void Cables::nodePositions(std::size_t cable, std::vector<float>& out) const {
     out.clear();
 #ifdef WIZ_HAVE_FEA
     if (cable >= cables_.size() || !cables_[cable].valid) return;
@@ -175,7 +179,7 @@ void PhysicsWorld::cableNodePositions(std::size_t cable, std::vector<float>& out
 #endif
 }
 
-double PhysicsWorld::cableTension(std::size_t cable) const {
+double Cables::tension(std::size_t cable) const {
     if (cable >= cables_.size()) return 0.0;
     double best = 0.0;
     for (const auto& l : cables_[cable].links) {
@@ -184,3 +188,6 @@ double PhysicsWorld::cableTension(std::size_t cable) const {
     }
     return best;
 }
+
+}  // namespace physics
+}  // namespace wizengine

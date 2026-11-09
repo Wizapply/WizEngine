@@ -7,6 +7,7 @@
 #include "physics/BodyLoads.h"
 #include "physics/BodyMotion.h"
 #include "physics/BodyRegistry.h"
+#include "physics/Cables.h"
 #include "physics/ContactMaterials.h"
 #include "physics/Diagnostics.h"
 #include "physics/GravityOverride.h"
@@ -34,7 +35,8 @@ struct PhysicsWorld::Parts {
           damping(bodies),
           diag(system, bodies),
           terrain(system, bodies, materials),
-          joints(system, bodies, motion) {
+          joints(system, bodies, motion),
+          cables(system, bodies, materials) {
         // 出来事の受け手はここで登録する。受け手どうしは順番に依存しない
         // （それぞれ自分の状態と Chrono の別々の部分だけを触る）。
         bodies.events().add(&sleeping);
@@ -62,7 +64,10 @@ struct PhysicsWorld::Parts {
     wizengine::physics::Diagnostics diag;
     // system より先に壊れる。系が持ち続けるコールバックはデストラクタが切り離す。
     wizengine::physics::TerrainContact terrain;
-    // 最後に宣言する = 最初に壊れる（以前の PhysicsWorld のメンバと同じく、系と名簿より
-    // 先にリンクと荷重コンテナへの参照を手放す）。
+    // 系と名簿より後に宣言する = 系と名簿より先に壊れる（リンクと荷重コンテナへの参照を
+    // 先に手放す。以前の PhysicsWorld のメンバと同じ順番）。
     wizengine::physics::Joints joints;
+    // joints より後 = 最初に壊れる（以前の PhysicsWorld では cables_ が窓口のメンバで、
+    // p_ より先 = ジョイントより先に壊れていた。その順番を保つ）。
+    wizengine::physics::Cables cables;
 };

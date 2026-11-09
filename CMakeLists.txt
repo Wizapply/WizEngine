@@ -323,6 +323,7 @@ set(WIZ_PHYSICS_SOURCES
     src/physics/BodyLoads.cpp
     src/physics/BodyMotion.cpp
     src/physics/BodyRegistry.cpp
+    src/physics/Cables.cpp
     src/physics/ContactMaterials.cpp
     src/physics/ContactReport.cpp
     src/physics/Diagnostics.cpp
@@ -330,11 +331,10 @@ set(WIZ_PHYSICS_SOURCES
     src/physics/Joints.cpp
     src/physics/JointsManual.cpp
     src/physics/MeshCollision.cpp
+    src/physics/ModalAnalysis.cpp
     src/physics/ModelImport.cpp
     src/physics/PhysicsSystem.cpp
     src/physics/PhysicsWorld.cpp
-    src/physics/PhysicsWorldCables.cpp
-    src/physics/PhysicsWorldModal.cpp
     src/physics/PhysicsWorldMotion.cpp
     src/physics/PhysicsWorldRegistry.cpp
     src/physics/PhysicsWorldSystem.cpp
