@@ -43,6 +43,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <utility>
 #include <vector>
 
 using namespace chrono;
@@ -517,12 +518,13 @@ void Joints::removeAll() {
     // 暖機は先にやり直しにする（途中の RemoveLink が例外を投げても、次の走行は
     // 暖機から始まる）。
     breakSteps_ = 0;
+    brokenPending_.clear();
     bool anyLoad = false;
     for (auto& j : joints_) {
         // 破断したリンクも無効化されて系に残っている（走行中の RemoveLink は
         // Multicore を壊す）ので、ここでまとめて外す。
-        if (j.link) system_.sys()->RemoveLink(j.link);
-        if (j.extra) system_.sys()->RemoveLink(j.extra);
+        system_.removeLink(j.link);
+        system_.removeLink(j.extra);
         if (j.load) anyLoad = true;
     }
 #ifdef WIZ_HAVE_LOADS
@@ -532,7 +534,6 @@ void Joints::removeAll() {
     (void)anyLoad;
 #endif
     joints_.clear();
-    brokenPending_.clear();
     // 拘束が減ったのでソルバの配置を組み直す（理由は PhysicsSystem::setup）。
     system_.setup();
 }

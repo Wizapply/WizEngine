@@ -36,6 +36,10 @@ public:
     // 新しい系に基本設定（重力・反復回数・スレッド数）を当てた後、荷重コンテナと
     // ソルバの設定の前（初回の構築でも呼ばれる）。名簿は空。
     virtual void onSystemRecreated() {}
+    // 名簿が空になった後（系の作り直し）。名簿の番号と並ぶ配列はここで捨てる
+    // （系に結び付く物は onSystemRecreated で作り直す）。系を作る前に出るので、
+    // 系には触らないこと。
+    virtual void onBodiesCleared() {}
     virtual void onBodyAdded(std::size_t id, const BodyAddInfo& info) {
         (void)id;
         (void)info;
@@ -55,6 +59,9 @@ public:
 
     void systemRecreated() {
         for (PhysicsPart* part : parts_) part->onSystemRecreated();
+    }
+    void bodiesCleared() {
+        for (PhysicsPart* part : parts_) part->onBodiesCleared();
     }
     void bodyAdded(std::size_t id, const BodyAddInfo& info) {
         for (PhysicsPart* part : parts_) part->onBodyAdded(id, info);

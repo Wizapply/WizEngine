@@ -26,7 +26,7 @@ public:
     // 印の付いたボディから、このステップの重力ぶんの速度を引く（積分の前）。
     void cancel(double dt);
 
-    void onSystemRecreated() override;
+    void onBodiesCleared() override;
     void onBodyAdded(std::size_t id, const BodyAddInfo& info) override;
 
 private:

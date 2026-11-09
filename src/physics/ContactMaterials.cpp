@@ -110,9 +110,12 @@ void ContactMaterials::setRollingFriction(float rolling, float spinning) {
     reapplyAll();
 }
 
-void ContactMaterials::onSystemRecreated() {
+void ContactMaterials::onBodiesCleared() {
     mats_.clear();
     options_.clear();
+}
+
+void ContactMaterials::onSystemRecreated() {
     mat_ = make();
     // No bounce: even a little restitution keeps settled boxes micro-bouncing.
     applySurface(*mat_, BodyOptions{});

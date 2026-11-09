@@ -106,8 +106,9 @@ void TerrainContact::attach() {
     }
 }
 
+void TerrainContact::onBodiesCleared() { proxies_.clear(); }
+
 void TerrainContact::clear() {
-    proxies_.clear();
     state_.reset();
     dropCallback();
 }

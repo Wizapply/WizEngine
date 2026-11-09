@@ -27,10 +27,9 @@ void BodyLoads::createContainer() {
 #endif
 }
 
-void BodyLoads::clear() {
-    loadsOf_.clear();
-    bodyLoads_.reset();
-}
+void BodyLoads::clear() { bodyLoads_.reset(); }
+
+void BodyLoads::onBodiesCleared() { loadsOf_.clear(); }
 
 void BodyLoads::onBodyAdded(std::size_t id, const BodyAddInfo& info) {
     loadsOf_.emplace_back();

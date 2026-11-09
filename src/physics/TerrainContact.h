@@ -39,7 +39,8 @@ public:
 
     // 新しい系へコールバックを登録する（Core のみ。Multicore では登録しない）。
     void attach();
-    // 系の作り直し: 形の記録・ゴースト・コールバックを捨てる。フレームは残す。
+    // 系の作り直し: ゴースト・コールバックを捨てる。フレームは残す（形の記録は
+    // onBodiesCleared が捨てる）。
     void clear();
 
     // field を張る / 差し替える。戻り値 = ゴーストの physId（Multicore では kInvalidId）。
@@ -56,6 +57,7 @@ public:
     bool hasProxy(std::size_t id) const;
     TerrainContactShape contactShape(std::size_t id) const;
 
+    void onBodiesCleared() override;
     void onBodyAdded(std::size_t id, const BodyAddInfo& info) override;
     void onBodyPlaced(std::size_t id) override;
     void onWakeAll() override;

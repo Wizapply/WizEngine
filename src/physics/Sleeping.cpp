@@ -81,8 +81,9 @@ void Sleeping::wakeAll() {
     }
 }
 
+void Sleeping::onBodiesCleared() { neverSleeps_.clear(); }
+
 void Sleeping::onSystemRecreated() {
-    neverSleeps_.clear();
     // Sleeping is off until the Scene enables it (see setEnabled).
     // Note: Chrono::Multicore does not support sleeping - the call is harmless
     // there, but sleepingCount() will simply stay at 0.

@@ -11,6 +11,7 @@
 #include "physics/PhysicsTypes.h"
 
 namespace chrono {
+class ChLinkBase;
 class ChSystem;
 }
 
@@ -32,6 +33,8 @@ public:
     // backendName / contactName / solverName は HTTP スレッド（/scene、/stats）からも
     // ロック無しで読まれる（作り直しや切替の最中と重なりうる。元からの扱い）。
     const char* backendName() const;
+    // 系の種類の名前（"core" / "multicore"。上の backendName と同じ語彙）。
+    static const char* backendName(PhysicsBackend backend);
     const char* contactName() const;
     const std::string& solverName() const { return solverName_; }
 
@@ -52,6 +55,10 @@ public:
     // 呼ぶ。呼ばないと、増減したものがソルバに入らない / 外れない（起こしたボディが
     // Reset の後に落ちない、など）。
     void setup();
+    // リンクを系から外し、link を null にする（null なら何もしない）。外す前に手元へ
+    // 取って null にするので、まとめて外す途中で例外が出ても、外し終えたものは null、
+    // 残りは次にもう一度外せる（二度外さない・外し漏れを残さない）。
+    void removeLink(std::shared_ptr<chrono::ChLinkBase>& link);
 
     void setGravity(double gx, double gy, double gz);
     bool setIntegrator(const std::string& name);

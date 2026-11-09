@@ -35,6 +35,7 @@ public:
     std::size_t count() const;
 
     void onSystemRecreated() override;
+    void onBodiesCleared() override;
     void onBodyAdded(std::size_t id, const BodyAddInfo& info) override;
 
 private:

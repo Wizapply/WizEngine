@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <utility>
 #include <vector>
 
 using namespace chrono;
@@ -171,8 +172,11 @@ void Cables::removeAll() {
 #ifdef WIZ_HAVE_FEA
     if (cables_.empty()) return;
     for (auto& c : cables_) {
-        for (auto& l : c.links) system_.sys()->RemoveLink(l);
-        if (c.mesh) removeMeshFrom(system_.sys().get(), c.mesh, 0);
+        // リンクもメッシュも 1 つずつ手元に取ってから外す（理由は PhysicsSystem::removeLink）。
+        for (auto& l : c.links) system_.removeLink(l);
+        if (auto mesh = std::exchange(c.mesh, nullptr)) {
+            removeMeshFrom(system_.sys().get(), mesh, 0);
+        }
     }
     cables_.clear();
     system_.setup();
@@ -200,6 +204,7 @@ double Cables::tension(std::size_t cable) const {
     if (cable >= cables_.size()) return 0.0;
     double best = 0.0;
     for (const auto& l : cables_[cable].links) {
+        if (!l) continue;  // removeAll が途中で投げたとき、外し終えたリンクは null
         double f = 0.0, t = 0.0;
         if (linkReaction(l.get(), f, t, 0) && std::isfinite(f)) best = std::max(best, f);
     }

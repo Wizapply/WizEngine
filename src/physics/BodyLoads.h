@@ -30,9 +30,11 @@ public:
     // PhysicsWorld::Parts::createSystem が決める: 残差を足す順が変わらないよう、ジョイント
     // 用のコンテナの後に系へ足す。通知（onSystemRecreated）はその前に出るので使わない。
     void createContainer();
-    // 全部手放す（系の作り直し。古い系を壊す前に呼ぶ）。
+    // 荷重コンテナを手放す（系の作り直し。古い系を壊す前に呼ぶ）。ボディごとの
+    // 荷重の一覧は onBodiesCleared が捨てる。
     void clear();
 
+    void onBodiesCleared() override;
     void onBodyAdded(std::size_t id, const BodyAddInfo& info) override;
     void onBodyRetiring(std::size_t id) override;
 

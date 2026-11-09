@@ -236,7 +236,7 @@ void SoftBodies::solve(SoftBody& soft, double dt) {
     }
 }
 
-void SoftBodies::clear() {
+void SoftBodies::onBodiesCleared() {
     soft_.clear();
 }
 

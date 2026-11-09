@@ -46,7 +46,8 @@ public:
     std::size_t add(const std::shared_ptr<chrono::ChBody>& body, const BodyAddInfo& info);
     // 退場させる: 通知 → 固定 → 当たり判定を切る → 地面の下へ退避。番号は残る。
     void retire(std::size_t id);
-    // 全部忘れる（系の作り直し）。受け手の一覧は残す。
+    // 全部忘れる（系の作り直し）。受け手の一覧は残す。空にした後で受け手へ
+    // onBodiesCleared を配る。
     void clear();
     // 出来事の受け手の一覧（ここ 1 つ）。窓口と担当が出す出来事もここから配る。
     PhysicsEvents& events() { return events_; }

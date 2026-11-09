@@ -7,6 +7,7 @@
 #include <chrono/collision/ChCollisionModel.h>
 #include <chrono/collision/ChCollisionSystem.h>
 #include <chrono/physics/ChContactMaterial.h>  // 材質の合成方式
+#include <chrono/physics/ChLinkBase.h>
 #include <chrono/physics/ChSystemNSC.h>
 #include <chrono/physics/ChSystemSMC.h>
 #include <chrono/solver/ChIterativeSolver.h>
@@ -36,6 +37,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 
 using namespace chrono;
 using namespace wizengine::physics::compat;
@@ -127,8 +129,10 @@ namespace physics {
 PhysicsSystem::PhysicsSystem(PhysicsBackend backend, ContactMethod contact)
     : backend_(backend), contact_(contact) {}
 
-const char* PhysicsSystem::backendName() const {
-    return backend_ == PhysicsBackend::Multicore ? "multicore" : "core";
+const char* PhysicsSystem::backendName() const { return backendName(backend_); }
+
+const char* PhysicsSystem::backendName(PhysicsBackend backend) {
+    return backend == PhysicsBackend::Multicore ? "multicore" : "core";
 }
 
 const char* PhysicsSystem::contactName() const {
@@ -148,6 +152,10 @@ void PhysicsSystem::setMaterialCombine(CombineMode mode) {
 void PhysicsSystem::doStep(double dt) { sys_->DoStepDynamics(dt); }
 
 void PhysicsSystem::setup() { sys_->Setup(); }
+
+void PhysicsSystem::removeLink(std::shared_ptr<ChLinkBase>& link) {
+    if (auto taken = std::exchange(link, nullptr)) sys_->RemoveLink(taken);
+}
 
 void PhysicsSystem::destroy(PhysicsBackend backend, ContactMethod contact) {
     backend_ = backend;

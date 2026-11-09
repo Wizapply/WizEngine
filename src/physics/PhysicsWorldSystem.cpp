@@ -3,6 +3,7 @@
 #include "physics/PhysicsParts.h"
 #include "core/Log.h"
 
+#include <exception>
 #include <string>
 
 void PhysicsWorld::setMaterialCombine(CombineMode mode) {
@@ -15,17 +16,38 @@ void PhysicsWorld::setMaterialCombine(CombineMode mode) {
 void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     p_->joints.clear();
     p_->cables.clear();
+    // 名簿を空にすると、番号と並ぶ担当の配列（ソフトボディの一覧など）も
+    // onBodiesCleared で捨てられる（系を壊す前 = 途中で例外が出ても古い番号が残らない）。
     p_->bodies.clear();
-    // ソフトボディの一覧は名簿と一緒に、系を壊す前に捨てる（途中で例外が出ても
-    // 古い代表番号が残らない = 次の add が昇順を崩さない）。
-    p_->soft.clear();
     // clear がコールバックの持ち主を切り離し、ゴーストの番号は状態ごと捨てる
     // （フレームは残す）。Scene が作り直したあとに setTerrain を呼び直す。
     p_->terrain.clear();
     p_->loads.clear();
     p_->diag.restart();
-    p_->system.destroy(backend, contact);
-    p_->createSystem();
+    // 古い系を壊して頼まれた種類で組む（失敗の倒し先も同じ手順）。
+    auto build = [&](PhysicsBackend kind) {
+        p_->system.destroy(kind, contact);
+        p_->createSystem();
+    };
+    bool failed = false;
+    std::string failure;
+    try {
+        build(backend);
+    } catch (const std::exception& e) {
+        failed = true;
+        failure = e.what();
+    } catch (...) {
+        failed = true;
+        failure = "unknown exception";
+    }
+    if (failed) {
+        // 頼まれた系が作れなかった: Core + 同じ接触法へ倒して続ける。それも投げたら
+        // そのまま上へ（main の guarded が受ける）。
+        LOGE("physics", "recreate %s/%s failed: %s - falling back to %s/%s", backendName(),
+             contactName(), failure.c_str(),
+             wizengine::physics::PhysicsSystem::backendName(PhysicsBackend::Core), contactName());
+        build(PhysicsBackend::Core);
+    }
     LOGI("physics", "world recreated: backend=%s contact=%s", backendName(), contactName());
 }
 
