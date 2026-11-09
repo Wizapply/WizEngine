@@ -31,9 +31,6 @@ public:
     void attach();
     // 衝突系が初期化済みで固定物の集合がまだなら作る（積分の前後で呼ぶ）。
     void syncIfPending();
-    // 衝突モデルを手放す前（EnableCollision(false) / RemoveBody）に呼ぶ:
-    // 解放された Bullet 側の実体のアドレスを集合に残さない。
-    void forget(chrono::ChBody& body);
 
     void onBodyAdded(std::size_t id, const BodyAddInfo& info) override;
     void onBodyRetiring(std::size_t id) override;
@@ -47,6 +44,9 @@ private:
     // 集合に足してペアを掃除、固定でなくなったら集合から外して衝突モデルを
     // 入れ直す（消したペアを Bullet に作り直させる）。
     void update(chrono::ChBody& body);
+    // 衝突モデルを手放す前（EnableCollision(false) / RemoveBody）に呼ぶ:
+    // 解放された Bullet 側の実体のアドレスを集合に残さない（退場の通知から）。
+    void forget(chrono::ChBody& body);
 
     PhysicsSystem& system_;
     BodyRegistry& bodies_;

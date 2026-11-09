@@ -41,17 +41,15 @@ BodyTransform PhysicsWorld::bodyTransform(std::size_t id) const {
     // 番号は系の作り直し（recreate）で全部無効になる。古い番号で呼ばれても
     // 落ちないよう、範囲外は単位姿勢を返す（他の bodyXxx と同じ守り）。
     if (id >= p_->bodies.count()) return BodyTransform{0, 0, 0, 1, 0, 0, 0};
-    if (p_->soft.isRoot(id)) return p_->soft.transform(id);
+    BodyTransform soft;
+    if (p_->soft.transform(id, soft)) return soft;
     return p_->motion.rigidTransform(id);
 }
 
 void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
                              const ChQuaternion<>& rot) {
     if (id >= p_->bodies.count()) return;
-    if (p_->soft.isRoot(id)) {
-        p_->soft.place(id, pos, rot);
-        return;
-    }
+    if (p_->soft.place(id, pos, rot)) return;
     p_->motion.place(id, pos, rot);
     p_->bodies.events().bodyPlaced(id);
 }

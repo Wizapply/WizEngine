@@ -40,6 +40,8 @@ bool modalFrequencies(PhysicsSystem& system, int count, std::vector<double>& hz,
         return false;
     }
     try {
+        // 行列を取り出す前に系を組む（Update() と対）。PhysicsSystem::setup() の
+        // 「足したリンク・メッシュを数え直す」とは理由が違うので直接呼ぶ。
         system.sys()->Setup();
         system.sys()->Update();
         ChSparseMatrix M, K, Cq;

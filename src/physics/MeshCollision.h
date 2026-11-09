@@ -25,6 +25,13 @@ namespace wizengine {
 std::vector<chrono::ChVector3d> loadCollisionPoints(
     const std::string& name, double scale, std::size_t maxPoints = 512);
 
+// 点を格子に寄せて 1 セル 1 点に間引く。格子を粗くしながら maxPoints 以下に
+// なるまで。外形は 1 セル以内に保たれる。点の順は元の順のまま（pointId を
+// 安定させるため）。格子 2 でも多い（同じ点が大量など）ときは等間隔に抜く。
+// loadCollisionPoints（凸包の入力）とテレインの接触の形の記録が使う。
+std::vector<chrono::ChVector3d> decimatePoints(std::vector<chrono::ChVector3d> pts,
+                                               std::size_t maxPoints);
+
 // 三角形をそのまま（頂点と 3 つ組の添字）。凹形状の当たり判定
 // （<geom collision="trimesh">、PhysicsWorld::addTriangleMesh）用。
 // 読めなければ両方空。

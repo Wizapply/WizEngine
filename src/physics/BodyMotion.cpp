@@ -83,15 +83,9 @@ void BodyMotion::applyForceAtPoint(std::size_t id, const ChVector3d& force,
     const ChVector3d impulse = force * dt;
     setLinVel(b.get(), getLinVel(b.get(), 0) + impulse / m, 0);
 
-    // 角運動量の変化 L = r × J をワールド → ローカルへ回し、ローカルの逆慣性
-    // テンソルを掛けてからワールドへ戻す（ChBody の慣性はローカル表現）。
+    // 角運動量の変化 L = r × J。
     const ChVector3d r = point - b->GetPos();
-    const ChVector3d angImpulseW = r.Cross(impulse);
-    const ChQuaternion<> q = b->GetRot();
-    const ChVector3d angImpulseL = q.RotateBack(angImpulseW);
-    const ChVector3d dwL = b->GetInvInertia() * angImpulseL;
-    const ChVector3d dwW = q.Rotate(dwL);
-    setAngVel(b.get(), getAngVel(b.get(), 0) + dwW, 0);
+    addAngularImpulse(*b, r.Cross(impulse));
 }
 
 ChVector3d BodyMotion::angularVelocity(std::size_t id) const {
@@ -138,9 +132,15 @@ void BodyMotion::applyAngularImpulse(std::size_t id, const ChVector3d& impulse) 
     auto& b = bodies_.body(id);
     if (b->IsFixed()) return;
     if (b->IsSleeping()) wakeUp(b.get(), 0);
-    const ChQuaternion<> q = b->GetRot();
-    const ChVector3d dwL = b->GetInvInertia() * q.RotateBack(impulse);
-    setAngVel(b.get(), getAngVel(b.get(), 0) + q.Rotate(dwL), 0);
+    addAngularImpulse(*b, impulse);
+}
+
+// 角力積（ワールド）をワールド → ローカルへ回し、ローカルの逆慣性テンソルを
+// 掛けてからワールドへ戻して角速度に足す（ChBody の慣性はローカル表現）。
+void BodyMotion::addAngularImpulse(ChBody& b, const ChVector3d& impulseW) {
+    const ChQuaternion<> q = b.GetRot();
+    const ChVector3d dwL = b.GetInvInertia() * q.RotateBack(impulseW);
+    setAngVel(&b, getAngVel(&b, 0) + q.Rotate(dwL), 0);
 }
 
 }  // namespace physics

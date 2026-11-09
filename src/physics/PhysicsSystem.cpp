@@ -33,7 +33,6 @@
 #endif
 
 #include <algorithm>
-#include <cstdio>
 #include <memory>
 #include <string>
 #include <thread>
@@ -165,9 +164,8 @@ void PhysicsSystem::destroy(PhysicsBackend backend, ContactMethod contact) {
 
 void PhysicsSystem::create() {
     if (backend_ == PhysicsBackend::Multicore && !multicoreAvailable()) {
-        std::puts(
-            "physics: Chrono::Multicore not built in "
-            "(configure with -DWIZ_USE_MULTICORE=ON); falling back to core");
+        LOGW("physics", "Chrono::Multicore not built in "
+                        "(configure with -DWIZ_USE_MULTICORE=ON); falling back to core");
         backend_ = PhysicsBackend::Core;
     }
 

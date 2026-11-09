@@ -84,7 +84,7 @@ void PhysicsWorld::Parts::detachBody(std::size_t id) {
     if (system.backend() == PhysicsBackend::Multicore || id >= bodies.count()) return;
     auto& b = bodies.body(id);
     if (!b->GetSystem()) return;  // 既に外れている
-    staticPairs.forget(*b);  // RemoveBody が衝突モデルを手放す前に
+    // 固定物の集合からは退場（retire → StaticPairs::onBodyRetiring）で外れている。
     system.sys()->RemoveBody(b);
 }
 

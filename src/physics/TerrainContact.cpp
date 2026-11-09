@@ -33,20 +33,11 @@ namespace wterrain = wizengine::terrain;
 
 namespace {
 
-// テレインの接触の判定の設定。値はベンチ（B1 / B2、chrono_bench の mode=hf
-// hfimpl=lib）の推薦値: envelope 6 mm + 近づく速度の項 1.5·max(0, −v_n)·dt、
-// 1 ボディ 16 点まで、箱の面サンプル無し。dt は毎ステップ書く。
-// pointId（反力キャッシュの添字）は faceSamples で変わるので、proxy の点数を
-// 数えるのも判定するのもこの同じ値を使う（途中で変えない）。
-wterrain::ContactParams terrainContactParams() {
-    wterrain::ContactParams p;
-    p.envelope = 0.006;
-    p.approachSpeedFactor = 1.5;
-    p.dt = 0.0;
-    p.maxPerBody = 16;
-    p.faceSamples = 0;
-    return p;
-}
+// テレインの接触の判定の設定 = terrain::ContactParams の既定値（ベンチ B1 / B2 の
+// 推薦値）。pointId（反力キャッシュの添字）は faceSamples で変わるので、proxy の
+// 点数を数える側（setProxy）と判定する側（collectContacts）は必ずこの同じ値を使う
+// （食い違うとキャッシュの範囲外の接触が黙って捨てられ、物が沈む）。
+const wterrain::ContactParams kTerrainContactParams{};
 
 }  // namespace
 
@@ -77,7 +68,8 @@ struct TerrainContact::State {
     // スピン摩擦 0（多点で触れる箱が BB ソルバで斜面に沈むため。ベンチ B1 / B2）。
     std::shared_ptr<chrono::ChContactMaterial> matRound;
     std::shared_ptr<chrono::ChContactMaterial> matFlat;
-    wterrain::ContactParams params = terrainContactParams();
+    // 判定の設定（kTerrainContactParams の写し）。dt だけ毎ステップ書く。
+    wterrain::ContactParams params = kTerrainContactParams;
     std::vector<wterrain::Contact> contacts;  // 作業用（ボディ 1 個ぶん）
 };
 
@@ -149,7 +141,7 @@ void TerrainContact::setProxy(std::size_t id, const wterrain::BodyProxy& proxy) 
     auto rec = std::make_shared<ProxyRec>();
     rec->proxy = proxy;
     rec->proxy.boundRadius = wterrain::computeBoundRadius(rec->proxy);
-    const int points = wterrain::proxyPointCount(rec->proxy, terrainContactParams());
+    const int points = wterrain::proxyPointCount(rec->proxy, kTerrainContactParams);
     if (points <= 0) {
         proxies_[id].reset();
         return;
@@ -264,12 +256,12 @@ std::size_t TerrainContact::set(std::shared_ptr<const wterrain::HeightField> fie
     }
     refreshMaterials();
 
-    // 地面が変わったので、前の地面に対する接触の印と眠りを捨てる（眠りは呼び出し側）。
+    // 前の地面に対する接触の印と眠りは呼び出し側が捨てる（窓口の wakeAll →
+    // onWakeAll → forgetContacts）。ここは記録のある物を数えるだけ。
     std::size_t bodies = 0, points = 0;
     for (std::size_t i = 0; i < proxies_.size(); ++i) {
         const auto& rec = proxies_[i];
         if (!rec) continue;
-        std::fill(rec->was.begin(), rec->was.end(), char(0));
         if (!bodies_.active(i)) continue;
         ++bodies;
         points += rec->cache.size();
@@ -293,10 +285,7 @@ bool TerrainContact::setFrame(const ChVector3d& origin, const ChQuaternion<>& ro
     frameRot_ = q;
     frameIdentity_ = o == ChVector3d(0, 0, 0) && q == ChQuaternion<>(1, 0, 0, 0);
     if (!hasTerrain()) return false;
-    // 地面が動いたので、前の位置に対する接触の印と眠りを捨てる（set と同じ）。
-    for (const auto& rec : proxies_) {
-        if (rec) std::fill(rec->was.begin(), rec->was.end(), char(0));
-    }
+    // 地面が動いた。前の位置に対する接触の印と眠りは呼び出し側が捨てる（set と同じ）。
     return true;
 }
 
@@ -304,11 +293,8 @@ bool TerrainContact::clearField() {
     if (!state_ || !state_->field) return false;
     state_->field.reset();
     state_->contactTerrain = wterrain::ContactTerrain();
-    for (const auto& rec : proxies_) {
-        if (rec) std::fill(rec->was.begin(), rec->was.end(), char(0));
-    }
     LOGI("physics", "terrain contact cleared (ghost body %zu kept)", state_->ghost);
-    // 載っていた物が浮いたまま眠らないように起こす（呼び出し側）。
+    // 載っていた物が浮いたまま眠らないように起こす・接触の印を捨てる（呼び出し側）。
     return true;
 }
 
@@ -338,7 +324,6 @@ void TerrainContact::collectContacts(ChSystem& sys) {
 
     const std::size_t n = std::min(proxies_.size(), bodies_.count());
     for (std::size_t i = 0; i < n; ++i) {
-        if (i == t.ghost) continue;
         ProxyRec* rec = proxies_[i].get();
         ChBody* b = bodies_.body(i).get();
         // 対象外（eligible）と眠っている物は足さない（眠っている物は

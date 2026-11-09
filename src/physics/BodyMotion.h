@@ -7,6 +7,10 @@
 
 #include "physics/PhysicsTypes.h"
 
+namespace chrono {
+class ChBody;
+}
+
 namespace wizengine {
 namespace physics {
 
@@ -36,6 +40,9 @@ public:
     void place(std::size_t id, const chrono::ChVector3d& pos, const chrono::ChQuaternion<>& rot);
 
 private:
+    // 1 個の剛体の角速度に角力積（ワールド座標）を足す（起こす・固定の判定は呼び出し側）。
+    static void addAngularImpulse(chrono::ChBody& b, const chrono::ChVector3d& impulseW);
+
     BodyRegistry& bodies_;
     Sleeping& sleeping_;
 };

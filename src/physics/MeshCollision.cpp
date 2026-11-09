@@ -166,30 +166,16 @@ bool loadCollisionMesh(const std::string& name, double scale,
 
 }  // namespace
 
-std::vector<ChVector3d> loadCollisionPoints(const std::string& name,
-                                            double scale,
-                                            std::size_t maxPoints) {
-    ChTriangleMeshConnected mesh;
-    if (!loadCollisionMesh(name, scale, mesh)) return {};
-    std::vector<ChVector3d> pts = mesh.GetCoordsVertices();
-
-    // Decimate by snapping points to a grid and keeping one per cell,
-    // halving the grid resolution until the count fits. The hull of the
-    // decimated set is within one cell of the true hull - far below the
-    // collision envelope at these resolutions.
+std::vector<ChVector3d> decimatePoints(std::vector<ChVector3d> pts, std::size_t maxPoints) {
+    if (pts.size() <= maxPoints || pts.empty()) return pts;
     ChVector3d lo = pts[0], hi = pts[0];
     for (const auto& p : pts) {
-        lo = ChVector3d(std::min(lo.x(), p.x()), std::min(lo.y(), p.y()),
-                        std::min(lo.z(), p.z()));
-        hi = ChVector3d(std::max(hi.x(), p.x()), std::max(hi.y(), p.y()),
-                        std::max(hi.z(), p.z()));
+        lo = ChVector3d(std::min(lo.x(), p.x()), std::min(lo.y(), p.y()), std::min(lo.z(), p.z()));
+        hi = ChVector3d(std::max(hi.x(), p.x()), std::max(hi.y(), p.y()), std::max(hi.z(), p.z()));
     }
     const ChVector3d span = hi - lo;
-    const double maxSpan =
-        std::max({span.x(), span.y(), span.z(), 1e-9});
-
-    const std::size_t original = pts.size();
-    for (int res = 64; res >= 4 && pts.size() > maxPoints; res /= 2) {
+    const double maxSpan = std::max({span.x(), span.y(), span.z(), 1e-9});
+    for (int res = 64; res >= 2 && pts.size() > maxPoints; res /= 2) {
         std::unordered_set<std::uint64_t> cells;
         std::vector<ChVector3d> kept;
         kept.reserve(maxPoints);
@@ -198,11 +184,32 @@ std::vector<ChVector3d> loadCollisionPoints(const std::string& name,
             const std::uint64_t cx = std::uint64_t((p.x() - lo.x()) / cell);
             const std::uint64_t cy = std::uint64_t((p.y() - lo.y()) / cell);
             const std::uint64_t cz = std::uint64_t((p.z() - lo.z()) / cell);
-            const std::uint64_t key = (cx << 42) | (cy << 21) | cz;
-            if (cells.insert(key).second) kept.push_back(p);
+            if (cells.insert((cx << 42) | (cy << 21) | cz).second) kept.push_back(p);
         }
         pts = std::move(kept);
     }
+    // 格子 2 でも多い（同じ点が大量など）ときは等間隔に抜く。
+    if (pts.size() > maxPoints) {
+        std::vector<ChVector3d> kept;
+        kept.reserve(maxPoints);
+        const double stride = double(pts.size()) / double(maxPoints);
+        for (std::size_t k = 0; k < maxPoints; ++k) kept.push_back(pts[std::size_t(k * stride)]);
+        pts = std::move(kept);
+    }
+    return pts;
+}
+
+std::vector<ChVector3d> loadCollisionPoints(const std::string& name,
+                                            double scale,
+                                            std::size_t maxPoints) {
+    ChTriangleMeshConnected mesh;
+    if (!loadCollisionMesh(name, scale, mesh)) return {};
+    std::vector<ChVector3d> pts = mesh.GetCoordsVertices();
+
+    // 間引いた点の凸包は本当の凸包から 1 セル以内に収まる - この解像度では
+    // 衝突のエンベロープよりずっと小さい。
+    const std::size_t original = pts.size();
+    pts = decimatePoints(std::move(pts), maxPoints);
 
     LOGI("collision", "%s: hull points %zu (from %zu vertices)", name.c_str(),
          pts.size(), original);

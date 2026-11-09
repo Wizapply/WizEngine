@@ -5,6 +5,7 @@
 #include "physics/ChronoCompat.h"
 #include "physics/ChronoMath.h"
 #include "physics/ContactMaterials.h"
+#include "physics/MeshCollision.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/Sleeping.h"
 #include "physics/TerrainConvert.h"
@@ -33,9 +34,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdint>
 #include <memory>
-#include <unordered_set>
 #include <vector>
 
 using namespace chrono;
@@ -48,6 +47,29 @@ namespace physics {
 
 namespace {
 
+// 球 1 個の形（ボディローカルの原点）。
+wterrain::ShapeProxy sphereShape(double radius) {
+    wterrain::ShapeProxy sp;
+    sp.kind = wterrain::ShapeProxy::Kind::Sphere;
+    sp.radius = radius;
+    return sp;
+}
+
+// 箱 1 個の形（各辺の長さ sx, sy, sz。ボディローカルの原点）。
+wterrain::ShapeProxy boxShape(double sx, double sy, double sz) {
+    wterrain::ShapeProxy sp;
+    sp.kind = wterrain::ShapeProxy::Kind::Box;
+    sp.halfExtents = wterrain::Vec3(sx * 0.5, sy * 0.5, sz * 0.5);
+    return sp;
+}
+
+// 箱の慣性（各辺の長さ L の均質な箱、質量 m）。
+ChVector3d boxInertia(double m, const double L[3]) {
+    return ChVector3d(m / 12.0 * (L[1] * L[1] + L[2] * L[2]),
+                      m / 12.0 * (L[0] * L[0] + L[2] * L[2]),
+                      m / 12.0 * (L[0] * L[0] + L[1] * L[1]));
+}
+
 // 追加の当たり形状（attachExtraShapes が実際に足す形と同じもの）を proxy へ。
 // 箱は各辺の長さ、球は x = 直径、円柱は x = 長さ（軸 X）・y = 直径。
 void appendExtraProxies(const std::vector<ExtraShape>& extras,
@@ -55,8 +77,6 @@ void appendExtraProxies(const std::vector<ExtraShape>& extras,
 #ifdef WIZ_HAVE_COLLISION_SHAPES
     for (const ExtraShape& s : extras) {
         wterrain::ShapeProxy sp;
-        sp.position = toTerrainVec(s.pos);
-        sp.rotation = toTerrainMat(ChMatrix33<>(s.rot));
         if (s.cylinder) {
 #ifdef WIZ_HAVE_CYLINDER_SHAPE
             // ShapeProxy の円柱も形のローカル X が軸（部品の円柱と同じ）なので、
@@ -68,12 +88,12 @@ void appendExtraProxies(const std::vector<ExtraShape>& extras,
             continue;  // 当たり形状にならない（attachExtraShapes と同じ）
 #endif
         } else if (s.sphere) {
-            sp.kind = wterrain::ShapeProxy::Kind::Sphere;
-            sp.radius = s.size.x() * 0.5;
+            sp = sphereShape(s.size.x() * 0.5);
         } else {
-            sp.kind = wterrain::ShapeProxy::Kind::Box;
-            sp.halfExtents = wterrain::Vec3(s.size.x() * 0.5, s.size.y() * 0.5, s.size.z() * 0.5);
+            sp = boxShape(s.size.x(), s.size.y(), s.size.z());
         }
+        sp.position = toTerrainVec(s.pos);
+        sp.rotation = toTerrainMat(ChMatrix33<>(s.rot));
         proxy.shapes.push_back(sp);
     }
 #else
@@ -86,42 +106,6 @@ void appendExtraProxies(const std::vector<ExtraShape>& extras,
 // （MeshCollision::loadCollisionPoints の既定 512）と同じ桁。1 ボディの判定は
 // 点数 × 約 100 ns なので、512 点でも 0.05 ms。接触として残るのは深い順 16 点。
 constexpr std::size_t kTerrainMaxProxyPoints = 512;
-
-// 点を格子に寄せて 1 セル 1 点に間引く（MeshCollision::loadCollisionPoints と
-// 同じ方式。格子を粗くしながら maxPoints 以下になるまで）。外形は 1 セル以内に
-// 保たれる。点の順は元の順のまま（pointId を安定させるため）。
-std::vector<ChVector3d> decimatePoints(std::vector<ChVector3d> pts, std::size_t maxPoints) {
-    if (pts.size() <= maxPoints || pts.empty()) return pts;
-    ChVector3d lo = pts[0], hi = pts[0];
-    for (const auto& p : pts) {
-        lo = ChVector3d(std::min(lo.x(), p.x()), std::min(lo.y(), p.y()), std::min(lo.z(), p.z()));
-        hi = ChVector3d(std::max(hi.x(), p.x()), std::max(hi.y(), p.y()), std::max(hi.z(), p.z()));
-    }
-    const ChVector3d span = hi - lo;
-    const double maxSpan = std::max({span.x(), span.y(), span.z(), 1e-9});
-    for (int res = 64; res >= 2 && pts.size() > maxPoints; res /= 2) {
-        std::unordered_set<std::uint64_t> cells;
-        std::vector<ChVector3d> kept;
-        kept.reserve(maxPoints);
-        const double cell = maxSpan / res;
-        for (const auto& p : pts) {
-            const std::uint64_t cx = std::uint64_t((p.x() - lo.x()) / cell);
-            const std::uint64_t cy = std::uint64_t((p.y() - lo.y()) / cell);
-            const std::uint64_t cz = std::uint64_t((p.z() - lo.z()) / cell);
-            if (cells.insert((cx << 42) | (cy << 21) | cz).second) kept.push_back(p);
-        }
-        pts = std::move(kept);
-    }
-    // 格子 2 でも多い（同じ点が大量など）ときは等間隔に抜く。
-    if (pts.size() > maxPoints) {
-        std::vector<ChVector3d> kept;
-        kept.reserve(maxPoints);
-        const double stride = double(pts.size()) / double(maxPoints);
-        for (std::size_t k = 0; k < maxPoints; ++k) kept.push_back(pts[std::size_t(k * stride)]);
-        pts = std::move(kept);
-    }
-    return pts;
-}
 
 // 点の集合（ボディローカル）1 個の形。
 wterrain::ShapeProxy pointsShapeProxy(const std::vector<ChVector3d>& pts) {
@@ -178,7 +162,7 @@ void attachExtraShapes(ChBody& body, const std::vector<ExtraShape>& extras,
 #ifdef WIZ_HAVE_CYLINDER_SHAPE
             shape = chrono_types::make_shared<ChCollisionShapeCylinder>(
                 mat, s.size.y() * 0.5, s.size.x());
-            rot = s.rot * quatFromZAxis(ChVector3d(1, 0, 0));
+            rot = s.rot * quatFromAxis(Axis::Z, ChVector3d(1, 0, 0));
 #else
             if (!warnedCylinder) {
                 warnedCylinder = true;
@@ -216,10 +200,7 @@ std::size_t BodyFactory::finish(const std::shared_ptr<ChBody>& body, const BodyA
 
 wterrain::BodyProxy BodyFactory::sphereProxy(double radius) {
     wterrain::BodyProxy proxy;
-    wterrain::ShapeProxy sp;
-    sp.kind = wterrain::ShapeProxy::Kind::Sphere;
-    sp.radius = radius;
-    proxy.shapes.push_back(sp);
+    proxy.shapes.push_back(sphereShape(radius));
     return proxy;
 }
 
@@ -257,10 +238,7 @@ std::size_t BodyFactory::addBox(double sx, double sy, double sz, double density,
     b->EnableCollision(true);
     // テレインの接触用の形の記録（本体の箱 + 追加の当たり形状）。
     wterrain::BodyProxy proxy;
-    wterrain::ShapeProxy sp;
-    sp.kind = wterrain::ShapeProxy::Kind::Box;
-    sp.halfExtents = wterrain::Vec3(sx * 0.5, sy * 0.5, sz * 0.5);
-    proxy.shapes.push_back(sp);
+    proxy.shapes.push_back(boxShape(sx, sy, sz));
     appendExtraProxies(extras, proxy);
     return finish(b, {options, mat, /*allowSleeping*/ true, &proxy});
 }
@@ -301,9 +279,7 @@ std::size_t BodyFactory::addTriangleMesh(const std::vector<ChVector3d>& vertices
     // 慣性は外接箱の均質な箱として（凹メッシュの体積は当てにならない）。
     double L[3];
     for (int a = 0; a < 3; ++a) L[a] = std::max(hi[a] - lo[a], 0.01);
-    b->SetInertiaXX(ChVector3d(m / 12.0 * (L[1] * L[1] + L[2] * L[2]),
-                               m / 12.0 * (L[0] * L[0] + L[2] * L[2]),
-                               m / 12.0 * (L[0] * L[0] + L[1] * L[1])));
+    b->SetInertiaXX(boxInertia(m, L));
     // 三角メッシュ形状: is_static = 固定なら true（Bullet が静的メッシュとして
     // 最適化する）、is_convex = false（凹形状のため）。sphere_swept は 0。
     auto shape = chrono_types::make_shared<ChCollisionShapeTriangleMesh>(
@@ -366,9 +342,7 @@ std::size_t BodyFactory::addFrame(double mass, const ChVector3d& pos,
     if (!extras.empty()) {
         for (int a = 0; a < 3; ++a) L[a] = std::max(hi[a] - lo[a], 0.01);
     }
-    b->SetInertiaXX(ChVector3d(m / 12.0 * (L[1] * L[1] + L[2] * L[2]),
-                               m / 12.0 * (L[0] * L[0] + L[2] * L[2]),
-                               m / 12.0 * (L[0] * L[0] + L[1] * L[1])));
+    b->SetInertiaXX(boxInertia(m, L));
     attachExtraShapes(*b, extras, mat);
     b->SetPos(pos);
     b->SetRot(rot);

@@ -131,9 +131,9 @@ std::size_t SoftBodies::add(const SoftBodySpec& spec, const ChVector3d& pos,
     return soft_.back().root;
 }
 
-void SoftBodies::place(std::size_t id, const ChVector3d& pos, const ChQuaternion<>& rot) {
+bool SoftBodies::place(std::size_t id, const ChVector3d& pos, const ChQuaternion<>& rot) {
     const SoftBody* soft = find(id);
-    if (!soft) return;
+    if (!soft) return false;
     const auto particles = bodies_.members(soft->root);
     for (std::size_t i = 0; i < particles.size(); ++i) {
         auto& b = bodies_.body(particles[i]);
@@ -143,14 +143,15 @@ void SoftBodies::place(std::size_t id, const ChVector3d& pos, const ChQuaternion
         wakeUp(b.get(), 0);
         bodies_.events().bodyPlaced(particles[i]);
     }
+    return true;
 }
 
 // 粒子群に「剛体だったらどこにあるか」を当てはめる。重心はそのまま平均、
 // 回転は静止形状との相関行列の極分解（SVD で U V^T）= 最小二乗の回転。
 // 選択の当たり判定・ギズモ・引っぱり線・保存される姿勢がこれを使う。
-BodyTransform SoftBodies::transform(std::size_t id) const {
+bool SoftBodies::transform(std::size_t id, BodyTransform& out) const {
     const SoftBody* found = find(id);
-    if (!found) return BodyTransform{0, 0, 0, 1, 0, 0, 0};
+    if (!found) return false;
     const SoftBody& soft = *found;
     const auto particles = bodies_.members(soft.root);
     const std::size_t n = particles.size();
@@ -179,7 +180,8 @@ BodyTransform SoftBodies::transform(std::size_t id) const {
     const Eigen::Vector3d c0(soft.restCentroid.x(), soft.restCentroid.y(),
                              soft.restCentroid.z());
     const Eigen::Vector3d pos = Eigen::Vector3d(c.x(), c.y(), c.z()) - R * c0;
-    return {pos.x(), pos.y(), pos.z(), q.w(), q.x(), q.y(), q.z()};
+    out = {pos.x(), pos.y(), pos.z(), q.w(), q.x(), q.y(), q.z()};
+    return true;
 }
 
 void SoftBodies::solveSprings(double dt) {

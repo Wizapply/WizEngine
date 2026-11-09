@@ -41,11 +41,17 @@ void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
         failure = "unknown exception";
     }
     if (failed) {
-        // 頼まれた系が作れなかった: Core + 同じ接触法へ倒して続ける。それも投げたら
-        // そのまま上へ（main の guarded が受ける）。
-        LOGE("physics", "recreate %s/%s failed: %s - falling back to %s/%s", backendName(),
-             contactName(), failure.c_str(),
-             wizengine::physics::PhysicsSystem::backendName(PhysicsBackend::Core), contactName());
+        // 頼まれた系が作れなかった: Core + 同じ接触法でもう一度作り直して続ける
+        // （試したのが Core でも 1 回やり直す = 作りかけの系を残さない）。それも
+        // 投げたらそのまま上へ（main の guarded が受ける）。
+        const char* core = wizengine::physics::PhysicsSystem::backendName(PhysicsBackend::Core);
+        if (p_->system.backend() == PhysicsBackend::Core) {
+            LOGE("physics", "recreate %s failed: %s - retrying %s/%s", backendName(),
+                 failure.c_str(), core, contactName());
+        } else {
+            LOGE("physics", "recreate %s/%s failed: %s - falling back to %s/%s", backendName(),
+                 contactName(), failure.c_str(), core, contactName());
+        }
         build(PhysicsBackend::Core);
     }
     LOGI("physics", "world recreated: backend=%s contact=%s", backendName(), contactName());

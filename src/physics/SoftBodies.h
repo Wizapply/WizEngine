@@ -32,11 +32,12 @@ public:
     std::size_t particleCount(std::size_t id) const;
     // 粒子のワールド位置を 3 個ずつ out へ（代表番号でなければ空）。
     void particlePositions(std::size_t id, std::vector<float>& out) const;
-    // 粒子群に当てはめた剛体姿勢（重心 + 最小二乗の回転）。代表番号で呼ぶこと
-    // （それ以外は単位姿勢）。
-    BodyTransform transform(std::size_t id) const;
-    // 静止形状のまま pos / rot へ置き直す（全粒子を止める）。代表番号で呼ぶこと。
-    void place(std::size_t id, const chrono::ChVector3d& pos, const chrono::ChQuaternion<>& rot);
+    // 粒子群に当てはめた剛体姿勢（重心 + 最小二乗の回転）を out へ。id が代表番号
+    // でなければ false（out は触らない）。
+    bool transform(std::size_t id, BodyTransform& out) const;
+    // 静止形状のまま pos / rot へ置き直す（全粒子を止める）。id が代表番号で
+    // なければ false（何もしない）。
+    bool place(std::size_t id, const chrono::ChVector3d& pos, const chrono::ChQuaternion<>& rot);
     // 全部のソフトボディのばねを解いて粒子の速度を書き換える（step の先頭）。
     void solveSprings(double dt);
 

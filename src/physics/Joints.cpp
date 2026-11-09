@@ -73,25 +73,6 @@ chrono::ChFrame<> worldToBodyLocal(const chrono::ChBody& body, const chrono::ChV
     return chrono::ChFrame<>(lp, lr);
 }
 
-// +X をこの向きに合わせる回転。ChLinkMotorLinear* は X 軸方向に動くので、
-// 直動モータだけはこちら（ChLinkLockPrismatic は Z）。
-chrono::ChQuaternion<> quatFromXAxis(const chrono::ChVector3d& axis) {
-    double ax = axis.x(), ay = axis.y(), az = axis.z();
-    const double n = std::sqrt(ax * ax + ay * ay + az * az);
-    if (n < 1e-9) return chrono::ChQuaternion<>(1, 0, 0, 0);
-    ax /= n;
-    ay /= n;
-    az /= n;
-    const double c = ax;  // dot((1,0,0), axis)
-    if (c < -0.999999) {  // 真後ろ: Y 軸まわりに 180 度
-        return chrono::ChQuaternion<>(0, 0, 1, 0);
-    }
-    // 最短回転。cross((1,0,0), axis) = (0, -az, ay)
-    chrono::ChQuaternion<> q(1.0 + c, 0.0, -az, ay);
-    q.Normalize();
-    return q;
-}
-
 // 零ベクトルでない軸か。
 bool axisUsable(const chrono::ChVector3d& a) {
     return a.x() * a.x() + a.y() * a.y() + a.z() * a.z() > 1e-12;
@@ -125,7 +106,7 @@ std::size_t Joints::add(const JointSpec& spec) {
     const ChVector3d axis = axisUsable(spec.axis) ? spec.axis : ChVector3d(0, 1, 0);
     // リンク座標系。Revolute は Z 軸まわりに回り、Prismatic は Z 軸方向へ
     // スライドするので、指定されたワールド軸を Z に合わせる。
-    const ChQuaternion<> frameRot = quatFromZAxis(axis);
+    const ChQuaternion<> frameRot = quatFromAxis(Axis::Z, axis);
 
     // 2 点間のばね（Spring 種類、または Prismatic に添えるばね）。地面側は
     // アンカー、それ以外はボディの中心を取り付け点にする。
@@ -276,7 +257,7 @@ std::size_t Joints::add(const JointSpec& spec) {
             const bool manualForce = manualMode && spec.motor == MotorType::Force;
             if (spec.motor != MotorType::None && !manualForce) {
                 // 直動モータは X 軸方向に動く（ChLinkLockPrismatic は Z）。
-                const ChQuaternion<> xRot = quatFromXAxis(axis);
+                const ChQuaternion<> xRot = quatFromAxis(Axis::X, axis);
                 std::shared_ptr<chrono::ChLinkMotorLinear> m;
                 std::shared_ptr<chrono::ChFunction> fn;
                 if (spec.motor == MotorType::Speed && manualMode) {
@@ -394,7 +375,7 @@ std::size_t Joints::add(const JointSpec& spec) {
         case JointType::PointLine: {
             // 線はリンク座標系の X 軸なので、指定した軸を X に合わせる。
             auto l = chrono_types::make_shared<ChLinkLockPointLine>();
-            initLink(l.get(), a, b, anchor, quatFromXAxis(axis), 0);
+            initLink(l.get(), a, b, anchor, quatFromAxis(Axis::X, axis), 0);
             link = l;
             break;
         }
@@ -415,7 +396,7 @@ std::size_t Joints::add(const JointSpec& spec) {
             auto l = chrono_types::make_shared<ChLinkLockGear>();
             initLink(l.get(), a, b, anchor, frameRot, 0);
             const ChFrame<> s1 = worldToBodyLocal(*a, anchor, frameRot);
-            const ChFrame<> s2 = worldToBodyLocal(*b, anchor2, quatFromZAxis(axis2));
+            const ChFrame<> s2 = worldToBodyLocal(*b, anchor2, quatFromAxis(Axis::Z, axis2));
             if (!setGearParams(l.get(), spec.ratio, s1, s2, 0)) {
                 LOGW("physics", "gear joint: this Chrono has a different ChLinkLockGear "
                                 "API - skipped");

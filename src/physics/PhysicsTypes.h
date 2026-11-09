@@ -189,7 +189,7 @@ struct ContactInfo {
 enum class CombineMode { Min, Average, Max };
 
 // 衝突レイヤの数（ファミリ 0〜7。8〜15 はソフトボディの粒子用）。
-constexpr int kCollisionLayerCount = 8;
+inline constexpr int kCollisionLayerCount = 8;
 
 // PhysicsWorld の入れ子として使う型と定数（PhysicsWorld に同じ名前の別名がある）。
 namespace wizengine {
@@ -209,7 +209,7 @@ struct ExtraShape {
 
 // physId やケーブル番号が無いことを表す値（add* / addCable / setTerrain が
 // 作れなかったとき、テレインが無いときの terrainBodyId など）。
-constexpr std::size_t kInvalidId = static_cast<std::size_t>(-1);
+inline constexpr std::size_t kInvalidId = static_cast<std::size_t>(-1);
 
 // PhysicsWorld::addSoftBody への指定。
 struct SoftBodySpec {
@@ -229,7 +229,7 @@ struct SoftBodySpec {
 };
 
 // addJoint が作れなかったときに返す番号。
-constexpr std::size_t kInvalidJoint = static_cast<std::size_t>(-1);
+inline constexpr std::size_t kInvalidJoint = static_cast<std::size_t>(-1);
 
 // PhysicsWorld::terrainContactShape の戻り値（意味はその宣言のコメント）。
 enum class TerrainContactShape { None, Exact, BoundingBox };
