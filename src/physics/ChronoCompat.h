@@ -3,7 +3,7 @@
 // Chrono の版やビルド構成の違いを吸収する部品（ヘッダの有無の判定と SFINAE の関数）を集めたヘッダ。
 // src/physics/ の .cpp 専用。他の層から include しない。
 // ヘッダの有無の判定はここ 1 か所に置き、機能の本体のヘッダは使う .cpp が
-// #ifdef WIZ_HAVE_X で読む（ここに残すのは下の関数と別名の宣言に要るものだけ）。
+// #ifdef WIZ_HAVE_X で読む（ここに残すのは下の関数の宣言に要るものだけ）。
 
 // 下の関数の引数と戻り値の型。
 #include <chrono/core/ChFrame.h>
@@ -54,14 +54,11 @@
 #include <chrono/physics/ChLoadContainer.h>  // removeLoadFrom の ChLoadBase
 #define WIZ_HAVE_LOADS 1
 #endif
-// FEA のケーブル（ANCF）。Chrono 9 は ChLinkNodeFrame、旧版は ChLinkPointFrame。
+// FEA のケーブル（ANCF）。Chrono 9 は ChLinkNodeFrame、旧版は ChLinkPointFrame
+// （どちらを使うかは Cables.cpp が WIZ_HAVE_FEA_LINK_NODE_FRAME で選ぶ）。
 #if __has_include(<chrono/fea/ChBuilderBeam.h>) && __has_include(<chrono/fea/ChMesh.h>)
 #if __has_include(<chrono/fea/ChLinkNodeFrame.h>)
-#include <chrono/fea/ChLinkNodeFrame.h>
-using WizNodeFrameLink = chrono::fea::ChLinkNodeFrame;
-#else
-#include <chrono/fea/ChLinkPointFrame.h>
-using WizNodeFrameLink = chrono::fea::ChLinkPointFrame;
+#define WIZ_HAVE_FEA_LINK_NODE_FRAME 1
 #endif
 #define WIZ_HAVE_FEA 1
 #endif
@@ -78,18 +75,11 @@ using WizNodeFrameLink = chrono::fea::ChLinkPointFrame;
 #if __has_include(<chrono/physics/ChLinkLockScrew.h>)
 #define WIZ_HAVE_SCREW 1
 #endif
-// 定数関数（モータの目標値）。Chrono 9 は functions/ChFunctionConst.h、
-// 旧版は motion_functions/ChFunction_Const.h。
+// 定数関数とランプ関数（モータの目標値）。Chrono 9 は functions/ChFunctionConst.h、
+// 旧版は motion_functions/ChFunction_Const.h（どちらを使うかは Joints.cpp が
+// WIZ_HAVE_FUNCTIONS_DIR で選ぶ）。
 #if __has_include(<chrono/functions/ChFunctionConst.h>)
-#include <chrono/functions/ChFunctionConst.h>
-#include <chrono/functions/ChFunctionRamp.h>
-using WizConstFunction = chrono::ChFunctionConst;
-using WizRampFunction = chrono::ChFunctionRamp;
-#else
-#include <chrono/motion_functions/ChFunction_Const.h>
-#include <chrono/motion_functions/ChFunction_Ramp.h>
-using WizConstFunction = chrono::ChFunction_Const;
-using WizRampFunction = chrono::ChFunction_Ramp;
+#define WIZ_HAVE_FUNCTIONS_DIR 1
 #endif
 
 #include <algorithm>

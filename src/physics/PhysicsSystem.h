@@ -3,7 +3,7 @@
 // Chrono の系（ChSystem）と、作り直しで当て直す設定の控えを持つ。物理スレッドが
 // 触る。例外は名前の取得（下の注記）。
 // 系を組む順番は他の担当と交互になるので、create / applyBaseSettings /
-// applySolverSettings に分けてあり、呼ぶ順番は PhysicsWorld::createSystem が決める。
+// applySolverSettings に分けてあり、呼ぶ順番は PhysicsWorld::Parts::createSystem が決める。
 
 #include <memory>
 #include <string>
@@ -46,9 +46,14 @@ public:
 
     // 1 ステップ積分する。
     void doStep(double dt);
+    // ソルバが解く変数と拘束の配置を組み直す（ChSystem::Setup）。Chrono はこの配置を
+    // ステップの中（ManageSleepingBodies など）でしか組み直さないので、外から拘束や
+    // ボディの構成（リンク・メッシュの増減、眠りから起こしたボディの数）を変えたら
+    // 呼ぶ。呼ばないと、増減したものがソルバに入らない / 外れない（起こしたボディが
+    // Reset の後に落ちない、など）。
+    void setup();
 
     void setGravity(double gx, double gy, double gz);
-    void setGravityY(double gravityY);
     bool setIntegrator(const std::string& name);
     bool setSolver(const std::string& name);
     void setMaterialCombine(CombineMode mode);

@@ -33,8 +33,6 @@ public:
     // 全部のボディを起こして計時をやり直す。
     void wakeAll();
     std::size_t count() const;
-    // 置き直したボディへ与える下向きの速さ（m/s）。
-    double wakeSpeed() const;
 
     void onSystemRecreated() override;
     void onBodyAdded(std::size_t id, const BodyAddInfo& info) override;

@@ -32,6 +32,13 @@
 #include <chrono/physics/ChLoadContainer.h>
 #include <chrono/physics/ChLoadsBody.h>
 #endif
+#ifdef WIZ_HAVE_FUNCTIONS_DIR
+#include <chrono/functions/ChFunctionConst.h>
+#include <chrono/functions/ChFunctionRamp.h>
+#else
+#include <chrono/motion_functions/ChFunction_Const.h>
+#include <chrono/motion_functions/ChFunction_Ramp.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -45,6 +52,15 @@ namespace wizengine {
 namespace physics {
 
 namespace {
+
+// モータの目標値の関数（定数とランプ）。Chrono 9 は ChFunctionConst、旧版は ChFunction_Const。
+#ifdef WIZ_HAVE_FUNCTIONS_DIR
+using WizConstFunction = chrono::ChFunctionConst;
+using WizRampFunction = chrono::ChFunctionRamp;
+#else
+using WizConstFunction = chrono::ChFunction_Const;
+using WizRampFunction = chrono::ChFunction_Ramp;
+#endif
 
 // ワールド座標の座標系をボディのローカルへ（歯車のシャフト座標系用）。
 // Chrono の TransformParentToLocal は版で引数が違うので四元数で手計算。
@@ -517,9 +533,8 @@ void Joints::removeAll() {
 #endif
     joints_.clear();
     brokenPending_.clear();
-    // 拘束の増減はソルバの構成を変えるので、Setup で作り直させる
-    // （wakeAll と同じ理由）。
-    system_.sys()->Setup();
+    // 拘束が減ったのでソルバの配置を組み直す（理由は PhysicsSystem::setup）。
+    system_.setup();
 }
 
 bool Joints::setMotorTarget(std::size_t joint, double target) {

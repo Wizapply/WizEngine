@@ -48,7 +48,7 @@ public:
     void applyManual(double dt);
 
     // ジョイント用の荷重コンテナを作って系へ足す（積分に取り込む系でだけ）。呼ぶ時期は
-    // PhysicsWorld::createSystem が決める: 残差を足す順が変わらないよう、ボディ用の
+    // PhysicsWorld::Parts::createSystem が決める: 残差を足す順が変わらないよう、ボディ用の
     // コンテナ（BodyLoads::createContainer）より前に系へ足す。
     void createContainer();
     // 系の作り直し: 一覧・外れた番号・荷重コンテナ・暖機の数を捨てる（番号が全部

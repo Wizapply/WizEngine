@@ -1,15 +1,9 @@
 // 系の作り直しの順番（担当と交互に組む）と、系の設定の中継。
 
-#include "physics/PhysicsWorldInternal.h"
+#include "physics/PhysicsParts.h"
 #include "core/Log.h"
 
-#include <chrono/physics/ChSystem.h>
-
-#include <memory>
 #include <string>
-
-using namespace chrono;
-using namespace wizengine::physics::compat;
 
 void PhysicsWorld::setMaterialCombine(CombineMode mode) {
     p_->system.setMaterialCombine(mode);
@@ -31,33 +25,33 @@ void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     p_->loads.clear();
     p_->diag.restart();
     p_->system.destroy(backend, contact);
-    createSystem();
+    p_->createSystem();
     LOGI("physics", "world recreated: backend=%s contact=%s", backendName(), contactName());
 }
 
 // 系を組む順番はここが唯一の定義（担当の設定が系の設定と交互に入る）。
-void PhysicsWorld::createSystem() {
-    p_->system.create();
+void PhysicsWorld::Parts::createSystem() {
+    system.create();
 
     // 固定物どうしのペアを作らせないフィルタ（Core のみ。Multicore では外す）。
-    p_->staticPairs.attach();
+    staticPairs.attach();
 
     // テレインの自前の接触（Core のみ）。setTerrain が呼ばれるまでは何もしない
     // （TerrainContact::collectContacts の先頭で戻る）= 呼ばないシーンの挙動は変わらない。
-    p_->terrain.attach();
+    terrain.attach();
 
-    p_->system.applyBaseSettings();
+    system.applyBaseSettings();
 
     // 眠りと共有の材質（受け手は Parts のコンストラクタ。互いの順番には依存しない）。
     // 荷重コンテナと許容差・ソルバの設定より前。
-    p_->bodies.events().systemRecreated();
+    bodies.events().systemRecreated();
 
     // 荷重コンテナ（ChLoad）。積分に取り込む系でだけ作る。
     // 系へ足す順（ジョイント用 → ボディ用）は残差を足す順なので変えない。
-    p_->joints.createContainer();
-    p_->loads.createContainer();
+    joints.createContainer();
+    loads.createContainer();
 
-    p_->system.applySolverSettings();
+    system.applySolverSettings();
 }
 
 const char* PhysicsWorld::backendName() const { return p_->system.backendName(); }
@@ -69,8 +63,6 @@ const std::string& PhysicsWorld::solverName() const { return p_->system.solverNa
 void PhysicsWorld::setGravity(double gx, double gy, double gz) {
     p_->system.setGravity(gx, gy, gz);
 }
-
-void PhysicsWorld::setGravityY(double gravityY) { p_->system.setGravityY(gravityY); }
 
 bool PhysicsWorld::setIntegrator(const std::string& name) {
     return p_->system.setIntegrator(name);

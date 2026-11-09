@@ -27,7 +27,7 @@ public:
     StaticPairs& operator=(const StaticPairs&) = delete;
 
     // 新しい系の Bullet ワールドにフィルタを付ける（Multicore では外したまま）。
-    // 呼ぶ時期は PhysicsWorld::createSystem が決める（系の基本設定より前）。
+    // 呼ぶ時期は PhysicsWorld::Parts::createSystem が決める（系の基本設定より前）。
     void attach();
     // 衝突系が初期化済みで固定物の集合がまだなら作る（積分の前後で呼ぶ）。
     void syncIfPending();

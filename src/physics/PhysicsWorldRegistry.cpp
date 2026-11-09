@@ -1,8 +1,9 @@
 // ボディの追加の中継（本体は BodyFactory）と退場の順番（名簿は BodyRegistry）。
 
-#include "physics/PhysicsWorldInternal.h"
+#include "physics/PhysicsParts.h"
 
 #include <chrono/physics/ChBody.h>
+#include <chrono/physics/ChSystem.h>
 
 std::size_t PhysicsWorld::addSphere(double radius, double density,
                                     const chrono::ChVector3d& pos,
@@ -71,7 +72,7 @@ void PhysicsWorld::disableBody(std::size_t id) {
     const auto members = p_->bodies.members(id);
     for (const std::size_t p : members) p_->bodies.retire(p);
     // Core では本当に系から外す（B の 18）。粒子も同じ。
-    for (const std::size_t p : members) detachBody(p);
+    for (const std::size_t p : members) p_->detachBody(p);
 }
 
 // Core（Bullet）は RemoveBody を実装しているので、退場したボディは系から
@@ -79,12 +80,12 @@ void PhysicsWorld::disableBody(std::size_t id) {
 // 大きさを何度も変えても空のボディが溜まらない。ChBody のオブジェクト自体は
 // 名簿に残す（番号を詰めない・接触コールバックの逆引きが壊れない）。
 // Multicore は衝突系の Remove が未実装なので触らない（退避のみ）。
-void PhysicsWorld::detachBody(std::size_t id) {
-    if (p_->system.backend() == PhysicsBackend::Multicore || id >= p_->bodies.count()) return;
-    auto& b = p_->bodies.body(id);
+void PhysicsWorld::Parts::detachBody(std::size_t id) {
+    if (system.backend() == PhysicsBackend::Multicore || id >= bodies.count()) return;
+    auto& b = bodies.body(id);
     if (!b->GetSystem()) return;  // 既に外れている
-    p_->staticPairs.forget(*b);  // RemoveBody が衝突モデルを手放す前に
-    p_->system.sys()->RemoveBody(b);
+    staticPairs.forget(*b);  // RemoveBody が衝突モデルを手放す前に
+    system.sys()->RemoveBody(b);
 }
 
 bool PhysicsWorld::bodyActive(std::size_t id) const {

@@ -27,7 +27,7 @@ public:
     BodyLoads& operator=(const BodyLoads&) = delete;
 
     // ボディ用の荷重コンテナを作って系へ足す（積分に取り込む系でだけ）。呼ぶ時期は
-    // PhysicsWorld::createSystem が決める: 残差を足す順が変わらないよう、ジョイント
+    // PhysicsWorld::Parts::createSystem が決める: 残差を足す順が変わらないよう、ジョイント
     // 用のコンテナの後に系へ足す。通知（onSystemRecreated）はその前に出るので使わない。
     void createContainer();
     // 全部手放す（系の作り直し。古い系を壊す前に呼ぶ）。

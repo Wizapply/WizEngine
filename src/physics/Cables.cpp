@@ -19,6 +19,11 @@
 #include <chrono/fea/ChElementCableANCF.h>
 #include <chrono/fea/ChMesh.h>
 #include <chrono/fea/ChNodeFEAxyzD.h>
+#ifdef WIZ_HAVE_FEA_LINK_NODE_FRAME
+#include <chrono/fea/ChLinkNodeFrame.h>
+#else
+#include <chrono/fea/ChLinkPointFrame.h>
+#endif
 #endif
 
 #include <algorithm>
@@ -31,6 +36,19 @@ using namespace wizengine::physics::compat;
 
 namespace wizengine {
 namespace physics {
+
+#ifdef WIZ_HAVE_FEA
+namespace {
+
+// 端の拘束（節点 ⇄ ボディ）。Chrono 9 は ChLinkNodeFrame、旧版は ChLinkPointFrame。
+#ifdef WIZ_HAVE_FEA_LINK_NODE_FRAME
+using WizNodeFrameLink = chrono::fea::ChLinkNodeFrame;
+#else
+using WizNodeFrameLink = chrono::fea::ChLinkPointFrame;
+#endif
+
+}  // namespace
+#endif
 
 // ---- ケーブル（FEA。B の 15）-----------------------------------------------
 // ANCF ケーブル要素を直線に並べ、端を固定点 / ボディ / 自由にする。節点の
@@ -131,9 +149,8 @@ std::size_t Cables::add(const CableSpec& spec) {
     };
     attach(rec.nodes.front(), spec.endA, spec.bodyA);
     attach(rec.nodes.back(), spec.endB, spec.bodyB);
-    rec.valid = true;
     cables_.push_back(std::move(rec));
-    system_.sys()->Setup();
+    system_.setup();
     LOGI("physics", "cable #%zu: %d elements, %zu nodes, length %.2f m, young %.3g Pa, "
                     "collide %d",
          cables_.size() - 1, n, cables_.back().nodes.size(), length, spec.young,
@@ -158,14 +175,14 @@ void Cables::removeAll() {
         if (c.mesh) removeMeshFrom(system_.sys().get(), c.mesh, 0);
     }
     cables_.clear();
-    system_.sys()->Setup();
+    system_.setup();
 #endif
 }
 
 void Cables::nodePositions(std::size_t cable, std::vector<float>& out) const {
     out.clear();
 #ifdef WIZ_HAVE_FEA
-    if (cable >= cables_.size() || !cables_[cable].valid) return;
+    if (cable >= cables_.size()) return;
     const CableRec& c = cables_[cable];
     out.reserve(c.nodes.size() * 3);
     for (const auto& node : c.nodes) {

@@ -191,7 +191,7 @@ public:
     // 小さな球の剛体（粒子）の集合を、ばねで結んで 1 つの柔らかい物にする。
     // 戻り値は**代表番号**（最初の粒子の physId）で、この番号への既存の
     // 操作はそのまま粒子全体に広がる: bodyTransform は粒子群に当てはめた
-    // 剛体姿勢（重心 + 最小二乗の回転）、placeBody / setBodyPose は静止
+    // 剛体姿勢（重心 + 最小二乗の回転）、placeBody は静止
     // 形状のまま置き直し、setBodyFixed / disableBody は全粒子、applyForce は
     // 全体の質量で速度変化を等しく配る、bodyMass は合計、bodyVelocity は
     // 平均、activeContactPairs は粒子の接触を代表番号で報告する。Scene 側は
@@ -215,13 +215,7 @@ public:
     std::size_t bodyCount() const;
     BodyTransform bodyTransform(std::size_t id) const;
 
-    // Move a body and clear its velocity/acceleration (for re-dropping).
-    void setBodyPose(std::size_t id, const chrono::ChVector3d& pos,
-                     const chrono::ChQuaternion<>& rot);
-
     // ---- エディタ用 ------------------------------------------------------
-    // 重力（-Y 方向の大きさ）。エディタのシミュレート設定から呼ぶ。
-    void setGravityY(double gravityY);
     // 重力の 3 成分（斜面・無重力・横向きの重力）。
     void setGravity(double gx, double gy, double gz);
     // このボディだけ重力を切る / 戻す（ソフトボディなら全粒子）。
@@ -251,8 +245,8 @@ public:
     // 2 材質の合成（min = Chrono の既定 / average / max）。
     void setMaterialCombine(CombineMode mode);
 
-    // エディタで置き直すときの姿勢設定。setBodyPose と違い「起こすための
-    // 落下速度」を与えない（置いた場所にそのまま静止させたいので）。
+    // エディタで置き直すときの姿勢設定。「起こすための落下速度」は
+    // 与えない（置いた場所にそのまま静止させたいので）。
     void placeBody(std::size_t id, const chrono::ChVector3d& pos,
                    const chrono::ChQuaternion<>& rot);
 
@@ -379,10 +373,6 @@ public:
     TerrainContactShape terrainContactShape(std::size_t id) const;
 
 private:
-    // Chrono の系を（作り直しも含めて）組む。コンストラクタと recreate が呼ぶ。
-    void createSystem();
-    // 本当に系から外す（Core。Multicore は退避だけ）。disableBody から。
-    void detachBody(std::size_t id);
     // 担当の入れ物（Chrono の系と名簿。中身は PhysicsParts.h）。
     struct Parts;
     // 壊れる順番（ジョイント・ケーブル・荷重など）は Parts の中で持つ。

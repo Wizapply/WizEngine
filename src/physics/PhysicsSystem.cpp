@@ -147,6 +147,8 @@ void PhysicsSystem::setMaterialCombine(CombineMode mode) {
 
 void PhysicsSystem::doStep(double dt) { sys_->DoStepDynamics(dt); }
 
+void PhysicsSystem::setup() { sys_->Setup(); }
+
 void PhysicsSystem::destroy(PhysicsBackend backend, ContactMethod contact) {
     backend_ = backend;
     contact_ = contact;
@@ -455,10 +457,6 @@ void PhysicsSystem::setSolverIterations(int iterations) {
         ls->SetMaxIterations(iterations);  // MINRES（LS 側の反復）
     }
     }
-}
-
-void PhysicsSystem::setGravityY(double gravityY) {
-    sys_->SetGravitationalAcceleration(ChVector3d(0, gravityY, 0));
 }
 
 }  // namespace physics

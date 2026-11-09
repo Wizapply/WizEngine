@@ -34,8 +34,6 @@ public:
     BodyTransform rigidTransform(std::size_t id) const;
     // その場に静止させて置く（落下速度を与えない）。
     void place(std::size_t id, const chrono::ChVector3d& pos, const chrono::ChQuaternion<>& rot);
-    // 置いて落とし始める（眠らないよう下向きの速度を与える）。
-    void drop(std::size_t id, const chrono::ChVector3d& pos, const chrono::ChQuaternion<>& rot);
 
 private:
     BodyRegistry& bodies_;

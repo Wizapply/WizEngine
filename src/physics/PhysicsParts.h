@@ -21,22 +21,9 @@
 #include "physics/VelocityDamping.h"
 
 struct PhysicsWorld::Parts {
-    Parts(PhysicsBackend backend, ContactMethod contact)
-        : staticPairs(system, bodies),  // 参照を覚えるだけ（中身に触るのは attach から）
-          system(backend, contact),
-          bodies(system),
-          sleeping(system, bodies),
-          motion(bodies, sleeping),
-          materials(system, bodies),
-          factory(system, bodies, sleeping, materials),
-          soft(bodies, factory, materials),
-          loads(system, bodies),
-          gravity(system, bodies),
-          damping(bodies),
-          diag(system, bodies),
-          terrain(system, bodies, materials),
-          joints(system, bodies, motion),
-          cables(system, bodies, materials) {
+    // system だけはコンストラクタ引数（系の種類）が要るので初期化子リストに残す。
+    // 他の担当の初期化子は宣言の行に書く（初期化は宣言の順 = 下の並び）。
+    Parts(PhysicsBackend backend, ContactMethod contact) : system(backend, contact) {
         // 出来事の受け手はここで登録する。受け手どうしは順番に依存しない
         // （それぞれ自分の状態と Chrono の別々の部分だけを触る）。
         bodies.events().add(&sleeping);
@@ -48,26 +35,32 @@ struct PhysicsWorld::Parts {
         bodies.events().add(&soft);
     }
 
+    // Chrono の系を（作り直しも含めて）組む。PhysicsWorld のコンストラクタと recreate が呼ぶ。
+    void createSystem();
+    // 本当に系から外す（Core。Multicore は退避だけ）。PhysicsWorld::disableBody から。
+    void detachBody(std::size_t id);
+
     // system より先に宣言する = 系より後に壊れる（Bullet のペアキャッシュがフィルタを
-    // 指すので、系の破棄の途中でも生きている必要がある）。
-    wizengine::physics::StaticPairs staticPairs;
+    // 指すので、系の破棄の途中でも生きている必要がある）。参照を覚えるだけで、
+    // 中身に触るのは attach から（system より先に初期化されても構わない）。
+    wizengine::physics::StaticPairs staticPairs{system, bodies};
     wizengine::physics::PhysicsSystem system;
-    wizengine::physics::BodyRegistry bodies;
-    wizengine::physics::Sleeping sleeping;
-    wizengine::physics::BodyMotion motion;
-    wizengine::physics::ContactMaterials materials;
-    wizengine::physics::BodyFactory factory;
-    wizengine::physics::SoftBodies soft;
-    wizengine::physics::BodyLoads loads;
-    wizengine::physics::GravityOverride gravity;
-    wizengine::physics::VelocityDamping damping;
-    wizengine::physics::Diagnostics diag;
+    wizengine::physics::BodyRegistry bodies{system};
+    wizengine::physics::Sleeping sleeping{system, bodies};
+    wizengine::physics::BodyMotion motion{bodies, sleeping};
+    wizengine::physics::ContactMaterials materials{system, bodies};
+    wizengine::physics::BodyFactory factory{system, bodies, sleeping, materials};
+    wizengine::physics::SoftBodies soft{bodies, factory, materials};
+    wizengine::physics::BodyLoads loads{system, bodies};
+    wizengine::physics::GravityOverride gravity{system, bodies};
+    wizengine::physics::VelocityDamping damping{bodies};
+    wizengine::physics::Diagnostics diag{system, bodies};
     // system より先に壊れる。系が持ち続けるコールバックはデストラクタが切り離す。
-    wizengine::physics::TerrainContact terrain;
+    wizengine::physics::TerrainContact terrain{system, bodies, materials};
     // 系と名簿より後に宣言する = 系と名簿より先に壊れる（リンクと荷重コンテナへの参照を
     // 先に手放す。以前の PhysicsWorld のメンバと同じ順番）。
-    wizengine::physics::Joints joints;
+    wizengine::physics::Joints joints{system, bodies, motion};
     // joints より後 = 最初に壊れる（以前の PhysicsWorld では cables_ が窓口のメンバで、
     // p_ より先 = ジョイントより先に壊れていた。その順番を保つ）。
-    wizengine::physics::Cables cables;
+    wizengine::physics::Cables cables{system, bodies, materials};
 };

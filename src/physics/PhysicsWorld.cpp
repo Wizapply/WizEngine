@@ -1,6 +1,7 @@
 // PhysicsWorld の窓口: 構築・1 ステップの順番・全体を起こす・機能の有無・小さな担当の中継。
 
-#include "physics/PhysicsWorldInternal.h"
+#include "physics/PhysicsParts.h"
+#include "physics/ChronoCompat.h"  // physicsFeatures の WIZ_HAVE_*
 #include "physics/ContactReport.h"
 #include "physics/ModalAnalysis.h"
 
@@ -31,7 +32,7 @@ PhysicsFeatures physicsFeatures() {
 
 PhysicsWorld::PhysicsWorld(PhysicsBackend backend, ContactMethod contact)
     : p_(std::make_unique<Parts>(backend, contact)) {
-    createSystem();
+    p_->createSystem();
 }
 
 // Parts が完全型のここで定義する。壊れる順は PhysicsParts.h（Parts の宣言の逆順）。
@@ -40,11 +41,8 @@ PhysicsWorld::~PhysicsWorld() = default;
 void PhysicsWorld::wakeAll() {
     p_->sleeping.wakeAll();
     p_->bodies.events().wakeAll();
-    // Waking from outside ManageSleepingBodies() changes how many bodies the
-    // solver has to handle, and Chrono only rebuilds that layout in Setup().
-    // Without this the "woken" bodies can stay out of the solve - i.e. they
-    // would not fall after a reset.
-    p_->system.sys()->Setup();
+    // 起こしたボディをソルバに入れる（理由は PhysicsSystem::setup）。
+    p_->system.setup();
 }
 
 void PhysicsWorld::step(double dt) {

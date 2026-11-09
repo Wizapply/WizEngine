@@ -8,19 +8,8 @@
 #include <chrono/physics/ChBody.h>
 #include <chrono/physics/ChSystem.h>
 
-#include <algorithm>
-
 using namespace chrono;
 using namespace wizengine::physics::compat;
-
-namespace {
-
-// Minimum downward speed given to a re-dropped body (m/s). The actual value
-// also scales with the configured sleep threshold, so the two cannot drift out
-// of sync if the Scene tightens the limits.
-constexpr double kWakeSpeed = 0.1;
-
-}  // namespace
 
 namespace wizengine {
 namespace physics {
@@ -90,10 +79,6 @@ void Sleeping::wakeAll() {
         wakeUp(bodies_.body(i).get(), 0);
         resetTimer(i);
     }
-}
-
-double Sleeping::wakeSpeed() const {
-    return std::max(kWakeSpeed, 3.0 * static_cast<double>(minLinVel_));
 }
 
 void Sleeping::onSystemRecreated() {

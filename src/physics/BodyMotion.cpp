@@ -129,23 +129,8 @@ void BodyMotion::place(std::size_t id, const ChVector3d& pos, const ChQuaternion
     b->ForceToRest();
     wakeUp(b.get(), 0);
     sleeping_.resetTimer(id);  // 静止させた直後に眠らせない
-    // drop と違って落下速度は与えない。エディタで置いた物は、
+    // 落下速度は与えない。エディタで置いた物は、
     // シミュレートを始めるまでその場に止まっていてほしい。
-}
-
-void BodyMotion::drop(std::size_t id, const ChVector3d& pos, const ChQuaternion<>& rot) {
-    auto& b = bodies_.body(id);
-    b->SetPos(pos);
-    b->SetRot(rot);
-    b->ForceToRest();  // zero linear + angular velocity and accel
-    wakeUp(b.get(), 0);  // a re-dropped body must not stay asleep
-
-    // ...and it must not fall straight back asleep. Chrono only refreshes a
-    // body's "last moving" timestamp while it is above the sleep speed, so a
-    // body we just stopped still looks like it has been still for ages and
-    // would sleep again on the very next step - before gravity gets a chance
-    // to speed it up. A small initial downward velocity resets that timer.
-    setLinVel(b.get(), ChVector3d(0, -sleeping_.wakeSpeed(), 0), 0);
 }
 
 void BodyMotion::applyAngularImpulse(std::size_t id, const ChVector3d& impulse) {

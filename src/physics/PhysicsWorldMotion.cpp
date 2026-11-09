@@ -45,17 +45,6 @@ BodyTransform PhysicsWorld::bodyTransform(std::size_t id) const {
     return p_->motion.rigidTransform(id);
 }
 
-void PhysicsWorld::setBodyPose(std::size_t id, const ChVector3d& pos,
-                               const ChQuaternion<>& rot) {
-    if (p_->soft.isRoot(id)) {
-        // 静止形状のまま置き直す。粒子は眠らないので落下速度は要らない。
-        p_->soft.place(id, pos, rot);
-        return;
-    }
-    p_->motion.drop(id, pos, rot);
-    p_->bodies.events().bodyPlaced(id);
-}
-
 void PhysicsWorld::placeBody(std::size_t id, const ChVector3d& pos,
                              const ChQuaternion<>& rot) {
     if (id >= p_->bodies.count()) return;

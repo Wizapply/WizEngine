@@ -49,7 +49,6 @@ private:
         std::shared_ptr<chrono::fea::ChMesh> mesh;
         std::vector<std::shared_ptr<chrono::fea::ChNodeFEAxyzD>> nodes;
         std::vector<std::shared_ptr<chrono::ChLinkBase>> links;  // 端の拘束
-        bool valid = false;
     };
 
     PhysicsSystem& system_;
