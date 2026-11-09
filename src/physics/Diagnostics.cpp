@@ -23,8 +23,9 @@ namespace physics {
 bool Diagnostics::afterStep(double dt, std::size_t jointCount) {
     // 診断: 拘束が解かれているかを最初の数ステップと 1 秒後に 1 回ずつ出す
     // （「全部が地面を抜けて落ちる」の切り分け用: 接触とリンクの数、
-    // ソルバの設定）。ステップ数は removeAllJoints で戻る = シミュレート
-    // 開始のたびに出る。
+    // ソルバの設定）。このステップ数は診断の行を出す時点（2 と 120 ステップ目）
+    // を決めるだけ。restart で戻る（ジョイントを全部外したとき = シミュレートの
+    // 開始と、走行中のジョイントの作り直し、系の作り直し）。
     ++diagSteps_;
     if (diagSteps_ == 2 || diagSteps_ == 120) {
         std::size_t activeBodies = 0;

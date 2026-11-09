@@ -393,8 +393,8 @@ private:
     void detachBody(std::size_t id);
     // 担当の入れ物（Chrono の系と名簿。中身は PhysicsParts.h）。
     struct Parts;
-    // 他のメンバより先に宣言する = 系は他のメンバ（ジョイント・荷重など）が
-    // 全部壊れた後に壊れる。
+    // 他のメンバより先に宣言する = 系は窓口に残る他のメンバ（cables_）が
+    // 壊れた後に壊れる（ジョイント・荷重などは Parts の中で順番を持つ）。
     std::unique_ptr<Parts> p_;
     // ケーブル（FEA メッシュ + 端の拘束）。removeAllCables でまとめて外す。
     struct CableRec {

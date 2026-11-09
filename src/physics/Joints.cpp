@@ -134,12 +134,12 @@ std::size_t Joints::add(const JointSpec& spec) {
     bool limitDone = false;
     // Multicore は ChLinkTSDA / ChLinkRSDA / トルク（力）モータの力を積分に
     // 取り込まず、速度モータは専用の一覧（RemoveLink で外れない）を持つ。
-    // そちらでは手計算の力積（applyManualJoints）と「角度モータ + ランプ
+    // そちらでは手計算の力積（applyManual）と「角度モータ + ランプ
     // 関数」で同じ意味を作る。Core は Chrono のリンクをそのまま使う。
     const bool manualMode = system_.backend() == PhysicsBackend::Multicore;
     // Multicore は片側拘束（ChLinkLimit）を解けない - 範囲に当たった瞬間に
     // 系全体が NaN になった（実機で確認）。そちらでは可動範囲も手計算の
-    // 力積にする（applyManualJoints）。
+    // 力積にする（applyManual）。
     auto manualLimit = [&](bool linear) {
         rec.manual.limited = true;
         rec.manual.limitLinear = linear;
@@ -433,7 +433,7 @@ std::size_t Joints::add(const JointSpec& spec) {
                 return kInvalidJoint;
             }
             if (manualMode) {
-                // リンク無し。毎ステップの力積だけ（applyManualJoints）。
+                // リンク無し。毎ステップの力積だけ（applyManual）。
                 const ChVector3d p1 = a->IsFixed() ? anchor : a->GetPos();
                 const ChVector3d p2 = b->IsFixed() ? anchor : b->GetPos();
                 rec.manual.kind = JointRec::Manual::Kind::Spring;
@@ -498,6 +498,9 @@ std::size_t Joints::add(const JointSpec& spec) {
 }
 
 void Joints::removeAll() {
+    // 暖機は先にやり直しにする（途中の RemoveLink が例外を投げても、次の走行は
+    // 暖機から始まる）。
+    breakSteps_ = 0;
     bool anyLoad = false;
     for (auto& j : joints_) {
         // 破断したリンクも無効化されて系に残っている（走行中の RemoveLink は
@@ -514,7 +517,6 @@ void Joints::removeAll() {
 #endif
     joints_.clear();
     brokenPending_.clear();
-    breakSteps_ = 0;
     // 拘束の増減はソルバの構成を変えるので、Setup で作り直させる
     // （wakeAll と同じ理由）。
     system_.sys()->Setup();
@@ -607,7 +609,9 @@ void Joints::checkBreaks() {
     // 開始直後はソルバが収束途中で反力が跳ねる（Multicore で静止荷重 59 N の
     // 棒が 1 ステップ目に 325 N を返した）ので、最初の数ステップは見ない。
     constexpr int kWarmupSteps = 10;
-    ++breakSteps_;
+    // 数えるのは暖機の間だけ（kWarmupSteps で止める = 長く走らせてもあふれない）。
+    // N ステップ目の呼び出しで N になり、kWarmupSteps ステップ目から判定する。
+    if (breakSteps_ < kWarmupSteps) ++breakSteps_;
     if (breakSteps_ < kWarmupSteps) return;
     for (std::size_t i = 0; i < joints_.size(); ++i) {
         JointRec& j = joints_[i];
@@ -617,7 +621,7 @@ void Joints::checkBreaks() {
         if (!std::isfinite(force) || force <= j.breakForce) continue;
         // 外すのではなく無効化する。走行中の RemoveLink + Setup は Multicore の
         // データマネージャを壊し、拘束の付いた物が全部 NaN になった。
-        // 系からは次の removeAllJoints（停止時）でまとめて外す。
+        // 系からは次の removeAll（停止時）でまとめて外す。
         bool ok = true;
         if (j.link) ok = disableLink(j.link.get(), 0) && ok;
         if (j.extra) ok = disableLink(j.extra.get(), 0) && ok;
