@@ -1,6 +1,8 @@
 // Multicore 用の手計算のジョイント（モータ・ばね・可動範囲）。
 
-#include "physics/PhysicsParts.h"
+#include "physics/Joints.h"
+#include "physics/BodyMotion.h"
+#include "physics/BodyRegistry.h"
 #include "physics/ChronoCompat.h"
 
 #include <chrono/physics/ChBody.h>
@@ -11,12 +13,15 @@
 using namespace chrono;
 using namespace wizengine::physics::compat;
 
+namespace wizengine {
+namespace physics {
+
 // ---- Multicore 用の手計算（モータ・ばね）----------------------------------
 // Chrono::Multicore は自前の積分で、リンクが IntLoadResidual_F で足す力
 // （TSDA / RSDA / トルクモータ）を拾わない。同じ意味の力積を DoStepDynamics の
 // 前に速度へ織り込む（車両の「点に掛かる力」と同じ流儀）。
 
-void PhysicsWorld::applyManualJoints(double dt) {
+void Joints::applyManual(double dt) {
     using Kind = JointRec::Manual::Kind;
     // 軸まわりの逆慣性（ワールド軸 w について w·(R I⁻¹ Rᵀ w)）。固定は 0。
     auto invInertiaAbout = [&](const std::shared_ptr<ChBody>& body, const ChVector3d& w) {
@@ -30,9 +35,9 @@ void PhysicsWorld::applyManualJoints(double dt) {
     for (JointRec& j : joints_) {
         JointRec::Manual& m = j.manual;
         if (j.broken || (m.kind == Kind::None && !m.limited)) continue;
-        if (m.a >= p_->bodies.count() || m.b >= p_->bodies.count()) continue;
-        auto& a = p_->bodies.body(m.a);
-        auto& b = p_->bodies.body(m.b);
+        if (m.a >= bodies_.count() || m.b >= bodies_.count()) continue;
+        auto& a = bodies_.body(m.a);
+        auto& b = bodies_.body(m.b);
         const ChVector3d axisW = a->GetRot().Rotate(m.axisLocalA);
 
         // ---- 可動範囲（速度レベルの片側拘束。接触の解き方と同じ）----
@@ -47,8 +52,8 @@ void PhysicsWorld::applyManualJoints(double dt) {
                 const double denom = invMassOf(a) + invMassOf(b);
                 if (want != vrel && denom > 0.0) {
                     const double impulse = (want - vrel) / denom;  // B に +、A に -
-                    p_->motion.applyForce(m.b, axisW * (impulse / dt), dt);
-                    p_->motion.applyForce(m.a, axisW * (-impulse / dt), dt);
+                    motion_.applyForce(m.b, axisW * (impulse / dt), dt);
+                    motion_.applyForce(m.a, axisW * (-impulse / dt), dt);
                     m.lastForce = std::max(m.lastForce, std::fabs(impulse / dt));
                 }
             } else {
@@ -64,8 +69,8 @@ void PhysicsWorld::applyManualJoints(double dt) {
                 const double denom = invInertiaAbout(a, axisW) + invInertiaAbout(b, axisW);
                 if (want != wrel && denom > 0.0) {
                     const double impulse = (want - wrel) / denom;  // 角力積。B に +、A に -
-                    p_->motion.applyAngularImpulse(m.b, axisW * impulse);
-                    p_->motion.applyAngularImpulse(m.a, axisW * (-impulse));
+                    motion_.applyAngularImpulse(m.b, axisW * impulse);
+                    motion_.applyAngularImpulse(m.a, axisW * (-impulse));
                     m.lastTorque = std::max(m.lastTorque, std::fabs(impulse / dt));
                 }
             }
@@ -75,15 +80,15 @@ void PhysicsWorld::applyManualJoints(double dt) {
             case Kind::Torque: {
                 // A に +τ、B に -τ（Chrono のモータと同じく body1 を回す向き）。
                 const ChVector3d L = axisW * (m.target * dt);
-                p_->motion.applyAngularImpulse(m.a, L);
-                p_->motion.applyAngularImpulse(m.b, -L);
+                motion_.applyAngularImpulse(m.a, L);
+                motion_.applyAngularImpulse(m.b, -L);
                 m.lastTorque = std::fabs(m.target);
                 break;
             }
             case Kind::Force: {
                 const ChVector3d F = axisW * m.target;
-                p_->motion.applyForce(m.a, F, dt);
-                p_->motion.applyForce(m.b, -F, dt);
+                motion_.applyForce(m.a, F, dt);
+                motion_.applyForce(m.b, -F, dt);
                 m.lastForce = std::fabs(m.target);
                 break;
             }
@@ -94,11 +99,11 @@ void PhysicsWorld::applyManualJoints(double dt) {
                 const double len = d.Length();
                 if (len < 1e-9) break;
                 const ChVector3d dir = d * (1.0 / len);
-                const double vrel = (bodyPointVelocity(m.b, p2) - bodyPointVelocity(m.a, p1)).Dot(dir);
+                const double vrel = (motion_.pointVelocity(m.b, p2) - motion_.pointVelocity(m.a, p1)).Dot(dir);
                 // 正 = 縮める向き（伸びているか、離れつつあるとき）。
                 const double f = m.k * (len - m.rest) + m.c * vrel;
-                p_->motion.applyForceAtPoint(m.a, dir * f, p1, dt);
-                p_->motion.applyForceAtPoint(m.b, dir * (-f), p2, dt);
+                motion_.applyForceAtPoint(m.a, dir * f, p1, dt);
+                motion_.applyForceAtPoint(m.b, dir * (-f), p2, dt);
                 m.lastForce = std::fabs(f);
                 break;
             }
@@ -112,8 +117,8 @@ void PhysicsWorld::applyManualJoints(double dt) {
                 const double wrel = (getAngVel(b.get(), 0) - getAngVel(a.get(), 0)).Dot(axisW);
                 const double tau = m.k * angle + m.c * wrel;  // B を戻す向きの大きさ
                 const ChVector3d L = axisW * (tau * dt);
-                p_->motion.applyAngularImpulse(m.b, -L);
-                p_->motion.applyAngularImpulse(m.a, L);
+                motion_.applyAngularImpulse(m.b, -L);
+                motion_.applyAngularImpulse(m.a, L);
                 m.lastTorque = std::fabs(tau);
                 break;
             }
@@ -122,3 +127,6 @@ void PhysicsWorld::applyManualJoints(double dt) {
         }
     }
 }
+
+}  // namespace physics
+}  // namespace wizengine

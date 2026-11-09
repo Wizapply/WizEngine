@@ -10,6 +10,7 @@
 #include "physics/ContactMaterials.h"
 #include "physics/Diagnostics.h"
 #include "physics/GravityOverride.h"
+#include "physics/Joints.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsWorld.h"
 #include "physics/Sleeping.h"
@@ -32,7 +33,8 @@ struct PhysicsWorld::Parts {
           gravity(system, bodies),
           damping(bodies),
           diag(system, bodies),
-          terrain(system, bodies, materials) {
+          terrain(system, bodies, materials),
+          joints(system, bodies, motion) {
         // 出来事の受け手はここで登録する。受け手どうしは順番に依存しない
         // （それぞれ自分の状態と Chrono の別々の部分だけを触る）。
         bodies.events().add(&sleeping);
@@ -60,4 +62,7 @@ struct PhysicsWorld::Parts {
     wizengine::physics::Diagnostics diag;
     // system より先に壊れる。系が持ち続けるコールバックはデストラクタが切り離す。
     wizengine::physics::TerrainContact terrain;
+    // 最後に宣言する = 最初に壊れる（以前の PhysicsWorld のメンバと同じく、系と名簿より
+    // 先にリンクと荷重コンテナへの参照を手放す）。
+    wizengine::physics::Joints joints;
 };

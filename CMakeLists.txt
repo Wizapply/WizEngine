@@ -327,13 +327,13 @@ set(WIZ_PHYSICS_SOURCES
     src/physics/ContactReport.cpp
     src/physics/Diagnostics.cpp
     src/physics/GravityOverride.cpp
+    src/physics/Joints.cpp
+    src/physics/JointsManual.cpp
     src/physics/MeshCollision.cpp
     src/physics/ModelImport.cpp
     src/physics/PhysicsSystem.cpp
     src/physics/PhysicsWorld.cpp
     src/physics/PhysicsWorldCables.cpp
-    src/physics/PhysicsWorldJoints.cpp
-    src/physics/PhysicsWorldJointsManual.cpp
     src/physics/PhysicsWorldModal.cpp
     src/physics/PhysicsWorldMotion.cpp
     src/physics/PhysicsWorldRegistry.cpp
