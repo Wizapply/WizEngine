@@ -9,18 +9,17 @@
 
 namespace wizengine {
 
-// CPU-side geometry reader for collision shapes. The renderer's glTF path
-// (gltfio) streams vertices straight to the GPU, so physics gets its own
-// small reader built on cgltf - the same single-header parser gltfio uses
-// internally. Resolves `name` through assetPath() like every other loader,
-// applies each node's world transform and the given uniform scale, and logs
-// what it produced. Returns empty instead of throwing: hull collision is an
-// optional extra on top of a scene that already renders, so a bad file
-// degrades (with a warning) rather than killing the run.
+// 当たり形状のための CPU 側の形状の読み込み。描画側の glTF の経路（gltfio）は
+// 頂点を GPU へ直接流すので、物理は cgltf（gltfio が内部で使うのと同じ
+// 単一ヘッダのパーサ）の上に自前の小さな読み込みを持つ。`name` は他の
+// 読み込みと同じく assetPath() で解決し、各ノードのワールド変換と指定の
+// 一様な倍率を掛け、作ったものをログに出す。投げずに空を返す: 凸包の当たり
+// 判定は既に描画できるシーンに足すおまけなので、壊れたファイルは実行を
+// 止めずに（警告付きで）質を落とす。
 
-// The model's vertices decimated to at most maxPoints (grid quantisation),
-// ready for ChBodyEasyConvexHull. A few hundred points is plenty for a hull;
-// feeding it every vertex of a dense model only slows hull construction.
+// モデルの頂点を maxPoints 以下に間引いたもの（格子への量子化）。
+// ChBodyEasyConvexHull にそのまま渡せる。凸包には数百点で十分で、
+// 密なモデルの頂点を全部渡しても凸包の構築が遅くなるだけ。
 // Scene の <asset><mesh/>（凸包の当たり判定）がこれを使う。
 std::vector<chrono::ChVector3d> loadCollisionPoints(
     const std::string& name, double scale, std::size_t maxPoints = 512);

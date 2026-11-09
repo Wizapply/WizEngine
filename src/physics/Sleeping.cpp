@@ -84,9 +84,9 @@ void Sleeping::wakeAll() {
 void Sleeping::onBodiesCleared() { neverSleeps_.clear(); }
 
 void Sleeping::onSystemRecreated() {
-    // Sleeping is off until the Scene enables it (see setEnabled).
-    // Note: Chrono::Multicore does not support sleeping - the call is harmless
-    // there, but sleepingCount() will simply stay at 0.
+    // スリープは Scene が有効にするまで切れている（setEnabled を参照）。
+    // 注意: Chrono::Multicore はスリープに対応しない - そちらでもこの呼び出しは
+    // 害が無いが、sleepingCount() は 0 のまま。
     allowSleeping(system_.sys().get(), enabled_, 0);
 }
 

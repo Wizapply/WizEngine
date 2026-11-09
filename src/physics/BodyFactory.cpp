@@ -378,13 +378,12 @@ std::size_t BodyFactory::addConvexHull(
     }
     if (hullCenter) *hullCenter = center;
 
-    // visualize=false: our renderer draws the glTF model itself; Chrono's
-    // visual assets are unused here.
+    // visualize=false: glTF のモデルは自前のレンダラが描くので、Chrono の
+    // 見た目のアセットはここでは使わない。
     //
-    // Chrono's constructor takes the points by NON-const reference and
-    // translates them in place (it moves the barycentre onto the centre of
-    // mass) - hence the local copy: the caller's point cloud is shared by
-    // every body and must not be mutated.
+    // Chrono のコンストラクタは点を const でない参照で受け、その場で平行移動する
+    // （重心を質量中心へ寄せる）- だから手元に写す: 呼び出し側の点群は
+    // すべてのボディで共有していて、書き換えてはいけない。
     //
     // 密度 1 で作って、あとから文書の質量へ合わせる。凸包の体積はモデルの
     // 大きさ次第（文書の size とは無関係）なので、密度から出すと質量が

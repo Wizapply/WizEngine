@@ -7,15 +7,14 @@
 
 #include <chrono/geometry/ChTriangleMeshConnected.h>
 
-// Filament's gltfio library carries its own cgltf implementation with
-// external linkage, so a plain CGLTF_IMPLEMENTATION here collides with it at
-// link time (LNK2005). An anonymous namespace does not help either: cgltf's
-// declarations sit in an extern "C" block, which keeps C linkage regardless
-// of the namespace. So this copy renames every public cgltf function to a
-// wiz_-prefixed symbol via macros - the macros rewrite the declarations, the
-// implementation AND our call sites below consistently, and the resulting
-// symbols cannot clash with gltfio's. The list is generated from cgltf.h
-// v1.14's declaration section; regenerate it if the pinned version changes.
+// Filament の gltfio ライブラリは外部リンケージの cgltf の実装を自分で持つので、
+// ここで素の CGLTF_IMPLEMENTATION を書くとリンク時にぶつかる（LNK2005）。
+// 無名名前空間も効かない: cgltf の宣言は extern "C" のブロックの中にあり、
+// 名前空間に関係なく C リンケージのまま。そこでこの写しは、公開されている
+// cgltf の関数を全部マクロで wiz_ 付きの名前に変える - マクロは宣言・実装・
+// 下の呼び出し側をそろって書き換えるので、できたシンボルは gltfio のものと
+// ぶつからない。一覧は cgltf.h v1.14 の宣言部から作った。固定している版が
+// 変わったら作り直す。
 #define cgltf_accessor_index wiz_cgltf_accessor_index
 #define cgltf_accessor_read_float wiz_cgltf_accessor_read_float
 #define cgltf_accessor_read_index wiz_cgltf_accessor_read_index
@@ -67,14 +66,14 @@ namespace wizengine {
 
 namespace {
 
-// Applies a cgltf world matrix (column-major float[16]) to a point.
+// cgltf のワールド行列（列優先の float[16]）を点に掛ける。
 ChVector3d transformPoint(const float* m, float x, float y, float z) {
     return ChVector3d(m[0] * x + m[4] * y + m[8] * z + m[12],
                       m[1] * x + m[5] * y + m[9] * z + m[13],
                       m[2] * x + m[6] * y + m[10] * z + m[14]);
 }
 
-// Every triangle of a .glb/.gltf as one connected mesh. いまは凸包
+// .glb/.gltf の全三角形を 1 つのつながったメッシュとして読む。いまは凸包
 // （loadCollisionPoints）の入力にだけ使う内部関数。
 bool loadCollisionMesh(const std::string& name, double scale,
                        ChTriangleMeshConnected& out) {
@@ -87,8 +86,8 @@ bool loadCollisionMesh(const std::string& name, double scale,
         LOGW("collision", "'%s' could not be parsed as glTF/GLB", path.c_str());
         return false;
     }
-    // Loads the binary chunk of a .glb / the external buffers of a .gltf
-    // (relative to the file, like the renderer's loader).
+    // .glb のバイナリチャンク / .gltf の外部バッファを読む
+    // （描画側の読み込みと同じく、ファイルからの相対）。
     if (cgltf_load_buffers(&options, data, path.c_str()) !=
         cgltf_result_success) {
         LOGW("collision", "'%s': mesh buffers could not be loaded",

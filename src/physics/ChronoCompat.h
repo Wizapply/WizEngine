@@ -31,8 +31,9 @@
     __has_include(<chrono/collision/bullet/BulletCollision/CollisionDispatch/cbtCollisionWorld.h>)
 #define WIZ_HAVE_BULLET_PAIR_FILTER 1
 #endif
-// ---- B の導入で足したヘッダ。どれも __has_include で見て、無い版・無い
-// ビルドではその機能だけ「無い」と答える（physicsFeatures）。
+// ---- 直接法ソルバ・ADMM・荷重・FEA ケーブル・モーダル解析のヘッダ。どれも
+// __has_include で見て、無い版・無いビルドではその機能だけ「無い」と答える
+// （physicsFeatures）。
 // 直接法（Eigen の SparseLU / SparseQR は Core 組み込み）。
 #if __has_include(<chrono/solver/ChDirectSolverLS.h>)
 #define WIZ_HAVE_DIRECT_SOLVERS 1
@@ -67,6 +68,8 @@
 #include <chrono/core/ChMatrix.h>  // systemMatrices の ChSparseMatrix
 #define WIZ_HAVE_MODAL 1
 #endif
+// ---- ジョイントの種類と定数関数のヘッダ。physicsFeatures には出ない（無ければ
+// その種類を作らないだけ）。
 // 歯車とねじは版で置き場が変わったので __has_include
 // で見て、無ければその種類だけ「作らない」で済ませる（Distance と同じ扱い）。
 #if __has_include(<chrono/physics/ChLinkLockGear.h>)
@@ -89,10 +92,10 @@ namespace wizengine {
 namespace physics {
 namespace compat {
 
-// Chrono renamed these between versions (SetUseSleeping -> SetSleepingAllowed,
-// SetSleeping -> WakeUp). Pick whichever the installed headers provide: the
-// first overload is preferred and the second is only considered if it does not
-// compile, so this builds against either API.
+// Chrono は版の間でこれらの名前を変えた（SetUseSleeping -> SetSleepingAllowed、
+// SetSleeping -> WakeUp）。入っているヘッダにある方を選ぶ: 1 つ目の多重定義が
+// 優先され、2 つ目はそれがコンパイルできないときだけ候補になるので、どちらの
+// API でもビルドできる。
 template <typename T>
 auto allowSleeping(T* obj, bool on, int)
     -> decltype(obj->SetSleepingAllowed(on), void()) {
@@ -104,8 +107,8 @@ auto allowSleeping(T* obj, bool on, long)
     obj->SetUseSleeping(on);
 }
 
-// Sleep thresholds. Chrono 9 renamed SetSleepMinSpeed/SetSleepMinWvel to
-// SetSleepMinLinVel/SetSleepMinAngVel; accept either.
+// 眠りのしきい値。Chrono 9 は SetSleepMinSpeed/SetSleepMinWvel を
+// SetSleepMinLinVel/SetSleepMinAngVel に改名した。どちらも受ける。
 template <typename T>
 auto setSleepLimits(T* b, float lin, float ang, int)
     -> decltype(b->SetSleepMinLinVel(lin), b->SetSleepMinAngVel(ang), void()) {
@@ -119,7 +122,7 @@ auto setSleepLimits(T* b, float lin, float ang, long)
     b->SetSleepMinWvel(ang);
 }
 
-// Chrono 9 renamed SetPos_dt to SetPosDt; accept either.
+// Chrono 9 は SetPos_dt を SetPosDt に改名した。どちらも受ける。
 template <typename T>
 auto setLinVel(T* b, const chrono::ChVector3d& v, int)
     -> decltype(b->SetPosDt(v), void()) {
@@ -131,9 +134,9 @@ auto setLinVel(T* b, const chrono::ChVector3d& v, long)
     b->SetPos_dt(v);
 }
 
-// Warm starting reuses the previous step's impulses as the starting guess.
-// For stacked contacts it converges far faster, so fewer iterations are needed.
-// Named EnableWarmStart in some Chrono versions, SetWarmStart in others.
+// ウォームスタートは前のステップの力積を初期値に使う。
+// 積み重なった接触ではずっと速く収束するので、反復回数が少なくて済む。
+// Chrono の版によって EnableWarmStart だったり SetWarmStart だったりする。
 template <typename T>
 auto enableWarmStart(T* solver, int) -> decltype(solver->EnableWarmStart(true), void()) {
     solver->EnableWarmStart(true);
@@ -199,7 +202,7 @@ auto wakeUp(T* obj, long) -> decltype(obj->WakeUp(), void()) {
     obj->WakeUp();
 }
 
-// ---- A の導入で足した版差の吸収（同じ SFINAE の手口）------------------------
+// ---- ジョイント・ボディ別の重力・衝突レイヤ・接触・診断の版差の吸収（同じ SFINAE の手口）
 // 定数関数の値: Chrono 9 は SetConstant、旧版は Set_yconst。
 template <typename F>
 auto setConstValue(F* f, double v, int) -> decltype(f->SetConstant(v), void()) {
@@ -210,8 +213,9 @@ auto setConstValue(F* f, double v, long) -> decltype(f->Set_yconst(v), void()) {
     f->Set_yconst(v);
 }
 
-// ボディごとの重力オフ: Chrono 9 は SetUseGravity、旧版は SetNoGravity。
-// どちらも無ければ何もしない（false を返して呼び出し側が警告する）。
+// ボディごとの重力オフ: 版によって SetUseGravity / SetNoGravity のどちらかがある。
+// Chrono 9.0.0 のヘッダにはどちらも無いので、3 つ目（何もせず false）が選ばれる。
+// 呼び出し側は戻り値を見ず、重力オフは GravityOverride::cancel の手計算が効かせる。
 template <typename B>
 auto setUseGravity(B* b, bool on, int) -> decltype(b->SetUseGravity(on), bool()) {
     b->SetUseGravity(on);

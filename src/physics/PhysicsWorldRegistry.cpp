@@ -71,7 +71,7 @@ void PhysicsWorld::disableBody(std::size_t id) {
     // ばねを解かなくするのは SoftBodies が退場の通知で受け持つ。
     const auto members = p_->bodies.members(id);
     for (const std::size_t p : members) p_->bodies.retire(p);
-    // Core では本当に系から外す（B の 18）。粒子も同じ。
+    // Core では本当に系から外す（RemoveBody）。粒子も同じ。
     for (const std::size_t p : members) p_->detachBody(p);
 }
 

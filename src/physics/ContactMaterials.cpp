@@ -102,8 +102,8 @@ void ContactMaterials::setSurfaceMaterial(float friction, float restitution) {
 }
 
 void ContactMaterials::setRollingFriction(float rolling, float spinning) {
-    // NSC materials expose these directly; they are ignored by solvers that do
-    // not model rolling resistance, which is harmless. SMC の材質には無い
+    // NSC の材質はこれらを直接持つ。転がり抵抗を扱わないソルバでは無視される
+    // が、害は無い。SMC の材質には無い
     // （applySurface が種類を見て入れる）。
     rolling_ = rolling;
     spinning_ = spinning;
@@ -117,7 +117,7 @@ void ContactMaterials::onBodiesCleared() {
 
 void ContactMaterials::onSystemRecreated() {
     mat_ = make();
-    // No bounce: even a little restitution keeps settled boxes micro-bouncing.
+    // 跳ねない: 少しでも反発があると、落ち着いた箱が細かく跳ね続ける。
     applySurface(*mat_, BodyOptions{});
 }
 

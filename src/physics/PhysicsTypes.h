@@ -8,10 +8,10 @@
 #include <chrono/core/ChQuaternion.h>
 #include <chrono/core/ChVector3.h>
 
-// Where the time went inside the last physics step (seconds), straight from
-// Chrono's own timers. Useful for deciding what to optimise: a solver-dominated
-// step wants fewer iterations, a collision-dominated one wants a smaller
-// contact envelope or a different collision system.
+// 直前の物理ステップの中で時間をどこに使ったか（秒）。Chrono 自身のタイマーの
+// 値そのまま。何を最適化するかを決めるのに使う: ソルバが大半のステップなら
+// 反復回数を減らし、衝突判定が大半なら接触のエンベロープを小さくするか、
+// 別の衝突系にする。
 struct StepTimers {
     double step = 0.0;
     double solver = 0.0;
@@ -20,18 +20,20 @@ struct StepTimers {
     double update = 0.0;
 };
 
-// Which Chrono system to build on. Multicore needs a Chrono built with the
-// MULTICORE module (CMake: -DWIZ_USE_MULTICORE=ON); if that is not available
-// the world silently falls back to Core and says so on stdout.
+// どの Chrono の系の上に組むか。Multicore には MULTICORE モジュール付きで
+// ビルドした Chrono が要る（CMake: -DWIZ_USE_MULTICORE=ON）。それが無ければ
+// Core に倒し、LOGW で知らせる（PhysicsSystem::create）。
 enum class PhysicsBackend {
-    Core,       // ChSystemNSC - serial solver, supports sleeping
-    Multicore,  // ChSystemMulticoreNSC - OpenMP solver + collision, no sleeping
+    // ChSystemNSC - 接触ソルバは逐次（衝突判定・FEA・Eigen は SetNumThreads の
+    // スレッドを使う）、スリープ対応
+    Core,
+    Multicore,  // ChSystemMulticoreNSC - OpenMP のソルバ + 衝突判定、スリープ無し
 };
 
-// True when this build can actually use PhysicsBackend::Multicore.
+// このビルドが PhysicsBackend::Multicore を本当に使えるとき true。
 bool multicoreAvailable();
 
-// 接触の解き方（B の 22）。
+// 接触の解き方（NSC / SMC）。
 //   NSC … 相補性（硬い接触。既定。1/60 s でも床を抜けない）
 //   SMC … ペナルティ法（ヤング率で決まる柔らかい接触。粒状体・FEA 向け。
 //         剛い材質ほど小さな dt が要る）
@@ -39,7 +41,9 @@ bool multicoreAvailable();
 // ChSystemMulticoreSMC。切替は系の作り直し（recreate）。
 enum class ContactMethod { NSC, SMC };
 
-// このビルドが持っている B の機能（CMake / ヘッダの有無）。Scene が
+// このビルドで使えるかを答える機能（FEA ケーブル・荷重・直接法ソルバ（Pardiso /
+// MUMPS を含む）・モーダル解析。CMake / ヘッダの有無）。どれが Core を要するかの
+// 判定は Scene の requiredBackend が持つ（ここは一覧ではない）。Scene が
 // 「Core へ切り替えれば使えるか」を判断するのに使う。
 struct PhysicsFeatures {
     bool fea = false;         // FEA のケーブル（chrono/fea）
@@ -50,8 +54,8 @@ struct PhysicsFeatures {
     bool modal = false;       // Chrono::Modal
 };
 
-// Rigid-body transform snapshot passed to the render side.
-// Position in metres, rotation as a unit quaternion (w, x, y, z).
+// 描画側へ渡す剛体の姿勢のスナップショット。
+// 位置は m、回転は単位四元数 (w, x, y, z)。
 struct BodyTransform {
     double px, py, pz;
     double qw, qx, qy, qz;
@@ -149,7 +153,7 @@ struct BodyOptions {
     chrono::ChVector3d torque{0.0, 0.0, 0.0};
 };
 
-// ---- ケーブル（FEA。B の 15）-----------------------------------------------
+// ---- ケーブル（FEA の ANCF 梁）---------------------------------------------
 // ANCF ケーブル要素（ChBuilderCableANCF）を a → b の直線に segments 本
 // 並べる。端は「固定点」「ボディに留める」「自由」のどれか。Core 専用
 // （Multicore のデータマネージャは FEA 要素を持たない）。

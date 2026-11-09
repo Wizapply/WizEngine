@@ -45,6 +45,8 @@ public:
 
     // field を張る / 差し替える。戻り値 = ゴーストの physId（Multicore では kInvalidId）。
     // field は null でないこと。成功したら呼び出し側が眠っている物を起こす。
+    // set / setFrame / clearField は接触の印を捨てない。捨てるのは窓口の wakeAll
+    // （onWakeAll → forgetContacts）に任せる。
     std::size_t set(std::shared_ptr<const terrain::HeightField> field, const BodyOptions& options);
     // 起こす必要があるときだけ true。
     bool setFrame(const chrono::ChVector3d& origin, const chrono::ChQuaternion<>& rot);

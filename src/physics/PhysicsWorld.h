@@ -20,22 +20,41 @@ class HeightField;
 
 PhysicsFeatures physicsFeatures();
 
-// Physics engine: owns the Chrono system (gravity, collision, contact material).
-// It holds no scene of its own - bodies are added by the Scene via addBox().
+// 物理エンジン: Chrono の系（重力・衝突・接触材質）を持つ。
+// 自分ではシーンを持たない - ボディは Scene が add*（addBox ほか）で足す。
+//
+// ---- 部品の足し方（風など、新しい担当を足すとき）----------------------------
+//   1. 担当ごとに新しいファイル（physics/<名前>.{h,cpp}）を作る。
+//   2. PhysicsParts.h に include を 1 行、Parts にメンバを 1 行足す。
+//   3. 名簿や系の作り直しの出来事を受けるなら PhysicsPart を継承し、Parts の
+//      コンストラクタで bodies.events().add(&...) を 1 行。
+//   4. 毎ステップ動くなら step() に 1 行（呼ぶ順番は step() の並びが正）。
+//   5. Scene から呼ぶ口が要るなら、この PhysicsWorld.h に公開メソッドを 1 つ、
+//      PhysicsWorld*.cpp に部品への中継を 1 つ。
+//   6. CMakeLists.txt の物理のソース一覧に 1 行。
+//   番号ごとの配列は onBodiesCleared で捨て、系に結び付く物は onSystemRecreated で
+//   作り直す。recreate は触らない。
+//   依存は窓口 → 部品の一方向。部品から窓口（PhysicsWorld）を呼ばない。
 class PhysicsWorld {
 public:
+    // ---- 定数 ------------------------------------------------------------
+    // physId・ケーブル番号が無いことを表す値（PhysicsTypes.h の kInvalidId）。
+    static constexpr std::size_t kInvalidId = wizengine::physics::kInvalidId;
+    // addJoint が作れなかったときに返す番号。
+    static constexpr std::size_t kInvalidJoint = wizengine::physics::kInvalidJoint;
+
     explicit PhysicsWorld(PhysicsBackend backend = PhysicsBackend::Core,
                           ContactMethod contact = ContactMethod::NSC);
     ~PhysicsWorld();
 
-    // "core" or "multicore" - what actually got created.
+    // "core" または "multicore" - 実際に作られた方。
     const char* backendName() const;
     PhysicsBackend backend() const;
-    // "nsc" or "smc".
+    // "nsc" または "smc"。
     const char* contactName() const;
     ContactMethod contactMethod() const;
 
-    // 系をまるごと作り直す（B の自動切替）。ボディ・ジョイント・ケーブルは
+    // 系をまるごと作り直す（バックエンドの自動切替）。ボディ・ジョイント・ケーブルは
     // 全部消える（番号も無効になる）ので、呼び出し側（Scene）が作り直す。
     // 設定（重力・反復回数・許容差・スレッド数・スリープ・減衰・材質の
     // 既定）は覚えていて、新しい系にそのまま当て直す。Multicore を頼まれて
@@ -49,15 +68,13 @@ public:
 
     void step(double dt);
 
-    // Solver iterations: the main quality/cost dial. Fewer = faster but more
-    // jitter in resting stacks.
-    // Push a body: applies force * dt as a change in linear velocity, and
-    // wakes the body so a sleeping box responds. Force is in newtons, dt in
-    // seconds; using an impulse rather than Chrono's force accumulators keeps
-    // this independent of which accumulator API the installed version has.
+    // ボディを押す: 速度の変化 dv = force * (dt / 質量) を足し、眠っている箱も
+    // 応じるようにボディを起こす（ソフトボディは合計質量で出した dv を全粒子に
+    // 等しく足す。固定の物には掛けない）。力は N、dt は秒。Chrono の力アキュムレータ
+    // ではなく力積を使うので、入っている版のアキュムレータの API に左右されない。
     void applyForce(std::size_t id, const chrono::ChVector3d& force, double dt);
     double bodyMass(std::size_t id) const;
-    // Linear velocity, for servo-style forces (mouse joint).
+    // 直線速度。サーボ式の力（マウスの掴み）用。
     chrono::ChVector3d bodyVelocity(std::size_t id) const;
 
     // ---- 車両用（点に掛かる力）------------------------------------------
@@ -74,36 +91,37 @@ public:
     chrono::ChVector3d bodyPointVelocity(std::size_t id,
                                         const chrono::ChVector3d& point) const;
 
-    // Number of worker threads the solver and collision detection may use.
-    // Must be called before stepping starts; Chrono sizes its thread pool from
-    // this. 0 or less leaves the automatic choice in place.
+    // ワーカースレッドの数。Chrono 本体（FEA の内力とヤコビアン）・衝突判定・
+    // Eigen（直接法ソルバ）の 3 つに同じ値で渡る。ステップを始める前に
+    // 呼ぶこと（Chrono はこの値でスレッドプールの大きさを決める）。0 以下なら
+    // 自動の選択のまま。
     void setNumThreads(int threads);
 
+    // ソルバの反復回数: 品質とコストを決めるいちばんのつまみ。少ない = 速いが、
+    // 静止した積み重ねの揺れが増える。
     void setSolverIterations(int iterations);
 
-    // Contact envelope/margin. The envelope makes Chrono create contacts before
-    // surfaces actually touch; the default (0.03 m) is large next to 0.5 m
-    // boxes and multiplies the contact count. Must be set before bodies are
-    // created.
+    // 接触のエンベロープ / マージン。エンベロープがあると、Chrono は面が実際に
+    // 触れる前に接触を作る。既定（0.03 m）は 0.5 m の箱に比べて大きく、接触の
+    // 数を何倍にもする。ボディを作る前に設定すること。
     void setCollisionTolerances(double envelope, double margin);
 
-    // How aggressively existing overlap is pushed out (m/s), and how tightly
-    // the solver converges. Raising the recovery speed removes visible
-    // interpenetration faster but can make resting stacks pop; tightening the
-    // tolerance costs iterations.
+    // 既にある重なりをどれだけ強く押し出すか（m/s）と、ソルバをどれだけきつく
+    // 収束させるか。押し戻しの速さを上げると目に見えるめり込みが早く消えるが、
+    // 静止した積み重ねが弾けることがある。許容差をきつくすると反復が要る。
     void setContactSettings(double recoverySpeed, double tolerance);
-    // Recovery speed alone (used for live tuning from the browser).
+    // 押し戻しの速さだけ（ブラウザからの実行中の調整に使う）。
     void setContactRecoverySpeed(double recoverySpeed);
 
-    // Timers for the most recent step().
+    // 直前の step() のタイマー。
     StepTimers timers() const;
 
-    // Chrono's own per-body sleeping: a body whose linear/angular speed stays
-    // below the limits for `seconds` is dropped from the solver until a contact
-    // island wakes it. Cheap for piles where only part of the scene moves.
-    // Caveat: a sleeping body is only woken through contact, so if its support
-    // moves away without touching it, it stays put in mid-air. Keep the limits
-    // tight (well under Chrono's 0.1 m/s default) to make that rare.
+    // Chrono 自身のボディごとのスリープ: 直線 / 角速度が `seconds` のあいだ
+    // しきい値を下回ったボディは、接触のアイランドが起こすまでソルバから外れる。
+    // シーンの一部だけが動く山積みには安い。
+    // 注意: 眠ったボディは接触でしか起きないので、支えが触れずに離れていくと
+    // 宙に浮いたまま止まる。しきい値をきつく（Chrono の既定 0.1 m/s よりずっと
+    // 下に）して、それを稀にする。
     void setSleepingEnabled(bool enabled, float seconds = 1.0f,
                             float minLinVel = 0.02f, float minAngVel = 0.02f);
     void wakeAll();
@@ -111,29 +129,30 @@ public:
 
     using ExtraShape = wizengine::physics::ExtraShape;
 
-    // Sphere body - rolls, unlike a box. Radius in metres.
+    // 球のボディ - 箱と違って転がる。半径は m。
     std::size_t addSphere(double radius, double density,
                           const chrono::ChVector3d& pos,
                           const chrono::ChQuaternion<>& rot, bool fixed,
                           const std::vector<ExtraShape>& extras = {},
                           const BodyOptions& options = BodyOptions{});
 
-    // Rolling/spinning friction on the shared contact material. Without any,
-    // spheres roll forever on a flat floor.
+    // シーン設定の転がり / スピン摩擦（共有の接触材質と、専用材質のボディの
+    // 「シーン任せ」の欄が追従する。SMC の材質には無い）。どちらも無いと、
+    // 平らな床で球が永遠に転がる。
     void setRollingFriction(float rolling, float spinning);
 
-    // Sliding friction and bounciness of the shared contact material.
-    // Friction is what converts sliding into rolling: a low value makes
-    // spheres skid, a high one makes them spin up as soon as they touch down.
+    // シーン設定の滑り摩擦と反発（共有の接触材質と、専用材質のボディの
+    // 「シーン任せ」の欄が追従する）。
+    // 滑りを転がりに変えるのは摩擦: 低い値では球が滑り、高い値では着地した
+    // 途端に回り始める。
     void setSurfaceMaterial(float friction, float restitution);
 
-    // Velocity damping, applied every step as v *= exp(-k dt): a stand-in for
-    // air resistance that also stops spheres from rolling forever. 0 disables
-    // it. Applied here rather than through ChBody's own damping so it behaves
-    // the same on both backends and across Chrono versions.
+    // 速度の減衰。毎ステップ v *= exp(-k dt) で掛ける: 空気抵抗の代わりで、
+    // 球が永遠に転がるのも止める。0 で無効。ChBody 自身の減衰ではなくここで
+    // 掛けるので、両バックエンドと Chrono の版をまたいで同じに振る舞う。
     void setDamping(double linearPerSecond, double angularPerSecond);
 
-    // Add a box body. density in kg/m^3; fixed=true makes it static. Returns id.
+    // 箱のボディを足す。density は kg/m^3、fixed=true で動かない物にする。戻り値は id。
     std::size_t addBox(double sx, double sy, double sz, double density,
                        const chrono::ChVector3d& pos,
                        const chrono::ChQuaternion<>& rot, bool fixed,
@@ -157,7 +176,6 @@ public:
     // 質量と慣性は外接箱の均質な箱として見積もる（凹メッシュの体積は
     // 当てにならない）。この Chrono に三角メッシュ形状の口が無ければ
     // kInvalidId を返し、呼び出し側が凸包へ倒す。
-    static constexpr std::size_t kInvalidId = wizengine::physics::kInvalidId;
     std::size_t addTriangleMesh(const std::vector<chrono::ChVector3d>& vertices,
                                 const std::vector<std::array<int, 3>>& triangles,
                                 double mass, const chrono::ChVector3d& pos,
@@ -169,8 +187,8 @@ public:
     // ときに使う（Scene::createBody。複合形状ではなく普通の箱 / 球）。
     void setAlias(std::size_t id, std::size_t owner);
 
-    // Dynamic body colliding as the convex hull of `points` (metres, already
-    // scaled; see MeshCollision::loadCollisionPoints).
+    // `points` の凸包で当たる動くボディ（m、拡縮済み。
+    // MeshCollision::loadCollisionPoints を参照）。
     //
     // 質量は `mass` そのもの（箱・球のような密度ではない）。凸包の体積は
     // モデルの大きさ次第で、文書の size とは無関係に決まるので、密度から
@@ -236,7 +254,7 @@ public:
     // 積分器 / ソルバの切替（名前は editor::integratorNameValid /
     // solverNameValid の語彙）。Multicore は自前のステッパと APGD なので
     // どちらも false を返して何もしない。Core では直接法（sparselu /
-    // sparseqr / pardiso / mumps）と hht / newmark も選べる（B の 16）。
+    // sparseqr / pardiso / mumps）と陰的な積分器 hht / newmark も選べる。
     // 直接法は片側拘束を解けないので、NSC のまま頼まれたら bb に戻して
     // 警告する（true を返す = 「処理した」）。ビルドに無いモジュール
     // （pardiso / mumps）も同じく bb に戻す。
@@ -283,7 +301,6 @@ public:
     // スライド方向で、それ以外では無視される。distance は Distance 専用で、
     // 0 なら現在の 2 点間の距離をそのまま保つ。
     // 戻り値はジョイント番号。作れなかったときは kInvalidJoint。
-    static constexpr std::size_t kInvalidJoint = wizengine::physics::kInvalidJoint;
     std::size_t addJoint(JointType type, std::size_t bodyA, std::size_t bodyB,
                          const chrono::ChVector3d& anchor,
                          const chrono::ChVector3d& axis, double distance);
@@ -315,14 +332,14 @@ public:
     // ケーブルの張力の目安（端の拘束の反力 N。無ければ 0）。
     double cableTension(std::size_t cable) const;
 
-    // ---- モーダル解析（Chrono::Modal。B の 20）-----------------------------
+    // ---- モーダル解析（Chrono::Modal。固有振動数）-------------------------
     // いまの系（剛体 + FEA + 拘束）の非減衰固有振動数を count 本求める
     // （Hz、昇順）。接触は入らない。Core 専用で、モジュールの無いビルド・
     // Multicore・失敗は false と理由（英語）。数十 ms〜数秒かかるので
     // シミュレート開始時に 1 回だけ呼ぶ。
     bool modalFrequencies(int count, std::vector<double>& hz, std::string& why);
 
-    // ---- テレイン（高さ格子との自前の接触。段階 1.5）------------------------
+    // ---- テレイン（高さ格子との自前の接触）--------------------------------
     // 三角メッシュではなく高さ格子（terrain::HeightField）を正として、物との
     // 接触を自前で見つけ（terrain::collectContacts）、Chrono の接触コンテナへ
     // 足す（ChSystem::CustomCollisionCallback。Bullet の接触の後、

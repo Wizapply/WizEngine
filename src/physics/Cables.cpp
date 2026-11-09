@@ -51,7 +51,7 @@ using WizNodeFrameLink = chrono::fea::ChLinkPointFrame;
 }  // namespace
 #endif
 
-// ---- ケーブル（FEA。B の 15）-----------------------------------------------
+// ---- ケーブル（FEA の ANCF 梁）---------------------------------------------
 // ANCF ケーブル要素を直線に並べ、端を固定点 / ボディ / 自由にする。節点の
 // 球で接触する（ChContactSurfaceNodeCloud）。Core 専用: Multicore のデータ
 // マネージャは剛体しか持たず、FEA の要素は積分に乗らない。

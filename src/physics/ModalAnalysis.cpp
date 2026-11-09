@@ -22,7 +22,7 @@ using namespace wizengine::physics::compat;
 namespace wizengine {
 namespace physics {
 
-// ---- モーダル解析（Chrono::Modal。B の 20）--------------------------------
+// ---- モーダル解析（Chrono::Modal。固有振動数）----------------------------
 // 系の質量行列 M・剛性行列 K・拘束ヤコビアン Cq を取り出して、非減衰の
 // 一般化固有値問題を Lanczos で解く。接触は入らない（K に無い）。剛体だけの
 // 系では拘束のモードしか出ないので、ケーブル（FEA）がある系で意味を持つ。

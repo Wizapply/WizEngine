@@ -10,7 +10,7 @@ void PhysicsWorld::setMaterialCombine(CombineMode mode) {
     p_->system.setMaterialCombine(mode);
 }
 
-// 系をまるごと作り直す（B の自動切替: Multicore ⇄ Core、NSC ⇄ SMC）。
+// 系をまるごと作り直す（バックエンドの自動切替: Multicore ⇄ Core、NSC ⇄ SMC）。
 // ボディ・ジョイント・ケーブル・荷重は全部捨てる - 番号は無効になるので、
 // Scene が設計値から作り直す（Scene::rebuildPhysicsWorld）。
 void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {

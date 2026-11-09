@@ -28,7 +28,7 @@
 #endif
 
 #ifdef WIZ_USE_MULTICORE
-// Chrono::Multicore: OpenMP-parallel solver (APGD) and collision detection.
+// Chrono::Multicore: OpenMP で並列のソルバ（APGD）と衝突判定。
 #include <chrono_multicore/physics/ChSystemMulticore.h>
 #endif
 
@@ -43,11 +43,11 @@ using namespace wizengine::physics::compat;
 
 namespace {
 
-// Smallest contact envelope that the multicore narrowphase behaves with (m).
+// Multicore の狭域判定がまともに動く最小の接触エンベロープ（m）。
 constexpr double kMulticoreMinEnvelope = 0.01;
 
 // 積分器の種類（名前は editor::integratorNameValid の語彙）。hht / newmark は
-// 滑らかな系（FEA・SMC）向け（B の 16）。
+// 滑らかな系（FEA・SMC）向けの陰的な積分器。
 bool timestepperFromName(const std::string& name, chrono::ChTimestepper::Type& out) {
     using T = chrono::ChTimestepper::Type;
     if (name == "euler") { out = T::EULER_IMPLICIT_LINEARIZED; return true; }
@@ -169,18 +169,18 @@ void PhysicsSystem::create() {
         backend_ = PhysicsBackend::Core;
     }
 
-    // Create every Chrono object with chrono_types::make_shared (aligned memory).
-    // Build & run in Release to match the Release-only Chrono install.
-    // NSC (complementarity) treats contacts as hard constraints, so boxes do
-    // not tunnel through the ground at this timestep.
+    // Chrono のオブジェクトはすべて chrono_types::make_shared で作る（整列したメモリ）。
+    // Chrono は Release だけを入れてあるので、合わせて Release でビルド・実行する。
+    // NSC（相補性）は接触を硬い拘束として扱うので、この時間刻みでも箱が
+    // 地面をすり抜けない。
 #ifdef WIZ_USE_MULTICORE
     if (backend_ == PhysicsBackend::Multicore) {
     // ---- Chrono::Multicore ----------------------------------------------
-    // Parallel APGD solver plus the module's own parallel collision detection.
-    // Its tuning lives in a settings struct rather than in ChSystem setters.
+    // 並列の APGD ソルバと、モジュール自前の並列の衝突判定。
+    // 調整は ChSystem のセッターではなく設定の構造体にある。
     std::shared_ptr<ChSystemMulticore> mc;
     if (contact_ == ContactMethod::SMC) {
-        // ペナルティ法（B の 22）。材質のヤング率・ポアソン比から接触剛性を
+        // ペナルティ法（SMC）。材質のヤング率・ポアソン比から接触剛性を
         // 出す（use_material_properties）。Hertz 接触 + 1 ステップの接線変位。
         auto smc = chrono_types::make_shared<ChSystemMulticoreSMC>();
         smc->GetSettings()->solver.contact_force_model = ChSystemSMC::ContactForceModel::Hertz;
@@ -193,17 +193,16 @@ void PhysicsSystem::create() {
         nsc->ChangeSolverType(SolverType::APGD);
         mc = nsc;
     }
-    // Use the module's own parallel collision system, not Bullet: the two are
-    // separate code paths and the multicore solver expects this one.
+    // Bullet ではなくモジュール自前の並列の衝突系を使う: 2 つは別々の経路で、
+    // Multicore のソルバはこちらを前提にしている。
     mc->SetCollisionSystemType(ChCollisionSystem::Type::MULTICORE);
 
     auto* st = mc->GetSettings();
-    // SPINNING mode also solves rolling/spinning resistance. In SLIDING mode
-    // the material's rolling friction is simply ignored, and spheres roll
-    // across a flat floor forever.
+    // SPINNING モードは転がり / スピンの抵抗も解く。SLIDING モードでは材質の
+    // 転がり摩擦が単に無視され、球が平らな床を永遠に転がる。
     st->solver.solver_mode = SolverMode::SPINNING;
     st->solver.max_iteration_normal = 0;
-    st->solver.max_iteration_sliding = 60;  // Scene overrides this
+    st->solver.max_iteration_sliding = 60;  // Scene が上書きする
     st->solver.max_iteration_spinning = 30;
     st->solver.max_iteration_bilateral = 100;
     st->solver.tolerance = 1e-3;
@@ -212,28 +211,27 @@ void PhysicsSystem::create() {
     st->solver.use_full_inertia_tensor = false;
     st->solver.clamp_bilaterals = true;
     st->solver.bilateral_clamp_speed = 1e8;
-    // The multicore narrowphase relies on a non-trivial envelope to generate
-    // contacts; the tiny value that suits Bullet makes it miss them entirely
-    // (boxes drop straight through the floor). Scene may raise this further.
+    // Multicore の狭域判定は、接触を作るのにある程度のエンベロープを当てにする。
+    // Bullet に合う小さな値では接触を丸ごと取りこぼす（箱が床をそのまま抜けて
+    // 落ちる）。Scene がさらに上げることがある。
     st->collision.collision_envelope = kMulticoreMinEnvelope;
-    // Broadphase grid: more bins = finer buckets. Roughly match the scene
-    // extent divided by the body size.
+    // 広域判定の格子: ビンが多い = 細かい区切り。おおよそシーンの広がりを
+    // ボディの大きさで割った数に合わせる。
     st->collision.bins_per_axis = vec3(20, 20, 20);
-    // Narrowphase: prefer the analytic primitive routines over MPR. MPR is a
-    // general convex algorithm that tends to report a single contact point per
-    // pair, which lets stacked boxes rock and sink; the analytic box-box test
-    // produces a proper multi-point manifold, much closer to what the Bullet
-    // path in the core build does.
-    // NOTE: the enum spelling moved between Chrono versions. If this line does
-    // not compile, check ChNarrowphase / NarrowPhaseType in the installed
-    // headers (older: NarrowPhaseType::NARROWPHASE_HYBRID_MPR).
+    // 狭域判定: MPR より解析的な基本形状の判定を優先する。MPR は一般の凸形状の
+    // 方法で、ペアごとに接触点を 1 つしか返さないことが多く、積んだ箱が揺れて
+    // 沈む。解析的な箱どうしの判定はきちんとした多点の接触多様体を作り、Core の
+    // ビルドの Bullet の経路にずっと近い。
+    // 注意: この列挙の綴りは Chrono の版の間で変わった。この行がコンパイル
+    // できなければ、入っているヘッダの ChNarrowphase / NarrowPhaseType を見る
+    // （旧版: NarrowPhaseType::NARROWPHASE_HYBRID_MPR）。
     st->collision.narrowphase_algorithm = ChNarrowphase::Algorithm::HYBRID;
 
     sys_ = mc;
     } else
 #endif
     {
-    // ---- Chrono core (serial) -------------------------------------------
+    // ---- Chrono core（逐次）---------------------------------------------
     std::shared_ptr<ChSystem> core;
     if (contact_ == ContactMethod::SMC) {
         auto smc = chrono_types::make_shared<ChSystemSMC>();
@@ -243,11 +241,11 @@ void PhysicsSystem::create() {
         core = chrono_types::make_shared<ChSystemNSC>();
     }
     core->SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
-    // BARZILAI-BORWEIN converges much better than the default SOR on stacked
-    // contacts. More iterations = steadier stacks, more CPU.
+    // BARZILAI-BORWEIN は積み重なった接触で既定の SOR よりずっとよく収束する。
+    // 反復が多い = 積み重ねが落ち着くが、CPU を食う。
     core->SetSolverType(ChSolver::Type::BARZILAIBORWEIN);
-    // How fast overlapping bodies are pushed apart (m/s). The default is high
-    // enough to visibly pop resting boxes; a small value settles them quietly.
+    // 重なったボディを引き離す速さ（m/s）。既定は静止した箱が目に見えて弾ける
+    // ほど大きい。小さな値なら静かに落ち着く。
     core->SetMaxPenetrationRecoverySpeed(0.1);
     sys_ = core;
     }
@@ -258,16 +256,17 @@ void PhysicsSystem::applyBaseSettings() {
     sys_->SetGravitationalAcceleration(gravity_);
     setSolverIterations(iterations_);
 
-    // Default: several cores for the solver and collision detection, leaving a
-    // couple for the render thread and the encoder. The Scene can override
-    // this (see setNumThreads) to match a pinned set of cores.
+    // 既定: ソルバと衝突判定に数コアを使い、描画スレッドとエンコーダに 2 つほど
+    // 残す。Scene は固定したコアの組に合わせてこれを上書きできる
+    // （setNumThreads を参照）。
     {
         int threads = threads_;
         if (threads < 1) {
             const unsigned hw = std::thread::hardware_concurrency();
             threads = (hw >= 4) ? int(hw) - 2 : 1;
         }
-        // 3 つ目は FEA（ケーブルの要素の並列化）。Core だけが使う。
+        // 3 つは Chrono 本体（FEA の内力とヤコビアン）・衝突判定・Eigen（直接法ソルバ）。
+        // FEA はケーブル（Core）だけが使う。
         sys_->SetNumThreads(threads, threads, threads);
     }
 }
@@ -309,7 +308,7 @@ bool PhysicsSystem::setIntegrator(const std::string& name) {
 bool PhysicsSystem::setSolver(const std::string& name) {
     if (backend_ == PhysicsBackend::Multicore) return false;  // APGD 固定
     if (name == solverName_) return true;  // 毎回作り直さない（反復回数が飛ぶ）
-    // 直接法はソルバのオブジェクトを作って渡す（B の 16）。直接法と MINRES は
+    // 直接法ソルバはオブジェクトを作って渡す。直接法と MINRES は
     // 線形ソルバで片側拘束（NSC の接触・可動範囲）を解けないので、NSC の
     // ままなら bb に戻して伝える。
     std::shared_ptr<ChSolver> solver;
@@ -388,9 +387,9 @@ void PhysicsSystem::setCollisionTolerances(double envelope, double margin) {
     envelope_ = envelope;
     margin_ = margin;
 #ifdef WIZ_USE_MULTICORE
-    // The multicore collision system keeps the envelope in its settings.
+    // Multicore の衝突系はエンベロープを自分の設定に持つ。
     if (auto* mc = dynamic_cast<ChSystemMulticore*>(sys_.get())) {
-        // Never go below the floor value - see the note in PhysicsSystem::create.
+        // 下限の値より下げない - PhysicsSystem::create の注記を参照。
         mc->GetSettings()->collision.collision_envelope =
             std::max(envelope, kMulticoreMinEnvelope);
         return;
@@ -437,7 +436,8 @@ void PhysicsSystem::setContactRecoverySpeed(double recoverySpeed) {
 void PhysicsSystem::setNumThreads(int threads) {
     if (threads < 1) return;
     threads_ = threads;
-    // Chrono takes (solver, collision, FEA). FEA はケーブル（Core）が使う。
+    // Chrono の引数は (Chrono 本体 = FEA の内力とヤコビアン, 衝突判定, Eigen = 直接法ソルバ)。
+    // FEA はケーブル（Core）が使う。
     sys_->SetNumThreads(threads, threads, threads);
     LOGI("physics", "threads: %d", threads);
 }
@@ -445,16 +445,16 @@ void PhysicsSystem::setNumThreads(int threads) {
 void PhysicsSystem::setSolverIterations(int iterations) {
     iterations_ = iterations;
 #ifdef WIZ_USE_MULTICORE
-    // APGD iterates on the sliding (frictional) contacts.
+    // APGD は滑り（摩擦のある）接触について反復する。
     if (auto* mc = dynamic_cast<ChSystemMulticore*>(sys_.get())) {
         mc->GetSettings()->solver.max_iteration_sliding = iterations;
         return;
     }
 #endif
     {
-    // The iteration count lives on the solver itself in this Chrono version
-    // (ChSystem::SetSolverMaxIterations was removed). If the active solver is
-    // not an iterative VI solver, the cast fails and we keep the defaults.
+    // この Chrono の版では反復回数はソルバ自身が持つ（ChSystem::SetSolverMaxIterations
+    // は消えた）。反復の VI ソルバならそこへ、線形の反復ソルバ（MINRES）なら
+    // そちらへ入れる。どちらでもない（直接法など）ときは何もしない。
     if (auto iterative =
             std::dynamic_pointer_cast<ChIterativeSolverVI>(sys_->GetSolver())) {
         iterative->SetMaxIterations(iterations);

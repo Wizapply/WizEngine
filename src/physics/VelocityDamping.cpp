@@ -20,11 +20,10 @@ void VelocityDamping::set(double linearPerSecond, double angularPerSecond) {
 }
 
 void VelocityDamping::apply(double dt) {
-    // Damping after the solve: scale each body's velocity towards zero. exp()
-    // makes the decay frame-rate independent, so changing the physics rate
-    // does not change how quickly things slow down. Sleeping bodies are left
-    // alone - they are not moving anyway, and touching them would wake the
-    // bookkeeping for nothing.
+    // 解いた後の減衰: 各ボディの速度をゼロへ向けて縮める。exp() で減り方が
+    // フレームレートに依存しないので、物理のレートを変えても止まる速さは
+    // 変わらない。眠っているボディは触らない - どうせ動いておらず、触ると
+    // 意味もなく眠りの管理を起こしてしまう。
     if (linearDamping_ <= 0.0 && angularDamping_ <= 0.0) return;
     const double linScale = std::exp(-linearDamping_ * dt);
     const double angScale = std::exp(-angularDamping_ * dt);

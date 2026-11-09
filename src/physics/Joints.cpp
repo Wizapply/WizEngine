@@ -12,7 +12,7 @@
 #include <chrono/physics/ChLinkDistance.h>
 #include <chrono/physics/ChLinkLock.h>
 #include <chrono/physics/ChSystem.h>
-// ジョイントの拡張（A の導入）: モータ・自在継手・歯車・ねじ・ばね。
+// 基本 5 種より後に足したジョイント: モータ・自在継手・歯車・ねじ・ばね。
 #include <chrono/physics/ChLinkMotorRotationSpeed.h>
 #include <chrono/physics/ChLinkMotorRotationAngle.h>
 #include <chrono/physics/ChLinkMotorRotationTorque.h>
@@ -448,7 +448,7 @@ std::size_t Joints::add(const JointSpec& spec) {
             break;
         }
         case JointType::Bushing: {
-            // ゴムブッシュ（B の 19）: 拘束ではなく荷重コンテナの力。並進 3 軸は
+            // ゴムブッシュ（ChLoad の荷重）: 拘束ではなく荷重コンテナの力。並進 3 軸は
             // stiffness / damping、回転 3 軸は rotStiffness / rotDamping。
             // 取り付け座標系はアンカー + 指定軸を Z にした向き。
 #ifdef WIZ_HAVE_LOADS

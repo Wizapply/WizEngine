@@ -47,8 +47,8 @@ void BodyMotion::applyForce(std::size_t id, const ChVector3d& force, double dt) 
         // 無視するので出ないが、速度が溜まるのは同じ。
         if (b->IsFixed()) continue;
 
-        // A sleeping body ignores everything until something touches it, so wake it
-        // first - otherwise pushing a settled box does nothing at all.
+        // 眠ったボディは何かが触れるまで何も受け付けないので、先に起こす -
+        // そうしないと、落ち着いた箱を押しても何も起きない。
         if (b->IsSleeping()) wakeUp(b.get(), 0);
 
         setLinVel(b.get(), getLinVel(b.get(), 0) + dv, 0);
