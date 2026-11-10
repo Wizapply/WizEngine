@@ -45,9 +45,13 @@ struct LayoutNode {
 // 親は子より前）・自分自身なら -1（Canvas の直下として扱う）。
 std::vector<int> parentIndices(const std::vector<ElementDesc>& elements);
 
-// 木を文書順にたどって全要素の矩形と見えるかを解く。props は要素ごとの
-// 重ね済みの性質（resolve の結果）で、空なら各要素の設計値を使う。大きさが
-// 合わなければ足りない分を設計値で補う。
+// i 番目の要素の性質: 重ね済みの性質（resolve の結果、要素の並びと同じ順）が
+// あればそれ、無ければ（resolved が空・短い）設計値。UI の組み立てはどこも
+// これを通して読む。
+const PropSet& elementProps(const std::vector<ElementDesc>& elements,
+                            const std::vector<PropSet>& resolved, std::size_t i);
+
+// 木を文書順にたどって全要素の矩形と見えるかを解く（性質は elementProps）。
 std::vector<LayoutNode> layoutTree(const std::vector<ElementDesc>& elements,
                                    const std::vector<PropSet>& props,
                                    const Rect& canvas);

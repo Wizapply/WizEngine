@@ -46,13 +46,18 @@ std::vector<int> parentIndices(const std::vector<ElementDesc>& elements) {
     return out;
 }
 
+const PropSet& elementProps(const std::vector<ElementDesc>& elements,
+                            const std::vector<PropSet>& resolved, std::size_t i) {
+    return i < resolved.size() ? resolved[i] : elements[i].props;
+}
+
 std::vector<LayoutNode> layoutTree(const std::vector<ElementDesc>& elements,
                                    const std::vector<PropSet>& props,
                                    const Rect& canvas) {
     const std::vector<int> parents = parentIndices(elements);
     std::vector<LayoutNode> out(elements.size());
     for (std::size_t i = 0; i < elements.size(); ++i) {
-        const PropSet& p = i < props.size() ? props[i] : elements[i].props;
+        const PropSet& p = elementProps(elements, props, i);
         LayoutNode& n = out[i];
         n.parent = parents[i];
         // 親は必ず前にあるので、もう解けている。

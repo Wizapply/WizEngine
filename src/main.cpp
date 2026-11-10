@@ -247,11 +247,11 @@ int run(int argc, char** argv) {
         } else if (arg == "--max-cameras") {
             const std::string v = next("--max-cameras");
             const int n = v.empty() ? 0 : std::atoi(v.c_str());
-            if (n >= 1 && n <= 16) {
+            if (n >= 1 && n <= wizengine::editor::kMaxCameraSlots) {
                 cfg.scene.maxCameras = std::size_t(n);
             } else if (!v.empty()) {
-                LOGW("app", "--max-cameras %s is out of range (1-16) - ignoring",
-                     v.c_str());
+                LOGW("app", "--max-cameras %s is out of range (1-%d) - ignoring",
+                     v.c_str(), wizengine::editor::kMaxCameraSlots);
             }
         } else if (arg == "--encoder") {
             const std::string v = next("--encoder");

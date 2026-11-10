@@ -296,6 +296,7 @@ endif()
 
 # stb_image: decodes PNG/JPEG/TGA/BMP for the ground texture.
 # stb_perlin: テレインの高さのノイズ（src/terrain/TerrainNoise.cpp）。
+# stb_truetype / stb_rect_pack: UI の字の置き場（src/ui/FontAtlas.cpp）。
 if(EXISTS "${THIRD_PARTIES_DIR}/stb/stb_image.h")
     list(APPEND WIZ_DEP_INCLUDE_DIRS "${THIRD_PARTIES_DIR}/stb")
     message(STATUS "WizEngine: stb_image -> submodule")
@@ -306,6 +307,12 @@ else()
     wiz_download_header(
         "https://raw.githubusercontent.com/nothings/stb/master/stb_perlin.h"
         "${DEPS_INC}/stb_perlin.h")
+    wiz_download_header(
+        "https://raw.githubusercontent.com/nothings/stb/master/stb_truetype.h"
+        "${DEPS_INC}/stb_truetype.h")
+    wiz_download_header(
+        "https://raw.githubusercontent.com/nothings/stb/master/stb_rect_pack.h"
+        "${DEPS_INC}/stb_rect_pack.h")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -449,8 +456,13 @@ set(WIZ_AUTOGEN_SOURCES
     src/autogen/SceneGenerator.cpp
     src/autogen/SceneLayout.cpp)
 set(WIZ_UI_SOURCES
+    src/ui/FontAtlas.cpp
+    src/ui/UiImage.cpp
+    src/ui/UiKinds.cpp
     src/ui/UiLayout.cpp
+    src/ui/UiMesh.cpp
     src/ui/UiProps.cpp
+    src/ui/UiText.cpp
     src/ui/UiValue.cpp)
 
 add_executable(wizengine

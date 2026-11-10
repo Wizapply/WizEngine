@@ -1,5 +1,7 @@
 #include "ui/UiProps.h"
 
+#include "ui/UiMeshFormat.h"  // 縁取りの上限（kSdfOutlineMaxEm）
+
 #include <algorithm>
 #include <utility>
 
@@ -9,8 +11,6 @@ namespace {
 
 // ---- 性質の表 ----------------------------------------------------------------
 // 並びは Prop の順（propInfo が添字で引く。tests/ui が id との一致を検査する）。
-const char* const kAlignNames[] = {"left", "center", "right", nullptr};
-
 // 位置・大きさの上限（設計上の画素。基準の高さ 1080 に対して十分に広い）。
 constexpr double kCoordMax = 1.0e6;
 // 文字列の上限（バイト）。
@@ -31,7 +31,9 @@ const PropInfo kProps[] = {
     {Prop::Font, "font", {PropType::Name, textValue(""), 0.0, 0.0}, false, kTextual, "フォント"},
     {Prop::FontSize, "fontSize", {PropType::Number, numberValue(32), 1.0, 1024.0}, true, kTextual, "文字の大きさ"},
     {Prop::Align, "align", {PropType::Enum, numberValue(0), 0.0, 0.0, kAlignNames}, false, kTextual, "揃え"},
-    {Prop::Outline, "outline", {PropType::Number, numberValue(0), 0.0, 16.0}, true, kTextual, "縁取り"},
+    // 縁取りの幅は em（字の大きさ）に対する割合。上限は字の SDF のにじみ幅で決まる。
+    {Prop::Outline, "outline", {PropType::Number, numberValue(0), 0.0, kSdfOutlineMaxEm}, true, kTextual, "縁取り"},
+    {Prop::OutlineColor, "outlineColor", {PropType::Color, numberValue(0, 0, 0, 1), 0.0, 1.0}, true, kTextual, "縁取りの色"},
     {Prop::Wrap, "wrap", {PropType::Bool, numberValue(0), 0.0, 1.0}, false, kTextual, "折り返し"},
     {Prop::File, "file", {PropType::Path, textValue(""), 0.0, kPathMaxBytes}, false, kKindImage | kKindButton, "画像"},
     {Prop::Hover, "hover", {PropType::Color, numberValue(1, 1, 1, 1), 0.0, 1.0}, false, kKindButton, "ホバー時の色"},
@@ -64,6 +66,14 @@ std::size_t editDistanceIcase(const std::string& a, const std::string& b) {
 // ---- 性質の表を引く ----------------------------------------------------------
 const PropInfo& propInfo(Prop id) {
     return kProps[static_cast<std::size_t>(id) % kPropCount];
+}
+
+PropMask propsOfKind(KindMask kind) {
+    PropMask mask = 0;
+    for (const auto& p : kProps) {
+        if (p.kinds & kind) mask |= propBit(p.id);
+    }
+    return mask;
 }
 
 const char* nearestName(const std::string& name, const char* const* names,

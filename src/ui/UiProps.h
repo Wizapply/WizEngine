@@ -33,10 +33,15 @@ inline constexpr KindMask kKindImage = 1u << 1;
 inline constexpr KindMask kKindButton = 1u << 2;
 inline constexpr KindMask kKindAll = 0xFFFFFFFFu;
 
+// ---- 列挙の性質の名前 --------------------------------------------------------
+// 揃え（align）。名前の並びが値（添字）の定義なので、enum と同じ順に書く。
+enum class TextAlign : std::uint8_t { Left, Center, Right };
+inline const char* const kAlignNames[] = {"left", "center", "right", nullptr};
+
 // ---- 性質の表 ----------------------------------------------------------------
 enum class Prop : std::uint8_t {
     Anchor, Pivot, Pos, Size, Color, Alpha, Visible, Text, Font, FontSize,
-    Align, Outline, Wrap, File, Hover, Pressed, Enabled, Count
+    Align, Outline, OutlineColor, Wrap, File, Hover, Pressed, Enabled, Count
 };
 inline constexpr std::size_t kPropCount = static_cast<std::size_t>(Prop::Count);
 
@@ -60,6 +65,13 @@ const PropInfo* propFromName(const std::string& name,
 // Canvas の属性名・種類の名前で同じ規則を使うための口。
 const char* nearestName(const std::string& name, const char* const* names,
                         std::size_t count);
+
+// 性質の集合のビット（Prop の番号のビット）。
+using PropMask = std::uint32_t;
+static_assert(kPropCount <= 32, "PropMask holds one bit per Prop");
+inline constexpr PropMask propBit(Prop p) { return PropMask(1) << static_cast<unsigned>(p); }
+// 種類 kind が持つ性質の集合（性質の表の kinds から引く = 種類の表に写しを持たない）。
+PropMask propsOfKind(KindMask kind);
 
 // ---- 性質の集まり ------------------------------------------------------------
 // 立っている性質だけが意味を持つ（部分更新・重ね順の段・アニメのキー）。
