@@ -210,12 +210,14 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     sys_ = std::move(sys);
     // スロット数（config.json の "scene"."maxCameras"、exe 引数 --max-cameras で
     // 上書き）。カメラ 0（エディタカメラ）は必ず要るので 1 未満にはしない。
-    // 極端な値はページ・受け口・スレッドを無駄に増やすだけなので 16 で止める。
+    // 極端な値はページ・受け口・スレッドを無駄に増やすだけなので
+    // ed::kMaxCameraSlots で止める。
+    constexpr std::size_t kSlotsMax = std::size_t(ed::kMaxCameraSlots);
     std::size_t slots = sys_.maxCameras;
     if (slots < 1) slots = 1;
-    if (slots > 16) {
-        LOGW("scene", "max cameras %zu is excessive - clamped to 16", slots);
-        slots = 16;
+    if (slots > kSlotsMax) {
+        LOGW("scene", "max cameras %zu is excessive - clamped to %zu", slots, kSlotsMax);
+        slots = kSlotsMax;
     }
     // cameraConfigs() のぶんが最初から有効で（スロット数を超えるぶんは
     // 落とす）、残りは「カメラを追加」で有効になるまで一覧に出ない予備。

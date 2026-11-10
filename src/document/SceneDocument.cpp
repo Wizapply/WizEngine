@@ -1,6 +1,7 @@
 #include "document/SceneDocument.h"
 
 #include "core/MathConstants.h"
+#include "document/XmlValues.h"
 #include "formula/FormulaXml.h"
 #include "vehicle/VehicleXml.h"
 
@@ -83,12 +84,7 @@ Vec3d getVec3(const xml::Element& e, const char* key, const Vec3d& fallback) {
 }
 // 零ベクトルか（既定値と同じ置き場所・回転を書かないため）。
 bool isZero(const Vec3d& v) { return v.x == 0.0 && v.y == 0.0 && v.z == 0.0; }
-// 色は MuJoCo と同じ rgba="r g b a"（リニア値）。a は今は使わないが、
-// MJCF を見慣れた目に自然な形にしておく。
-void setColor(xml::Element& e, const char* key, const Color3& c) {
-    const double a[4] = {c.r, c.g, c.b, 1.0};
-    e.setNumbers(key, a, 4, 6);  // float 由来なので 6 桁で十分
-}
+// 色の読み書き（setColor / getColor）は document/XmlValues.h。
 // 材質（PBR）。**既定値と同じ値は書かない** - 全部書くと、材質を触って
 // いないシーンの保存ファイルまで 6 属性ぶん太って差分が読めなくなる。
 // 読む側は既定値付きなので、書いていない属性は従来の見た目になる。
@@ -114,21 +110,6 @@ MaterialDesc getMaterial(const xml::Element& e, const MaterialDesc& base) {
     m.clearCoatRoughness = e.number("clearcoatRoughness", m.clearCoatRoughness);
     m.emissive = e.number("emissive", m.emissive);
     return clampMaterial(m);
-}
-
-Color3 getColor(const xml::Element& e, const char* key, const Color3& fallback) {
-    double a[4] = {fallback.r, fallback.g, fallback.b, 1.0};
-    if (e.numbers(key, a, 4) < 3) {
-        // ブラウザ API と同じ "#rrggbb" 表記も受ける（手書きしやすい）。
-        const std::string s = e.attr(key);
-        if (s.size() == 7 && s[0] == '#') return colorFromHex(s, fallback);
-        return fallback;
-    }
-    Color3 c;
-    c.r = float(a[0]);
-    c.g = float(a[1]);
-    c.b = float(a[2]);
-    return c;
 }
 
 // ---- 種類の名前（MJCF の語彙に寄せる）--------------------------------------

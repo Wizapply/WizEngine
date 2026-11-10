@@ -327,6 +327,7 @@ endif()
 #   app/        起動設定（config.json）の読み込み
 #   autogen/    AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換 Text to 3D。
 #               Chrono も Filament も知らない）
+#   ui/         UI の性質・矩形・文書の形（純粋な計算。tests/ui が使う）
 set(WIZ_APP_SOURCES
     src/app/AppConfig.cpp)
 set(WIZ_CORE_SOURCES
@@ -447,6 +448,10 @@ set(WIZ_AUTOGEN_SOURCES
     src/autogen/ScenePrompt.cpp
     src/autogen/SceneGenerator.cpp
     src/autogen/SceneLayout.cpp)
+set(WIZ_UI_SOURCES
+    src/ui/UiLayout.cpp
+    src/ui/UiProps.cpp
+    src/ui/UiValue.cpp)
 
 add_executable(wizengine
     src/main.cpp
@@ -462,7 +467,8 @@ add_executable(wizengine
     ${WIZ_FORMULA_SOURCES}
     ${WIZ_CONTROL_SOURCES}
     ${WIZ_TERRAIN_SOURCES}
-    ${WIZ_AUTOGEN_SOURCES})
+    ${WIZ_AUTOGEN_SOURCES}
+    ${WIZ_UI_SOURCES})
 # ノード式の実行エンジン（LuaJIT）。無ければ C++ の参照インタプリタに落ちる。
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/LuaJIT.cmake)
 wiz_link_luajit(wizengine)
@@ -724,13 +730,13 @@ endif()
 # configure できる（tests/vehicle/CMakeLists.txt 参照）。本体と一緒に回すなら
 #   cmake -B build -DWIZ_BUILD_TESTS=ON && cmake --build build && ctest --test-dir build
 # ---------------------------------------------------------------------------
-option(WIZ_BUILD_TESTS "Build the unit tests (vehicle, soft body, document, terrain) alongside the engine" OFF)
+option(WIZ_BUILD_TESTS "Build the unit tests (vehicle, soft body, document, terrain, ui) alongside the engine" OFF)
 if(WIZ_BUILD_TESTS)
     enable_testing()
     # テストは単独でも configure できる（tests/<名前>/CMakeLists.txt）。
     # ここでは「あるものだけ」取り込む - 片方だけ持っているクローンでも
     # -DWIZ_BUILD_TESTS=ON が configure エラーにならないように。
-    foreach(_test vehicle softbody document terrain)
+    foreach(_test vehicle softbody document terrain ui)
         if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/${_test}/CMakeLists.txt)
             add_subdirectory(tests/${_test})
         endif()
