@@ -20,7 +20,8 @@ class HeightField;
 
 PhysicsFeatures physicsFeatures();
 
-// 物理エンジン: Chrono の系（重力・衝突・接触材質）を持つ。
+// 物理エンジンの窓口: Scene から呼ぶ口だけを持ち、各部品へ中継する。Chrono の系
+// （重力・衝突・接触材質）と担当の部品を持つのは Parts（部品の入れ物、PhysicsParts.h）。
 // 自分ではシーンを持たない - ボディは Scene が add*（addBox ほか）で足す。
 //
 // ---- 部品の足し方（風など、新しい担当を足すとき）----------------------------
@@ -239,7 +240,7 @@ public:
     // 重力の 3 成分（斜面・無重力・横向きの重力）。
     void setGravity(double gx, double gy, double gz);
     // このボディだけ重力を切る / 戻す（ソフトボディなら全粒子）。
-    // Multicore は自前の積分で重力を足すため効かない版がある。
+    // 印を付けると、そのボディだけ重力ぶんが毎ステップ打ち消される（GravityOverride）。
     void setBodyGravity(std::size_t id, bool enabled);
     // 速度と角速度（ワールド座標、rad/s）を直接書く。初速とイベントの
     // setVelocity 用。眠っていれば起こす。固定ボディには何もしない。
@@ -277,10 +278,11 @@ public:
     // 掴みはこれを見て引っぱり線ごと諦める。
     bool bodyFixed(std::size_t id) const;
 
-    // 「削除」。Chrono からボディを取り除くのではなく、当たり判定を切って
-    // 固定し、地面のはるか下へ退避させる。Multicore バックエンドはボディの
-    // 削除でデータマネージャの配列が崩れることがあるため、ここでは触らない
-    // ほうが安全（番号も動かないので、他のオブジェクトの ID がずれない）。
+    // 削除相当。固定して地面のはるか下へ退避させ、Core では当たり判定も切って
+    // 系から外す（RemoveBody）。Multicore は退避だけ（当たり判定のフラグも
+    // 触らない）。どちらも番号は詰めず、ChBody のオブジェクトは名簿に残す。
+    // ソフトボディなら粒子を全部。テレインのゴーストは外さず、テレインの接触を
+    // 止めるだけ。理由は BodyRegistry::retire / Parts::detachBody。
     void disableBody(std::size_t id);
     bool bodyActive(std::size_t id) const;
 

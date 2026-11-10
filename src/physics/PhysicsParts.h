@@ -57,10 +57,10 @@ struct PhysicsWorld::Parts {
     wizengine::physics::Diagnostics diag{system, bodies};
     // system より先に壊れる。系が持ち続けるコールバックはデストラクタが切り離す。
     wizengine::physics::TerrainContact terrain{system, bodies, materials};
-    // 系と名簿より後に宣言する = 系と名簿より先に壊れる（リンクと荷重コンテナへの参照を
-    // 先に手放す。以前の PhysicsWorld のメンバと同じ順番）。
+    // joints と cables は系と名簿への参照（system_ / bodies_）を持つので、それより後に
+    // 宣言して先に壊す（今のデストラクタは系に触らないが、触る形にしても安全な順番）。リンクとメッシュは
+    // 系も shared_ptr で持っているので、ここで系から外れるわけではない。
     wizengine::physics::Joints joints{system, bodies, motion};
-    // joints より後 = 最初に壊れる（以前の PhysicsWorld では cables_ が窓口のメンバで、
-    // p_ より先 = ジョイントより先に壊れていた。その順番を保つ）。
+    // joints より後 = 最初に壊れる。ジョイントとの順番には依存しない。
     wizengine::physics::Cables cables{system, bodies, materials};
 };

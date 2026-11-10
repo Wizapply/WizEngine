@@ -79,7 +79,8 @@ void PhysicsWorld::disableBody(std::size_t id) {
 // 本当に外す: ソルバと衝突系がその変数・形状を見なくなり、エディタで
 // 大きさを何度も変えても空のボディが溜まらない。ChBody のオブジェクト自体は
 // 名簿に残す（番号を詰めない・接触コールバックの逆引きが壊れない）。
-// Multicore は衝突系の Remove が未実装なので触らない（退避のみ）。
+// Multicore は系から外さない（退避のみ）: ボディを削除するとデータマネージャの
+// 配列が崩れることがあるため。当たり判定のフラグを触らない理由は BodyRegistry::retire。
 void PhysicsWorld::Parts::detachBody(std::size_t id) {
     if (system.backend() == PhysicsBackend::Multicore || id >= bodies.count()) return;
     auto& b = bodies.body(id);

@@ -14,6 +14,11 @@ void PhysicsWorld::setMaterialCombine(CombineMode mode) {
 // ボディ・ジョイント・ケーブル・荷重は全部捨てる - 番号は無効になるので、
 // Scene が設計値から作り直す（Scene::rebuildPhysicsWorld）。
 void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
+    // 新しい部品の片付けは通知（onBodiesCleared / onSystemRecreated）で済む。ここで
+    // 名指しする 5 つは既存の例外: joints と cables は出来事の受け手ではない、terrain と
+    // loads は系に結び付く物（コールバック・荷重コンテナ）を古い系を壊す前に手放す、
+    // diag は診断の数え直し（bodies.clear() は通知を配る側なので数に入れない。joints と
+    // cables は名簿を空にする前に片付ける）。
     p_->joints.clear();
     p_->cables.clear();
     // 名簿を空にすると、番号と並ぶ担当の配列（ソフトボディの一覧など）も
