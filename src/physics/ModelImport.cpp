@@ -13,6 +13,7 @@
 // 無ければこのファイルは「無い」と答えるだけになる。
 #if defined(WIZ_WITH_CHRONO_PARSERS) && __has_include(<chrono_parsers/ChParserURDF.h>)
 #define WIZ_HAVE_PARSERS 1
+#include "physics/ChronoCompat.h"
 #include <chrono/core/ChMatrix33.h>
 #include <chrono/collision/ChCollisionModel.h>
 #include <chrono/collision/ChCollisionShape.h>
@@ -61,8 +62,9 @@ bool importAvailable() {
 namespace {
 
 using namespace chrono;
+using physics::compat::linksOf;
 
-// ---- 版差の吸収（PhysicsWorld.cpp と同じ SFINAE の手口）--------------------
+// ---- 版差の吸収（ChronoCompat.h と同じ SFINAE の手口）--------------------
 template <typename S>
 auto bodiesOf(const S* s, int) -> decltype(s->GetBodies()) {
     return s->GetBodies();
@@ -70,14 +72,6 @@ auto bodiesOf(const S* s, int) -> decltype(s->GetBodies()) {
 template <typename S>
 auto bodiesOf(const S* s, long) -> decltype(s->Get_bodylist()) {
     return s->Get_bodylist();
-}
-template <typename S>
-auto linksOf(const S* s, int) -> decltype(s->GetLinks()) {
-    return s->GetLinks();
-}
-template <typename S>
-auto linksOf(const S* s, long) -> decltype(s->Get_linklist()) {
-    return s->Get_linklist();
 }
 // リンクの絶対座標系（マーカー 2 側）。Chrono 9 は GetFrame2Abs、旧版の
 // ChLinkLock は GetLinkAbsoluteCoords。どちらも無ければ false。
