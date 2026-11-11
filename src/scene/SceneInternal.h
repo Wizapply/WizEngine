@@ -21,6 +21,7 @@
 #include "core/Log.h"
 
 #include "scene/SceneMath.h"
+#include "scene/SharedAssetFile.h"
 
 #include <chrono/core/ChQuaternion.h>
 #include <chrono/core/ChVector3.h>
@@ -607,7 +608,7 @@ inline bool readSceneDocument(const std::string& name, ed::SceneDocument& doc,
     }
     std::string text;
     std::string xmlReason;
-    if (EditorState::readText(xmlPath, text, xmlReason)) {
+    if (wizengine::sharedasset::readTextFile(xmlPath, text, xmlReason)) {
         std::string error;
         std::vector<std::string> warnings;
         if (!ed::parseXml(text, doc, error, &warnings)) {

@@ -22,6 +22,7 @@
 #include "scene/GameObject.h"
 #include "scene/SceneComponent.h"
 #include "scene/SceneMath.h"  // cameraRay の Basis / Vec3
+#include "scene/UiState.h"
 #include "document/SceneDocument.h"
 #include "physics/MeshCollision.h"  // CollisionTriangles
 #include "physics/PhysicsWorld.h"  // for BodyTransform
@@ -391,6 +392,9 @@ public:
 
     // ---- モードと編集 ----------------------------------------------------
     EditorState& editor() { return editor_; }
+    // UI の状態（Canvas・共用 UI・フォントの設計値。UiState が唯一の持ち主）。
+    wizengine::UiState& ui() { return ui_; }
+    const wizengine::UiState& ui() const { return ui_; }
     wizengine::editor::AppMode mode() const { return editor_.mode(); }
     // エディタ操作（モード切替・配置・ギズモ・ジョイント・保存/読込）を
     // 受け付けるカメラ。SceneSystemConfig::editorCamera（既定 0）。
@@ -1028,6 +1032,7 @@ private:
     SceneSystemConfig sys_;
     std::vector<std::unique_ptr<SceneComponent>> components_;
     EditorState editor_;
+    wizengine::UiState ui_;
     // 地面の物理ボディ。ジョイントの「ワールド側」に使う。
     std::size_t groundPhysId_ = GameObject::kInvalidId;
     // 文書のジョイント番号 → PhysicsWorld のジョイント番号（作れなかった /

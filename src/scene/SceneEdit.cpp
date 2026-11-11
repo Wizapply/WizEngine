@@ -1619,6 +1619,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         editor_.setParams({});
         editor_.setCharts({});
         editor_.setPrefabAssets({});
+        ui_.clear();  // UI（Canvas・共用 UI・フォント）もシーンの一部
         editor_.setPrefabEditObject(-1);
         editor_.clearSel();
         // edit.new は名前付きの空のシーン（保存先がその名前になる）。
@@ -1708,7 +1709,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         if (!libWritten.empty()) {
             eventsWritten += (eventsWritten.empty() ? "" : " ") + libWritten;
         }
-        if (EditorState::writeText(path, ed::toXmlText(doc), reason)) {
+        if (wizengine::sharedasset::writeTextFile(path, ed::toXmlText(doc), reason)) {
             editor_.setSceneFile(name);
             editor_.setStatus("保存しました: " + name + ".xml" +
                               (terrainWritten.empty()

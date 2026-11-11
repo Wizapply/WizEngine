@@ -411,7 +411,10 @@ set(WIZ_SCENE_SOURCES
     src/scene/SceneTerrainScatter.cpp
     src/scene/SceneTerrainScatterBody.cpp
     src/scene/SceneTerrainSculpt.cpp
-    src/scene/SoftLattice.cpp)
+    src/scene/SharedAssetFile.cpp
+    src/scene/SoftLattice.cpp
+    src/scene/UiFiles.cpp
+    src/scene/UiState.cpp)
 set(WIZ_COMPONENT_SOURCES
     src/components/AutoGenComponent.cpp
     src/components/EditorComponent.cpp

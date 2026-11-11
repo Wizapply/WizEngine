@@ -18,6 +18,7 @@
 // 戻さない）。読めなかったもの（覚えが無い）は書かない（空で上書きしない）。
 // すべて PHYSICS thread。
 #include "scene/SceneInternal.h"
+#include "scene/SharedAssetFile.h"
 
 #include "core/Trash.h"
 
@@ -45,7 +46,7 @@ bool Scene::readLibraryFormula(fml::FormulaGraphDesc& g, std::string& reason) {
         return false;
     }
     std::string text;
-    if (!EditorState::readText(wizengine::assetPath(file), text, reason)) return false;
+    if (!wizengine::sharedasset::readTextFile(wizengine::assetPath(file), text, reason)) return false;
     fml::FormulaGraphDesc got;
     std::string error;
     std::vector<std::string> warnings;
@@ -68,7 +69,7 @@ bool Scene::readLibraryPrefab(ed::PrefabDesc& d, std::string& reason) {
         return false;
     }
     std::string text;
-    if (!EditorState::readText(wizengine::assetPath(file), text, reason)) return false;
+    if (!wizengine::sharedasset::readTextFile(wizengine::assetPath(file), text, reason)) return false;
     ed::PrefabDesc got;
     std::vector<ed::MeshAssetDesc> decls;
     std::string error;
@@ -141,7 +142,7 @@ bool Scene::saveLibraryAssets(const ed::SceneDocument& doc, std::string& written
         if (it == libBaseline_.end()) continue;  // 読めなかった = 空で上書きしない
         const std::string text = ed::formulaToLibraryXmlText(g);
         if (text == it->second) continue;       // 変更なし
-        if (!EditorState::writeText(wizengine::assetPath(g.file), text, reason)) return false;
+        if (!wizengine::sharedasset::writeTextFile(wizengine::assetPath(g.file), text, reason)) return false;
         it->second = text;
         written += (written.empty() ? "" : " ") + g.name;
         any = true;
@@ -153,7 +154,7 @@ bool Scene::saveLibraryAssets(const ed::SceneDocument& doc, std::string& written
         if (it == libBaseline_.end()) continue;
         const std::string text = ed::prefabToLibraryXmlText(d, doc.meshes);
         if (text == it->second) continue;
-        if (!EditorState::writeText(wizengine::assetPath(d.file), text, reason)) return false;
+        if (!wizengine::sharedasset::writeTextFile(wizengine::assetPath(d.file), text, reason)) return false;
         it->second = text;
         written += (written.empty() ? "" : " ") + d.name;
         any = true;
@@ -224,7 +225,7 @@ bool Scene::applyLibraryOp(const EditorState::Op& op) {
             d->file = file;
             text = ed::prefabToLibraryXmlText(*d, meshDescs());
         }
-        if (!EditorState::writeText(wizengine::assetPath(file), text, reason)) {
+        if (!wizengine::sharedasset::writeTextFile(wizengine::assetPath(file), text, reason)) {
             LOGW("scene", "%s share '%s': %s", kind.c_str(), name.c_str(), reason.c_str());
             editor_.setStatus(label + "をグローバルにできません（コンソール参照）");
             return true;

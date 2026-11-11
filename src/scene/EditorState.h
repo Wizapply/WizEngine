@@ -156,8 +156,9 @@ public:
     // 取り直す。
     std::vector<std::string> eventLibrary() const;
     void refreshEventLibrary();
-    // assets/events（無ければ作らない。書くときに作る）。
-    static std::string eventsDir();
+    // イベントライブラリの置き場（assets/ 相対のフォルダ）と拡張子。
+    static constexpr const char* kEventLibraryDir = "events";
+    static constexpr const char* kEventLibraryExt = ".xml";
     // ライブラリのファイル（assets/ 相対、"events/<名前>.xml"）。名前が不正なら空。
     static std::string eventLibraryFile(const std::string& name);
     // ---- グローバル（ライブラリ）の計算式・プレハブ・メッシュ -------------------
@@ -350,12 +351,8 @@ public:
     // 同じ名前の旧形式（.json）のフルパス。読み込みの後方互換にだけ使う。
     static std::string legacyScenePath(const std::string& name);
 
-    // 保存・読み込み（テキスト）。失敗時は false を返し、reason に理由を
-    // 入れる。中身が XML か JSON かはここでは見ない。
-    static bool writeText(const std::string& path, const std::string& text,
-                          std::string& reason);
-    static bool readText(const std::string& path, std::string& text,
-                         std::string& reason);
+    // テキストファイルの読み書きは scene/SharedAssetFile の readTextFile /
+    // writeTextFile（シーンの保存・読込もそれを呼ぶ）。
     // 旧形式（*.json）の読み込み。新規の保存には使わない。
     static bool readJson(const std::string& path, nlohmann::json& doc,
                          std::string& reason);

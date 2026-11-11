@@ -6,9 +6,38 @@
 #include "control/ControlTemplates.h"
 #include "formula/FormulaText.h"
 #include "terrain/TerrainBrush.h"
+#include "scene/UiFiles.h"
 
 using namespace chrono;
 using namespace scene_detail;
+
+namespace {
+
+// 文書の UI（<canvas> / <ui> / <font>）を UiState へ入れる（読込と取込の共通の道）。
+// 共用 UI（file あり）は中身をファイルから入れる。読めなくても参照は残す（中身は
+// 空 = 何も出ない。ファイルを戻して読み直せば元に戻る。共通イベントと同じ扱い）。
+// 戻り値 = 読めなかった共用 UI の件数（呼び手がステータスに足す）。
+std::size_t loadUiFromDocument(wizengine::UiState& ui, const ed::SceneDocument& doc,
+                               wizengine::UiState::LoadMode mode) {
+    ed::SceneDocument part;
+    part.canvases = doc.canvases;
+    part.fonts = doc.fonts;
+    part.uiAssets = doc.uiAssets;
+    std::size_t missing = 0;
+    for (auto& a : part.uiAssets) {
+        if (a.file.empty()) continue;
+        std::string reason;
+        if (!wizengine::uifiles::readSharedUi(a, reason)) {
+            LOGW("scene", "shared ui '%s': %s - it shows nothing until the file is back",
+                 a.name.c_str(), reason.c_str());
+            ++missing;
+        }
+    }
+    ui.fromDocument(part, mode);
+    return missing;
+}
+
+}  // namespace
 
 std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     auto hex = [](const filament::math::float3& c) {
@@ -541,6 +570,11 @@ ed::SceneDocument Scene::document() {
     doc.controllers = editor_.controllers();
     doc.params = editor_.params();
     doc.charts = editor_.charts();
+    // UI（UiState のロックは末端 = objects → editor の後に取ってよい）。共用 UI は
+    // 参照だけを書く（ファイルへ書くのは後の PR）。Canvas の番号の付け替え表は、
+    // Canvas を番号で指すノード（後の PR）が使う。
+    const std::vector<int> canvasRemap = ui_.toDocument(doc);
+    (void)canvasRemap;
     return doc;
 }
 
@@ -732,6 +766,17 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     // 格子も当たり判定も作り直さない。
     setTerrainFromDocument(doc, keepSameTerrain);
 
+    // UI（Canvas・共用 UI・フォント）。節の無い文書は UI 無し。読めない共用 UI の
+    // 注意は読込の注意の末尾に足す（setTerrainFromDocument が注意を作り直した後）。
+    {
+        const std::size_t uiMissing =
+            loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Replace);
+        if (uiMissing > 0) {
+            terrainLoadCaveat_ += "（共用 UI " + std::to_string(uiMissing) +
+                                  " 件のファイルが読めません - コンソール参照）";
+        }
+    }
+
     // 文書が Core 専用の機能を使っていれば系を切り替える（使わなくなって
     // いれば既定へ戻す）。setTerrainFromDocument の中で済んでいるので、ここは確認だけ。
     // シミュレート中ならジョイントとケーブルも張り直す。
@@ -843,6 +888,9 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
         }
         editor_.setEmitters(std::move(emitters));
     }
+    // UI は後ろへ足す（共用 UI とフォントは名前が重ならないものだけ）。読めない
+    // 共用 UI は loadUiFromDocument が LOGW に出す。
+    loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Append);
     editor_.bumpGraphVersion();
     syncBackend();
     if (editor_.mode() == ed::AppMode::Simulate) {

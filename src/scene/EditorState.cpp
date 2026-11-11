@@ -9,6 +9,7 @@
 #include "core/AssetError.h"
 #include "core/Log.h"
 #include "core/SafeName.h"
+#include "scene/SharedAssetFile.h"
 
 // 保存名に使ってよい文字だけ残す。".." や "/" を弾くのが目的（保存先は
 // assets/scenes に固定したい）。
@@ -953,22 +954,10 @@ std::vector<std::string> EditorState::eventLibrary() const {
 }
 
 void EditorState::refreshEventLibrary() {
-    std::vector<std::string> found;
-    std::error_code ec;
-    const std::filesystem::path dir(eventsDir());
-    if (std::filesystem::exists(dir, ec)) {
-        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-            if (ec) break;
-            if (!entry.is_regular_file(ec)) continue;
-            if (entry.path().extension().string() != ".xml") continue;
-            // 名前に使えない文字のファイル（手で置いた物）は一覧に出さない
-            // （参照名 = ファイル名の語幹、の約束が崩れるため）。
-            const std::string stem = entry.path().stem().string();
-            if (wizengine::editor::sanitizeEventName(stem) != stem) continue;
-            found.push_back(stem);
-        }
-    }
-    std::sort(found.begin(), found.end());
+    // 名前に使えない文字のファイル（手で置いた物）は一覧に出さない（規則は
+    // scene/SharedAssetFile の listLibrary）。
+    std::vector<std::string> found =
+        wizengine::sharedasset::listLibrary(kEventLibraryDir, kEventLibraryExt);
     std::lock_guard<std::mutex> lk(mutex_);
     eventLibrary_.swap(found);
 }
@@ -1065,14 +1054,8 @@ std::string EditorState::prefabLibraryFile(const std::string& name) {
     return "prefabs/" + safe + ".xml";
 }
 
-std::string EditorState::eventsDir() {
-    return wizengine::assetPath("events");
-}
-
 std::string EditorState::eventLibraryFile(const std::string& name) {
-    const std::string safe = wizengine::editor::sanitizeEventName(name);
-    if (safe.empty()) return {};
-    return "events/" + safe + ".xml";
+    return wizengine::sharedasset::libraryFile(kEventLibraryDir, name, kEventLibraryExt);
 }
 
 std::string EditorState::scenesDir() {
@@ -1092,46 +1075,10 @@ std::string EditorState::legacyScenePath(const std::string& name) {
     return scenesDir() + "/" + safe + ".json";
 }
 
-bool EditorState::writeText(const std::string& path, const std::string& text,
-                            std::string& reason) {
-    std::error_code ec;
-    std::filesystem::create_directories(
-        std::filesystem::path(path).parent_path(), ec);
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (!f) {
-        reason = "cannot write: " + path;
-        return false;
-    }
-    f << text;
-    if (!f) {
-        reason = "write error: " + path;
-        return false;
-    }
-    LOGI("editor", "saved %s", path.c_str());
-    return true;
-}
-
-bool EditorState::readText(const std::string& path, std::string& text,
-                           std::string& reason) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) {
-        reason = "not found: " + path;
-        return false;
-    }
-    text.assign(std::istreambuf_iterator<char>(f),
-                std::istreambuf_iterator<char>());
-    if (f.bad()) {
-        reason = "read error: " + path;
-        return false;
-    }
-    LOGI("editor", "loaded %s", path.c_str());
-    return true;
-}
-
 bool EditorState::readJson(const std::string& path, nlohmann::json& doc,
                            std::string& reason) {
     std::string text;
-    if (!readText(path, text, reason)) return false;
+    if (!wizengine::sharedasset::readTextFile(path, text, reason)) return false;
     doc = nlohmann::json::parse(text, nullptr, false);
     if (doc.is_discarded() || !doc.is_object()) {
         reason = "not readable as JSON: " + path;
