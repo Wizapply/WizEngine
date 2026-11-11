@@ -1656,12 +1656,12 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             return;
         }
         for (const auto& w : warnings) LOGW("editor", "import '%s': %s", file.c_str(), w.c_str());
-        appendDocument(doc);
+        const std::string caveat = appendDocument(doc);
         editor_.setStatus("取込: " + file + "（" + std::to_string(doc.bodies.size()) +
                           " 体, " + std::to_string(doc.joints.size()) + " ジョイント" +
                           (warnings.empty() ? "" : ", 警告 " + std::to_string(warnings.size()) +
                                                        " 件") +
-                          "）");
+                          "）" + caveat);
         return;
     }
 

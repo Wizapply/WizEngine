@@ -53,7 +53,7 @@ bool decodeTextureRGBA(const std::string& texturePath, const char* label,
 
 void uploadMipChain(filament::Engine& engine, filament::Texture* texture,
                     uint32_t layer, std::vector<uint8_t> pixels, int width,
-                    int height) {
+                    int height, MipFilter filter) {
     // Upload every mip level ourselves (simple box filter). Filament's
     // generateMipmaps() needs a texture usage flag whose name varies between
     // versions, so building the chain by hand keeps this version-proof.
@@ -62,6 +62,9 @@ void uploadMipChain(filament::Engine& engine, filament::Texture* texture,
     // 各段は次の段を作ってから記述子へ移す（写さない。渡した後は Filament が
     // 読み終えるまで持つので、こちらからは触らない）。
     const int levels = int(texture->getLevels());
+    using Halve = void (*)(const uint8_t*, int, int, bool, bool, std::vector<uint8_t>&, int&, int&);
+    const Halve halve =
+        filter == MipFilter::PremultipliedSrgb ? &halvePremultipliedSrgbRGBA : &halveRGBA;
     std::vector<uint8_t> mip = std::move(pixels);
     std::vector<uint8_t> next;
     int w = width;
@@ -70,7 +73,7 @@ void uploadMipChain(filament::Engine& engine, filament::Texture* texture,
         const bool last = level + 1 == levels || (w == 1 && h == 1);
         int nw = w;
         int nh = h;
-        if (!last) halveRGBA(mip.data(), w, h, true, true, next, nw, nh);
+        if (!last) halve(mip.data(), w, h, true, true, next, nw, nh);
         texture->setImage(engine, size_t(level), 0, 0, layer, uint32_t(w),
                           uint32_t(h), 1, moveToPixelDescriptor(std::move(mip)));
         if (last) break;
@@ -82,7 +85,7 @@ void uploadMipChain(filament::Engine& engine, filament::Texture* texture,
 }
 
 filament::Texture* createTextureRGBA(filament::Engine& engine, std::vector<uint8_t> pixels,
-                                     int width, int height, bool srgb) {
+                                     int width, int height, bool srgb, MipFilter filter) {
     filament::Texture* texture =
         filament::Texture::Builder()
             .width(uint32_t(width))
@@ -92,7 +95,7 @@ filament::Texture* createTextureRGBA(filament::Engine& engine, std::vector<uint8
                          : filament::Texture::InternalFormat::RGBA8)
             .sampler(filament::Texture::Sampler::SAMPLER_2D)
             .build(engine);
-    uploadMipChain(engine, texture, 0, std::move(pixels), width, height);
+    uploadMipChain(engine, texture, 0, std::move(pixels), width, height, filter);
     return texture;
 }
 

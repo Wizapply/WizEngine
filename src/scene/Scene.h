@@ -540,7 +540,9 @@ private:
     void syncCables();
     // 文書の中身を今のシーンへ**足す**（URDF などの取込。loadDocument は
     // 置き換え）。ボディ・ジョイント・ケーブル・メッシュ・プレハブが対象。
-    void appendDocument(const wizengine::editor::SceneDocument& doc);
+    // 戻り値 = 取込の注意（ステータスの末尾に足す日本語。読めない共用 UI の件数など。
+    // 無ければ空）。
+    std::string appendDocument(const wizengine::editor::SceneDocument& doc);
 
     // ---- イベントグラフの実行（PHYSICS スレッド）--------------------------
     // シミュレートの 1 サブステップごとに、**付いているイベントアセット**の
@@ -805,7 +807,7 @@ private:
     //   * ファイルが決まらない → Missing
     //   * ファイルはあるが使えない（readTerrainFile が断る）→ Unreadable
     //     （そのファイルは使わず上書きもしない）
-    // 理由（英語）は LOGW に、注意は loadCaveat_ に入れる。
+    // 理由（英語）は LOGW に、注意は loadCaveat_ に足す。
     void loadTerrainField(const wizengine::editor::TerrainDesc& doc);
     // name のファイルを読み、使えるなら desc.position に置いた格子を返して、desc の
     // data / guid / size / resolution / height を読んだ値で埋める（位置と表面は

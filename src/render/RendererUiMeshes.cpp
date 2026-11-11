@@ -1,6 +1,6 @@
 // Renderer の UI のテクスチャと Canvas（overlay）のレンダラブル。
 //
-// Canvas の中身はビューごと（UiCanvasView）: アンカーの解き方はビューの縦横比で
+// Canvas の中身はビューごと（UiCanvasPart）: アンカーの解き方はビューの縦横比で
 // 変わるので、ビューごとにメッシュとレンダラブルを持ち、そのビューの UI の
 // シーンにだけ入れる。レンダラブルは UiMeshData の run（同じテクスチャ・材質が
 // 続く範囲）ごとにプリミティブを 1 つ持つ。
@@ -9,7 +9,11 @@
 // 頂点の形は ui/UiMeshFormat.h の UiVertex（属性の割り当ては ui.mat の先頭）。
 #include "render/RendererInternal.h"
 
+#include <algorithm>
 #include <cstddef>
+
+#include "render/ImageScale.h"
+#include "render/UiTextureId.h"
 
 using namespace filament;
 using namespace filament::math;
@@ -59,8 +63,23 @@ const char* uiMeshProblem(const ui::UiMeshData& m) {
     for (const auto& r : m.runs) {
         const bool inside = std::size_t(r.firstIndex) + r.indexCount <= m.indices.size();
         if (!inside || r.indexCount == 0) return "a draw run is outside the indices";
+        const bool wholeTriangles = r.firstIndex % 3 == 0 && r.indexCount % 3 == 0;
+        if (!wholeTriangles) return "a draw run starts or ends inside a triangle";
     }
     return nullptr;
+}
+
+// UI のテクスチャを作れる大きさか（端末の上限を超えると Filament が止まる = abort
+// なので、作る前に断る）。字の置き場と画像の両方がここを通る。だめなら警告する
+// （consequence = 代わりにどう描くか、英語）。
+bool uiTextureSizeOk(Engine& engine, int width, int height, const char* consequence) {
+    const std::size_t maxSize = Texture::getMaxTextureSize(engine, Texture::Sampler::SAMPLER_2D);
+    const bool positive = width > 0 && height > 0;
+    const bool fits = std::size_t(width) <= maxSize && std::size_t(height) <= maxSize;
+    if (positive && fits) return true;
+    LOGW("render", "ui texture %dx%d cannot be created (limit %zu) - %s", width, height, maxSize,
+         consequence);
+    return false;
 }
 
 template <class T>
@@ -80,9 +99,13 @@ void Renderer::loadUiMaterial() {
 
 // ---- 番号 → 実体 ---------------------------------------------------------------
 Renderer::UiTexture* Renderer::uiTextureAt(int textureId) {
-    const bool inRange = textureId >= 0 && std::size_t(textureId) < uiTextures_.size();
-    if (!inRange || !uiTextures_[std::size_t(textureId)].used) return nullptr;
-    return &uiTextures_[std::size_t(textureId)];
+    if (textureId < 0) return nullptr;
+    const std::size_t slot = std::size_t(uiTextureSlot(textureId));
+    if (slot >= uiTextures_.size()) return nullptr;
+    UiTexture& t = uiTextures_[slot];
+    // 返した後に枠が使い直されていれば世代が違う = 古い番号は別のテクスチャを指さない。
+    const bool current = t.used && t.generation == uiTextureGeneration(textureId);
+    return current ? &t : nullptr;
 }
 
 Renderer::UiCanvas* Renderer::uiCanvasAt(std::size_t id) {
@@ -93,6 +116,11 @@ Renderer::UiCanvas* Renderer::uiCanvasAt(std::size_t id) {
 // ---- テクスチャ ----------------------------------------------------------------
 Renderer::UiTexture& Renderer::uiTextureOrWhite(int textureId) {
     if (UiTexture* t = uiTextureAt(textureId)) return *t;
+    if (textureId != ui::kUiNoTexture && !uiStaleTextureWarned_) {
+        uiStaleTextureWarned_ = true;
+        LOGW("render", "ui mesh refers to texture %d which no longer exists - drawn white",
+             textureId);
+    }
     if (!uiWhite_.texture) {
         uiWhite_.texture = createTextureRGBA(*engine_, {255, 255, 255, 255}, 1, 1, false);
         uiWhite_.width = uiWhite_.height = 1;
@@ -114,14 +142,16 @@ MaterialInstance* Renderer::uiInstance(int textureId, int materialId) {
         mi->setParameter("tex", t.texture, sampler);
         mi->setParameter("sdf", slot == 1);
         mi->setParameter("srgbOut", kUiSrgbOut);
-        // 輪郭の値（UiMeshFormat.h の kSdfOnEdge、0..255 → 0..1）。
+        // 輪郭の値（ui/UiSdfParams.h の kSdfOnEdge、0..255 → 0..1）。
         mi->setParameter("onEdge", float(ui::kSdfOnEdge) / 255.0f);
     }
     return mi;
 }
 
 int Renderer::addUiTextureR8(int width, int height) {
-    if (width <= 0 || height <= 0) return ui::kUiNoTexture;
+    if (!uiTextureSizeOk(*engine_, width, height, "text is drawn as filled boxes")) {
+        return ui::kUiNoTexture;
+    }
     Texture* texture = Texture::Builder()
                            .width(uint32_t(width))
                            .height(uint32_t(height))
@@ -129,18 +159,15 @@ int Renderer::addUiTextureR8(int width, int height) {
                            .format(Texture::InternalFormat::R8)
                            .sampler(Texture::Sampler::SAMPLER_2D)
                            .build(*engine_);
-    if (!texture) return ui::kUiNoTexture;
-    const int id = firstFreeSlot(uiTextures_);
-    UiTexture& t = uiTextures_[std::size_t(id)];
-    t = UiTexture{};
-    t.texture = texture;
-    t.width = width;
-    t.height = height;
-    t.used = true;
+    if (!texture) {
+        LOGW("render", "ui texture %dx%d could not be created - text is drawn as filled boxes",
+             width, height);
+        return ui::kUiNoTexture;
+    }
     // 中身を 0（= 輪郭の外）で入れておく（未初期化のテクスチャを引かせない）。
     std::vector<uint8_t> zeros(std::size_t(width) * std::size_t(height), 0);
     texture->setImage(*engine_, 0, moveToPixelDescriptor(std::move(zeros), Texture::Format::R));
-    return id;
+    return adoptUiTexture(texture, width, height, false);
 }
 
 void Renderer::updateUiTexture(int textureId, int x, int y, int w, int h,
@@ -169,15 +196,33 @@ int Renderer::loadUiImage(const std::string& path) {
     if (!decodeTextureRGBA(path, "ui image", TextureFallback::None, pixels, w, h)) {
         return ui::kUiNoTexture;
     }
-    const int id = firstFreeSlot(uiTextures_);
-    UiTexture& t = uiTextures_[std::size_t(id)];
+    if (!uiTextureSizeOk(*engine_, w, h, "the image is drawn as a white panel")) {
+        return ui::kUiNoTexture;
+    }
+    premultiplySrgbRGBA(pixels);  // 縁の透明な画素の色がにじまないように
+    Texture* texture =
+        createTextureRGBA(*engine_, std::move(pixels), w, h, true, MipFilter::PremultipliedSrgb);
+    return adoptUiTexture(texture, w, h, true);
+}
+
+int Renderer::adoptUiTexture(Texture* texture, int width, int height, bool mipmapped) {
+    const int slot = firstFreeSlot(uiTextures_);
+    if (slot >= kUiTextureSlots) {  // 番号に入らない（同時に 65536 枚 = 呼び手の誤り）
+        uiTextures_.pop_back();
+        engine_->destroy(texture);
+        LOGW("render", "too many ui textures - this one is not created");
+        return ui::kUiNoTexture;
+    }
+    UiTexture& t = uiTextures_[std::size_t(slot)];
+    const int generation = nextUiTextureGeneration(t.generation);
     t = UiTexture{};
-    t.texture = createTextureRGBA(*engine_, std::move(pixels), w, h, true);
-    t.width = w;
-    t.height = h;
-    t.mipmapped = true;
+    t.texture = texture;
+    t.width = width;
+    t.height = height;
+    t.mipmapped = mipmapped;
+    t.generation = generation;
     t.used = true;
-    return id;
+    return uiTextureId(slot, generation);
 }
 
 void Renderer::releaseUiTexture(int textureId) {
@@ -203,7 +248,9 @@ void Renderer::destroyUiTexture(UiTexture& t) {
         if (mi) engine_->destroy(mi);
     }
     if (t.texture) engine_->destroy(t.texture);
+    const int generation = t.generation;  // 枠の世代は残す（次に使うときに進める）
     t = UiTexture{};
+    t.generation = generation;
 }
 
 // ---- Canvas --------------------------------------------------------------------
@@ -221,19 +268,18 @@ void Renderer::removeUiCanvas(std::size_t id) {
     *canvas = UiCanvas{};
 }
 
-void Renderer::destroyUiCanvasPart(UiCanvasView& part) {
+void Renderer::destroyUiCanvasPart(UiCanvasPart& part) {
     if (!part.entity.isNull()) {
+        // 入っているのはそのビューの UI のシーンだけ（Renderer.h の UiCanvasPart の約束）。
         ViewSlot& slot = views_[part.view];
-        if (slot.uiScene) slot.uiScene->remove(part.entity);
-        // UI のシーンからは上で外した（主のシーンには入っていない）。
-        bool inMainScene = false;
-        destroyRenderable(*engine_, *scene_, part.entity, part.vb, part.ib, inMainScene);
+        bool inUiScene = true;
+        destroyRenderable(*engine_, *slot.uiScene, part.entity, part.vb, part.ib, inUiScene);
     }
     part.mesh = ui::UiMeshData{};
     part.instances.clear();
 }
 
-void Renderer::buildUiCanvasPart(const UiCanvas& canvas, UiCanvasView& part) {
+void Renderer::buildUiCanvasPart(const UiCanvas& canvas, UiCanvasPart& part) {
     const ui::UiMeshData& m = part.mesh;
     part.vb = VertexBuffer::Builder()
                   .vertexCount(uint32_t(m.vertices.size()))
@@ -273,14 +319,13 @@ void Renderer::buildUiCanvasPart(const UiCanvas& canvas, UiCanvasView& part) {
     builder.build(*engine_, part.entity);
     applyUiCanvasTransform(canvas, part);
     ViewSlot& slot = views_[part.view];
-    if (slot.uiScene) slot.uiScene->addEntity(part.entity);
+    slot.uiScene->addEntity(part.entity);  // 入れ物があれば uiScene もある（Renderer.h）
 }
 
-void Renderer::setUiCanvasMesh(std::size_t id, std::size_t viewIndex,
-                               const ui::UiMeshData& mesh) {
+void Renderer::setUiCanvasMesh(std::size_t id, std::size_t viewIndex, ui::UiMeshData mesh) {
     UiCanvas* canvas = uiCanvasAt(id);
     if (!canvas) return;
-    UiCanvasView* part = nullptr;
+    UiCanvasPart* part = nullptr;
     for (auto& p : canvas->parts) {
         if (p.view == viewIndex) part = &p;
     }
@@ -309,7 +354,7 @@ void Renderer::setUiCanvasMesh(std::size_t id, std::size_t viewIndex,
                            part->mesh.indices.size() == mesh.indices.size() &&
                            sameRuns(part->mesh.runs, mesh.runs);
     if (!sameShape) destroyUiCanvasPart(*part);
-    part->mesh = mesh;
+    part->mesh = std::move(mesh);
     if (sameShape) {
         refreshUiPartInstances(*part);  // 作り直す道は buildUiCanvasPart が解く
     } else {
@@ -323,7 +368,7 @@ void Renderer::setUiCanvasMesh(std::size_t id, std::size_t viewIndex,
     if (!sameShape) refreshUiBlendOrders(viewIndex);
 }
 
-void Renderer::refreshUiPartInstances(UiCanvasView& part) {
+void Renderer::refreshUiPartInstances(UiCanvasPart& part) {
     // テクスチャが後から用意された（白で解決していた番号が有効になった）ら、
     // その run の材質インスタンスを解決し直して差し替える（作り直さない）。
     auto& rm = engine_->getRenderableManager();
@@ -365,7 +410,7 @@ void Renderer::setUiCanvasViews(std::size_t id, const std::vector<std::size_t>& 
         }
         if (already) continue;
         ensureUiView(views_[v]);  // 最初に Canvas を出すときに UI のビューを作る
-        UiCanvasView part;
+        UiCanvasPart part;
         part.view = v;
         parts.push_back(std::move(part));
     }
@@ -385,7 +430,7 @@ void Renderer::setUiCanvasDesignHeight(std::size_t id, float designHeight) {
     for (auto& part : canvas->parts) applyUiCanvasTransform(*canvas, part);
 }
 
-void Renderer::applyUiCanvasTransform(const UiCanvas& canvas, UiCanvasView& part) {
+void Renderer::applyUiCanvasTransform(const UiCanvas& canvas, UiCanvasPart& part) {
     if (part.entity.isNull()) return;
     // 設計上の画素 → ビューの高さ = 1 の単位（applyUiProjection の座標）。
     const float s = 1.0f / canvas.designHeight;
@@ -397,7 +442,7 @@ void Renderer::refreshUiBlendOrders(std::size_t viewIndex) {
     // （文書順）どおりに通し番号を振る（UI のシーンはビューごとに別）。
     struct Entry {
         std::size_t canvas;
-        const UiCanvasView* part;
+        const UiCanvasPart* part;
     };
     std::vector<Entry> order;
     for (std::size_t i = 0; i < uiCanvases_.size(); ++i) {

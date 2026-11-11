@@ -425,7 +425,9 @@ void Renderer::renderFrame(
     if (!renderer_->beginFrame(slot.swapChain)) return;
     renderer_->render(slot.view);
     // UI を同じ描画先へ重ねる（半透明のビュー = 主の絵の上に乗る。読み戻しに入る）。
-    if (slot.uiView) renderer_->render(slot.uiView);
+    // 中身が空のビューは描かない。
+    const bool hasUi = slot.uiView && slot.uiScene->getRenderableCount() > 0;
+    if (hasUi) renderer_->render(slot.uiView);
 
     // Start a readback into whichever buffer is free. If both are still with
     // the GPU we skip the capture for this frame rather than blocking - the

@@ -7,8 +7,7 @@
 #include <vector>
 
 #include "ui/FontProvider.h"
-#include "ui/UiMeshFormat.h"  // （UiSdf.h を含む。使う側がこれを通して UiMeshData を見ている）
-#include "ui/UiSdf.h"
+#include "ui/UiSdfParams.h"  // kSdfBasePx
 
 // 字の置き場（SDF のアトラス）。字を「輪郭までの距離」の 1 チャンネル画像
 // （R8）として stb_truetype で作り、stb_rect_pack で 1 枚に詰める。

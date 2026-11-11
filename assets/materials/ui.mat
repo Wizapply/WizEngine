@@ -8,6 +8,8 @@
 //   CUSTOM1  = 縁取りの色（リニア値、不透明度込み）
 //
 // 画像（sdf = false）: テクスチャの色 × 頂点の色。テクスチャ無しは白の 1×1 が入る。
+//   テクスチャは乗算済みアルファ（Renderer が入れる時に掛ける = 透明な画素の色が
+//   縁ににじまない）。引いた値をストレートに戻してから頂点の色を掛ける。
 // 字（sdf = true）: テクスチャ（R8）は「輪郭までの距離」で、値 onEdge が輪郭。
 //   輪郭の外 d 画素の値は onEdge × (1 − d / にじみ幅) なので、縁取りの幅が
 //   outline（割合）のとき、縁取りの外側の線は onEdge × (1 − outline)。
@@ -68,7 +70,9 @@ fragment {
         vec2 uv = getUV0();
         vec4 color = getColor();
         if (!materialParams.sdf) {
-            material.baseColor = premultiplied(texture(materialParams_tex, uv) * color);
+            vec4 t = texture(materialParams_tex, uv);
+            vec3 straight = t.a > 0.0 ? t.rgb / t.a : vec3(0.0);
+            material.baseColor = premultiplied(vec4(straight, t.a) * color);
             return;
         }
         float d = texture(materialParams_tex, uv).r;

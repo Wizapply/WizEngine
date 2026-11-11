@@ -7,6 +7,7 @@
 // 読み書きは TerrainFile、ハイトマップの形式は Heightmap（どれも src/terrain）。
 #include "scene/SceneInternal.h"
 
+#include "core/FileBytes.h"
 #include "render/ImageLoader.h"
 #include "terrain/Heightmap.h"
 #include "terrain/TerrainFile.h"
@@ -345,7 +346,7 @@ void Scene::importTerrainHeightmap(const std::string& file, bool flipRows) {
     bool read = false;
     if (wt::sameTerrainName(fsPath.extension().u8string(), ".raw")) {
         std::vector<uint8_t> bytes;
-        read = wt::readFileBytes(fsPath, wt::kMaxRaw16Bytes, bytes, reason) &&
+        read = wizengine::readFileBytes(fsPath, wt::kMaxRaw16Bytes, bytes, reason) &&
                wt::decodeRaw16(bytes.data(), bytes.size(), samples, width, reason);
         rows = width;
     } else if (!readImageSize(path, width, rows)) {
@@ -433,7 +434,7 @@ void Scene::exportTerrainHeightmap(const std::string& format, bool overwrite,
     if (png) bytes = wt::encodePng16Gray(wt::heightmapSamples(*field, height), side);
     else wt::appendRaw16(*field, height, bytes);
     std::string reason = "cannot encode the grid";
-    const bool ok = !bytes.empty() && wt::writeFileBytes(path, bytes, reason);
+    const bool ok = !bytes.empty() && wizengine::writeFileBytes(path, bytes, reason);
     if (!ok) {
         LOGW("scene", "terrain heightmap export to %s: %s", shown.c_str(), reason.c_str());
         editor_.setStatus("ハイトマップを書き出せません: " + shown + "（コンソール参照）");

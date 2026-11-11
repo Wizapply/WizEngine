@@ -117,19 +117,25 @@ bool decodeTextureRGBA(const std::string& texturePath, const char* label,
                        TextureFallback fallback, std::vector<uint8_t>& pixels,
                        int& width, int& height);
 
+// ミップの縮め方。Bytes = バイトのまま平均（ImageScale.h の halveRGBA。地面・
+// テレインなど）、PremultipliedSrgb = 乗算済みの sRGB をリニアで平均
+// （halvePremultipliedSrgbRGBA。UI の画像だけ）。
+enum class MipFilter { Bytes, PremultipliedSrgb };
+
 // pixels（RGBA8、width × height = texture の段 0 の大きさ）を段 0 に入れ、
-// ボックスフィルタ（ImageScale.h の halveRGBA）で作った縮小をテクスチャの全段へ
+// ボックスフィルタ（filter の縮め方）で作った縮小をテクスチャの全段へ
 // 入れる（generateMipmaps は版によって usage フラグが要るため使わない）。layer は
 // 配列の層の番号（2D テクスチャは 0）。画素は各段とも記述子へ移す（写さない）。
 void uploadMipChain(filament::Engine& engine, filament::Texture* texture,
                     uint32_t layer, std::vector<uint8_t> pixels, int width,
-                    int height);
+                    int height, MipFilter filter = MipFilter::Bytes);
 
 // RGBA8 の画素（width × height）から 2D テクスチャを作る（全段のミップを
 // uploadMipChain で入れる）。srgb = 画素が sRGB（画像ファイル）か、リニア
 // （代わりの絵）か。loadTextureRGBA と UI の画像（loadUiImage）が使う。
 filament::Texture* createTextureRGBA(filament::Engine& engine, std::vector<uint8_t> pixels,
-                                     int width, int height, bool srgb);
+                                     int width, int height, bool srgb,
+                                     MipFilter filter = MipFilter::Bytes);
 
 // assets/ 相対の画像を 2D テクスチャとして作る（decodeTextureRGBA →
 // createTextureRGBA。読めた画像は sRGB、読めなければ市松模様 = Checker のリニア

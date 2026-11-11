@@ -1,5 +1,7 @@
 #pragma once
 
+// 数値を範囲に収める・整数へ丸める（どの層からも使える小さな部品）。
+
 #include <climits>
 #include <cmath>
 

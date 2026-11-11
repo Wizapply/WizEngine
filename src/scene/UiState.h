@@ -59,7 +59,9 @@ public:
     // 後ろへ足す（共用 UI とフォントは名前が重ならないものだけ）。戻り値 =
     // 文書の Canvas 0 番が入った番号（読込のノードの番号をずらすため = lightBase）。
     // 共用 UI の中身は呼び手が先にファイルから入れておく（UiFiles）。
-    std::size_t fromDocument(const editor::SceneDocument& doc, LoadMode mode);
+    std::size_t fromDocument(const std::vector<ui::CanvasDesc>& canvases,
+                             const std::vector<ui::UiAssetDesc>& uiAssets,
+                             const std::vector<ui::FontAssetDesc>& fonts, LoadMode mode);
     // 全部消す（シーンの全消し）。
     void clear();
 

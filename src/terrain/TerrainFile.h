@@ -7,7 +7,6 @@
 #include <string>
 #include <vector>
 
-#include "core/FileBytes.h"
 #include "terrain/HeightField.h"
 #include "terrain/TerrainScatter.h"
 
@@ -196,12 +195,6 @@ bool writeFile(const std::filesystem::path& path, const HeightField& field,
                const TerrainLayers& layers, const TerrainScatter& scatter);
 bool readFile(const std::filesystem::path& path, TerrainFileData& out,
               std::string& reason);
-
-// ファイルのバイト列の読み書きは core/FileBytes.h（UI のフォントと共用）。
-// terrain:: の名前でも呼べるのは、まだ付け替えていない呼び手（scene の
-// SceneTerrainFile.cpp。PR1 の仕上げ 2 回目で付け替えたら、この 2 行を消す）のため。
-using wizengine::readFileBytes;
-using wizengine::writeFileBytes;
 
 }  // namespace terrain
 }  // namespace wizengine

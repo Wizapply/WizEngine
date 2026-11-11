@@ -19,12 +19,10 @@ namespace {
 // 戻り値 = 読めなかった共用 UI の件数（呼び手がステータスに足す）。
 std::size_t loadUiFromDocument(wizengine::UiState& ui, const ed::SceneDocument& doc,
                                wizengine::UiState::LoadMode mode) {
-    ed::SceneDocument part;
-    part.canvases = doc.canvases;
-    part.fonts = doc.fonts;
-    part.uiAssets = doc.uiAssets;
+    // 書き換える（ファイルの中身を入れる）のは共用 UI だけなので、それだけを写す。
+    std::vector<wizengine::ui::UiAssetDesc> uiAssets = doc.uiAssets;
     std::size_t missing = 0;
-    for (auto& a : part.uiAssets) {
+    for (auto& a : uiAssets) {
         if (a.file.empty()) continue;
         std::string reason;
         if (!wizengine::uifiles::readSharedUi(a, reason)) {
@@ -33,7 +31,7 @@ std::size_t loadUiFromDocument(wizengine::UiState& ui, const ed::SceneDocument& 
             ++missing;
         }
     }
-    ui.fromDocument(part, mode);
+    ui.fromDocument(doc.canvases, uiAssets, doc.fonts, mode);
     return missing;
 }
 
@@ -801,7 +799,7 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
 // 後ろに追加、ジョイント・ケーブルの参照は追加ぶんの先頭番号だけずらす。
 // 設定（option / visual / ground / terrain / ライト / カメラ / イベント）は
 // 文書にあっても無視する（取り込む物の「構造」だけが欲しいので）。
-void Scene::appendDocument(const ed::SceneDocument& doc) {
+std::string Scene::appendDocument(const ed::SceneDocument& doc) {
     {
         std::lock_guard<std::mutex> lk(objectsMutex_);
         for (const auto& m : doc.meshes) {
@@ -897,8 +895,9 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
         editor_.setEmitters(std::move(emitters));
     }
     // UI は後ろへ足す（共用 UI とフォントは名前が重ならないものだけ）。読めない
-    // 共用 UI は loadUiFromDocument が LOGW に出す。
-    loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Append);
+    // 共用 UI は loadUiFromDocument が LOGW に出し、件数は読込と同じ文で注意に返す。
+    const std::size_t uiMissing =
+        loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Append);
     editor_.bumpGraphVersion();
     syncBackend();
     if (editor_.mode() == ed::AppMode::Simulate) {
@@ -906,4 +905,5 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
         buildCables();
     }
     snapshot();
+    return unreadableFilesCaveat("共用 UI", uiMissing);
 }

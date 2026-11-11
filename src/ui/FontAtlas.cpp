@@ -1,5 +1,7 @@
 #include "ui/FontAtlas.h"
 
+#include "ui/UiSdf.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>

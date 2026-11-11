@@ -41,7 +41,9 @@ std::vector<int> UiState::toDocument(editor::SceneDocument& doc) const {
     return remap;
 }
 
-std::size_t UiState::fromDocument(const editor::SceneDocument& doc, LoadMode mode) {
+std::size_t UiState::fromDocument(const std::vector<ui::CanvasDesc>& canvases,
+                                  const std::vector<ui::UiAssetDesc>& uiAssets,
+                                  const std::vector<ui::FontAssetDesc>& fonts, LoadMode mode) {
     std::lock_guard<std::mutex> lk(mutex_);
     if (mode == LoadMode::Replace) {
         // 番号は詰めずに残す（前の Canvas を指していたものが、読込後の別の
@@ -52,14 +54,14 @@ std::size_t UiState::fromDocument(const editor::SceneDocument& doc, LoadMode mod
         fonts_.clear();
     }
     const std::size_t base = canvases_.size();
-    for (const auto& c : doc.canvases) canvases_.push_back({c, true});
+    for (const auto& c : canvases) canvases_.push_back({c, true});
     auto hasAsset = [this](const std::string& name) {
         for (const auto& a : uiAssets_) {
             if (a.desc.name == name) return true;
         }
         return false;
     };
-    for (const auto& a : doc.uiAssets) {
+    for (const auto& a : uiAssets) {
         if (!hasAsset(a.name)) uiAssets_.push_back({a, false});
     }
     auto hasFont = [this](const std::string& name) {
@@ -68,7 +70,7 @@ std::size_t UiState::fromDocument(const editor::SceneDocument& doc, LoadMode mod
         }
         return false;
     };
-    for (const auto& f : doc.fonts) {
+    for (const auto& f : fonts) {
         if (!hasFont(f.name)) fonts_.push_back(f);
     }
     bumpLocked();

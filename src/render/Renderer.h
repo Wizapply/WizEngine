@@ -512,14 +512,21 @@ public:
     // 解き方はビューの縦横比で変わるので、呼び手は各ビューの viewSize から組んで
     // そのビューへ送る（同じ縦横比なら同じ中身 = 転送は省かれる）。どれも RENDER スレッド。
     //
-    // テクスチャ（番号は UiDrawRun::textureId。kUiNoTexture = 白）。
-    // 字の置き場（R8）を作る。失敗したら kUiNoTexture。
+    // テクスチャ（番号は UiDrawRun::textureId。kUiNoTexture = 白）。番号は世代付き
+    // （render/UiTextureId.h）: 返した番号を持ったままのメッシュは、枠が使い直されても
+    // 別のテクスチャを指さず白で描く（警告は 1 回）。呼び手はテクスチャを返したら、
+    // それを使っていた Canvas を組み直して送る。
+    // 字の置き場（R8）を作る。作れない（大きさが 0 以下・端末の上限を超える）なら
+    // 警告して kUiNoTexture。
     int addUiTextureR8(int width, int height);
     // pixels（1 行 rowStride バイトの画像）の矩形 (x, y, w, h) を同じ位置へ送る
     // （字の置き場の部分更新。pixels はページ全体を渡せばよい）。
     void updateUiTexture(int textureId, int x, int y, int w, int h,
                          const uint8_t* pixels, int rowStride);
-    // assets/ 相対の画像（RGBA）。読めなければ警告して kUiNoTexture（止めない）。
+    // assets/ 相対の画像（RGBA）。読めない・端末の上限を超える大きさなら警告して
+    // kUiNoTexture（止めない。報告はここの 1 か所）。rgb はリニアで α を掛けた乗算済みにして入れ、ミップの
+    // 各段もリニアの乗算済みで平均する（ImageScale.h）= 縁の透明な画素の色が、
+    // ミップと線形の引き方でにじまない。
     int loadUiImage(const std::string& path);
     // 番号を返す（使っている Canvas は次の setUiCanvasMesh まで描かない）。
     void releaseUiTexture(int textureId);
@@ -530,7 +537,8 @@ public:
     // そのビューでの中身（UiMesh の組み立ての結果）。前回と同じなら送らない。
     // 頂点数・描く回数（run）が変わったときだけレンダラブルを作り直す。空 = 描かない。
     // setUiCanvasViews に無いビューへの中身は捨てる。
-    void setUiCanvasMesh(std::size_t id, std::size_t viewIndex, const ui::UiMeshData& mesh);
+    // 中身は受け取って持つ（次の比較に使う。同じ中身を他のビューにも送るなら呼び手が写す）。
+    void setUiCanvasMesh(std::size_t id, std::size_t viewIndex, ui::UiMeshData mesh);
     // 出すビューの一覧（ビュー番号）。まだ無いビューの番号は無視する
     // （呼び手は次のフレームにまた呼ぶ）。外れたビューの中身は壊す。
     void setUiCanvasViews(std::size_t id, const std::vector<std::size_t>& viewIndices);
@@ -634,11 +642,13 @@ private:
         int width = 0, height = 0;
         bool mipmapped = false;
         filament::MaterialInstance* instances[2] = {nullptr, nullptr};  // UiMaterialId
+        int generation = 0;  // 枠の世代（使い直すたびに進む。番号に入る = UiTextureId.h）
         bool used = false;
     };
     // overlay の Canvas の、あるビューでの中身 = レンダラブル 1 個（run ごとに
-    // プリミティブ 1 つ）。そのビューの uiScene にだけ入る。
-    struct UiCanvasView {
+    // プリミティブ 1 つ）。そのビューの uiScene にだけ入る。約束: 入れ物は
+    // setUiCanvasViews が ensureUiView の後にだけ作る = 入れ物があれば uiScene もある。
+    struct UiCanvasPart {
         std::size_t view = 0;
         utils::Entity entity;
         filament::VertexBuffer* vb = nullptr;
@@ -649,7 +659,7 @@ private:
         std::vector<filament::MaterialInstance*> instances;
     };
     struct UiCanvas {
-        std::vector<UiCanvasView> parts;  // 出しているビューごと
+        std::vector<UiCanvasPart> parts;  // 出しているビューごと
         int order = 0;
         float designHeight = 1.0f;
         bool used = false;
@@ -660,6 +670,7 @@ private:
     filament::Material* uiMaterial_ = nullptr;
     bool uiWarned_ = false;  // 形の壊れた UI のメッシュの警告を出したか（1 回だけ）
     bool uiBlendWarned_ = false;  // 重なり順の範囲を超えた警告を出したか（1 回だけ）
+    bool uiStaleTextureWarned_ = false;  // 古い番号のテクスチャの警告を出したか（1 回だけ）
     // ui.filamat の読み込み（コンストラクタ。無い・壊れていれば AssetError）。
     void loadUiMaterial();
     void ensureUiView(ViewSlot& slot);
@@ -670,14 +681,16 @@ private:
     // 描くときのテクスチャ（無効な番号は 1×1 の白）。
     UiTexture& uiTextureOrWhite(int textureId);
     filament::MaterialInstance* uiInstance(int textureId, int materialId);
-    void destroyUiCanvasPart(UiCanvasView& part);
+    void destroyUiCanvasPart(UiCanvasPart& part);
     // 作り直さずに済んだ中身の run の材質インスタンスを解決し直す（テクスチャが
     // 後から用意されたら差し替える）。
-    void refreshUiPartInstances(UiCanvasView& part);
+    void refreshUiPartInstances(UiCanvasPart& part);
     // テクスチャ 1 枚の後始末（材質インスタンス → テクスチャ → 空に戻す）。
     void destroyUiTexture(UiTexture& t);
-    void buildUiCanvasPart(const UiCanvas& canvas, UiCanvasView& part);
-    void applyUiCanvasTransform(const UiCanvas& canvas, UiCanvasView& part);
+    // 作ったテクスチャを空いた枠に入れ、世代を進めた番号を返す（R8 と画像の共通）。
+    int adoptUiTexture(filament::Texture* texture, int width, int height, bool mipmapped);
+    void buildUiCanvasPart(const UiCanvas& canvas, UiCanvasPart& part);
+    void applyUiCanvasTransform(const UiCanvas& canvas, UiCanvasPart& part);
     // そのビューの UI のシーンの重なり順を振り直す（Canvas の order → 番号 → run）。
     void refreshUiBlendOrders(std::size_t viewIndex);
     // 終了時（Engine を壊す前）: Canvas・材質インスタンス・テクスチャ・材質・UI のビュー。

@@ -35,6 +35,14 @@ std::string checkedPath(const std::string& file) {
     return checked == file ? checked : std::string();
 }
 
+// そのビューで Canvas を組む幅（canvasRect の幅 = 基準の高さ × ビューの縦横比）。
+// 同じ幅のビューは同じ中身になる（組み立ても字の印付けも幅ごとに 1 回）。
+double canvasWidthOn(const wizengine::Renderer& renderer, const ui::CanvasDesc& desc,
+                     std::size_t view) {
+    const auto size = renderer.viewSize(view);
+    return ui::canvasRect(desc.height, size.x, size.y).w;
+}
+
 }  // namespace
 
 UiRenderComponent::UiRenderComponent() = default;
@@ -114,10 +122,8 @@ int UiRenderComponent::imageTexture(wizengine::Renderer& renderer, const std::st
     if (checked.empty()) return ui::kUiNoTexture;
     const auto it = images_.find(checked);
     if (it != images_.end()) return it->second;
+    // 読めなければ Renderer が警告する（報告はそこの 1 か所）。
     const int id = renderer.loadUiImage(checked);
-    if (id == ui::kUiNoTexture) {
-        LOGW("ui", "image '%s' is not readable - drawn as a white panel", checked.c_str());
-    }
     images_[checked] = id;  // 読めなかった物も版が変わるまで覚える（警告は 1 回）
     return id;
 }
@@ -148,14 +154,22 @@ void UiRenderComponent::syncCanvases(wizengine::Renderer& renderer, bool designC
     }
     for (std::size_t i = 0; i < snap_.canvases.size(); ++i) {
         const auto& item = snap_.canvases[i];
-        if (!item.alive) continue;  // 生きていない枠は作らない
+        if (!item.alive) {  // 生きていない枠は作らない
+            notDrawnWarned_.erase(i);
+            continue;
+        }
         if (!drawnHere(item.desc)) {
-            if (notDrawnWarned_.insert(i).second) {
+            // 同じ Canvas は mode が変わったときだけ知らせ直す（編集のたびに出さない）。
+            const auto warned = notDrawnWarned_.find(i);
+            const bool known = warned != notDrawnWarned_.end() && warned->second == item.desc.mode;
+            if (!known) {
                 LOGW("ui", "canvas '%s': mode is not drawn yet (only overlay) - skipped",
                      item.desc.name.c_str());
+                notDrawnWarned_[i] = item.desc.mode;
             }
             continue;
         }
+        notDrawnWarned_.erase(i);
         auto found = canvases_.find(i);
         if (found == canvases_.end()) {
             CanvasSlot slot;
@@ -188,8 +202,8 @@ void UiRenderComponent::syncCanvases(wizengine::Renderer& renderer, bool designC
     }
 }
 
-ui::UiMeshData UiRenderComponent::buildOne(wizengine::Renderer& renderer, const ui::CanvasDesc& desc,
-                                           double canvasWidth) {
+ui::UiMeshData UiRenderComponent::buildOne(wizengine::Renderer& renderer,
+                                           const ui::CanvasDesc& desc, double canvasWidth) {
     const std::vector<ui::ElementDesc>& elements = elementsOf(desc);
     // 重ね順（設計値 → アニメ → ノード → ポインタ）。今は設計値だけ（後の段は後の PR）。
     const ui::PropSet none;
@@ -208,19 +222,24 @@ void UiRenderComponent::buildMeshes(wizengine::Renderer& renderer, bool all) {
     const int generation = atlas_->generation();
     for (auto& [index, slot] : canvases_) {
         const ui::CanvasDesc& desc = snap_.canvases[index].desc;
-        // 同じ縦横比のビューは同じ中身（組むのは 1 回）。
-        std::map<double, ui::UiMeshData> byWidth;
+        // 同じ縦横比のビューは同じ中身（組むのは幅ごとに 1 回）。
+        std::map<double, std::vector<std::size_t>> pending;  // 幅 → 組み直すビュー
         for (const std::size_t view : slot.views) {
-            const auto size = renderer.viewSize(view);
-            const double width = ui::canvasRect(desc.height, size.x, size.y).w;
-            ViewBuild& b = slot.built[view];
+            const double width = canvasWidthOn(renderer, desc, view);
+            const ViewBuild& b = slot.built[view];
             const bool upToDate =
                 b.version == version_ && b.canvasWidth == width && b.generation == generation;
-            if (upToDate && !all) continue;
-            auto mesh = byWidth.find(width);
-            if (mesh == byWidth.end()) mesh = byWidth.emplace(width, buildOne(renderer, desc, width)).first;
-            renderer.setUiCanvasMesh(slot.rendererId, view, mesh->second);
-            b = {version_, width, generation};
+            if (!upToDate || all) pending[width].push_back(view);
+        }
+        for (const auto& [width, views] : pending) {
+            ui::UiMeshData mesh = buildOne(renderer, desc, width);
+            for (std::size_t k = 0; k < views.size(); ++k) {
+                // 最後のビューへは渡し切る（それより前は写す）。
+                const bool last = k + 1 == views.size();
+                renderer.setUiCanvasMesh(slot.rendererId, views[k],
+                                         last ? std::move(mesh) : ui::UiMeshData(mesh));
+                slot.built[views[k]] = {version_, width, generation};
+            }
         }
     }
 }
@@ -235,7 +254,8 @@ void UiRenderComponent::uploadAtlas(wizengine::Renderer& renderer) {
 
 void UiRenderComponent::onRender(Scene& scene) {
     // オブジェクトのロックの中: カメラの有効フラグ（構造はこのロックが守る）と
-    // ビュー番号を写すだけ。
+    // ビュー番号を写すだけ（数個の int なので UI の無いシーンでも毎フレーム写す =
+    // 写しが古いまま残らない）。
     cameraViews_.resize(scene.cameraCount());
     for (std::size_t cam = 0; cam < cameraViews_.size(); ++cam) {
         cameraViews_[cam] = scene.cameraActive(cam) ? scene.camera(cam).viewIndex() : -1;
@@ -250,7 +270,15 @@ void UiRenderComponent::onRenderUnlocked(Scene& scene) {
 
 void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::UiState& state) {
     const bool changed = state.copyIfChanged(version_, snap_);
-    if (snap_.canvases.empty() && canvases_.empty()) return;  // UI の無いシーンは何もしない
+    if (changed) {
+        anyAlive_ = anyAliveCanvas();  // 写したときに 1 回だけ数える
+        // 一覧が縮んだ（全消し・読込）ら、外になった番号の警告の記録を捨てる（次に同じ
+        // 番号で来た Canvas をまた知らせる）。
+        notDrawnWarned_.erase(notDrawnWarned_.lower_bound(snap_.canvases.size()),
+                              notDrawnWarned_.end());
+    }
+    // UI の無いシーンは何もしない（字の置き場もフォントも作らない。作った物は残す）。
+    if (canvases_.empty() && !anyAlive_) return;
     ensureAtlas(renderer);
     if (changed) {
         syncFonts();
@@ -259,21 +287,31 @@ void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::U
     syncCanvases(renderer, changed);
     buildMeshes(renderer, false);
     if (atlas_->needsRebuild()) {
-        // 字の置き場が溢れた: 全 Canvas を組んで「使っている字」に印を付けてから
-        // 組み直す。字の位置が変わる（世代が進む）ので、全部を組み直して送る。
-        atlas_->beginUse();
-        for (auto& [index, slot] : canvases_) {
-            const ui::CanvasDesc& desc = snap_.canvases[index].desc;
-            for (const std::size_t view : slot.views) {
-                const auto size = renderer.viewSize(view);
-                buildOne(renderer, desc, ui::canvasRect(desc.height, size.x, size.y).w);
-            }
-        }
-        const ui::AtlasRebuildResult result = atlas_->rebuild();
-        if (result.missing > 0) {
-            LOGW("ui", "the glyph atlas is full: %d glyphs are drawn as boxes", result.missing);
-        }
+        // 字の位置が変わる（世代が進む）ので、全部を組み直して送る。
+        rebuildAtlas(renderer);
         buildMeshes(renderer, true);
     }
     uploadAtlas(renderer);
+}
+
+void UiRenderComponent::rebuildAtlas(wizengine::Renderer& renderer) {
+    atlas_->beginUse();
+    for (auto& [index, slot] : canvases_) {
+        const ui::CanvasDesc& desc = snap_.canvases[index].desc;
+        // 同じ縦横比のビューは同じ字を使う（buildMeshes と同じく幅ごとに 1 回）。
+        std::set<double> widths;
+        for (const std::size_t view : slot.views) {
+            widths.insert(canvasWidthOn(renderer, desc, view));
+        }
+        for (const double width : widths) buildOne(renderer, desc, width);
+    }
+    const ui::AtlasRebuildResult result = atlas_->rebuild();
+    if (result.missing > 0) {
+        LOGW("ui", "the glyph atlas is full: %d glyphs are drawn as boxes", result.missing);
+    }
+}
+
+bool UiRenderComponent::anyAliveCanvas() const {
+    return std::any_of(snap_.canvases.begin(), snap_.canvases.end(),
+                       [](const wizengine::UiState::CanvasItem& c) { return c.alive; });
 }

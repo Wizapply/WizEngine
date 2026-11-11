@@ -11,6 +11,7 @@
 #include "scene/SceneComponent.h"
 #include "scene/UiState.h"
 #include "ui/FontAtlas.h"
+#include "ui/UiMeshFormat.h"  // UiMeshData
 
 namespace wizengine {
 class Renderer;
@@ -63,9 +64,14 @@ private:
     void syncCanvases(wizengine::Renderer& renderer, bool designChanged);
     // 組み直しが要る（canvas, view）を組んで送る。all = 全部（字の置き場の組み直し）。
     void buildMeshes(wizengine::Renderer& renderer, bool all);
+    // 字の置き場が溢れたとき: 全 Canvas を（同じ幅は 1 回だけ）組んで使っている字に
+    // 印を付け、置き場を組み直す。
+    void rebuildAtlas(wizengine::Renderer& renderer);
+    // 写しに生きている Canvas があるか（写したときに anyAlive_ へ）。
+    bool anyAliveCanvas() const;
     // 1 枚の Canvas を、あるビューの大きさで組む。
-    wizengine::ui::UiMeshData buildOne(wizengine::Renderer& renderer, const wizengine::ui::CanvasDesc& desc,
-                                       double canvasWidth);
+    wizengine::ui::UiMeshData buildOne(wizengine::Renderer& renderer,
+                                       const wizengine::ui::CanvasDesc& desc, double canvasWidth);
     void uploadAtlas(wizengine::Renderer& renderer);
 
     std::uint64_t version_ = 0;
@@ -75,7 +81,9 @@ private:
     std::map<std::string, int> fontFiles_;        // 正規化したパス → フォントの番号（-1 = 読めない）
     std::map<std::string, int> images_;           // 正規化したパス → テクスチャ（-1 = 読めない）
     std::map<std::size_t, CanvasSlot> canvases_;  // UiState の Canvas 番号 → 入れ物
-    std::set<std::size_t> notDrawnWarned_;        // 描かない mode の警告を出した Canvas
+    // 描かない mode の警告を出した Canvas → そのときの mode（mode が変わったら出し直す）。
+    std::map<std::size_t, wizengine::ui::CanvasMode> notDrawnWarned_;
+    bool anyAlive_ = false;  // 写しに生きている Canvas があるか（UI の無いシーンは何もしない）
     // カメラ（スロット番号）→ ビュー番号（無効・ビュー未定は -1）。onRender が写す。
     std::vector<int> cameraViews_;
 };
