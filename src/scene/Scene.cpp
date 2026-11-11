@@ -243,11 +243,12 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     addComponent(std::make_unique<GizmoComponent>());
     addComponent(std::make_unique<CameraControlComponent>());
     addComponent(std::make_unique<BoxControlComponent>());
-    // UI の描画（RENDER の onRender だけ。コマンドを取らないので並びは入力に
-    // 影響しない）。main がこの後にも部品を足すので、onRender の中で最後とは
-    // 限らない。overlay の Canvas は他の部品の姿勢に依らないので順番は問わない。
-    // 3D の板（world / camera、後の PR）を車体やプレハブの姿勢に付けるなら、
-    // その姿勢を決める部品（PrefabComponent など）より後に動くよう登録し直す。
+    // UI の描画。onRender（ロックの中）はカメラの写しだけで、組み立てと転送は
+    // ロックの外の onRenderUnlocked（オブジェクト一覧は読めない）。コマンドを
+    // 取らないので並びは入力に影響せず、overlay は他の部品の姿勢に依らないので
+    // 順番も問わない。3D の板（後の PR）で車体・プレハブの姿勢が要るなら、その
+    // 姿勢を onRender（ロックの中）で写し、組み立てはロックの外で行う（写す姿勢を
+    // 他の部品の onRender が決めるなら、その部品より後に登録する）。
     // UI の入力（後の PR）はギズモより前に登録する。
     addComponent(std::make_unique<UiRenderComponent>());
 }
@@ -1722,4 +1723,6 @@ void Scene::applyToRenderer() {
             }
         }
     }
+    // ロックを外した後の口（重い描画側の仕事。登録の順）。
+    for (auto& c : components_) c->onRenderUnlocked(*this);
 }

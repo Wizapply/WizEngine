@@ -40,7 +40,7 @@ std::string checkedPath(const std::string& file) {
 UiRenderComponent::UiRenderComponent() = default;
 UiRenderComponent::~UiRenderComponent() = default;
 
-void UiRenderComponent::ensureAtlas(Scene& scene) {
+void UiRenderComponent::ensureAtlas(wizengine::Renderer& renderer) {
     if (atlas_) return;
     atlas_ = std::make_unique<ui::FontAtlas>();
     std::vector<std::uint8_t> bytes;
@@ -53,7 +53,7 @@ void UiRenderComponent::ensureAtlas(Scene& scene) {
              kDefaultFontFile, reason.empty() ? "not a font" : reason.c_str());
     }
     fontFiles_[kDefaultFontFile] = index;  // 既定のフォントは読み直さない
-    atlasTexture_ = scene.renderer().addUiTextureR8(atlas_->size(), atlas_->size());
+    atlasTexture_ = renderer.addUiTextureR8(atlas_->size(), atlas_->size());
 }
 
 void UiRenderComponent::syncFonts() {
@@ -86,7 +86,7 @@ void UiRenderComponent::syncFonts() {
     atlas_->setFontNames(std::move(names));
 }
 
-void UiRenderComponent::releaseUnusedImages(Scene& scene) {
+void UiRenderComponent::releaseUnusedImages(wizengine::Renderer& renderer) {
     std::set<std::string> used;
     for (const auto& item : snap_.canvases) {
         if (!item.alive || !drawnHere(item.desc)) continue;
@@ -104,17 +104,17 @@ void UiRenderComponent::releaseUnusedImages(Scene& scene) {
         // 使わなくなった画像は返す。読めなかった記録は捨てて次でもう一度試す。
         // 返した番号を持つメッシュは Renderer が描かなくなり、版が変わったので
         // この後の組み立てで全 Canvas を組み直す。
-        if (it->second >= 0) scene.renderer().releaseUiTexture(it->second);
+        if (it->second >= 0) renderer.releaseUiTexture(it->second);
         it = images_.erase(it);
     }
 }
 
-int UiRenderComponent::imageTexture(Scene& scene, const std::string& file) {
+int UiRenderComponent::imageTexture(wizengine::Renderer& renderer, const std::string& file) {
     const std::string checked = checkedPath(file);
     if (checked.empty()) return ui::kUiNoTexture;
     const auto it = images_.find(checked);
     if (it != images_.end()) return it->second;
-    const int id = scene.renderer().loadUiImage(checked);
+    const int id = renderer.loadUiImage(checked);
     if (id == ui::kUiNoTexture) {
         LOGW("ui", "image '%s' is not readable - drawn as a white panel", checked.c_str());
     }
@@ -132,8 +132,7 @@ const std::vector<ui::ElementDesc>& UiRenderComponent::elementsOf(
     return kNone;
 }
 
-void UiRenderComponent::syncCanvases(Scene& scene, bool designChanged) {
-    auto& renderer = scene.renderer();
+void UiRenderComponent::syncCanvases(wizengine::Renderer& renderer, bool designChanged) {
     auto draws = [this](std::size_t i) {
         const bool exists = i < snap_.canvases.size();
         return exists && snap_.canvases[i].alive && drawnHere(snap_.canvases[i].desc);
@@ -172,12 +171,10 @@ void UiRenderComponent::syncCanvases(Scene& scene, bool designChanged) {
         // 出すビュー: その Canvas を出すカメラ（canvasShownOnCamera）のうち、
         // 有効でビューが決まっている（最初の applyTo の後）もの。
         std::vector<std::size_t> views;
-        for (std::size_t cam = 0; cam < scene.cameraCount(); ++cam) {
+        for (std::size_t cam = 0; cam < cameraViews_.size(); ++cam) {
             const bool shown = ui::canvasShownOnCamera(item.desc, int(cam));
-            const int view = scene.camera(cam).viewIndex();
-            if (shown && scene.cameraActive(cam) && view >= 0) {
-                views.push_back(std::size_t(view));
-            }
+            const int view = cameraViews_[cam];
+            if (shown && view >= 0) views.push_back(std::size_t(view));
         }
         if (views != slot.views) {
             renderer.setUiCanvasViews(slot.rendererId, views);
@@ -191,7 +188,7 @@ void UiRenderComponent::syncCanvases(Scene& scene, bool designChanged) {
     }
 }
 
-ui::UiMeshData UiRenderComponent::buildOne(Scene& scene, const ui::CanvasDesc& desc,
+ui::UiMeshData UiRenderComponent::buildOne(wizengine::Renderer& renderer, const ui::CanvasDesc& desc,
                                            double canvasWidth) {
     const std::vector<ui::ElementDesc>& elements = elementsOf(desc);
     // 重ね順（設計値 → アニメ → ノード → ポインタ）。今は設計値だけ（後の段は後の PR）。
@@ -202,13 +199,12 @@ ui::UiMeshData UiRenderComponent::buildOne(Scene& scene, const ui::CanvasDesc& d
 
     ui::UiTextureLookup lookup;
     lookup.fontPage = [this](int /*page*/) { return atlasTexture_; };
-    lookup.image = [this, &scene](const std::string& file) { return imageTexture(scene, file); };
+    lookup.image = [this, &renderer](const std::string& file) { return imageTexture(renderer, file); };
     const ui::Rect canvas{0.0, 0.0, canvasWidth, desc.height};
     return ui::buildCanvasMesh(elements, resolved, canvas, *atlas_, lookup);
 }
 
-void UiRenderComponent::buildMeshes(Scene& scene, bool all) {
-    auto& renderer = scene.renderer();
+void UiRenderComponent::buildMeshes(wizengine::Renderer& renderer, bool all) {
     const int generation = atlas_->generation();
     for (auto& [index, slot] : canvases_) {
         const ui::CanvasDesc& desc = snap_.canvases[index].desc;
@@ -222,31 +218,46 @@ void UiRenderComponent::buildMeshes(Scene& scene, bool all) {
                 b.version == version_ && b.canvasWidth == width && b.generation == generation;
             if (upToDate && !all) continue;
             auto mesh = byWidth.find(width);
-            if (mesh == byWidth.end()) mesh = byWidth.emplace(width, buildOne(scene, desc, width)).first;
+            if (mesh == byWidth.end()) mesh = byWidth.emplace(width, buildOne(renderer, desc, width)).first;
             renderer.setUiCanvasMesh(slot.rendererId, view, mesh->second);
             b = {version_, width, generation};
         }
     }
 }
 
-void UiRenderComponent::uploadAtlas(Scene& scene) {
+void UiRenderComponent::uploadAtlas(wizengine::Renderer& renderer) {
     ui::AtlasRect r;
     while (atlas_->takeDirtyRect(r)) {
-        scene.renderer().updateUiTexture(atlasTexture_, r.x, r.y, r.w, r.h,
+        renderer.updateUiTexture(atlasTexture_, r.x, r.y, r.w, r.h,
                                          atlas_->pixels(r.page).data(), atlas_->size());
     }
 }
 
 void UiRenderComponent::onRender(Scene& scene) {
-    const bool changed = scene.ui().copyIfChanged(version_, snap_);
+    // オブジェクトのロックの中: カメラの有効フラグ（構造はこのロックが守る）と
+    // ビュー番号を写すだけ。
+    cameraViews_.resize(scene.cameraCount());
+    for (std::size_t cam = 0; cam < cameraViews_.size(); ++cam) {
+        cameraViews_[cam] = scene.cameraActive(cam) ? scene.camera(cam).viewIndex() : -1;
+    }
+}
+
+void UiRenderComponent::onRenderUnlocked(Scene& scene) {
+    // ロックの外で使うのは Renderer と UI の状態だけ（下の関数は Scene を受けない =
+    // オブジェクト一覧を読むコードが書けない）。
+    update(scene.renderer(), scene.ui());
+}
+
+void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::UiState& state) {
+    const bool changed = state.copyIfChanged(version_, snap_);
     if (snap_.canvases.empty() && canvases_.empty()) return;  // UI の無いシーンは何もしない
-    ensureAtlas(scene);
+    ensureAtlas(renderer);
     if (changed) {
         syncFonts();
-        releaseUnusedImages(scene);
+        releaseUnusedImages(renderer);
     }
-    syncCanvases(scene, changed);
-    buildMeshes(scene, false);
+    syncCanvases(renderer, changed);
+    buildMeshes(renderer, false);
     if (atlas_->needsRebuild()) {
         // 字の置き場が溢れた: 全 Canvas を組んで「使っている字」に印を付けてから
         // 組み直す。字の位置が変わる（世代が進む）ので、全部を組み直して送る。
@@ -254,15 +265,15 @@ void UiRenderComponent::onRender(Scene& scene) {
         for (auto& [index, slot] : canvases_) {
             const ui::CanvasDesc& desc = snap_.canvases[index].desc;
             for (const std::size_t view : slot.views) {
-                const auto size = scene.renderer().viewSize(view);
-                buildOne(scene, desc, ui::canvasRect(desc.height, size.x, size.y).w);
+                const auto size = renderer.viewSize(view);
+                buildOne(renderer, desc, ui::canvasRect(desc.height, size.x, size.y).w);
             }
         }
         const ui::AtlasRebuildResult result = atlas_->rebuild();
         if (result.missing > 0) {
             LOGW("ui", "the glyph atlas is full: %d glyphs are drawn as boxes", result.missing);
         }
-        buildMeshes(scene, true);
+        buildMeshes(renderer, true);
     }
-    uploadAtlas(scene);
+    uploadAtlas(renderer);
 }
