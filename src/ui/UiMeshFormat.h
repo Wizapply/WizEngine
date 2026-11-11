@@ -3,25 +3,16 @@
 #include <cstdint>
 #include <vector>
 
+// 字の SDF の決まり（輪郭の値・にじみ幅。頂点の縁取りの幅の意味が依る）。
+#include "ui/UiSdf.h"
+
 // UI の頂点の形（型だけ。処理は持たない）。UI 側（UiMesh）が作り、描画側
 // （render/）がそのまま頂点バッファに写す。並び順の知識をここ 1 か所に
 // 置くため、render はこのヘッダだけを読む。Chrono / Filament / Scene は知らない。
 namespace wizengine {
 namespace ui {
 
-// ---- 字の SDF の作り方（唯一の定義）-------------------------------------------
-// 字の置き場（FontAtlas）が作り、描画側の材質（ui.mat）が読む。値は「輪郭で
-// kSdfOnEdge、外へ 1 画素ごとに kSdfOnEdge / kSdfSpreadPx ずつ下がり、にじみ幅
-// の外で 0」（0..255）。
-//   基準の字の大きさ 40 px: 画数の多い漢字の細部を残すための見当（実機で
-//     調整する前提）。にじみ幅込みで 1 字およそ 56 px 角 = 2048 の置き場に
-//     約 1300 字（UI で使う字の種類には十分）。
-//   にじみ幅 8 px（= 0.2 em）: 縁取りに使える距離の上限。
-inline constexpr float kSdfBasePx = 40.0f;
-inline constexpr int kSdfSpreadPx = 8;
-inline constexpr int kSdfOnEdge = 128;  // 輪郭の値（0..255）
-// 縁取りの幅の上限（em に対する割合 = にじみ幅 / 基準の字の大きさ）。
-inline constexpr double kSdfOutlineMaxEm = double(kSdfSpreadPx) / double(kSdfBasePx);
+// 字の SDF の作り方（基準の字の大きさ・にじみ幅・輪郭の値）は ui/UiSdf.h。
 
 // 頂点 1 個。座標は Canvas の設計上の画素（左上が原点、y 下向き）。
 struct UiVertex {

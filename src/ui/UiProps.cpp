@@ -1,6 +1,6 @@
 #include "ui/UiProps.h"
 
-#include "ui/UiMeshFormat.h"  // 縁取りの上限（kSdfOutlineMaxEm）
+#include "ui/UiSdf.h"  // 縁取りの上限（kSdfOutlineMaxEm）
 
 #include <algorithm>
 #include <utility>

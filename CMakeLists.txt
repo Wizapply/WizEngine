@@ -468,6 +468,7 @@ set(WIZ_UI_SOURCES
     src/ui/UiLayout.cpp
     src/ui/UiMesh.cpp
     src/ui/UiProps.cpp
+    src/ui/UiSdf.cpp
     src/ui/UiText.cpp
     src/ui/UiValue.cpp
     src/ui/UiXml.cpp)

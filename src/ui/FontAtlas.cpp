@@ -17,8 +17,6 @@ namespace {
 
 // 字と字の間の隙間（画素）。隣の字の端がバイリニアで混ざらないように。
 constexpr int kGlyphGap = 1;
-// 輪郭から 1 画素離れるごとの値の変化（にじみ幅の外で 0 になる）。
-constexpr float kSdfDistScale = float(kSdfOnEdge) / float(kSdfSpreadPx);
 
 // 豆腐（字が無いときの四角）の寸法（em に対する割合）。
 constexpr float kTofuWidthEm = 0.55f;
@@ -30,6 +28,35 @@ constexpr float kTofuStrokeEm = 0.06f;
 // フォントが 1 つも無いときの行の寸法（em に対する割合。豆腐が並べられるように）。
 constexpr float kFallbackAscentEm = 0.8f;
 constexpr float kFallbackDescentEm = -0.2f;
+
+// 字の SDF を作る（stbtt_GetGlyphSDF は 2 次の曲線しか扱わず、CFF の字 = 3 次の
+// 曲線が崩れるので使わない）。stb のラスタライザ（3 次の曲線も平らにして塗る）で
+// 基準の倍率 × kSdfOversample で塗り、周りににじみ幅ぶんの余白を付けて UiSdf で
+// 距離の画像にする。出力の大きさ・xoff・yoff は基準の画素（にじみ幅の余白込み、
+// ベースラインから y 下向き）。塗る範囲の無い字（空白）は false。
+bool rasterizeSdf(const stbtt_fontinfo& info, float scale, int glyph, std::vector<uint8_t>& out,
+                  int& w, int& h, int& xoff, int& yoff) {
+    const int n = kSdfOversample;
+    const float fine = scale * float(n);
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    stbtt_GetGlyphBitmapBox(&info, glyph, fine, fine, &x0, &y0, &x1, &y1);
+    if (x0 >= x1 || y0 >= y1) return false;
+    // 基準の画素の箱（細かい箱を含む最小の箱）+ にじみ幅の余白。
+    auto floorDiv = [n](int v) { return v >= 0 ? v / n : -((-v + n - 1) / n); };
+    const int bx0 = floorDiv(x0) - kSdfSpreadPx, by0 = floorDiv(y0) - kSdfSpreadPx;
+    const int bx1 = floorDiv(x1 - 1) + 1 + kSdfSpreadPx, by1 = floorDiv(y1 - 1) + 1 + kSdfSpreadPx;
+    const int fw = (bx1 - bx0) * n, fh = (by1 - by0) * n;
+    std::vector<unsigned char> coverage(std::size_t(fw) * std::size_t(fh), 0);
+    const int ox = x0 - bx0 * n, oy = y0 - by0 * n;
+    stbtt_MakeGlyphBitmap(&info, coverage.data() + std::size_t(oy) * std::size_t(fw) + std::size_t(ox),
+                          x1 - x0, y1 - y0, fw, fine, fine, glyph);
+    out = sdfFromCoverage(coverage.data(), fw, fh, n);
+    w = bx1 - bx0;
+    h = by1 - by0;
+    xoff = bx0;
+    yoff = by0;
+    return true;
+}
 
 std::uint64_t keyOf(int font, char32_t cp) {
     return (std::uint64_t(std::uint32_t(font)) << 32) | std::uint64_t(cp);
@@ -128,15 +155,9 @@ GlyphInfo FontAtlas::glyph(int font, char32_t codepoint) {
         stbtt_GetGlyphHMetrics(&owner->info, glyphIndex, &advance, &lsb);
         r.advance = advance * owner->scale;
         int w = 0, h = 0, xoff = 0, yoff = 0;
-        unsigned char* sdf =
-            stbtt_GetGlyphSDF(&owner->info, owner->scale, glyphIndex, kSdfSpreadPx,
-                              static_cast<unsigned char>(kSdfOnEdge), kSdfDistScale, &w,
-                              &h, &xoff, &yoff);
-        if (!sdf) {
+        if (!rasterizeSdf(owner->info, owner->scale, glyphIndex, r.bitmap, w, h, xoff, yoff)) {
             r.empty = true;
         } else {
-            r.bitmap.assign(sdf, sdf + std::size_t(w) * std::size_t(h));
-            stbtt_FreeSDF(sdf, nullptr);
             r.bw = w;
             r.bh = h;
             r.xoff = float(xoff);
@@ -276,9 +297,7 @@ FontAtlas::Record FontAtlas::makeTofu() const {
             const float outside = std::hypot(std::max(qx, 0.0f), std::max(qy, 0.0f));
             const float box = outside + std::min(std::max(qx, qy), 0.0f);
             const float ring = std::fabs(box + stroke * 0.5f) - stroke * 0.5f;
-            const float v = float(kSdfOnEdge) - ring * kSdfDistScale;
-            r.bitmap[std::size_t(y) * std::size_t(r.bw) + std::size_t(x)] =
-                static_cast<std::uint8_t>(std::clamp(v, 0.0f, 255.0f));
+            r.bitmap[std::size_t(y) * std::size_t(r.bw) + std::size_t(x)] = sdfValue(ring);
         }
     }
     r.xoff = kTofuLeftEm * em - float(kSdfSpreadPx);
