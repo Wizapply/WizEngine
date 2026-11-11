@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- UI（overlay の Canvas）の見本。確かめる点:
+       * 日本語の字（大きい字・小さい字・画数の多い漢字）が潰れずに出るか
+       * 縁取り（outline / outlineColor）と、半透明の板・字
+       * 画像（textures/ground.png）
+       * 右下に寄せた要素が、ページの縦横比を変えても右下に残るか
+       * 共用 UI（<canvas ui="hud"> = assets/ui/hud.xml）
+       * cameras="1" の Canvas が Camera 1 のページにだけ出るか
+       * 後処理（ブルーム・ビネット）が UI に掛からないか
+     番号の正しくない cameras（どこにも出ない + 警告 1 件）は ui_cameras_error.xml。
+     字は同梱の Noto Sans JP（assets/fonts/、<font> を書かなければこれ）。 -->
+<wizengine model="ui" version="4">
+  <!-- 後処理を効かせる（ブルーム・ビネット・ACES）。UI はこれの影響を受けない
+       （後処理を切った 2 枚目のビューに描く）ことを確かめる。 -->
+  <visual>
+    <quality shadowMap="2048" cascades="3" shadow="pcss" msaa="4" fxaa="true"/>
+    <postprocess enabled="true" ssao="true" bloom="0.3" vignette="0.35"/>
+    <grading tonemap="aces" contrast="1.05" saturation="1.02"/>
+  </visual>
+  <asset>
+    <ui name="hud" file="ui/hud.xml"/>
+  </asset>
+  <worldbody>
+    <environment hdr="studio.hdr" intensity="30000"/>
+    <ground size="10" visual="8" texture="textures/ground.png" tile="2" rgba="1 1 1 1"/>
+    <body name="box0" pos="0 0.5 0" euler="0 20 0">
+      <geom type="box" size="0.5 0.5 0.5" mass="1" rgba="0.80 0.36 0.18 1"/>
+    </body>
+    <body name="ball0" pos="1.4 0.4 0.6">
+      <geom type="sphere" size="0.4" mass="1" rgba="0.2 0.45 0.8 1"/>
+    </body>
+
+    <!-- 左上: 見出し・説明（折り返し）・画数の多い漢字・小さい字 -->
+    <canvas name="title" order="1">
+      <image id="1" name="panel" pos="32 32" size="760 330" color="0 0 0 0.4"/>
+      <text id="2" parent="1" name="heading" pos="28 20" size="704 80" text="Charon の UI"
+            fontSize="64" outline="0.08" outlineColor="0.05 0.08 0.2 1"
+            color="1 0.92 0.6 1"/>
+      <text id="3" parent="1" name="body" pos="28 112" size="704 120" wrap="true"
+            text="日本語の文字を、輪郭までの距離の画像（SDF）で描いています。拡大しても縁がなめらかなままか、折り返しが正しいかを見てください。"
+            fontSize="28"/>
+      <text id="4" parent="1" name="kanji" pos="28 220" size="704 50"
+            text="鬱・薔薇・齟齬・驚愕・憂鬱・魑魅魍魎" fontSize="36"/>
+      <text id="5" parent="1" name="small" pos="28 280" size="704 30"
+            text="小さい字（14 px）: 画数の多い漢字「鬱」「麤」も潰れずに読めますか？"
+            fontSize="14" color="0.85 0.85 0.85 1"/>
+    </canvas>
+
+    <!-- 左下: 画像（半透明）と、その上の字 -->
+    <canvas name="image" order="0">
+      <image id="1" name="thumb" anchor="0 1 0 1" pivot="0 1" pos="32 -32" size="256 256"
+             file="textures/ground.png" color="1 1 1 0.85"/>
+      <text id="2" parent="1" name="caption" anchor="0 1 1 1" pivot="0 1" pos="12 -12"
+            size="-24 40" text="画像 textures/ground.png" fontSize="22"
+            outline="0.1" outlineColor="0 0 0 0.9"/>
+    </canvas>
+
+    <!-- 右下: 共用 UI（assets/ui/hud.xml） -->
+    <canvas name="hud" ui="hud" order="2"/>
+
+    <!-- 上の中央: Camera 1 のページにだけ出る -->
+    <canvas name="camera1" cameras="1" order="3">
+      <image id="1" name="tag" anchor="0.5 0 0.5 0" pivot="0.5 0" pos="0 24" size="420 64"
+             color="0.6 0.1 0.1 0.7"/>
+      <text id="2" parent="1" name="label" anchor="0 0 1 1" pivot="0.5 0.5" size="0 0"
+            pos="0 10" text="Camera 1 だけに表示" fontSize="34" align="center"/>
+    </canvas>
+  </worldbody>
+</wizengine>

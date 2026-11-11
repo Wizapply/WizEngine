@@ -7,6 +7,7 @@
 #include "core/Log.h"
 #include "core/Trash.h"
 #include "document/EditorTypes.h"
+#include "terrain/TerrainFile.h"  // readFileBytes（大きさの上限つきのバイト列の読み込み）
 
 namespace wizengine {
 namespace sharedasset {
@@ -56,6 +57,12 @@ bool readTextFile(const std::string& path, std::string& text, std::string& reaso
 bool readAssetText(const std::string& file, std::string& text, std::string& reason) {
     if (!allowed(file, reason)) return false;
     return readTextFile(assetPath(file), text, reason);
+}
+
+bool readAssetBytes(const std::string& file, std::uintmax_t maxBytes,
+                    std::vector<std::uint8_t>& out, std::string& reason) {
+    if (!allowed(file, reason)) return false;
+    return terrain::readFileBytes(std::filesystem::u8path(assetPath(file)), maxBytes, out, reason);
 }
 
 bool writeAssetText(const std::string& file, const std::string& text, std::string& reason) {

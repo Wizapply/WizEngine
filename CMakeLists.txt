@@ -424,6 +424,7 @@ set(WIZ_COMPONENT_SOURCES
     src/components/ScatterComponent.cpp
     src/components/ControlComponent.cpp
     src/components/TerrainComponent.cpp
+    src/components/UiRenderComponent.cpp
     src/components/VehicleComponent.cpp)
 set(WIZ_FORMULA_SOURCES
     src/formula/Formula.cpp

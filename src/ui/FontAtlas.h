@@ -55,6 +55,12 @@ public:
     int addFont(const std::string& name, std::vector<std::uint8_t> bytes);
     int fontCount() const { return int(fonts_.size()); }
 
+    // 名前 → フォントの番号の対応（文書の <font name> の名前）。fontIndex は
+    // まずこの対応を見て、無ければ addFont の名前、それも無ければ既定（0）。
+    // 呼ぶたびに全部入れ替える（同じファイルを別の名前で宣言しても 1 回だけ
+    // 読み、名前は別名として付ける）。
+    void setFontNames(std::unordered_map<std::string, int> names) { names_ = std::move(names); }
+
     // FontProvider
     int fontIndex(const std::string& name) const override;
     GlyphInfo glyph(int font, char32_t codepoint) override;
@@ -92,6 +98,7 @@ private:
 
     int size_;
     std::vector<std::unique_ptr<Font>> fonts_;
+    std::unordered_map<std::string, int> names_;  // setFontNames
     std::vector<std::vector<std::uint8_t>> pages_;
     std::unique_ptr<Packer> packer_;
     std::unordered_map<std::uint64_t, Record> records_;

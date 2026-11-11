@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -26,6 +27,9 @@ bool writeTextFile(const std::string& path, const std::string& text, std::string
 // assets/ 相対の file を読む。assets/ の外を指すパス・読めないファイルは false と
 // 英語の reason。
 bool readAssetText(const std::string& file, std::string& text, std::string& reason);
+// assets/ 相対の file をバイト列のまま読む（maxBytes を超えるファイルは読まずに断る）。
+bool readAssetBytes(const std::string& file, std::uintmax_t maxBytes,
+                    std::vector<std::uint8_t>& out, std::string& reason);
 // assets/ 相対の file へ書く（フォルダが無ければ作る）。
 bool writeAssetText(const std::string& file, const std::string& text, std::string& reason);
 // ライブラリのファイル（assets/ 相対の "<subdir>/<名前><ext>"）。名前が不正なら空。

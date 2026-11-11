@@ -4,6 +4,7 @@
 // 文書との変換は SceneSerialize.cpp。共通の下準備は SceneInternal.h。
 #include "scene/SceneInternal.h"
 #include "scene/PrefabDefaults.h"
+#include "components/UiRenderComponent.h"
 
 #include <chrono>
 
@@ -242,6 +243,13 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     addComponent(std::make_unique<GizmoComponent>());
     addComponent(std::make_unique<CameraControlComponent>());
     addComponent(std::make_unique<BoxControlComponent>());
+    // UI の描画（RENDER の onRender だけ。コマンドを取らないので並びは入力に
+    // 影響しない）。main がこの後にも部品を足すので、onRender の中で最後とは
+    // 限らない。overlay の Canvas は他の部品の姿勢に依らないので順番は問わない。
+    // 3D の板（world / camera、後の PR）を車体やプレハブの姿勢に付けるなら、
+    // その姿勢を決める部品（PrefabComponent など）より後に動くよう登録し直す。
+    // UI の入力（後の PR）はギズモより前に登録する。
+    addComponent(std::make_unique<UiRenderComponent>());
 }
 
 // 前方宣言の型（TerrainLibrary / TerrainUndoStack）の unique_ptr を壊すので、

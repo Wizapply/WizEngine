@@ -90,6 +90,10 @@ int FontAtlas::addFont(const std::string& name, std::vector<std::uint8_t> bytes)
 
 int FontAtlas::fontIndex(const std::string& name) const {
     if (fonts_.empty()) return -1;
+    const auto alias = names_.find(name);
+    if (alias != names_.end() && alias->second >= 0 && alias->second < int(fonts_.size())) {
+        return alias->second;
+    }
     for (std::size_t k = 0; k < fonts_.size(); ++k) {
         if (fonts_[k]->name == name) return int(k);
     }
