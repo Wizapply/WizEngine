@@ -81,6 +81,21 @@ void uploadMipChain(filament::Engine& engine, filament::Texture* texture,
     }
 }
 
+filament::Texture* createTextureRGBA(filament::Engine& engine, std::vector<uint8_t> pixels,
+                                     int width, int height, bool srgb) {
+    filament::Texture* texture =
+        filament::Texture::Builder()
+            .width(uint32_t(width))
+            .height(uint32_t(height))
+            .levels(mipLevelCount(width, height))
+            .format(srgb ? filament::Texture::InternalFormat::SRGB8_A8
+                         : filament::Texture::InternalFormat::RGBA8)
+            .sampler(filament::Texture::Sampler::SAMPLER_2D)
+            .build(engine);
+    uploadMipChain(engine, texture, 0, std::move(pixels), width, height);
+    return texture;
+}
+
 filament::Texture* loadTextureRGBA(filament::Engine& engine,
                                    const std::string& texturePath,
                                    const char* label) {
@@ -89,17 +104,7 @@ filament::Texture* loadTextureRGBA(filament::Engine& engine,
     int texH = 0;
     const bool fromFile = decodeTextureRGBA(texturePath, label, TextureFallback::Checker,
                                             pixels, texW, texH);
-    filament::Texture* texture =
-        filament::Texture::Builder()
-            .width(uint32_t(texW))
-            .height(uint32_t(texH))
-            .levels(mipLevelCount(texW, texH))
-            .format(fromFile ? filament::Texture::InternalFormat::SRGB8_A8
-                             : filament::Texture::InternalFormat::RGBA8)
-            .sampler(filament::Texture::Sampler::SAMPLER_2D)
-            .build(engine);
-    uploadMipChain(engine, texture, 0, std::move(pixels), texW, texH);
-    return texture;
+    return createTextureRGBA(engine, std::move(pixels), texW, texH, fromFile);
 }
 
 }  // namespace render_detail

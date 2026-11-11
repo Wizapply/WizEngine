@@ -1,0 +1,91 @@
+// UI（Canvas の文字と画像）の材質。頂点の形は src/ui/UiMeshFormat.h の UiVertex で、
+// 属性はこう割り当てる（Renderer の RendererUiMeshes.cpp と 1 対 1）:
+//   POSITION = 位置 x y（Canvas の設計上の画素。z は 0）
+//   UV0      = テクスチャの座標（0..1。データの 0 行目 = v 0 = 上）
+//   UV1      = 要素の中の位置（今は使わない。後の効果のため）
+//   COLOR    = 色（リニア値、不透明度込み）
+//   CUSTOM0  = 縁取りの幅（x。にじみ幅に対する割合 0..1）
+//   CUSTOM1  = 縁取りの色（リニア値、不透明度込み）
+//
+// 画像（sdf = false）: テクスチャの色 × 頂点の色。テクスチャ無しは白の 1×1 が入る。
+// 字（sdf = true）: テクスチャ（R8）は「輪郭までの距離」で、値 onEdge が輪郭。
+//   輪郭の外 d 画素の値は onEdge × (1 − d / にじみ幅) なので、縁取りの幅が
+//   outline（割合）のとき、縁取りの外側の線は onEdge × (1 − outline)。
+//   どちらの線も画面上の微分（fwidth）で 1 画素ぶんぼかす = 拡大しても縮小しても
+//   縁がなめらか。onEdge は C++ が kSdfOnEdge / 255 を入れる（.mat に直書きしない）。
+//   字と縁取りは画素を分け合う（縁取り = 字の外側の帯）ので、字が半透明でも
+//   内側に縁取りが透けない。縁取りの外側の線はぼかしの幅より内側に止める。
+//
+// srgbOut: UI のビューは後処理（トーンマップと sRGB への符号化）を切ってあるので、
+// ここが書いた値がそのまま映像の画素になる。主のビューは sRGB に符号化した値を
+// 書くので、リニアの色を合わせるには sRGB へ直して書く（既定 true）。
+//
+// blending : transparent は乗算済みのアルファを前提にするので、rgb にアルファを
+// 掛けるのはここの 1 か所だけ。重なり順は Renderer が blendOrder で決める
+// （深さは使わない = depthCulling / depthWrite とも false）。
+// flipUV : false: matc は既定で UV の y を反転するが、字の置き場の座標は
+// データの行のまま（v = 行 / 高さ）で渡す。
+material {
+    name : ui,
+    shadingModel : unlit,
+    blending : transparent,
+    depthWrite : false,
+    depthCulling : false,
+    culling : none,
+    flipUV : false,
+    requires : [ uv0, uv1, color, custom0, custom1 ],
+    parameters : [
+        { type : sampler2d, name : tex },
+        { type : bool,      name : sdf },
+        { type : bool,      name : srgbOut },
+        { type : float,     name : onEdge }
+    ],
+    variables : [ outlineWidth, outlineColor ]
+}
+
+vertex {
+    void materialVertex(inout MaterialVertexInputs material) {
+        material.outlineWidth = getCustom0();
+        material.outlineColor = getCustom1();
+    }
+}
+
+fragment {
+    vec3 linearToSrgb(vec3 c) {
+        vec3 lo = c * 12.92;
+        vec3 hi = 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+        return mix(lo, hi, step(vec3(0.0031308), c));
+    }
+
+    // 色（リニア、ストレートアルファ）→ 書き出す値（乗算済み）。
+    vec4 premultiplied(vec4 c) {
+        vec3 rgb = materialParams.srgbOut ? linearToSrgb(c.rgb) : c.rgb;
+        return vec4(rgb * c.a, c.a);
+    }
+
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        vec2 uv = getUV0();
+        vec4 color = getColor();
+        if (!materialParams.sdf) {
+            material.baseColor = premultiplied(texture(materialParams_tex, uv) * color);
+            return;
+        }
+        float d = texture(materialParams_tex, uv).r;
+        float aa = max(fwidth(d), 1e-4) * 0.75;
+        float edge = materialParams.onEdge;
+        float fill = smoothstep(edge - aa, edge + aa, d);
+        float outline = clamp(variable_outlineWidth.x, 0.0, 1.0);
+        // 縁取りの外側の線。にじみ幅いっぱい（outline = 1）でも、ぼかしの幅 aa より
+        // 内側に残す: 0 まで下げると SDF = 0 の余白（字の四角の全体）が
+        // smoothstep の半分 = 半透明の箱になるため。
+        float outerEdge = max(edge * (1.0 - outline), aa);
+        float outer = outline > 0.0 ? smoothstep(outerEdge - aa, outerEdge + aa, d) : 0.0;
+        // 字と縁取りは画素を分け合う（縁取りは字の外側の帯だけ = outer × (1 − fill)）。
+        // 字が半透明（フェード・a < 1）でも、字の内側に縁取りの色が透けない。
+        float ring = outer * (1.0 - fill);
+        vec4 fillC = premultiplied(vec4(color.rgb, color.a * fill));
+        vec4 lineC = premultiplied(vec4(variable_outlineColor.rgb, variable_outlineColor.a * ring));
+        material.baseColor = fillC + lineC;
+    }
+}
