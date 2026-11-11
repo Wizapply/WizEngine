@@ -56,12 +56,12 @@ const void* bulletKeyOf(const ChBody& body) {
 void PhysicsWorld::attachStaticPairFilter() {
 #ifdef WIZ_HAVE_BULLET_PAIR_FILTER
     if (!staticPairs_) staticPairs_ = std::make_shared<StaticPairFilter>();
-    // 古い系のワールドは sys_ と一緒に壊れている（recreate が先に reset する）。
+    // 古い系のワールドは系と一緒に壊れている（recreate が先に reset する）。
     staticPairs_->statics.clear();
     staticPairs_->world = nullptr;
     staticPairs_->ready = false;
-    if (backend_ == PhysicsBackend::Multicore) return;
-    auto bt = std::dynamic_pointer_cast<ChCollisionSystemBullet>(sys_->GetCollisionSystem());
+    if (p_->system.backend() == PhysicsBackend::Multicore) return;
+    auto bt = std::dynamic_pointer_cast<ChCollisionSystemBullet>(p_->system.sys()->GetCollisionSystem());
     if (!bt || !bt->GetBulletCollisionWorld()) return;
     staticPairs_->world = bt->GetBulletCollisionWorld();
     staticPairs_->world->getPairCache()->setOverlapFilterCallback(staticPairs_.get());
@@ -73,9 +73,9 @@ void PhysicsWorld::syncStaticPairs() {
     if (!staticPairs_ || !staticPairs_->world) return;
     StaticPairFilter& f = *staticPairs_;
     f.statics.clear();
-    for (std::size_t i = 0; i < bodies_.size(); ++i) {
-        if (!active_[i] || !bodies_[i]->IsFixed()) continue;
-        if (const void* key = bulletKeyOf(*bodies_[i])) f.statics.insert(key);
+    for (std::size_t i = 0; i < p_->bodies.count(); ++i) {
+        if (!p_->bodies.active(i) || !p_->bodies.body(i)->IsFixed()) continue;
+        if (const void* key = bulletKeyOf(*p_->bodies.body(i))) f.statics.insert(key);
     }
     f.ready = true;
     const std::size_t removed = f.purge();

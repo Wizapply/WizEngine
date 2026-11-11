@@ -74,10 +74,10 @@ bool PhysicsWorld::hasTerrainProxy(std::size_t id) const {
 // 円柱の口の無い版で円柱の部品だけのフレーム・退化した凸包は、他の何とも
 // 当たらないのでテレインにも当てない = 安全網も作らない）。
 bool PhysicsWorld::terrainEligible(std::size_t id) const {
-    if (id >= bodies_.size() || id >= active_.size()) return false;
+    if (id >= p_->bodies.count()) return false;
     if (terrain_ && id == terrain_->ghost) return false;
-    const ChBody* b = bodies_[id].get();
-    if (!active_[id] || !b->GetSystem() || b->IsFixed() || !b->IsCollisionEnabled())
+    const ChBody* b = p_->bodies.body(id).get();
+    if (!p_->bodies.active(id) || !b->GetSystem() || b->IsFixed() || !b->IsCollisionEnabled())
         return false;
     const auto model = b->GetCollisionModel();
     return model && !model->GetShapeInstances().empty();
@@ -118,8 +118,8 @@ PhysicsWorld::TerrainProxyRec* PhysicsWorld::terrainFallbackRec(std::size_t id) 
 void PhysicsWorld::refreshTerrainMaterials() {
     if (!terrain_ || !terrain_->matRound || !terrain_->matFlat) return;
     TerrainState& t = *terrain_;
-    applySurface(*t.matRound, t.options);
-    applySurface(*t.matFlat, t.options);
+    p_->materials.applySurface(*t.matRound, t.options);
+    p_->materials.applySurface(*t.matFlat, t.options);
     // 多点で触れる形には転がり・スピン摩擦を効かせない（SMC の材質には欄が無い）。
     if (auto* n = dynamic_cast<ChContactMaterialNSC*>(t.matFlat.get())) {
         n->SetRollingFriction(0.0f);
@@ -133,7 +133,7 @@ std::size_t PhysicsWorld::setTerrain(std::shared_ptr<const wterrain::HeightField
         clearTerrain();
         return kInvalidId;
     }
-    if (backend_ == PhysicsBackend::Multicore || !terrainCallback_) {
+    if (p_->system.backend() == PhysicsBackend::Multicore || !terrainCallback_) {
         static bool warned = false;
         if (!warned) {
             warned = true;
@@ -149,16 +149,16 @@ std::size_t PhysicsWorld::setTerrain(std::shared_ptr<const wterrain::HeightField
         // 空の衝突モデル: ChCollisionInfo の modelB（GetContactable の元）に要る。
         // EnableCollision は呼ばない = Bullet に登録されない。
         ghost->AddCollisionModel(chrono_types::make_shared<ChCollisionModel>());
-        sys_->AddBody(ghost);
-        registerBody(ghost);
-        t.ghost = bodies_.size() - 1;
+        p_->system.sys()->AddBody(ghost);
+        registerBody(ghost, nullptr, BodyOptions{}, /*allowSleeping*/ true);
+        t.ghost = p_->bodies.count() - 1;
     }
     t.field = std::move(field);
     t.contactTerrain = wterrain::ContactTerrain(*t.field);
     t.options = terrainOptions;
     if (!t.matRound || !t.matFlat) {
-        t.matRound = makeMaterial();
-        t.matFlat = makeMaterial();
+        t.matRound = p_->materials.make();
+        t.matFlat = p_->materials.make();
     }
     refreshTerrainMaterials();
 
@@ -168,7 +168,7 @@ std::size_t PhysicsWorld::setTerrain(std::shared_ptr<const wterrain::HeightField
         const auto& rec = terrainProxies_[i];
         if (!rec) continue;
         std::fill(rec->was.begin(), rec->was.end(), char(0));
-        if (!active_[i]) continue;
+        if (!p_->bodies.active(i)) continue;
         ++bodies;
         points += rec->cache.size();
     }
@@ -212,7 +212,7 @@ void PhysicsWorld::clearTerrain() {
 }
 
 bool PhysicsWorld::hasTerrain() const {
-    return terrain_ && terrain_->field && terrain_->ghost < bodies_.size();
+    return terrain_ && terrain_->field && terrain_->ghost < p_->bodies.count();
 }
 
 std::size_t PhysicsWorld::terrainBodyId() const {
@@ -224,7 +224,7 @@ void PhysicsWorld::collectTerrainContacts(ChSystem& sys) {
     if (!hasTerrain()) return;
     TerrainState& t = *terrain_;
     const auto container = sys.GetContactContainer();
-    const auto& ghostBody = bodies_[t.ghost];
+    const auto& ghostBody = p_->bodies.body(t.ghost);
     ChCollisionModel* ghostModel = ghostBody->GetCollisionModel().get();
     if (!container || !ghostModel) return;
     t.params.dt = sys.GetStep();
@@ -235,11 +235,11 @@ void PhysicsWorld::collectTerrainContacts(ChSystem& sys) {
     const wterrain::Mat3 frameRot = toTerrainMat(ChMatrix33<>(terrainFrameRot_));
     const wterrain::Vec3 frameOrigin = toTerrainVec(terrainFrameOrigin_);
 
-    const std::size_t n = std::min(terrainProxies_.size(), bodies_.size());
+    const std::size_t n = std::min(terrainProxies_.size(), p_->bodies.count());
     for (std::size_t i = 0; i < n; ++i) {
         if (i == t.ghost) continue;
         TerrainProxyRec* rec = terrainProxies_[i].get();
-        ChBody* b = bodies_[i].get();
+        ChBody* b = p_->bodies.body(i).get();
         // 対象外（terrainEligible）と眠っている物は足さない（眠っている物は
         // 足しても AddContact が捨てる）。次に起きたら「前の接触なし」から。
         if (!terrainEligible(i) || b->IsSleeping()) {
@@ -295,7 +295,7 @@ void PhysicsWorld::collectTerrainContacts(ChSystem& sys) {
         }
 
         std::fill(rec->now.begin(), rec->now.end(), char(0));
-        const auto& bodyMat = mats_[i] ? mats_[i] : mat_;
+        const auto& bodyMat = p_->materials.materialOf(i);
         for (const wterrain::Contact& c : t.contacts) {
             if (c.pointId < 0 || std::size_t(c.pointId) >= rec->cache.size()) continue;
             const std::size_t pid = std::size_t(c.pointId);

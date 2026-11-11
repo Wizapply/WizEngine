@@ -28,6 +28,9 @@ enum class PhysicsBackend {
     Multicore,  // ChSystemMulticoreNSC - OpenMP solver + collision, no sleeping
 };
 
+// True when this build can actually use PhysicsBackend::Multicore.
+bool multicoreAvailable();
+
 // 接触の解き方（B の 22）。
 //   NSC … 相補性（硬い接触。既定。1/60 s でも床を抜けない）
 //   SMC … ペナルティ法（ヤング率で決まる柔らかい接触。粒状体・FEA 向け。

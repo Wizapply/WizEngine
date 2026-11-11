@@ -1,4 +1,4 @@
-// PhysicsWorld の窓口: 構築・1 ステップの順番・全体を起こす・バックエンドの名前と機能の有無。
+// PhysicsWorld の窓口: 構築・1 ステップの順番・全体を起こす・機能の有無・眠りと材質の中継。
 
 #include "physics/PhysicsWorldInternal.h"
 
@@ -9,14 +9,6 @@
 
 using namespace chrono;
 using namespace wizengine::physics::compat;
-
-bool multicoreAvailable() {
-#ifdef WIZ_USE_MULTICORE
-    return true;
-#else
-    return false;
-#endif
-}
 
 PhysicsFeatures physicsFeatures() {
     PhysicsFeatures f;
@@ -43,25 +35,17 @@ PhysicsFeatures physicsFeatures() {
     return f;
 }
 
-const char* PhysicsWorld::backendName() const {
-    return backend_ == PhysicsBackend::Multicore ? "multicore" : "core";
-}
-
-const char* PhysicsWorld::contactName() const {
-    return contact_ == ContactMethod::SMC ? "smc" : "nsc";
-}
-
-PhysicsWorld::PhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
-    backend_ = backend;
-    contact_ = contact;
+PhysicsWorld::PhysicsWorld(PhysicsBackend backend, ContactMethod contact)
+    : p_(std::make_unique<Parts>(backend, contact)) {
     createSystem();
 }
 
+// Parts が完全型のここで定義する。メンバは PhysicsWorld.h の宣言の逆順に壊れる
+// （p_ の持つ系はほかのメンバの後、staticPairs_ は系の後）。
+PhysicsWorld::~PhysicsWorld() = default;
+
 void PhysicsWorld::wakeAll() {
-    for (auto& b : bodies_) {
-        wakeUp(b.get(), 0);
-        resetSleepTimer(*b);
-    }
+    p_->sleeping.wakeAll();
     // テレインの反力キャッシュも捨てる（シミュレートの開始・Reset で呼ばれる。
     // 前回の走行の最後の反力で次の走行の最初のステップを始めない）。
     for (std::size_t i = 0; i < terrainProxies_.size(); ++i) forgetTerrainContacts(i);
@@ -69,7 +53,7 @@ void PhysicsWorld::wakeAll() {
     // solver has to handle, and Chrono only rebuilds that layout in Setup().
     // Without this the "woken" bodies can stay out of the solve - i.e. they
     // would not fall after a reset.
-    sys_->Setup();
+    p_->system.sys()->Setup();
 }
 
 void PhysicsWorld::step(double dt) {
@@ -81,12 +65,12 @@ void PhysicsWorld::step(double dt) {
     // ボディ別の重力オフ: Chrono 9 には per-body の口が無い（SetNoGravity は
     // 消えた）ので、重力ぶんを毎ステップ打ち消す（両バックエンド共通）。
     {
-        const ChVector3d g = sys_->GetGravitationalAcceleration();
+        const ChVector3d g = p_->system.sys()->GetGravitationalAcceleration();
         if (g.Length2() > 0.0) {
-            for (std::size_t i = 0; i < bodies_.size(); ++i) {
-                if (options_[i].gravity || !active_[i]) continue;
-                auto& b = bodies_[i];
-                if (b->IsFixed() || softOf_[i] != kNoSoft) continue;
+            for (std::size_t i = 0; i < p_->bodies.count(); ++i) {
+                if (p_->materials.options(i).gravity || !p_->bodies.active(i)) continue;
+                auto& b = p_->bodies.body(i);
+                if (b->IsFixed() || p_->bodies.isGroupMember(i)) continue;
                 if (b->IsSleeping()) continue;
                 setLinVel(b.get(), getLinVel(b.get(), 0) - g * dt, 0);
             }
@@ -101,13 +85,13 @@ void PhysicsWorld::step(double dt) {
 #ifdef WIZ_HAVE_BULLET_PAIR_FILTER
     auto staticPairsPending = [this]() {
         if (!staticPairs_ || !staticPairs_->world || staticPairs_->ready) return false;
-        const auto coll = sys_->GetCollisionSystem();
+        const auto coll = p_->system.sys()->GetCollisionSystem();
         return coll && coll->IsInitialized();
     };
     if (staticPairsPending()) syncStaticPairs();
 #endif
 
-    sys_->DoStepDynamics(dt);
+    p_->system.sys()->DoStepDynamics(dt);
 
 #ifdef WIZ_HAVE_BULLET_PAIR_FILTER
     if (staticPairsPending()) syncStaticPairs();
@@ -126,7 +110,7 @@ void PhysicsWorld::step(double dt) {
     if (linearDamping_ <= 0.0 && angularDamping_ <= 0.0) return;
     const double linScale = std::exp(-linearDamping_ * dt);
     const double angScale = std::exp(-angularDamping_ * dt);
-    for (auto& b : bodies_) {
+    for (auto& b : p_->bodies.all()) {
         if (b->IsFixed() || b->IsSleeping()) continue;
         if (linearDamping_ > 0.0) {
             setLinVel(b.get(), getLinVel(b.get(), 0) * linScale, 0);
@@ -135,4 +119,33 @@ void PhysicsWorld::step(double dt) {
             setAngVel(b.get(), getAngVel(b.get(), 0) * angScale, 0);
         }
     }
+}
+
+// ---- 眠り --------------------------------------------------------------------
+
+void PhysicsWorld::setSleepingEnabled(bool enabled, float seconds,
+                                      float minLinVel, float minAngVel) {
+    p_->sleeping.setEnabled(enabled, seconds, minLinVel, minAngVel);
+}
+
+std::size_t PhysicsWorld::sleepingCount() const { return p_->sleeping.count(); }
+
+// ---- 接触の材質（シーン設定を変えたらテレインの材質も書き直す）--------------
+
+void PhysicsWorld::setSmcDefaults(double young, double poisson) {
+    if (p_->materials.setSmcDefaults(young, poisson)) refreshTerrainMaterials();
+}
+
+bool PhysicsWorld::setBodySurface(std::size_t id, const BodyOptions& options) {
+    return p_->materials.setBodySurface(id, options);
+}
+
+void PhysicsWorld::setSurfaceMaterial(float friction, float restitution) {
+    p_->materials.setSurfaceMaterial(friction, restitution);
+    refreshTerrainMaterials();
+}
+
+void PhysicsWorld::setRollingFriction(float rolling, float spinning) {
+    p_->materials.setRollingFriction(rolling, spinning);
+    refreshTerrainMaterials();
 }

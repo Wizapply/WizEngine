@@ -1,6 +1,6 @@
 // 接触の報告: 接触コンテナの走査と、番号の持ち主への寄せ。
 
-#include "physics/PhysicsWorld.h"
+#include "physics/PhysicsParts.h"
 #include "physics/ChronoCompat.h"
 
 #include <chrono/core/ChMatrix33.h>
@@ -25,9 +25,9 @@ namespace {
 // 力積 / dt に直して渡してくる。
 class ContactCollector : public chrono::ChContactContainer::ReportContactCallback {
 public:
-    ContactCollector(const std::unordered_map<const chrono::ChBody*, std::size_t>& index,
+    ContactCollector(const wizengine::physics::BodyRegistry& bodies,
                      std::vector<ContactInfo>& out)
-        : index_(index), out_(out) {}
+        : bodies_(bodies), out_(out) {}
 
     bool OnReportContact(const ChVector3d&, const ChVector3d&,
                          const ChMatrix33<>& plane, const double& distance,
@@ -37,12 +37,12 @@ public:
         const auto* bodyA = dynamic_cast<const ChBody*>(objA);
         const auto* bodyB = dynamic_cast<const ChBody*>(objB);
         if (!bodyA || !bodyB) return true;  // ボディ以外（FEA 等）は対象外
-        const auto ia = index_.find(bodyA);
-        const auto ib = index_.find(bodyB);
-        if (ia == index_.end() || ib == index_.end()) return true;
+        const std::size_t ia = bodies_.indexOf(bodyA);
+        const std::size_t ib = bodies_.indexOf(bodyB);
+        if (ia == PhysicsWorld::kInvalidId || ib == PhysicsWorld::kInvalidId) return true;
         ContactInfo c;
-        c.a = ia->second;
-        c.b = ib->second;
+        c.a = ia;
+        c.b = ib;
         if (c.a == c.b) return true;
         const ChVector3d n = matrixXAxis(plane, 0);  // A から B へ向く法線
         if (c.a > c.b) {
@@ -59,7 +59,7 @@ public:
     }
 
 private:
-    const std::unordered_map<const chrono::ChBody*, std::size_t>& index_;
+    const wizengine::physics::BodyRegistry& bodies_;
     std::vector<ContactInfo>& out_;
 };
 
@@ -67,20 +67,16 @@ private:
 
 std::vector<ContactInfo> PhysicsWorld::activeContacts() const {
     std::vector<ContactInfo> contacts;
-    const auto container = sys_->GetContactContainer();
+    const auto container = p_->system.sys()->GetContactContainer();
     if (!container) return contacts;
-    auto collector = chrono_types::make_shared<ContactCollector>(bodyIndex_, contacts);
+    auto collector = chrono_types::make_shared<ContactCollector>(p_->bodies, contacts);
     container->ReportAllContacts(collector);
     // ソフトボディの粒子は代表番号に、子ボディ（setAlias）は持ち主に寄せる
     // （Scene はその番号しか知らない）。同じ物どうしは一致するので落ちる。
-    auto owner = [this](std::size_t id) {
-        id = representative(id);
-        return (id < alias_.size() && alias_[id] != kNoSoft) ? alias_[id] : id;
-    };
     std::size_t kept = 0;
     for (auto& c : contacts) {
-        const std::size_t a = owner(c.a);
-        const std::size_t b = owner(c.b);
+        const std::size_t a = p_->bodies.owner(c.a);
+        const std::size_t b = p_->bodies.owner(c.b);
         if (a == b) continue;
         ContactInfo out = c;
         out.a = a;

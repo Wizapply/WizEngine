@@ -1,6 +1,6 @@
 // 診断ログ: シミュレート開始直後の状態と NaN の検出。
 
-#include "physics/PhysicsWorld.h"
+#include "physics/PhysicsParts.h"
 #include "core/Log.h"
 #include "physics/ChronoCompat.h"
 
@@ -22,23 +22,23 @@ void PhysicsWorld::logStepDiagnostics(double dt) {
     ++diagSteps_;
     if (diagSteps_ == 2 || diagSteps_ == 120) {
         std::size_t activeBodies = 0;
-        for (std::size_t i = 0; i < bodies_.size(); ++i) {
-            if (active_[i] && !bodies_[i]->IsFixed()) ++activeBodies;
+        for (std::size_t i = 0; i < p_->bodies.count(); ++i) {
+            if (p_->bodies.active(i) && !p_->bodies.body(i)->IsFixed()) ++activeBodies;
         }
         LOGI("physics",
              "diag step %d: backend=%s dt=%.4f bodies=%zu (dynamic %zu) links=%d "
              "contacts=%d joints=%zu gravity=(%.2f %.2f %.2f)",
-             diagSteps_, backendName(), dt, bodies_.size(), activeBodies,
-             linkCountOf(sys_.get(), 0),
-             contactCountOf(sys_->GetContactContainer().get(), 0), joints_.size(),
-             sys_->GetGravitationalAcceleration().x(),
-             sys_->GetGravitationalAcceleration().y(),
-             sys_->GetGravitationalAcceleration().z());
-        if (auto iterative = std::dynamic_pointer_cast<ChIterativeSolverVI>(sys_->GetSolver())) {
+             diagSteps_, backendName(), dt, p_->bodies.count(), activeBodies,
+             linkCountOf(p_->system.sys().get(), 0),
+             contactCountOf(p_->system.sys()->GetContactContainer().get(), 0), joints_.size(),
+             p_->system.sys()->GetGravitationalAcceleration().x(),
+             p_->system.sys()->GetGravitationalAcceleration().y(),
+             p_->system.sys()->GetGravitationalAcceleration().z());
+        if (auto iterative = std::dynamic_pointer_cast<ChIterativeSolverVI>(p_->system.sys()->GetSolver())) {
             LOGI("physics", "diag: iterative solver, max iterations %d",
                  iterative->GetMaxIterations());
-        } else if (sys_->GetSolver()) {
-            LOGI("physics", "diag: non-iterative solver (type %d)", int(sys_->GetSolver()->GetType()));
+        } else if (p_->system.sys()->GetSolver()) {
+            LOGI("physics", "diag: non-iterative solver (type %d)", int(p_->system.sys()->GetSolver()->GetType()));
         } else {
             LOGW("physics", "diag: the system has NO solver");
         }
@@ -49,10 +49,10 @@ void PhysicsWorld::logStepDiagnostics(double dt) {
     // 見て、出たらどのジョイントの反力が NaN かを 1 回だけ出す。
     if (diagSteps_ <= 120 && !diagNanReported_) {
         std::size_t bad = 0;
-        for (std::size_t i = 0; i < bodies_.size(); ++i) {
-            if (!active_[i]) continue;
-            const ChVector3d p = bodies_[i]->GetPos();
-            const ChVector3d v = getLinVel(bodies_[i].get(), 0);
+        for (std::size_t i = 0; i < p_->bodies.count(); ++i) {
+            if (!p_->bodies.active(i)) continue;
+            const ChVector3d p = p_->bodies.body(i)->GetPos();
+            const ChVector3d v = getLinVel(p_->bodies.body(i).get(), 0);
             if (!std::isfinite(p.x() + p.y() + p.z() + v.x() + v.y() + v.z())) ++bad;
         }
         if (bad > 0) {

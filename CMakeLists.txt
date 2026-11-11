@@ -319,8 +319,12 @@ set(WIZ_CORE_SOURCES
     src/core/Trash.cpp
     src/core/Versions.cpp)
 set(WIZ_PHYSICS_SOURCES
+    src/physics/BodyMotion.cpp
+    src/physics/BodyRegistry.cpp
+    src/physics/ContactMaterials.cpp
     src/physics/MeshCollision.cpp
     src/physics/ModelImport.cpp
+    src/physics/PhysicsSystem.cpp
     src/physics/PhysicsWorld.cpp
     src/physics/PhysicsWorldBodies.cpp
     src/physics/PhysicsWorldCables.cpp
@@ -331,15 +335,14 @@ set(WIZ_PHYSICS_SOURCES
     src/physics/PhysicsWorldJoints.cpp
     src/physics/PhysicsWorldJointsManual.cpp
     src/physics/PhysicsWorldLoads.cpp
-    src/physics/PhysicsWorldMaterials.cpp
     src/physics/PhysicsWorldModal.cpp
     src/physics/PhysicsWorldMotion.cpp
     src/physics/PhysicsWorldRegistry.cpp
-    src/physics/PhysicsWorldSleeping.cpp
     src/physics/PhysicsWorldSoft.cpp
     src/physics/PhysicsWorldStaticPairs.cpp
     src/physics/PhysicsWorldSystem.cpp
-    src/physics/PhysicsWorldTerrain.cpp)
+    src/physics/PhysicsWorldTerrain.cpp
+    src/physics/Sleeping.cpp)
 set(WIZ_RENDER_SOURCES
     src/render/EnvironmentLoader.cpp
     src/render/GltfLoader.cpp
