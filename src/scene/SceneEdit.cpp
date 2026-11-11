@@ -1569,7 +1569,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                  ? std::string("XML を適用しました")
                  : "XML を適用しました（警告 " +
                        std::to_string(warnings.size()) + " 件 - コンソール参照）") +
-            terrainLoadCaveat() + terrainCombineCaveat(true));
+            takeLoadCaveat() + terrainCombineCaveat(true));
         return;
     }
 
@@ -1743,7 +1743,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                  ? "読み込みました: " + name
                  : "読み込みました: " + name + "（警告 " +
                        std::to_string(warnCount) + " 件 - コンソール参照）") +
-            terrainLoadCaveat() + terrainCombineCaveat(true));
+            takeLoadCaveat() + terrainCombineCaveat(true));
         editor_.refreshSceneFiles();
         return;
     }

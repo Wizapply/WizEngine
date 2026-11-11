@@ -37,6 +37,14 @@ std::size_t loadUiFromDocument(wizengine::UiState& ui, const ed::SceneDocument& 
     return missing;
 }
 
+// 読めないファイルの読込の注意（ステータスの末尾に足す日本語 1 文）。label は
+// 種類（"共通イベント" / "共用 UI"）。0 件なら空。
+std::string unreadableFilesCaveat(const char* label, std::size_t count) {
+    if (count == 0) return {};
+    return std::string("（") + label + " " + std::to_string(count) +
+           " 件のファイルが読めません - コンソール参照）";
+}
+
 }  // namespace
 
 std::string Scene::hierarchyJson(std::size_t cameraIndex) {
@@ -582,7 +590,16 @@ std::string Scene::documentXml() {
     return ed::toXmlText(document());
 }
 
+std::string Scene::takeLoadCaveat() {
+    std::string out;
+    out.swap(loadCaveat_);
+    return out;
+}
+
 void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
+    // 読込の注意の箱を空にするのはここだけ（書く側 = テレイン・共通イベント・
+    // 共用 UI は足すだけ）。
+    loadCaveat_.clear();
     // いま在るものを全部畳んでから作り直す。番号は 0 から振り直されるので、
     // 掴んでいる選択も落とす。
     removeAllCables();
@@ -661,10 +678,7 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
         auto prefabs = doc.prefabs;
         std::size_t missing = 0;
         resolveLibraryAssets(formulas, prefabs, missing);
-        if (missing > 0) {
-            terrainLoadCaveat_ += "（グローバルの計算式 / プレハブ " + std::to_string(missing) +
-                                  " 件のファイルが読めません - コンソール参照）";
-        }
+        loadCaveat_ += unreadableFilesCaveat("グローバルの計算式 / プレハブ", missing);
         editor_.setFormulaAssets(std::move(formulas));
         editor_.setPrefabAssets(std::move(prefabs));
     }
@@ -711,9 +725,10 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     // イベントの節を持たない文書は既定の構成へ - ライトを 1 灯も書かない
     // 文書が初期構成で開くのと同じ扱いで、「掴んでも動かないシーン」で
     // 始めさせないため。
+    // 読めなかった共通イベントの件数（注意は下で共用 UI と並べて足す）。
+    std::size_t sharedMissing = 0;
     if (doc.hasEvents) {
         std::vector<ed::EventAssetDesc> assets;
-        std::size_t sharedMissing = 0;
         for (const auto& assetDoc : doc.eventAssets) {
             // 共通化したイベント（file あり）は中身をイベントライブラリから入れる。
             // 読めなくても参照は残す（中身は空 = 何もしない。ファイルを戻して
@@ -748,11 +763,6 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
             asset.wires = assetIn.wires;
             assets.push_back(std::move(asset));
         }
-        if (sharedMissing > 0) {
-            // ステータスの末尾に足す注意（テレインの注意と同じ口）。
-            terrainLoadCaveat_ += "（共通イベント " + std::to_string(sharedMissing) +
-                                  " 件のファイルが読めません - コンソール参照）";
-        }
         editor_.setEventAssets(std::move(assets), doc.worldEvents);
         resetGraphRuntime();
     } else {
@@ -766,16 +776,14 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     // 格子も当たり判定も作り直さない。
     setTerrainFromDocument(doc, keepSameTerrain);
 
-    // UI（Canvas・共用 UI・フォント）。節の無い文書は UI 無し。読めない共用 UI の
-    // 注意は読込の注意の末尾に足す（setTerrainFromDocument が注意を作り直した後）。
-    {
-        const std::size_t uiMissing =
-            loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Replace);
-        if (uiMissing > 0) {
-            terrainLoadCaveat_ += "（共用 UI " + std::to_string(uiMissing) +
-                                  " 件のファイルが読めません - コンソール参照）";
-        }
-    }
+    // UI（Canvas・共用 UI・フォント）。節の無い文書は UI 無し。
+    const std::size_t uiMissing =
+        loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Replace);
+
+    // 読込の注意（ステータスの末尾に足す日本語）。テレインの注意
+    // （setTerrainFromDocument が足した）の後ろに、共通イベント → 共用 UI の順。
+    loadCaveat_ += unreadableFilesCaveat("共通イベント", sharedMissing);
+    loadCaveat_ += unreadableFilesCaveat("共用 UI", uiMissing);
 
     // 文書が Core 専用の機能を使っていれば系を切り替える（使わなくなって
     // いれば既定へ戻す）。setTerrainFromDocument の中で済んでいるので、ここは確認だけ。

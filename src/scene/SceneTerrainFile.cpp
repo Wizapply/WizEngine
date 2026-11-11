@@ -37,7 +37,7 @@ std::string terrainLabel(const std::string& name, const std::string& guid) {
 }
 
 // Missing（ファイルが見つからない / 読めない）の説明の文。日本語の文はここだけが
-// 持つ（読込の注意 terrainLoadCaveat_ と /scene の terrainMissing が同じ文になる）。
+// 持つ（読込の注意 loadCaveat_ と /scene の terrainMissing が同じ文になる）。
 std::string terrainMissingNote(bool unreadable, const std::string& label) {
     if (unreadable) {
         return "テレインのファイル " + label +
@@ -152,12 +152,12 @@ void Scene::loadTerrainField(const ed::TerrainDesc& doc) {
         auto field = readTerrainFile(res.file, desc, layers, scatter, reason);
         if (field) {
             if (res.dataChanged) {
-                terrainLoadCaveat_ = "（テレイン " + label + " は背番号で見つけた " +
-                                     desc.data + " を使いました）";
+                loadCaveat_ += "（テレイン " + label + " は背番号で見つけた " +
+                               desc.data + " を使いました）";
             } else if (!res.warnings.empty()) {
-                terrainLoadCaveat_ = "（テレインの警告 " +
-                                     std::to_string(res.warnings.size()) +
-                                     " 件 - コンソール参照）";
+                loadCaveat_ += "（テレインの警告 " +
+                               std::to_string(res.warnings.size()) +
+                               " 件 - コンソール参照）";
             }
             publishTerrainField(desc, std::move(field), TerrainHistory::Clear,
                                 TerrainFileState::Saved, {}, false, &layers,
@@ -185,7 +185,7 @@ void Scene::loadTerrainField(const ed::TerrainDesc& doc) {
     // 状態から作る（/scene の terrainMissing と同じ口 = 名前が食い違わない）。
     // 層と散布物はファイルが持つので分からない（格子無し = publishTerrainField が既定に戻す）。
     publishTerrainField(doc, nullptr, TerrainHistory::Clear, missing);
-    terrainLoadCaveat_ = "（注意: " + terrainMissingText() + "）";
+    loadCaveat_ += "（注意: " + terrainMissingText() + "）";
 }
 
 bool Scene::refersToTerrain(const std::string& name) const {
@@ -208,7 +208,6 @@ bool Scene::sameTerrainIdentity(const ed::TerrainDesc& a) const {
 }
 
 void Scene::setTerrainFromDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
-    terrainLoadCaveat_.clear();
     if (!doc.hasTerrain) {
         publishTerrainField(ed::TerrainDesc{}, nullptr, TerrainHistory::Clear,
                             TerrainFileState::Saved);
@@ -242,8 +241,8 @@ void Scene::setTerrainFromDocument(const ed::SceneDocument& doc, bool keepSameTe
                       "attributes (%s, %dx%d cells, %.1f ms) as '%s'",
              legacy.hasNoise ? "noise" : "flat", doc.terrain.resolution,
              doc.terrain.resolution, ms, name.c_str());
-        terrainLoadCaveat_ = "（旧形式のテレインをテレイン " + name +
-                             " として開きました - 保存すると .terrain に移ります）";
+        loadCaveat_ += "（旧形式のテレインをテレイン " + name +
+                       " として開きました - 保存すると .terrain に移ります）";
         adoptLegacySurface(legacy);
         return;
     }
@@ -264,10 +263,10 @@ void Scene::adoptLegacySurface(const ed::TerrainLegacyDesc& legacy) {
         // 違う値を書いていた（📄 XML で書き換えた等）ならステータスにも出す
         // （同じ値 = 移した後の古い XML なので知らせない）。
         if (legacy.texture != now.texture) {
-            terrainLoadCaveat_ += "（XML の texture 属性は使いませんでした - " +
-                                  terrainLayerLabel(0) +
-                                  " は .terrain が持っています。Inspector の『塗り分けの層』で"
-                                  "変えてください）";
+            loadCaveat_ += "（XML の texture 属性は使いませんでした - " +
+                           terrainLayerLabel(0) +
+                           " は .terrain が持っています。Inspector の『塗り分けの層』で"
+                           "変えてください）";
         }
         return;
     }
@@ -281,14 +280,8 @@ void Scene::adoptLegacySurface(const ed::TerrainLegacyDesc& legacy) {
          terrain_.data.c_str());
     publishTerrainField(terrain_, terrainField(), TerrainHistory::Keep, TerrainFileState::Dirty,
                         {}, false, &layers);
-    terrainLoadCaveat_ += "（XML のテクスチャを" + terrainLayerLabel(0) +
-                          " として .terrain に移します - 保存で書きます）";
-}
-
-std::string Scene::terrainLoadCaveat() {
-    std::string out;
-    out.swap(terrainLoadCaveat_);
-    return out;
+    loadCaveat_ += "（XML のテクスチャを" + terrainLayerLabel(0) +
+                   " として .terrain に移します - 保存で書きます）";
 }
 
 // ---- 保存 ---------------------------------------------------------------------

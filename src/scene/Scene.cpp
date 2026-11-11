@@ -475,7 +475,7 @@ void Scene::build() {
             loadDocument(doc, false);
             editor_.setSceneFile(startup);
             editor_.setStatus("読み込みました: " + startup +
-                              terrainLoadCaveat() + terrainCombineCaveat(true));
+                              takeLoadCaveat() + terrainCombineCaveat(true));
             LOGI("scene", "startup scene '%s' loaded (%zu bodies, %zu meshes)",
                  startup.c_str(), doc.bodies.size(), doc.meshes.size());
         } else {
