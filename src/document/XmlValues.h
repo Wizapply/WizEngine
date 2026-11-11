@@ -82,12 +82,10 @@ inline constexpr int kColorPrecision = 6;
 // 色の表記の規則（唯一の定義）: 空白区切りの数値が 3 個以上なら r g b [a]
 // （rgba のリニア値。a を書かなければ 1）、そうでなければブラウザ
 // API と同じ "#rrggbb"（a = 1。手書きしやすい）。どちらでもなければ false で
-// out は変えない。数値の読み方は xml::Element の数値列と同じ。
+// out は変えない。数値の読み方は xml::parseNumbers（Element の数値列と同じ）。
 inline bool parseColorText(const std::string& text, double out[4]) {
-    xml::Element e;
-    e.set("v", text);
     double a[4] = {0.0, 0.0, 0.0, 1.0};
-    if (e.numbers("v", a, 4) < 3) {
+    if (xml::parseNumbers(text, a, 4) < 3) {
         const Color3 bad{-1.0f, -1.0f, -1.0f};
         const Color3 c = colorFromHex(text, bad);
         if (c.r < 0.0f) return false;

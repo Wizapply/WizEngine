@@ -1,9 +1,13 @@
 #include "document/SceneXml.h"
 
+#include "core/Clamp.h"
+
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace wizengine {
 namespace xml {
@@ -74,14 +78,6 @@ std::string unescape(const std::string& in) {
         i = end + 1;
     }
     return out;
-}
-
-std::string formatNumber(double value, int precision) {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.*g", precision, value);
-    // "-0" は読みづらいだけなので 0 に寄せる。
-    if (std::strcmp(buf, "-0") == 0) return "0";
-    return std::string(buf);
 }
 
 bool isNameStart(char c) {
@@ -325,30 +321,30 @@ std::string Element::attr(const char* key, const char* fallback) const {
     return std::string(fallback);
 }
 
-double Element::number(const char* key, double fallback) const {
-    double v = fallback;
-    return numbers(key, &v, 1) == 1 ? v : fallback;
+std::string formatNumber(double value, int precision) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.*g", precision, value);
+    // "-0" は読みづらいだけなので 0 に寄せる。
+    if (std::strcmp(buf, "-0") == 0) return "0";
+    return std::string(buf);
 }
 
-int Element::integer(const char* key, int fallback) const {
-    const double v = number(key, double(fallback));
-    return int(v < 0 ? v - 0.5 : v + 0.5);
+std::string formatBool(bool value) { return value ? "true" : "false"; }
+
+std::string formatInt(long long value) { return std::to_string(value); }
+
+std::string formatNumbers(const double* values, std::size_t count, int precision) {
+    std::string out;
+    for (std::size_t k = 0; k < count; ++k) {
+        if (k) out.push_back(' ');
+        out += formatNumber(values[k], precision);
+    }
+    return out;
 }
 
-bool Element::boolean(const char* key, bool fallback) const {
-    if (!has(key)) return fallback;
-    const std::string v = attr(key);
-    if (v == "true" || v == "1" || v == "yes" || v == "on") return true;
-    if (v == "false" || v == "0" || v == "no" || v == "off") return false;
-    return fallback;
-}
-
-std::size_t Element::numbers(const char* key, double* out,
-                             std::size_t count) const {
-    if (!has(key) || count == 0) return 0;
-    const std::string v = attr(key);
+std::size_t parseNumbers(const std::string& text, double* out, std::size_t count) {
     std::size_t got = 0;
-    const char* p = v.c_str();
+    const char* p = text.c_str();
     while (got < count) {
         char* end = nullptr;
         const double parsed = std::strtod(p, &end);
@@ -357,6 +353,39 @@ std::size_t Element::numbers(const char* key, double* out,
         p = end;
     }
     return got;
+}
+
+bool parseBool(const std::string& text, bool& out) {
+    if (text == "true" || text == "1" || text == "yes" || text == "on") {
+        out = true;
+        return true;
+    }
+    if (text == "false" || text == "0" || text == "no" || text == "off") {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
+double Element::number(const char* key, double fallback) const {
+    double v = fallback;
+    return numbers(key, &v, 1) == 1 ? v : fallback;
+}
+
+int Element::integer(const char* key, int fallback) const {
+    return roundToInt(number(key, double(fallback)), fallback);
+}
+
+bool Element::boolean(const char* key, bool fallback) const {
+    if (!has(key)) return fallback;
+    bool v = fallback;
+    return parseBool(attr(key), v) ? v : fallback;
+}
+
+std::size_t Element::numbers(const char* key, double* out,
+                             std::size_t count) const {
+    if (!has(key) || count == 0) return 0;
+    return parseNumbers(attr(key), out, count);
 }
 
 void Element::set(const char* key, std::string value) {
@@ -384,21 +413,16 @@ void Element::setNumber(const char* key, double value, int precision) {
 }
 
 void Element::setInt(const char* key, long long value) {
-    set(key, std::to_string(value));
+    set(key, formatInt(value));
 }
 
 void Element::setBool(const char* key, bool value) {
-    set(key, value ? "true" : "false");
+    set(key, formatBool(value));
 }
 
 void Element::setNumbers(const char* key, const double* values,
                          std::size_t count, int precision) {
-    std::string out;
-    for (std::size_t k = 0; k < count; ++k) {
-        if (k) out.push_back(' ');
-        out += formatNumber(values[k], precision);
-    }
-    set(key, std::move(out));
+    set(key, formatNumbers(values, count, precision));
 }
 
 Element& Element::add(std::string name) {

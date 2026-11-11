@@ -340,6 +340,7 @@ set(WIZ_APP_SOURCES
 set(WIZ_CORE_SOURCES
     src/core/AssetError.cpp
     src/core/CpuAffinity.cpp
+    src/core/FileBytes.cpp
     src/core/Log.cpp
     src/core/PortScan.cpp
     src/core/Trash.cpp

@@ -33,7 +33,7 @@ constexpr float kFallbackDescentEm = -0.2f;
 // 曲線が崩れるので使わない）。stb のラスタライザ（3 次の曲線も平らにして塗る）で
 // 基準の倍率 × kSdfOversample で塗り、周りににじみ幅ぶんの余白を付けて UiSdf で
 // 距離の画像にする。出力の大きさ・xoff・yoff は基準の画素（にじみ幅の余白込み、
-// ベースラインから y 下向き）。塗る範囲の無い字（空白）は false。
+// ベースラインから y 下向き）。塗る範囲の無い字（空白）と内側の無い字は false。
 bool rasterizeSdf(const stbtt_fontinfo& info, float scale, int glyph, std::vector<uint8_t>& out,
                   int& w, int& h, int& xoff, int& yoff) {
     const int n = kSdfOversample;
@@ -50,7 +50,10 @@ bool rasterizeSdf(const stbtt_fontinfo& info, float scale, int glyph, std::vecto
     const int ox = x0 - bx0 * n, oy = y0 - by0 * n;
     stbtt_MakeGlyphBitmap(&info, coverage.data() + std::size_t(oy) * std::size_t(fw) + std::size_t(ox),
                           x1 - x0, y1 - y0, fw, fine, fine, glyph);
+    // 細かい塗りで 1 画素も内側に届かない字（極細の点だけの字など）は空が返る =
+    // 絵の無い字と同じに扱う（置き場を使わない）。
     out = sdfFromCoverage(coverage.data(), fw, fh, n);
+    if (out.empty()) return false;
     w = bx1 - bx0;
     h = by1 - by0;
     xoff = bx0;
@@ -109,9 +112,14 @@ int FontAtlas::addFont(const std::string& name, std::vector<std::uint8_t> bytes)
     f->metrics = {ascent * f->scale, descent * f->scale, lineGap * f->scale};
     fonts_.push_back(std::move(f));
     // 新しいフォントで見つかる字があるかもしれないので、豆腐の記録は捨てる。
+    // 豆腐で組んだメッシュを組み直してもらうため、捨てたら世代を進める。
+    bool droppedTofu = false;
     for (auto it = records_.begin(); it != records_.end();) {
-        it = it->second.tofu ? records_.erase(it) : std::next(it);
+        const bool tofu = it->second.tofu;
+        droppedTofu = droppedTofu || tofu;
+        it = tofu ? records_.erase(it) : std::next(it);
     }
+    if (droppedTofu) ++generation_;
     return int(fonts_.size()) - 1;
 }
 

@@ -9,7 +9,7 @@
 
 // ハイトマップ（16 ビットの高さ画像）のバイト列と 16 ビット標本の往復、
 // そして標本と格子（HeightField）の往復。ファイルの読み書きはしない（バイト列
-// だけ。ファイルは TerrainFile の readFileBytes / writeFileBytes）。
+// だけ。ファイルは core/FileBytes の readFileBytes / writeFileBytes）。
 //
 // 標本の約束（.terrain の HGHT 節と同じ）:
 //   * 1 辺 side 個（= 格子の resolution + 1）の正方形。行優先で、行 = +Z、

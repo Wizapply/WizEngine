@@ -13,6 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/Clamp.h"
 #include "core/Guid.h"
 #include "core/Hex.h"
 #include "core/SafeName.h"
@@ -2541,13 +2542,7 @@ inline EnvironmentDesc clampEnvironment(EnvironmentDesc e) {
     return e;
 }
 
-// テレインの丸めの部品（clampTerrain / clampTerrainNoise が共通で使う）。
-// NaN は fallback へ戻す（XML の strtod は "nan" も読むので、比較だけの
-// 丸めでは素通りしてしまう）。
-inline double clampTerrainNumber(double v, double lo, double hi, double fallback) {
-    if (!(v == v)) return fallback;
-    return v < lo ? lo : (v > hi ? hi : v);
-}
+// テレインの丸めの部品は core/Clamp.h の clampOrFallback（NaN は既定値へ戻す）。
 
 // ノイズ生成の値の範囲: octaves は 0〜16（HeightField の安全弁と同じ）、
 // gain は 0〜1、lacunarity は 1〜4、scale は 0.1〜10000 m。
@@ -2555,9 +2550,9 @@ inline TerrainNoiseParams clampTerrainNoise(TerrainNoiseParams n) {
     const TerrainNoiseParams d;
     n.octaves = n.octaves < 0 ? 0
               : (n.octaves > kTerrainMaxOctaves ? kTerrainMaxOctaves : n.octaves);
-    n.gain = clampTerrainNumber(n.gain, 0.0, 1.0, d.gain);
-    n.lacunarity = clampTerrainNumber(n.lacunarity, 1.0, 4.0, d.lacunarity);
-    n.scale = clampTerrainNumber(n.scale, 0.1, 10000.0, d.scale);
+    n.gain = clampOrFallback(n.gain, 0.0, 1.0, d.gain);
+    n.lacunarity = clampOrFallback(n.lacunarity, 1.0, 4.0, d.lacunarity);
+    n.scale = clampOrFallback(n.scale, 0.1, 10000.0, d.scale);
     return n;
 }
 
@@ -2601,7 +2596,7 @@ inline TerrainNoiseParams terrainNoiseFromJson(const nlohmann::json& j,
 //     金属はここと同じ範囲）。
 inline TerrainDesc clampTerrain(TerrainDesc t) {
     const TerrainDesc d;
-    const auto cl = clampTerrainNumber;
+    const auto cl = clampOrFallback;
     auto clf = [](float v, float fallback) {
         if (!(v == v)) return fallback;
         return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);

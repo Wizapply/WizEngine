@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "core/FileBytes.h"
 #include "terrain/HeightField.h"
 #include "terrain/TerrainScatter.h"
 
@@ -196,15 +197,11 @@ bool writeFile(const std::filesystem::path& path, const HeightField& field,
 bool readFile(const std::filesystem::path& path, TerrainFileData& out,
               std::string& reason);
 
-// ファイルのバイト列の読み書き（.terrain・ハイトマップの RAW / PNG が共用）。
-// readFileBytes は maxBytes を超えるファイルを読まずに断る（壊れた・別の
-// 大きなファイルを丸ごと読まない安全弁）。writeFileBytes は一時ファイルに
-// 書いてから置き換え（途中で失敗しても元のファイルは壊れない）、親フォルダが
-// 無ければ作る。reason にはパスが付く。
-bool readFileBytes(const std::filesystem::path& path, uintmax_t maxBytes,
-                   std::vector<uint8_t>& out, std::string& reason);
-bool writeFileBytes(const std::filesystem::path& path, const std::vector<uint8_t>& bytes,
-                    std::string& reason);
+// ファイルのバイト列の読み書きは core/FileBytes.h（UI のフォントと共用）。
+// terrain:: の名前でも呼べるのは、まだ付け替えていない呼び手（scene の
+// SceneTerrainFile.cpp。PR1 の仕上げ 2 回目で付け替えたら、この 2 行を消す）のため。
+using wizengine::readFileBytes;
+using wizengine::writeFileBytes;
 
 }  // namespace terrain
 }  // namespace wizengine

@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "core/Clamp.h"
 #include "document/EditorTypes.h"
 #include "ui/UiProps.h"  // ElementDesc / KeyDesc の PropSet
 #include "ui/UiValue.h"  // kCanvasAttrs の ValueSpec
@@ -66,6 +67,11 @@ struct FontAssetDesc {
 // ---- Canvas ------------------------------------------------------------------
 enum class CanvasMode : std::uint8_t { Overlay, Camera, World };
 inline const char* const kCanvasModeNames[] = {"overlay", "camera", "world", nullptr};
+static_assert(sizeof(kCanvasModeNames) / sizeof(kCanvasModeNames[0]) - 1 ==
+                  std::size_t(CanvasMode::World) + 1,
+              "kCanvasModeNames must have one name per CanvasMode");
+// cameras 属性の名前（表の行と、それを名前で引く側が共用する）。
+inline constexpr const char* kCanvasCamerasAttr = "cameras";
 
 // Canvas の既定値（CanvasDesc の初期値と kCanvasAttrs の既定値が同じ値を使う）。
 inline constexpr double kCanvasDefaultHeight = 1080.0;
@@ -116,7 +122,7 @@ inline const CanvasAttrInfo kCanvasAttrs[] = {
          c.mode = CanvasMode(enumIndex(v.v[0], kCanvasModeNames, int(CanvasMode::Overlay)));
      }},
     // カメラの番号はスロットの範囲（0..kMaxCameraSlots-1）。
-    {"cameras",
+    {kCanvasCamerasAttr,
      {PropType::IndexList, numberValue(0), 0.0, double(editor::kMaxCameraSlots - 1)},
      "表示するカメラ",
      [](const CanvasDesc& c) {
@@ -127,7 +133,7 @@ inline const CanvasAttrInfo kCanvasAttrs[] = {
          // 丸めを通さずに呼ばれても Q20 の規則どおりにする: この行の決まりで
          // 丸め直す（範囲の外の番号を含む並びは、黙って減らさず正しくない並びに
          // なる。範囲の規則は clampValue / firstInvalidIndex の 1 か所）。
-         const PropValue checked = clampValue(canvasAttrFromName("cameras")->spec, v);
+         const PropValue checked = clampValue(canvasAttrFromName(kCanvasCamerasAttr)->spec, v);
          c.cameras.clear();
          c.invalidCameras.clear();
          if (!indexListValid(checked)) {
@@ -141,7 +147,7 @@ inline const CanvasAttrInfo kCanvasAttrs[] = {
      [](CanvasDesc& c, const PropValue& v) { c.height = v.v[0]; }},
     {"order", {PropType::Int, numberValue(0), -10000.0, 10000.0}, "重なり順",
      [](const CanvasDesc& c) { return numberValue(double(c.order)); },
-     [](CanvasDesc& c, const PropValue& v) { c.order = roundInt(v.v[0], 0); }},
+     [](CanvasDesc& c, const PropValue& v) { c.order = roundToInt(v.v[0], 0); }},
     {"distance", {PropType::Number, numberValue(kCanvasDefaultDistance), 0.01, 10000.0}, "カメラからの距離",
      [](const CanvasDesc& c) { return numberValue(c.distance); },
      [](CanvasDesc& c, const PropValue& v) { c.distance = v.v[0]; }},

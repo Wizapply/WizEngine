@@ -1,5 +1,7 @@
 #include "ui/UiKinds.h"
 
+#include <cassert>
+
 namespace wizengine {
 namespace ui {
 namespace {
@@ -19,7 +21,12 @@ const ElementKindInfo* kindInfo(const std::string& name) {
 
 std::size_t kindCount() { return kKindCount; }
 
-const ElementKindInfo& kindAt(std::size_t index) { return *kKinds[index % kKindCount]; }
+const ElementKindInfo& kindAt(std::size_t index) {
+    // 範囲外はプログラムの誤り（propInfo と同じ扱い: デバッグ版は止まり、
+    // リリース版は表の外を読まない）。
+    assert(index < kKindCount && "kindAt: index out of range");
+    return *kKinds[index < kKindCount ? index : 0];
+}
 
 void elementColor(const ResolvedElement& e, Prop colorProp, float out[4]) {
     const PropValue& c = e.props.get(colorProp);

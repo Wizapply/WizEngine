@@ -1,9 +1,12 @@
 #include "ui/UiProps.h"
 
-#include "ui/UiSdf.h"  // 縁取りの上限（kSdfOutlineMaxEm）
+#include "ui/UiSdfParams.h"  // 縁取りの上限（kSdfOutlineMaxEm）
 
 #include <algorithm>
+#include <cassert>
 #include <utility>
+
+#include "core/NearestName.h"
 
 namespace wizengine {
 namespace ui {
@@ -13,8 +16,8 @@ namespace {
 // 並びは Prop の順（propInfo が添字で引く。tests/ui が id との一致を検査する）。
 // 位置・大きさの上限（設計上の画素。基準の高さ 1080 に対して十分に広い）。
 constexpr double kCoordMax = 1.0e6;
-// 文字列の上限（バイト）。
-constexpr double kTextMaxBytes = 4096.0;
+// パスの上限（バイト）。Windows の従来のパスの長さ（MAX_PATH = 260）に合わせる:
+// assets/ からの相対パスなので実際にはずっと短く、これを超えるのは誤りか悪意の値。
 constexpr double kPathMaxBytes = 260.0;
 
 constexpr KindMask kTextual = kKindText | kKindButton;
@@ -27,7 +30,7 @@ const PropInfo kProps[] = {
     {Prop::Color, "color", {PropType::Color, numberValue(1, 1, 1, 1), 0.0, 1.0}, true, kKindAll, "色"},
     {Prop::Alpha, "alpha", {PropType::Number, numberValue(1), 0.0, 1.0}, true, kKindAll, "不透明度"},
     {Prop::Visible, "visible", {PropType::Bool, numberValue(1), 0.0, 1.0}, true, kKindAll, "表示"},
-    {Prop::Text, "text", {PropType::Text, textValue(""), 0.0, kTextMaxBytes}, true, kTextual, "文字"},
+    {Prop::Text, "text", {PropType::Text, textValue(""), 0.0, double(kMaxTextBytes)}, true, kTextual, "文字"},
     {Prop::Font, "font", {PropType::Name, textValue(""), 0.0, 0.0}, false, kTextual, "フォント"},
     {Prop::FontSize, "fontSize", {PropType::Number, numberValue(32), 1.0, 1024.0}, true, kTextual, "文字の大きさ"},
     {Prop::Align, "align", {PropType::Enum, numberValue(0), 0.0, 0.0, kAlignNames}, false, kTextual, "揃え"},
@@ -43,29 +46,13 @@ const PropInfo kProps[] = {
 static_assert(sizeof(kProps) / sizeof(kProps[0]) == kPropCount,
               "kProps must have one row per Prop");
 
-// 大文字小文字を無視した編集距離。
-std::size_t editDistanceIcase(const std::string& a, const std::string& b) {
-    auto lower = [](char c) {
-        return (c >= 'A' && c <= 'Z') ? char(c - 'A' + 'a') : c;
-    };
-    std::vector<std::size_t> prev(b.size() + 1), cur(b.size() + 1);
-    for (std::size_t j = 0; j <= b.size(); ++j) prev[j] = j;
-    for (std::size_t i = 1; i <= a.size(); ++i) {
-        cur[0] = i;
-        for (std::size_t j = 1; j <= b.size(); ++j) {
-            const std::size_t cost = lower(a[i - 1]) == lower(b[j - 1]) ? 0 : 1;
-            cur[j] = std::min({prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost});
-        }
-        std::swap(prev, cur);
-    }
-    return prev[b.size()];
-}
-
 }  // namespace
 
 // ---- 性質の表を引く ----------------------------------------------------------
 const PropInfo& propInfo(Prop id) {
-    return kProps[static_cast<std::size_t>(id) % kPropCount];
+    const std::size_t index = static_cast<std::size_t>(id);
+    assert(index < kPropCount && "propInfo: id out of range");
+    return kProps[index < kPropCount ? index : 0];
 }
 
 PropMask propsOfKind(KindMask kind) {
@@ -74,24 +61,6 @@ PropMask propsOfKind(KindMask kind) {
         if (p.kinds & kind) mask |= propBit(p.id);
     }
     return mask;
-}
-
-const char* nearestName(const std::string& name, const char* const* names,
-                        std::size_t count) {
-    if (name.empty()) return nullptr;
-    // 短い名前ほど打ち間違いの許し幅を狭める（"pos" に 2 文字違いを許すと
-    // 無関係な名前まで候補になる）。
-    const std::size_t maxDistance = name.size() <= 3 ? 1 : 2;
-    const char* best = nullptr;
-    std::size_t bestDistance = maxDistance + 1;
-    for (std::size_t k = 0; k < count; ++k) {
-        const std::size_t d = editDistanceIcase(name, names[k]);
-        if (d < bestDistance) {
-            best = names[k];
-            bestDistance = d;
-        }
-    }
-    return best;
 }
 
 const PropInfo* propFromName(const std::string& name, const PropInfo** suggestion) {

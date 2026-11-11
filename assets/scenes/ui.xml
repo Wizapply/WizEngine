@@ -30,18 +30,19 @@
       <geom type="sphere" size="0.4" mass="1" rgba="0.2 0.45 0.8 1"/>
     </body>
 
-    <!-- 左上: 見出し・説明（折り返し）・画数の多い漢字・小さい字 -->
+    <!-- 左上: 見出し・説明（折り返し）・画数の多い漢字・小さい字。説明は 28 px で
+         3 行（1 行約 41 px = 約 122 px）なので、漢字の行はその下（y 252）から。 -->
     <canvas name="title" order="1">
-      <image id="1" name="panel" pos="32 32" size="760 330" color="0 0 0 0.4"/>
+      <image id="1" name="panel" pos="32 32" size="760 364" color="0 0 0 0.4"/>
       <text id="2" parent="1" name="heading" pos="28 20" size="704 80" text="Charon の UI"
             fontSize="64" outline="0.08" outlineColor="0.05 0.08 0.2 1"
             color="1 0.92 0.6 1"/>
-      <text id="3" parent="1" name="body" pos="28 112" size="704 120" wrap="true"
+      <text id="3" parent="1" name="body" pos="28 112" size="704 128" wrap="true"
             text="日本語の文字を、輪郭までの距離の画像（SDF）で描いています。拡大しても縁がなめらかなままか、折り返しが正しいかを見てください。"
             fontSize="28"/>
-      <text id="4" parent="1" name="kanji" pos="28 220" size="704 50"
+      <text id="4" parent="1" name="kanji" pos="28 252" size="704 56"
             text="鬱・薔薇・齟齬・驚愕・憂鬱・魑魅魍魎" fontSize="36"/>
-      <text id="5" parent="1" name="small" pos="28 280" size="704 30"
+      <text id="5" parent="1" name="small" pos="28 316" size="704 30"
             text="小さい字（14 px）: 画数の多い漢字「鬱」「麤」も潰れずに読めますか？"
             fontSize="14" color="0.85 0.85 0.85 1"/>
     </canvas>
@@ -58,9 +59,9 @@
     <!-- 右下: 共用 UI（assets/ui/hud.xml） -->
     <canvas name="hud" ui="hud" order="2"/>
 
-    <!-- 上の中央: Camera 1 のページにだけ出る -->
+    <!-- 中央の上寄り（左上の板の下 = 重ならない）: Camera 1 のページにだけ出る -->
     <canvas name="camera1" cameras="1" order="3">
-      <image id="1" name="tag" anchor="0.5 0 0.5 0" pivot="0.5 0" pos="0 24" size="420 64"
+      <image id="1" name="tag" anchor="0.5 0 0.5 0" pivot="0.5 0" pos="0 420" size="420 64"
              color="0.6 0.1 0.1 0.7"/>
       <text id="2" parent="1" name="label" anchor="0 0 1 1" pivot="0.5 0.5" size="0 0"
             pos="0 10" text="Camera 1 だけに表示" fontSize="34" align="center"/>

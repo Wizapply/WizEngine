@@ -21,7 +21,7 @@ namespace ui {
 // ---- 値の型 ------------------------------------------------------------------
 enum class PropType : std::uint8_t {
     Number,     // v[0]
-    Int,        // v[0]（roundInt で整数に丸める）
+    Int,        // v[0]（core/Clamp.h の roundToInt で整数に丸める）
     Vec2,       // v[0..1]
     Vec3,       // v[0..2]
     Euler,      // v[0..2]（度。丸めは editor::clampAngleDegrees = ±360 の外は畳む）
@@ -67,9 +67,18 @@ struct ValueSpec {
 };
 
 // ---- 部品 --------------------------------------------------------------------
-// 整数への丸めの唯一の定義（0.5 は 0 から遠い方へ: 2.5 → 3、-2.5 → -3）。
-// NaN・int に入らない値は fallback。
-int roundInt(double v, int fallback);
+// 文字列の値の上限（バイト。Text の性質と、正しくない添字の並びに保つ文字列）。
+inline constexpr std::size_t kMaxTextBytes = 4096;
+
+// 整数への丸めは core/Clamp.h の roundToInt（XML の整数属性と同じ規則）。
+
+// 整数の字（空白を含まない 1 語）を読む唯一の口。全部が整数の字（先頭の + / - は 1 つ可）で
+// int に入るときだけ true（"3abc" や "1.5" は false）。文書の番号（id / parent）と
+// 添字の並びが使う。
+bool parseIntToken(const std::string& token, int& out);
+// 前後の空白を許して整数 1 つを読む（空白の決まりは添字の並びと同じ。中身は
+// parseIntToken）。文書の番号（id / parent）が使う。
+bool parseIntText(const std::string& text, int& out);
 
 // Enum の名前の数（nullptr まで）。
 std::size_t enumNameCount(const char* const* names);
@@ -81,6 +90,9 @@ inline constexpr int kMaxIndexBits = 32;
 static_assert(kMaxIndexBits == 8 * sizeof(std::uint32_t), "one bit per index in a uint32_t");
 // v[0] に入っているビットの集合。NaN・負・32 ビットに入らない値は空。
 std::uint32_t maskOf(double v);
+// v[0] がビットの集合として正しい値か（0 以上の整数で 32 ビットに入る）。NaN・負・
+// 小数（プログラムの誤り）は正しくない = clampValue が「どれも選ばない」並びにする。
+bool maskValueValid(double v);
 // 添字の並び → ビットの集合（範囲外の添字は落とす）。
 std::uint32_t indexMaskFromList(const std::vector<int>& indices);
 // ビットの集合 → 添字の並び（小さい順）。

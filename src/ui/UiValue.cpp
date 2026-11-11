@@ -1,5 +1,6 @@
 #include "ui/UiValue.h"
 
+#include "core/Clamp.h"
 #include "core/SafeName.h"
 #include "core/Utf8.h"
 #include "document/EditorTypes.h"
@@ -7,7 +8,6 @@
 #include "document/XmlValues.h"
 
 #include <charconv>
-#include <climits>
 #include <limits>
 #include <cmath>
 
@@ -16,43 +16,8 @@ namespace ui {
 namespace {
 
 // ---- 文字列の読み書きの下請け -----------------------------------------------
-// 数値の並び・真偽値の表記はシーン文書（xml::Element）と同じ規則で読み書き
-// する。規則を 2 か所に書かないよう、一時的な要素の属性を通して使う。
-constexpr const char* kTmpKey = "v";
-
-// 空白区切りの数値を最大 count 個読む（読めた個数を返す）。
-std::size_t readNumbers(const std::string& text, double* out, std::size_t count) {
-    xml::Element e;
-    e.set(kTmpKey, text);
-    return e.numbers(kTmpKey, out, count);
-}
-// 真偽値の表記（true / 1 / yes / on …）。読めなければ false。
-bool readBool(const std::string& text, bool& out) {
-    xml::Element e;
-    e.set(kTmpKey, text);
-    // 読めない表記は fallback がそのまま返るので、2 通りで食い違えば不正。
-    const bool t = e.boolean(kTmpKey, true);
-    const bool f = e.boolean(kTmpKey, false);
-    if (t != f) return false;
-    out = t;
-    return true;
-}
-std::string writeNumbers(const double* values, std::size_t count, int precision = 10) {
-    xml::Element e;
-    e.setNumbers(kTmpKey, values, count, precision);
-    return e.attr(kTmpKey);
-}
-std::string writeBool(bool b) {
-    xml::Element e;
-    e.setBool(kTmpKey, b);
-    return e.attr(kTmpKey);
-}
-std::string writeInt(int k) {
-    xml::Element e;
-    e.setInt(kTmpKey, k);
-    return e.attr(kTmpKey);
-}
-
+// 数値の並び・真偽値の表記はシーン文書と同じ規則（document/SceneXml の
+// parseNumbers / parseBool / formatNumbers / formatBool / formatInt）で読み書きする。
 bool isNumeric(PropType t) {
     switch (t) {
         case PropType::Number:
@@ -71,28 +36,7 @@ bool isString(PropType t) {
     return t == PropType::Text || t == PropType::Name || t == PropType::Path;
 }
 
-// 先頭から maxBytes バイト以内で、字の途中で切らない長さ。
-std::size_t utf8PrefixLength(const std::string& s, std::size_t maxBytes) {
-    std::size_t i = 0;
-    while (i < s.size()) {
-        std::size_t next = i;
-        nextCodepoint(s, next);
-        if (next > maxBytes) break;
-        i = next;
-    }
-    return i;
-}
-
-int defaultInt(const ValueSpec& spec) { return roundInt(spec.def.v[0], 0); }
-
-// 番号 1 つ（空白を含まない字の並び）を整数として読む。全部が整数の字でなければ false。
-bool readIndexToken(const std::string& token, int& out) {
-    const char* first = token.data();
-    const char* last = first + token.size();
-    if (first != last && *first == '+') ++first;  // from_chars は + を読まない
-    const auto r = std::from_chars(first, last, out);
-    return r.ec == std::errc() && r.ptr == last && first != last;
-}
+int defaultInt(const ValueSpec& spec) { return roundToInt(spec.def.v[0], 0); }
 
 // 空白区切りの字の並び。
 std::vector<std::string> splitTokens(const std::string& text) {
@@ -115,16 +59,37 @@ bool indexInSpec(const ValueSpec& spec, int k) {
 }
 
 // 添字の並びの値（規則は UiValue.h の firstInvalidIndex）。
+// 正しくない並び（どれも選ばない）。書いた文字列を保つ（長さは kMaxTextBytes まで）。
+// 長すぎるときは、途中で切ると正しくない番号が落ちて正しい並びに化けうるので、最初の
+// 正しくない番号だけを残す。それでも正しい並びに読める・空なら "?"（空は「正しい
+// 並び」の印）。
+PropValue invalidIndexList(const ValueSpec& spec, const std::string& text) {
+    PropValue v;
+    if (utf8PrefixLength(text, kMaxTextBytes) == text.size()) {
+        v.s = text;
+    } else {
+        const std::string bad = firstInvalidIndex(spec, text);
+        v.s = bad.substr(0, utf8PrefixLength(bad, kMaxTextBytes));
+    }
+    if (v.s.empty() || firstInvalidIndex(spec, v.s).empty()) v.s = "?";
+    return v;
+}
+
+// ビットの集合として壊れた値（NaN・負・小数 = プログラムの誤り）を、黙って全部 / 一部に
+// 出さず「どれも選ばない」並びにする（Q20 の考え方）。clampValue・書き出し・JSON が
+// 同じ扱いになるよう、どれもここを通してから読む。
+PropValue checkedIndexList(const ValueSpec& spec, const PropValue& value) {
+    const bool broken = indexListValid(value) && !maskValueValid(value.v[0]);
+    return broken ? invalidIndexList(spec, xml::formatNumber(value.v[0])) : value;
+}
+
 PropValue indexListFromText(const ValueSpec& spec, const std::string& text) {
     PropValue v;
-    if (!firstInvalidIndex(spec, text).empty()) {
-        v.s = text;  // 正しくない並び: どれも選ばない・書いた文字列を保つ
-        return v;
-    }
+    if (!firstInvalidIndex(spec, text).empty()) return invalidIndexList(spec, text);
     std::vector<int> indices;
     for (const std::string& token : splitTokens(text)) {
         int k = 0;
-        readIndexToken(token, k);
+        parseIntToken(token, k);
         indices.push_back(k);
     }
     v.v[0] = double(indexMaskFromList(indices));
@@ -134,11 +99,20 @@ PropValue indexListFromText(const ValueSpec& spec, const std::string& text) {
 }  // namespace
 
 // ---- 部品 --------------------------------------------------------------------
-int roundInt(double v, int fallback) {
-    const double r = std::round(v);  // 0.5 は 0 から遠い方へ
-    // NaN はどの比較も偽 = fallback。
-    const bool inRange = r >= double(INT_MIN) && r <= double(INT_MAX);
-    return inRange ? int(r) : fallback;
+bool parseIntToken(const std::string& token, int& out) {
+    const char* first = token.data();
+    const char* last = first + token.size();
+    if (first != last && *first == '+') {
+        ++first;  // from_chars は + を読まない
+        if (first != last && (*first == '+' || *first == '-')) return false;  // 符号は 1 つだけ
+    }
+    const auto r = std::from_chars(first, last, out);
+    return r.ec == std::errc() && r.ptr == last && first != last;
+}
+
+bool parseIntText(const std::string& text, int& out) {
+    const std::vector<std::string> tokens = splitTokens(text);
+    return tokens.size() == 1 && parseIntToken(tokens[0], out);
 }
 
 std::size_t enumNameCount(const char* const* names) {
@@ -150,16 +124,23 @@ std::size_t enumNameCount(const char* const* names) {
 }
 
 int enumIndex(double v, const char* const* names, int fallback) {
-    const int k = roundInt(v, -1);
+    const int k = roundToInt(v, -1);
     const bool valid = k >= 0 && std::size_t(k) < enumNameCount(names);
     return valid ? k : fallback;
 }
 
-std::uint32_t maskOf(double v) {
-    // 32 ビットまでは double で正確に持てる。NaN はどの比較も偽 = 空。
-    if (!(v >= 0.0) || v > double(std::numeric_limits<std::uint32_t>::max())) return 0;
-    return static_cast<std::uint32_t>(v);
+// v[0] がビットの集合として持てる範囲か（0 以上で 32 ビットに入る）。maskOf と
+// maskValueValid の範囲の確かめはこれだけ。32 ビットまでは double で正確に持てる。
+// NaN はどの比較も偽 = 範囲外。
+static bool maskInRange(double v) {
+    return v >= 0.0 && v <= double(std::numeric_limits<std::uint32_t>::max());
 }
+
+std::uint32_t maskOf(double v) {
+    return maskInRange(v) ? static_cast<std::uint32_t>(v) : 0;  // 小数は切り捨て
+}
+
+bool maskValueValid(double v) { return maskInRange(v) && std::floor(v) == v; }
 
 std::uint32_t indexMaskFromList(const std::vector<int>& indices) {
     std::uint32_t mask = 0;
@@ -172,7 +153,7 @@ std::uint32_t indexMaskFromList(const std::vector<int>& indices) {
 std::string firstInvalidIndex(const ValueSpec& spec, const std::string& text) {
     for (const std::string& token : splitTokens(text)) {
         int k = 0;
-        const bool readable = readIndexToken(token, k);
+        const bool readable = parseIntToken(token, k);
         if (!readable || !indexInSpec(spec, k)) return token;
     }
     return {};
@@ -183,7 +164,7 @@ static std::string indexListText(std::uint32_t mask) {
     std::string out;
     for (const int k : indicesFromMask(mask)) {
         if (!out.empty()) out.push_back(' ');
-        out += writeInt(k);
+        out += xml::formatInt(k);
     }
     return out;
 }
@@ -212,18 +193,18 @@ bool parseValue(const ValueSpec& spec, const std::string& text, PropValue& out) 
     PropValue v = spec.def;
     switch (spec.type) {
         case PropType::Number:
-            if (readNumbers(text, v.v, 1) < 1) return false;
+            if (xml::parseNumbers(text, v.v, 1) < 1) return false;
             break;
         case PropType::Int:
-            if (readNumbers(text, v.v, 1) < 1) return false;
-            v.v[0] = roundInt(v.v[0], defaultInt(spec));
+            if (xml::parseNumbers(text, v.v, 1) < 1) return false;
+            v.v[0] = roundToInt(v.v[0], defaultInt(spec));
             break;
         case PropType::Vec2:
         case PropType::Vec3:
         case PropType::Euler:
         case PropType::Rect: {
             const std::size_t n = componentCount(spec.type);
-            if (readNumbers(text, v.v, n) < n) return false;
+            if (xml::parseNumbers(text, v.v, n) < n) return false;
             break;
         }
         case PropType::Color:
@@ -231,7 +212,7 @@ bool parseValue(const ValueSpec& spec, const std::string& text, PropValue& out) 
             break;
         case PropType::Bool: {
             bool b = false;
-            if (!readBool(text, b)) return false;
+            if (!xml::parseBool(text, b)) return false;
             v.v[0] = b ? 1.0 : 0.0;
             break;
         }
@@ -264,13 +245,13 @@ std::string formatValue(const ValueSpec& spec, const PropValue& value) {
         case PropType::Vec3:
         case PropType::Euler:
         case PropType::Rect:
-            return writeNumbers(value.v, componentCount(spec.type));
+            return xml::formatNumbers(value.v, componentCount(spec.type));
         case PropType::Color:
-            return writeNumbers(value.v, 4, editor::kColorPrecision);
+            return xml::formatNumbers(value.v, 4, editor::kColorPrecision);
         case PropType::Int:
-            return writeInt(roundInt(value.v[0], defaultInt(spec)));
+            return xml::formatInt(roundToInt(value.v[0], defaultInt(spec)));
         case PropType::Bool:
-            return writeBool(value.v[0] != 0.0);
+            return xml::formatBool(value.v[0] != 0.0);
         case PropType::Enum: {
             const int k = enumIndex(value.v[0], spec.enumNames, -1);
             return k >= 0 ? spec.enumNames[k] : "";
@@ -279,9 +260,11 @@ std::string formatValue(const ValueSpec& spec, const PropValue& value) {
         case PropType::Name:
         case PropType::Path:
             return value.s;
-        case PropType::IndexList:
+        case PropType::IndexList: {
             // 正しくない並びは書かれた文字列のまま戻す。
-            return indexListValid(value) ? indexListText(maskOf(value.v[0])) : value.s;
+            const PropValue checked = checkedIndexList(spec, value);
+            return indexListValid(checked) ? indexListText(maskOf(checked.v[0])) : checked.s;
+        }
     }
     return {};
 }
@@ -291,7 +274,7 @@ nlohmann::json valueToJson(const ValueSpec& spec, const PropValue& value) {
         case PropType::Number:
             return value.v[0];
         case PropType::Int:
-            return roundInt(value.v[0], defaultInt(spec));
+            return roundToInt(value.v[0], defaultInt(spec));
         case PropType::Vec2:
         case PropType::Vec3:
         case PropType::Euler:
@@ -309,10 +292,12 @@ nlohmann::json valueToJson(const ValueSpec& spec, const PropValue& value) {
         case PropType::Name:
         case PropType::Path:
             return value.s;
-        case PropType::IndexList:
+        case PropType::IndexList: {
             // 正しくない並びは文字列（正しい並びは番号の配列）。
-            if (!indexListValid(value)) return value.s;
-            return indicesFromMask(maskOf(value.v[0]));
+            const PropValue checked = checkedIndexList(spec, value);
+            if (!indexListValid(checked)) return checked.s;
+            return indicesFromMask(maskOf(checked.v[0]));
+        }
     }
     return nullptr;
 }
@@ -340,7 +325,7 @@ bool valueFromJson(const ValueSpec& spec, const nlohmann::json& obj, const char*
             break;
         case PropType::Int:
             if (!j.is_number()) return false;
-            v.v[0] = roundInt(editor::jsonNumber(obj, key, 0.0), defaultInt(spec));
+            v.v[0] = roundToInt(editor::jsonNumber(obj, key, 0.0), defaultInt(spec));
             break;
         case PropType::Vec2:
         case PropType::Vec3:
@@ -375,12 +360,18 @@ bool valueFromJson(const ValueSpec& spec, const nlohmann::json& obj, const char*
         case PropType::IndexList: {
             // 数の配列だけを受ける（型違いは false）。中身の規則は XML と同じ
             // （文字列の並びにして同じ関数で読む = 範囲外・小数があれば正しくない並び）。
+            // 整数の値の数（1.0 など。ブラウザの数は double）は整数として受ける。
             if (!j.is_array()) return false;
             std::string text;
             for (const auto& e : j) {
                 if (!e.is_number()) return false;
                 if (!text.empty()) text.push_back(' ');
-                text += e.dump();
+                const double d = e.get<double>();
+                // 整数の判定は roundToInt と同じ int の範囲（入らない値は fallback の 0 が
+                // 返って一致しない = 字のまま読んで正しくない並びになる）。
+                const int k = roundToInt(d, 0);
+                const bool integral = double(k) == d;
+                text += integral ? xml::formatInt(k) : e.dump();
             }
             v = indexListFromText(spec, text);
             break;
@@ -398,7 +389,7 @@ PropValue clampValue(const ValueSpec& spec, PropValue value) {
         case PropType::Rect:
         case PropType::Color:
             for (std::size_t k = 0; k < componentCount(spec.type); ++k) {
-                value.v[k] = editor::clampTerrainNumber(value.v[k], spec.lo, spec.hi,
+                value.v[k] = clampOrFallback(value.v[k], spec.lo, spec.hi,
                                                         spec.def.v[k]);
             }
             break;
@@ -406,12 +397,14 @@ PropValue clampValue(const ValueSpec& spec, PropValue value) {
             for (std::size_t k = 0; k < 3; ++k) value.v[k] = editor::clampAngleDegrees(value.v[k]);
             break;
         case PropType::Int:
-            value.v[0] = roundInt(
-                editor::clampTerrainNumber(value.v[0], spec.lo, spec.hi, spec.def.v[0]),
+            value.v[0] = roundToInt(
+                clampOrFallback(value.v[0], spec.lo, spec.hi, spec.def.v[0]),
                 defaultInt(spec));
             break;
         case PropType::Bool:
-            value.v[0] = (value.v[0] != 0.0 && value.v[0] == value.v[0]) ? 1.0 : 0.0;
+            // NaN は既定値（ヘッダの約束）。それ以外は 0 でなければ真。
+            if (!(value.v[0] == value.v[0])) value.v[0] = spec.def.v[0];
+            value.v[0] = value.v[0] != 0.0 ? 1.0 : 0.0;
             break;
         case PropType::Enum:
             value.v[0] = enumIndex(value.v[0], spec.enumNames,
@@ -432,9 +425,9 @@ PropValue clampValue(const ValueSpec& spec, PropValue value) {
         case PropType::IndexList:
             // 正しくない並びはそのまま。正しい並びも範囲の外の番号を含めば、同じ
             // 規則で正しくない並びになる（一部だけを残さない）。
-            if (indexListValid(value)) {
-                value = indexListFromText(spec, indexListText(maskOf(value.v[0])));
-            }
+            // ビットの集合として壊れた値も checkedIndexList が正しくない並びにする。
+            value = checkedIndexList(spec, value);
+            if (indexListValid(value)) value = indexListFromText(spec, indexListText(maskOf(value.v[0])));
             break;
     }
     return value;
@@ -447,7 +440,7 @@ PropValue lerpValue(const ValueSpec& spec, const PropValue& a, const PropValue& 
     for (std::size_t k = 0; k < componentCount(spec.type); ++k) {
         v.v[k] = a.v[k] + (b.v[k] - a.v[k]) * t;
     }
-    if (spec.type == PropType::Int) v.v[0] = roundInt(v.v[0], roundInt(a.v[0], 0));
+    if (spec.type == PropType::Int) v.v[0] = roundToInt(v.v[0], roundToInt(a.v[0], 0));
     return v;
 }
 

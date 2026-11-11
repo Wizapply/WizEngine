@@ -56,6 +56,18 @@ inline char32_t nextCodepoint(const std::string& s, std::size_t& i) {
     return cp;
 }
 
+// 先頭から maxBytes バイト以内で、字の途中で切らない長さ（文字列の上限で切るとき）。
+inline std::size_t utf8PrefixLength(const std::string& s, std::size_t maxBytes) {
+    std::size_t i = 0;
+    while (i < s.size()) {
+        std::size_t next = i;
+        nextCodepoint(s, next);
+        if (next > maxBytes) break;
+        i = next;
+    }
+    return i;
+}
+
 // 文字列全体をコードポイントの列にする（不正なバイト列は U+FFFD）。
 inline std::u32string decodeUtf8(const std::string& s) {
     std::u32string out;

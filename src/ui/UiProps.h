@@ -37,6 +37,9 @@ inline constexpr KindMask kKindAll = 0xFFFFFFFFu;
 // 揃え（align）。名前の並びが値（添字）の定義なので、enum と同じ順に書く。
 enum class TextAlign : std::uint8_t { Left, Center, Right };
 inline const char* const kAlignNames[] = {"left", "center", "right", nullptr};
+static_assert(sizeof(kAlignNames) / sizeof(kAlignNames[0]) - 1 ==
+                  std::size_t(TextAlign::Right) + 1,
+              "kAlignNames must have one name per TextAlign");
 
 // ---- 性質の表 ----------------------------------------------------------------
 enum class Prop : std::uint8_t {
@@ -54,17 +57,15 @@ struct PropInfo {
     const char* label;  // Inspector の表示名（日本語）
 };
 
+// 範囲外の id（Prop::Count など）はプログラムの誤り: デバッグ版は assert で止まり、
+// リリース版は表の外を読まないよう先頭の行を返す。
 const PropInfo& propInfo(Prop id);
 // 名前 → 性質。見つからなければ nullptr で、suggestion があればそこへ
 // 「近い名前」（大文字小文字違い・2 文字以内の打ち間違い。無ければ nullptr）を
 // 入れる（文書の読み込みの「もしかして」に使う）。
 const PropInfo* propFromName(const std::string& name,
                              const PropInfo** suggestion = nullptr);
-// names[0..count) のうち name に近いもの（大文字小文字を無視して一致、
-// 無ければ編集距離 2 以内で最も近いもの）。無ければ nullptr。性質の名前・
-// Canvas の属性名・種類の名前で同じ規則を使うための口。
-const char* nearestName(const std::string& name, const char* const* names,
-                        std::size_t count);
+// 「もしかして」の近い名前の規則は core/NearestName.h（性質・属性・種類の名前で共用）。
 
 // 性質の集合のビット（Prop の番号のビット）。
 using PropMask = std::uint32_t;

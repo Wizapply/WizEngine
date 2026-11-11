@@ -12,14 +12,15 @@
 namespace wizengine {
 namespace ui {
 
-// 並べ方の指定。字の大きさ・折り返し・揃えは性質の値なので、既定値も
-// 性質の表から取る（textStyleOf。値を持つ欄に既定値を書かない）。
+// 並べ方の指定。字の大きさ・折り返し・揃えは性質の値なので、textStyleOf で
+// 性質の表の既定値から作る。直接作ったときの初期値は「無効」（字の大きさ 0 =
+// 何も並べない）と中立の値で、性質の既定値の写しではない。
 struct TextStyle {
-    int font = -1;       // FontProvider::fontIndex の番号
-    double fontSize;     // 1 em の大きさ（設計上の画素）
-    double width = 0.0;  // 折り返す幅（0 以下 = 折り返さない）
-    bool wrap;
-    TextAlign align;
+    int font = -1;          // FontProvider::fontIndex の番号
+    double fontSize = 0.0;  // 1 em の大きさ（設計上の画素。0 以下 = 無効）
+    double width = 0.0;     // 折り返す幅（0 以下 = 折り返さない）
+    bool wrap = false;      // 折り返すか（width が 0 以下なら意味を持たない）
+    TextAlign align = TextAlign::Left;  // 揃え（中立 = 左）
 };
 
 // 性質（Font / FontSize / Wrap / Align）から並べ方を作る。立っていない性質は

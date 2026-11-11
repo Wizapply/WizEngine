@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "core/Clamp.h"
+#include "core/NearestName.h"
 #include "ui/UiKinds.h"
 #include "ui/UiProps.h"
 #include "ui/UiValue.h"
@@ -86,8 +88,21 @@ std::string readName(const xml::Element& e, const std::string& label, Warn& warn
     return readText(e, kNameAttr, nameSpec(), label, warn);
 }
 // 宣言の file（<font> / <ui>）。決まりは要素の file 性質と同じ（assets/ 相対・長さ）。
-std::string readFile(const xml::Element& e, const std::string& label, Warn& warn) {
-    return readText(e, kFileAttr, propInfo(Prop::File).spec, label, warn);
+// rejected = 書いてあったのに決まりで弾かれた（readText が警告済み）。
+std::string readFile(const xml::Element& e, const std::string& label, Warn& warn,
+                     bool& rejected) {
+    std::string file = readText(e, kFileAttr, propInfo(Prop::File).spec, label, warn);
+    rejected = !e.attr(kFileAttr).empty() && file.empty();
+    return file;
+}
+
+// 一覧に同じ名前があるか（フォント・UI アセットの宣言と重複の確かめ）。
+template <class T>
+bool hasName(const std::vector<T>& list, const std::string& name) {
+    for (const auto& item : list) {
+        if (item.name == name) return true;
+    }
+    return false;
 }
 
 // 性質を読む。allowed はその要素が持てる性質、keyMode はアニメのキー
@@ -95,8 +110,6 @@ std::string readFile(const xml::Element& e, const std::string& label, Warn& warn
 PropSet readProps(const xml::Element& e, PropMask allowed, bool keyMode,
                   const std::vector<const char*>& identity, const std::string& label,
                   Warn& warn) {
-    std::vector<const char*> candidates = identity;
-    for (std::size_t k = 0; k < kPropCount; ++k) candidates.push_back(propInfo(Prop(k)).name);
     PropSet props;
     for (const auto& a : e.attributes()) {
         bool isIdentity = false;
@@ -106,6 +119,11 @@ PropSet readProps(const xml::Element& e, PropMask allowed, bool keyMode,
         if (isIdentity) continue;
         const PropInfo* info = propFromName(a.first);
         if (!info) {
+            // 「もしかして」の候補は警告するときだけ作る。
+            std::vector<const char*> candidates = identity;
+            for (std::size_t k = 0; k < kPropCount; ++k) {
+                candidates.push_back(propInfo(Prop(k)).name);
+            }
             warnUnknownAttr(label, a.first, candidates, warn);
             continue;
         }
@@ -140,17 +158,15 @@ void writeProps(xml::Element& e, const PropSet& props, bool skipDefaults) {
     }
 }
 
-// 識別の番号（id / parent）。書いていなければ fallback。書いてあるのに整数として
-// 読めなければ ok = false（呼び手が警告する）で fallback。
+// 識別の番号（id / parent）。書いていなければ fallback。書いてあるのに整数の字と
+// して読めなければ（"3abc"・"1.5"・int に入らない値）ok = false（呼び手が警告する）で
+// fallback。読み方は parseIntText（前後の空白は許す。添字の並びと同じ規則）。
 int readIndex(const xml::Element& e, const char* key, int fallback, bool& ok) {
     ok = true;
     if (!e.has(key)) return fallback;
-    double v = 0.0;
-    const bool isNumber = e.numbers(key, &v, 1) == 1;
-    // int に入らない値は roundInt が fallback を返すので、2 通りで食い違えば範囲外。
-    const bool fitsInt = isNumber && roundInt(v, 0) == roundInt(v, 1);
-    ok = fitsInt;
-    return fitsInt ? roundInt(v, 0) : fallback;
+    int k = fallback;
+    ok = parseIntText(e.attr(key), k);
+    return ok ? k : fallback;
 }
 
 // 警告の見出し（"<worldbody> <canvas name=..."）。where が空なら要素だけ。
@@ -159,13 +175,6 @@ std::string elementLabel(const std::string& where, const xml::Element& e) {
     if (e.has(kIdAttr)) s += " id=" + inQuotes(e.attr(kIdAttr));
     if (e.has(kNameAttr)) s += " name=" + inQuotes(e.attr(kNameAttr));
     return s + ">";
-}
-
-bool fontDeclared(const std::vector<FontAssetDesc>& fonts, const std::string& name) {
-    for (const auto& f : fonts) {
-        if (f.name == name) return true;
-    }
-    return false;
 }
 
 // アニメ 1 本。キーの element は els の名前でなければならない。
@@ -204,9 +213,6 @@ AnimDesc readAnim(const xml::Element& e, const std::vector<ElementDesc>& els,
 void readContents(const xml::Element& c, std::vector<ElementDesc>& elements,
                   std::vector<AnimDesc>& anims, const std::vector<FontAssetDesc>* fonts,
                   const std::string& label, Warn& warn) {
-    std::vector<const char*> childNames;
-    for (std::size_t k = 0; k < kindCount(); ++k) childNames.push_back(kindAt(k).name);
-    childNames.push_back(kAnimTag);
 
     std::set<int> usedIds;
     std::vector<ElementDesc> pending;
@@ -214,6 +220,10 @@ void readContents(const xml::Element& c, std::vector<ElementDesc>& elements,
         if (child.name() == kAnimTag) continue;  // 要素を読み終えてから
         const ElementKindInfo* kind = kindInfo(child.name());
         if (!kind) {
+            // 「もしかして」の候補（種類の名前と anim）は警告するときだけ作る。
+            std::vector<const char*> childNames;
+            for (std::size_t k = 0; k < kindCount(); ++k) childNames.push_back(kindAt(k).name);
+            childNames.push_back(kAnimTag);
             const char* near = nearestName(child.name(), childNames.data(), childNames.size());
             std::string msg = label + ": unsupported <" + child.name() + ">";
             if (near) msg += " - did you mean <" + std::string(near) + ">?";
@@ -258,7 +268,7 @@ void readContents(const xml::Element& c, std::vector<ElementDesc>& elements,
         }
         const bool fontChecked = fonts != nullptr && el.props.has(Prop::Font);
         const std::string& font = el.props.text(Prop::Font);
-        if (fontChecked && !font.empty() && !fontDeclared(*fonts, font)) {
+        if (fontChecked && !font.empty() && !hasName(*fonts, font)) {
             warn(elLabel + ": font=" + inQuotes(font) +
                  " is not declared in <asset> - using the default font");
         }
@@ -342,8 +352,8 @@ bool readUiAsset(const xml::Element& e, const std::vector<FontAssetDesc>* fonts,
     a.name = readName(e, label, warn);
     if (allowFile) {
         warnUnknownAttrs(e, {kNameAttr, kFileAttr}, label, warn);
-        a.file = readFile(e, label, warn);
-        const bool fileRejected = !e.attr(kFileAttr).empty() && a.file.empty();
+        bool fileRejected = false;
+        a.file = readFile(e, label, warn, fileRejected);
         if (fileRejected) {
             warn(label + ": the reference is ignored (its file is not allowed)");
             return false;
@@ -401,15 +411,14 @@ void readUiAssets(const xml::Element& asset, std::vector<FontAssetDesc>& fonts,
         warnUnknownAttrs(*f, {kNameAttr, kFileAttr}, label, warn);
         FontAssetDesc font;
         font.name = readName(*f, label, warn);
-        font.file = readFile(*f, label, warn);
-        // 許されない file は readFile が警告済み（同じ要素に 2 回言わない）。
-        const bool fileRejected = !f->attr(kFileAttr).empty() && font.file.empty();
-        if (fileRejected) continue;
+        bool fileRejected = false;
+        font.file = readFile(*f, label, warn, fileRejected);
+        if (fileRejected) continue;  // readFile が警告済み（同じ要素に 2 回言わない）
         if (font.name.empty() || font.file.empty()) {
             warn(label + ": <font> needs name=\"...\" and file=\"...\" - ignored");
             continue;
         }
-        if (fontDeclared(fonts, font.name)) {
+        if (hasName(fonts, font.name)) {
             warn(label + ": duplicates an earlier <font> - ignored");
             continue;
         }
@@ -424,11 +433,7 @@ void readUiAssets(const xml::Element& asset, std::vector<FontAssetDesc>& fonts,
                  "ignored");
             continue;
         }
-        bool dup = false;
-        for (const auto& prev : uiAssets) {
-            if (prev.name == a.name) dup = true;
-        }
-        if (dup) {
+        if (hasName(uiAssets, a.name)) {
             warn(label + ": duplicates an earlier <ui> - ignored");
             continue;
         }
@@ -463,18 +468,14 @@ void readCanvases(const xml::Element& world, const std::vector<FontAssetDesc>& f
         }
         // 正しくない cameras は 1 種類の文で知らせる（Q20: どのカメラにも出さない）。
         if (!c.invalidCameras.empty()) {
-            const ValueSpec& cams = canvasAttrFromName("cameras")->spec;
+            const ValueSpec& cams = canvasAttrFromName(kCanvasCamerasAttr)->spec;
             warn(label + ": cameras=" + shownValue(c.invalidCameras) + ": camera " +
                  firstInvalidIndex(cams, c.invalidCameras) + " does not exist (" +
-                 std::to_string(roundInt(cams.lo, 0)) + "-" + std::to_string(roundInt(cams.hi, 0)) +
+                 std::to_string(roundToInt(cams.lo, 0)) + "-" + std::to_string(roundToInt(cams.hi, 0)) +
                  ") - the canvas is shown on no camera until this is fixed");
         }
         if (!c.ui.empty()) {
-            bool declared = false;
-            for (const auto& u : uiAssets) {
-                if (u.name == c.ui) declared = true;
-            }
-            if (!declared) {
+            if (!hasName(uiAssets, c.ui)) {
                 warn(label + ": ui=" + inQuotes(c.ui) + " is not declared in <asset>");
             }
             if (!e->children().empty()) {
@@ -491,9 +492,8 @@ void readCanvases(const xml::Element& world, const std::vector<FontAssetDesc>& f
 
 // ---- 共用の UI のファイル ----------------------------------------------------
 std::string uiAssetToXmlText(const UiAssetDesc& asset) {
-    UiAssetDesc a = asset;
-    a.file.clear();  // ファイルの中は中身そのもの（自分を参照しない）
-    return xml::write(uiAssetElement(a, true));
+    // 中身ごと書く（withContents = true は file を書かない = 自分を参照しない）。
+    return xml::write(uiAssetElement(asset, true));
 }
 
 bool parseUiAssetXml(const std::string& text, UiAssetDesc& out, std::string& error,
@@ -506,8 +506,7 @@ bool parseUiAssetXml(const std::string& text, UiAssetDesc& out, std::string& err
              ">, expected <ui> - reading its elements anyway");
     }
     out = UiAssetDesc{};
-    readUiAsset(root, nullptr, false, "<ui>", warn, out);
-    out.file.clear();
+    readUiAsset(root, nullptr, false, "<ui>", warn, out);  // file は読まない（allowFile = false）
     return true;
 }
 

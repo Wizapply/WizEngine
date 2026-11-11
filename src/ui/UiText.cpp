@@ -22,30 +22,26 @@ bool isCjk(char32_t cp) { return cp >= kCjkStart && cp != kIdeographicSpace; }
 struct Item {
     char32_t cp;
     GlyphInfo glyph;
+    float kern = 0.0f;  // 同じ行の前の字とのカーニング（行の頭は 0。引くのは 1 組 1 回）
 };
 using Line = std::vector<Item>;
 
-// 行の k 番目の字の、前の字からの字送り（カーニング込み、基準の画素）。
-float stepBefore(const Line& line, std::size_t k, int font, FontProvider& fonts) {
-    return k > 0 ? fonts.kerning(font, line[k - 1].cp, line[k].cp) : 0.0f;
-}
-
 // 行の幅（基準の画素）。trimTrailing で行末の空白を除く。
-float lineWidth(const Line& line, int font, FontProvider& fonts, bool trimTrailing) {
+float lineWidth(const Line& line, bool trimTrailing) {
     std::size_t end = line.size();
     while (trimTrailing && end > 0 && isSpace(line[end - 1].cp)) --end;
     float w = 0.0f;
-    for (std::size_t k = 0; k < end; ++k) {
-        w += stepBefore(line, k, font, fonts) + line[k].glyph.advance;
-    }
+    for (std::size_t k = 0; k < end; ++k) w += line[k].kern + line[k].glyph.advance;
     return w;
 }
 
-// 字 1 個。空白として扱う字（タブなど）でフォントに字が無いものは、豆腐では
-// なく半角の空白と同じ字送りの空の字にする（空白は絵を持たない）。
+// 字 1 個。空白として扱う字（タブなど）で、フォントに字が無い・字送りが 0 のものは、
+// 豆腐ではなく半角の空白と同じ字送りの空の字にする（空白は絵を持たない。半角の空白
+// そのものも同じ = フォントが無いときも豆腐にしない）。
 Item makeItem(char32_t cp, int font, FontProvider& fonts) {
     Item item{cp, fonts.glyph(font, cp)};
-    if (isSpace(cp) && item.glyph.tofu) {
+    const bool unusableSpace = item.glyph.tofu || !(item.glyph.advance > 0.0f);
+    if (isSpace(cp) && unusableSpace) {
         const GlyphInfo space = fonts.glyph(font, U' ');
         item.glyph = GlyphInfo{};
         item.glyph.advance = space.advance;
@@ -68,14 +64,14 @@ std::vector<Line> breakLines(const std::string& utf8, int font, float limit,
             breakAt = 0;
             continue;
         }
-        const Item item = makeItem(cp, font, fonts);
+        Item item = makeItem(cp, font, fonts);
         const bool space = isSpace(cp);
         const bool cjk = isCjk(cp);
         if (cjk) breakAt = lines.back().size();  // 漢字の前で折り返せる
-        const float kern = lines.back().empty()
-                               ? 0.0f
-                               : fonts.kerning(font, lines.back().back().cp, cp);
-        const float next = width + kern + item.glyph.advance;
+        // 前の字とのカーニング（この 1 回だけ引き、字に持たせる）。
+        item.kern = lines.back().empty() ? 0.0f
+                                         : fonts.kerning(font, lines.back().back().cp, cp);
+        const float next = width + item.kern + item.glyph.advance;
         // 折り返すのは: 折り返しが有効・空白でない（空白ははみ出してよい）・
         // 行に字がある・幅を超える、のすべて。
         const bool wrapping = limit > 0.0f;
@@ -90,23 +86,24 @@ std::vector<Line> breakLines(const std::string& utf8, int font, float limit,
             const auto firstInk = std::find_if(rest.begin(), rest.end(),
                                                [](const Item& i) { return !isSpace(i.cp); });
             rest.erase(rest.begin(), firstInk);
+            if (!rest.empty()) rest.front().kern = 0.0f;  // 行の頭になった
             lines.push_back(std::move(rest));
-            width = lineWidth(lines.back(), font, fonts, false);
+            width = lineWidth(lines.back(), false);
             breakAt = 0;
-            float kern2 = lines.back().empty()
-                              ? 0.0f
-                              : fonts.kerning(font, lines.back().back().cp, cp);
+            // 送った語の最後の字は前の行の最後の字と同じなので、カーニングはそのまま。
+            // 送った語が空なら今の字が行の頭。
+            if (lines.back().empty()) item.kern = 0.0f;
             // 送った語（幅に収まっている）に今の字を足すと超えるなら、送った語を
             // 1 行にして今の字から次の行を始める（字の境での切断と同じ）。
             const bool restOverflows = !lines.back().empty() &&
-                                       width + kern2 + item.glyph.advance > limit;
+                                       width + item.kern + item.glyph.advance > limit;
             if (restOverflows) {
                 lines.emplace_back();
                 width = 0.0f;
-                kern2 = 0.0f;
+                item.kern = 0.0f;
             }
             lines.back().push_back(item);
-            width += kern2 + item.glyph.advance;
+            width += item.kern + item.glyph.advance;
         } else {
             lines.back().push_back(item);
             width = next;
@@ -131,7 +128,7 @@ TextLayout layoutText(const std::string& utf8, const TextStyle& style, FontProvi
     const double lineHeight = (m.ascent - m.descent + m.lineGap) * scale;
     std::vector<double> widths;
     for (const Line& line : lines) {
-        widths.push_back(lineWidth(line, style.font, fonts, true) * scale);
+        widths.push_back(lineWidth(line, true) * scale);
         out.width = std::max(out.width, widths.back());
     }
     // 揃えの基準の幅: 要素の幅（無ければいちばん長い行）。
@@ -143,7 +140,7 @@ TextLayout layoutText(const std::string& utf8, const TextStyle& style, FontProvi
         if (style.align == TextAlign::Right) pen = box - widths[i];
         const double baseline = double(i) * lineHeight + m.ascent * scale;
         for (std::size_t k = 0; k < line.size(); ++k) {
-            pen += stepBefore(line, k, style.font, fonts) * scale;
+            pen += line[k].kern * scale;
             const GlyphInfo& g = line[k].glyph;
             if (!g.empty) {
                 PlacedGlyph p;
