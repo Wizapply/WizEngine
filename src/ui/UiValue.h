@@ -32,7 +32,9 @@ enum class PropType : std::uint8_t {
     Text,       // s（自由な文字列。hi は最大バイト数）
     Name,       // s（sanitizeSafeName で正規化する参照名）
     Path,       // s（assets/ からの相対パス。hi は最大バイト数）
-    IndexList,  // v[0] が添字のビットの集合（0 = 空 = 「全部」の意味は使う側）
+    IndexList,  // v[0] が添字のビットの集合（0 = 空 = 「全部」の意味は使う側）。
+                // 正しくない並び（範囲外・読めない番号を含む）は s に書かれた文字列を
+                // 持ち、どの番号も選ばない（indexListValid）。
 };
 
 // 値。数値系は v、文字列系は s を使う（型は表が決める）。
@@ -84,12 +86,23 @@ std::uint32_t indexMaskFromList(const std::vector<int>& indices);
 // ビットの集合 → 添字の並び（小さい順）。
 std::vector<int> indicesFromMask(std::uint32_t mask);
 
+// 添字の並びの規則（唯一の定義）: 空白区切りの整数で、どれも spec の lo..hi
+// （かつ 0..kMaxIndexBits-1）に入っていること。1 つでも外れる・整数として
+// 読めない番号があれば、並び全体が「正しくない並び」になり、どの番号も選ばない
+// （一部だけを残すことはしない）。正しくない並びは書かれた文字列を s に保ち、
+// 書き出しでそのまま戻す（書いた人が自分の番号を見て直せる）。
+// text の中で最初に正しくない番号（無ければ空 = 正しい並び）。
+std::string firstInvalidIndex(const ValueSpec& spec, const std::string& text);
+// 正しい並びか（正しくない並びは s に元の文字列を持つ）。
+inline bool indexListValid(const PropValue& value) { return value.s.empty(); }
+
 // 型の成分の数（数値系）。文字列系と Bool / Enum / IndexList は 1。
 std::size_t componentCount(PropType type);
 
 // ---- 表記と丸め --------------------------------------------------------------
 // XML の属性文字列 → 値。型に合わなければ false で out は変えない。色は
-// editor::parseColorText（"r g b [a]" と "#rrggbb"）。
+// editor::parseColorText（"r g b [a]" と "#rrggbb"）。IndexList は失敗しない
+// （正しくない並びも値。上の firstInvalidIndex の規則。JSON も同じ規則）。
 bool parseValue(const ValueSpec& spec, const std::string& text, PropValue& out);
 // 値 → XML の属性文字列（parseValue で読み戻せる形）。
 std::string formatValue(const ValueSpec& spec, const PropValue& value);

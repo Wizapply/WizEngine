@@ -3,6 +3,7 @@
 #include "core/MathConstants.h"
 #include "document/XmlValues.h"
 #include "formula/FormulaXml.h"
+#include "ui/UiXml.h"
 #include "vehicle/VehicleXml.h"
 
 #include <algorithm>
@@ -22,66 +23,9 @@ namespace {
 double toDegrees(double radians) { return radians * 180.0 / kPi; }
 double toRadians(double degrees) { return degrees * kPi / 180.0; }
 
-// ---- 警告の集積 -------------------------------------------------------------
-// 「読めるけれど意図と違うかもしれない」内容を文で集める。読み取りを止めない
-// （既定値へ落として続行する）ので、代わりにここへ痕跡を残す。out が無ければ
-// 何もしない。壊れた文書ほど警告が湧くので、件数に上限を置く。
-class Warn {
-public:
-    explicit Warn(std::vector<std::string>* out) : out_(out) {}
-    void operator()(std::string msg) {
-        if (!out_) return;
-        if (out_->size() >= kMax) {
-            if (!overflowNoted_) {
-                out_->push_back("(further warnings omitted)");
-                overflowNoted_ = true;
-            }
-            return;
-        }
-        out_->push_back(std::move(msg));
-    }
+// 警告の集積（Warn）・語彙の照合（unknownName / warnUnknownChildren）・
+// Vec3 の読み書きは document/XmlValues.h（UI の文書と共用）。
 
-private:
-    static constexpr std::size_t kMax = 40;
-    std::vector<std::string>* out_;
-    bool overflowNoted_ = false;
-};
-
-// 名前が語彙に無いか。FromName 系は未知の名前で fallback をそのまま返すので、
-// 別々の fallback で 2 回呼んで結果が食い違えば「知らない名前」と分かる
-// （語彙の文字列一覧をここへ複製して同期漏れを作らないための判定）。
-template <typename T, typename F>
-bool unknownName(const F& fromName, const std::string& s, T a, T b) {
-    return fromName(s, a) != fromName(s, b);
-}
-
-// 親の子要素のうち「知らない名前」を警告する。節を増やしたら known へ足す
-// （SceneDocument.h の「拡張の手順」）。
-void warnUnknownChildren(const xml::Element& parent,
-                         std::initializer_list<const char*> known,
-                         const char* where, Warn& warn) {
-    for (const auto& c : parent.children()) {
-        bool ok = false;
-        for (const char* k : known) {
-            if (c.name() == k) { ok = true; break; }
-        }
-        if (!ok) {
-            warn(std::string("unsupported <") + c.name() + "> in " + where +
-                 " - ignored");
-        }
-    }
-}
-
-// ---- 属性の読み書き（Vec3 と色）--------------------------------------------
-void setVec3(xml::Element& e, const char* key, const Vec3d& v) {
-    const double a[3] = {v.x, v.y, v.z};
-    e.setNumbers(key, a, 3);
-}
-Vec3d getVec3(const xml::Element& e, const char* key, const Vec3d& fallback) {
-    double a[3] = {fallback.x, fallback.y, fallback.z};
-    e.numbers(key, a, 3);
-    return Vec3d{a[0], a[1], a[2]};
-}
 // 零ベクトルか（既定値と同じ置き場所・回転を書かないため）。
 bool isZero(const Vec3d& v) { return v.x == 0.0 && v.y == 0.0 && v.z == 0.0; }
 // 色の読み書き（setColor / getColor）は document/XmlValues.h。
@@ -1428,7 +1372,7 @@ xml::Element toXml(const SceneDocument& doc) {
     // <asset>: メッシュ（glTF）とイベントアセット（ノードの中身）。どちらも
     // 「名前で参照される素材」なので MJCF と同じくこの節にまとめる。
     if (!doc.meshes.empty() || !doc.eventAssets.empty() || !doc.formulas.empty() ||
-        !doc.prefabs.empty()) {
+        !doc.prefabs.empty() || !doc.fonts.empty() || !doc.uiAssets.empty()) {
         xml::Element asset("asset");
         for (const auto& m : doc.meshes) {
             xml::Element e("mesh");
@@ -1442,6 +1386,8 @@ xml::Element toXml(const SceneDocument& doc) {
         }
         for (const auto& f : doc.formulas) asset.append(formula::formulaElement(f));
         for (const auto& pf : doc.prefabs) asset.append(prefabElement(pf));
+        for (const auto& f : doc.fonts) asset.append(ui::fontElement(f));
+        for (const auto& u : doc.uiAssets) asset.append(ui::uiAssetElement(u));
         root.append(std::move(asset));
     }
 
@@ -1479,6 +1425,7 @@ xml::Element toXml(const SceneDocument& doc) {
     for (const auto& b : doc.bodies) world.append(bodyElement(b));
     for (const auto& c : doc.cables) world.append(cableElement(c, doc.bodies));
     for (const auto& m : doc.emitters) world.append(emitterElement(m, doc.bodies));
+    for (const auto& c : doc.canvases) world.append(ui::canvasElement(c));
     root.append(std::move(world));
 
     if (!doc.joints.empty()) {
@@ -1574,7 +1521,12 @@ SceneDocument fromXml(const xml::Element& root,
         // <event>（イベントアセット）はここでは名前だけ見て、中身は
         // worldbody を読んだあとで取り込む（ノードの対象番号をオブジェクト
         // 一覧と突き合わせて検証するため）。
-        warnUnknownChildren(*asset, {"mesh", "event", "formula", "prefab"}, "<asset>", warn);
+        warnUnknownChildren(*asset,
+                            {"mesh", "event", "formula", "prefab", ui::kFontTag,
+                             ui::kUiAssetTag},
+                            "<asset>", warn);
+        // UI のフォントと UI アセット（ui/UiXml.h。フォントを先に読む）。
+        ui::readUiAssets(*asset, doc.fonts, doc.uiAssets, warn);
         // 計算式アセット。名前はイベントと同じ規則（英数字と _ -）。
         for (const xml::Element* fe : asset->all("formula")) {
             std::vector<std::string> fw;
@@ -1675,7 +1627,7 @@ SceneDocument fromXml(const xml::Element& root,
     if (const xml::Element* world = root.first("worldbody")) {
         warnUnknownChildren(*world,
                             {"environment", "ground", "terrain", "light", "camera",
-                             "body", "cable", "emitter"},
+                             "body", "cable", "emitter", ui::kCanvasTag},
                             "<worldbody>", warn);
 
         // 環境光と地面は worldbody 直下の単一要素。2 個目以降は警告して無視。
@@ -1766,6 +1718,8 @@ SceneDocument fromXml(const xml::Element& root,
         for (const xml::Element* m : world->all("emitter")) {
             doc.emitters.push_back(emitterFromXml(*m, doc.bodies, warn));
         }
+        // UI の Canvas（ui/UiXml.h）。フォントと UI アセットの宣言は <asset> で読んだ。
+        ui::readCanvases(*world, doc.fonts, doc.uiAssets, doc.canvases, warn);
     }
 
     if (const xml::Element* eq = root.first("equality")) {

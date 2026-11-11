@@ -21,12 +21,17 @@ std::string escape(const std::string& in) {
             case '>': out += "&gt;"; break;
             case '"': out += "&quot;"; break;
             case '\'': out += "&apos;"; break;
+            // 改行・CR・タブは文字参照で書く（UI の文字の改行を保存で残すため）。
+            // 生のまま書くと、XML の属性値の正規化でほかの読み手は空白に
+            // 変えてしまう（この DOM の読み込みは素通しだが、ファイルは人や
+            // ほかの道具も読む）。読み込みの unescape は &#10; などを戻せる。
+            case '\n': out += "&#10;"; break;
+            case '\r': out += "&#13;"; break;
+            case '\t': out += "&#9;"; break;
             default:
-                // 制御文字は XML に入れられない。落として続ける（保存名や
+                // ほかの制御文字は XML に入れられない。落として続ける（保存名や
                 // オブジェクト名に紛れ込んでも壊れたファイルにしないため）。
-                if (static_cast<unsigned char>(c) >= 0x20 || c == '\t') {
-                    out.push_back(c);
-                }
+                if (static_cast<unsigned char>(c) >= 0x20) out.push_back(c);
                 break;
         }
     }

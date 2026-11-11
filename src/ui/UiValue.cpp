@@ -6,6 +6,7 @@
 #include "document/SceneXml.h"
 #include "document/XmlValues.h"
 
+#include <charconv>
 #include <climits>
 #include <limits>
 #include <cmath>
@@ -84,6 +85,52 @@ std::size_t utf8PrefixLength(const std::string& s, std::size_t maxBytes) {
 
 int defaultInt(const ValueSpec& spec) { return roundInt(spec.def.v[0], 0); }
 
+// 番号 1 つ（空白を含まない字の並び）を整数として読む。全部が整数の字でなければ false。
+bool readIndexToken(const std::string& token, int& out) {
+    const char* first = token.data();
+    const char* last = first + token.size();
+    if (first != last && *first == '+') ++first;  // from_chars は + を読まない
+    const auto r = std::from_chars(first, last, out);
+    return r.ec == std::errc() && r.ptr == last && first != last;
+}
+
+// 空白区切りの字の並び。
+std::vector<std::string> splitTokens(const std::string& text) {
+    std::vector<std::string> out;
+    std::size_t i = 0;
+    while (i < text.size()) {
+        const std::size_t start = text.find_first_not_of(" \t\r\n", i);
+        if (start == std::string::npos) break;
+        const std::size_t end = text.find_first_of(" \t\r\n", start);
+        out.push_back(text.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        i = end == std::string::npos ? text.size() : end;
+    }
+    return out;
+}
+
+// 番号が spec の範囲に入るか（ビットとして持てる範囲も見る）。
+bool indexInSpec(const ValueSpec& spec, int k) {
+    const bool representable = k >= 0 && k < kMaxIndexBits;
+    return representable && double(k) >= spec.lo && double(k) <= spec.hi;
+}
+
+// 添字の並びの値（規則は UiValue.h の firstInvalidIndex）。
+PropValue indexListFromText(const ValueSpec& spec, const std::string& text) {
+    PropValue v;
+    if (!firstInvalidIndex(spec, text).empty()) {
+        v.s = text;  // 正しくない並び: どれも選ばない・書いた文字列を保つ
+        return v;
+    }
+    std::vector<int> indices;
+    for (const std::string& token : splitTokens(text)) {
+        int k = 0;
+        readIndexToken(token, k);
+        indices.push_back(k);
+    }
+    v.v[0] = double(indexMaskFromList(indices));
+    return v;
+}
+
 }  // namespace
 
 // ---- 部品 --------------------------------------------------------------------
@@ -120,6 +167,25 @@ std::uint32_t indexMaskFromList(const std::vector<int>& indices) {
         if (k >= 0 && k < kMaxIndexBits) mask |= 1u << unsigned(k);
     }
     return mask;
+}
+
+std::string firstInvalidIndex(const ValueSpec& spec, const std::string& text) {
+    for (const std::string& token : splitTokens(text)) {
+        int k = 0;
+        const bool readable = readIndexToken(token, k);
+        if (!readable || !indexInSpec(spec, k)) return token;
+    }
+    return {};
+}
+
+// ビットの集合を並びの文字列に（正しい並びの書き出し。この .cpp だけで使う）。
+static std::string indexListText(std::uint32_t mask) {
+    std::string out;
+    for (const int k : indicesFromMask(mask)) {
+        if (!out.empty()) out.push_back(' ');
+        out += writeInt(k);
+    }
+    return out;
 }
 
 std::vector<int> indicesFromMask(std::uint32_t mask) {
@@ -183,14 +249,7 @@ bool parseValue(const ValueSpec& spec, const std::string& text, PropValue& out) 
             v.s = text;
             break;
         case PropType::IndexList: {
-            double a[kMaxIndexBits];
-            const std::size_t n = readNumbers(text, a, kMaxIndexBits);
-            // 1 個も読めないのに空白以外の字があれば不正（空 = 空の集合は可）。
-            const bool blank = text.find_first_not_of(" \t\r\n") == std::string::npos;
-            if (n == 0 && !blank) return false;
-            std::vector<int> indices;
-            for (std::size_t k = 0; k < n; ++k) indices.push_back(roundInt(a[k], -1));
-            v.v[0] = double(indexMaskFromList(indices));
+            v = indexListFromText(spec, text);
             break;
         }
     }
@@ -220,14 +279,9 @@ std::string formatValue(const ValueSpec& spec, const PropValue& value) {
         case PropType::Name:
         case PropType::Path:
             return value.s;
-        case PropType::IndexList: {
-            std::string out;
-            for (const int k : indicesFromMask(maskOf(value.v[0]))) {
-                if (!out.empty()) out.push_back(' ');
-                out += writeInt(k);
-            }
-            return out;
-        }
+        case PropType::IndexList:
+            // 正しくない並びは書かれた文字列のまま戻す。
+            return indexListValid(value) ? indexListText(maskOf(value.v[0])) : value.s;
     }
     return {};
 }
@@ -256,6 +310,8 @@ nlohmann::json valueToJson(const ValueSpec& spec, const PropValue& value) {
         case PropType::Path:
             return value.s;
         case PropType::IndexList:
+            // 正しくない並びは文字列（正しい並びは番号の配列）。
+            if (!indexListValid(value)) return value.s;
             return indicesFromMask(maskOf(value.v[0]));
     }
     return nullptr;
@@ -317,13 +373,16 @@ bool valueFromJson(const ValueSpec& spec, const nlohmann::json& obj, const char*
             v.s = editor::jsonString(obj, key, "");
             break;
         case PropType::IndexList: {
+            // 数の配列だけを受ける（型違いは false）。中身の規則は XML と同じ
+            // （文字列の並びにして同じ関数で読む = 範囲外・小数があれば正しくない並び）。
             if (!j.is_array()) return false;
-            std::vector<int> indices;
+            std::string text;
             for (const auto& e : j) {
                 if (!e.is_number()) return false;
-                indices.push_back(roundInt(e.get<double>(), -1));
+                if (!text.empty()) text.push_back(' ');
+                text += e.dump();
             }
-            v.v[0] = double(indexMaskFromList(indices));
+            v = indexListFromText(spec, text);
             break;
         }
     }
@@ -370,15 +429,13 @@ PropValue clampValue(const ValueSpec& spec, PropValue value) {
             if (tooLong || !allowed) value.s = spec.def.s;
             break;
         }
-        case PropType::IndexList: {
-            std::vector<int> kept;
-            for (const int k : indicesFromMask(maskOf(value.v[0]))) {
-                const bool inRange = double(k) >= spec.lo && double(k) <= spec.hi;
-                if (inRange) kept.push_back(k);
+        case PropType::IndexList:
+            // 正しくない並びはそのまま。正しい並びも範囲の外の番号を含めば、同じ
+            // 規則で正しくない並びになる（一部だけを残さない）。
+            if (indexListValid(value)) {
+                value = indexListFromText(spec, indexListText(maskOf(value.v[0])));
             }
-            value.v[0] = double(indexMaskFromList(kept));
             break;
-        }
     }
     return value;
 }
@@ -396,6 +453,7 @@ PropValue lerpValue(const ValueSpec& spec, const PropValue& a, const PropValue& 
 
 bool sameValue(const ValueSpec& spec, const PropValue& a, const PropValue& b) {
     if (isString(spec.type)) return a.s == b.s;
+    if (spec.type == PropType::IndexList && a.s != b.s) return false;  // 正しくない並び
     for (std::size_t k = 0; k < componentCount(spec.type); ++k) {
         if (a.v[k] != b.v[k]) return false;
     }

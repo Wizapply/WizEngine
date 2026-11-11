@@ -463,7 +463,8 @@ set(WIZ_UI_SOURCES
     src/ui/UiMesh.cpp
     src/ui/UiProps.cpp
     src/ui/UiText.cpp
-    src/ui/UiValue.cpp)
+    src/ui/UiValue.cpp
+    src/ui/UiXml.cpp)
 
 add_executable(wizengine
     src/main.cpp
