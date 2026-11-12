@@ -8,6 +8,8 @@
 #include <chrono/core/ChQuaternion.h>
 #include <chrono/core/ChVector3.h>
 
+#include "physics/PhysicsBackend.h"
+
 // Where the time went inside the last physics step (seconds), straight from
 // Chrono's own timers. Useful for deciding what to optimise: a solver-dominated
 // step wants fewer iterations, a collision-dominated one wants a smaller
@@ -20,13 +22,10 @@ struct StepTimers {
     double update = 0.0;
 };
 
-// Which Chrono system to build on. Multicore needs a Chrono built with the
-// MULTICORE module (CMake: -DWIZ_USE_MULTICORE=ON); if that is not available
-// the world silently falls back to Core and says so on stdout.
-enum class PhysicsBackend {
-    Core,       // ChSystemNSC - serial solver, supports sleeping
-    Multicore,  // ChSystemMulticoreNSC - OpenMP solver + collision, no sleeping
-};
+// Which Chrono system to build on: PhysicsBackend（physics/PhysicsBackend.h。
+// 起動設定 app/AppConfig が Chrono 抜きで読めるよう、enum だけ別の軽い
+// ヘッダに置いてある）。If Multicore is not compiled in, the world falls back
+// to Core and says so on stdout.
 
 // True when this build can actually use PhysicsBackend::Multicore.
 bool multicoreAvailable();
