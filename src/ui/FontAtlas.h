@@ -10,7 +10,8 @@
 #include "ui/UiSdfParams.h"  // kSdfBasePx
 
 // 字の置き場（SDF のアトラス）。字を「輪郭までの距離」の 1 チャンネル画像
-// （R8）として stb_truetype で作り、stb_rect_pack で 1 枚に詰める。
+// （R8）にして、stb_rect_pack で 1 枚に詰める。字は stb_truetype で白黒の絵として塗り、
+// 距離は ui/UiSdf の自前の計算で出す（stb の距離の関数は 3 次の曲線 = CFF の字を扱えない）。
 //
 // 使い方（1 フレームぶん）:
 //   atlas.beginUse();             // この組み立てで使う字の印を消す

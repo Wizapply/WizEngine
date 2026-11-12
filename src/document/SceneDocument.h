@@ -59,7 +59,7 @@
 //                                        PrefabDesc）。<body> の <prefab name/> で付ける。
 //                                        collide="true" の部品（箱 / 球）は付け先の
 //                                        当たり形状に足される（階段など）
-//       <font name="jp" file="fonts/NotoSansJP-Regular.ttf"/>
+//       <font name="jp" file="fonts/NotoSansJP-Regular.otf"/>
 //                                    ... UI の字のフォント（<text font="jp">）
 //       <ui name="hud" file="ui/hud.xml"/>
 //                                    ... UI アセット（<canvas ui="hud">）。file が

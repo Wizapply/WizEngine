@@ -14,7 +14,7 @@
 //
 // 書式:
 //   <asset>
-//     <font name="jp" file="fonts/NotoSansJP-Regular.ttf"/>
+//     <font name="jp" file="fonts/NotoSansJP-Regular.otf"/>
 //     <ui name="hud" file="ui/hud.xml"/>          ... 共用の UI（中身はファイル）
 //     <ui name="menu"> <image .../> ... </ui>     ... このシーン専用の UI
 //   </asset>
