@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "document/SceneXml.h"
+#include "core/Xml.h"
 #include "document/XmlValues.h"
 #include "ui/UiTypes.h"
 

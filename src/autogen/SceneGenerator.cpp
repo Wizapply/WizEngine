@@ -21,8 +21,8 @@
 #include "autogen/SceneLayout.h"
 #include "core/Log.h"
 #include "core/SafeName.h"
+#include "core/Xml.h"
 #include "document/SceneDocument.h"
-#include "document/SceneXml.h"
 
 namespace wizengine {
 namespace autogen {

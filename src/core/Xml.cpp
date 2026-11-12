@@ -1,4 +1,4 @@
-#include "document/SceneXml.h"
+#include "core/Xml.h"
 
 #include "core/Clamp.h"
 

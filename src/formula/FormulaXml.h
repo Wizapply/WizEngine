@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "document/SceneXml.h"
+#include "core/Xml.h"
 #include "formula/Formula.h"
 
 // ノード式の XML（シーン文書の <asset> の <formula>）:

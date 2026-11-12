@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "document/EditorTypes.h"
-#include "document/SceneXml.h"
+#include "core/Xml.h"
 
 // シーン文書の値の表記（属性文字列 ⇄ 値）と読み取りの警告のうち、シーン文書
 // （SceneDocument.cpp）と UI（ui/UiValue.cpp・ui/UiXml.cpp）が共用するもの。

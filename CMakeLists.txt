@@ -320,7 +320,7 @@ endif()
 # ---------------------------------------------------------------------------
 # ソースは担当ごとのフォルダに分けてある（src/ が include のルートで、
 # #include "core/Log.h" のようにフォルダ名から書く）:
-#   core/       ログ・例外・版・計測・CPU ピン留めなど、エンジン非依存の土台
+#   core/       ログ・例外・版・計測・CPU ピン留め・XML の読み書きなど、エンジン非依存の土台
 #   physics/    Chrono のラッパと glTF 凸包（当たり判定）
 #   render/     Filament のラッパと画像 / HDR / glTF の読み込み
 #   streaming/  HTTP・WebRTC・GStreamer の出力
@@ -344,7 +344,8 @@ set(WIZ_CORE_SOURCES
     src/core/Log.cpp
     src/core/PortScan.cpp
     src/core/Trash.cpp
-    src/core/Versions.cpp)
+    src/core/Versions.cpp
+    src/core/Xml.cpp)
 set(WIZ_PHYSICS_SOURCES
     src/physics/BodyFactory.cpp
     src/physics/BodyLoads.cpp
@@ -393,8 +394,7 @@ set(WIZ_STREAMING_SOURCES
     src/streaming/VideoStreamer.cpp
     src/streaming/WebRtcStreamer.cpp)
 set(WIZ_DOCUMENT_SOURCES
-    src/document/SceneDocument.cpp
-    src/document/SceneXml.cpp)
+    src/document/SceneDocument.cpp)
 set(WIZ_SCENE_SOURCES
     src/scene/CameraObject.cpp
     src/scene/EditorState.cpp

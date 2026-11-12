@@ -4,7 +4,7 @@
 #include "core/SafeName.h"
 #include "core/Utf8.h"
 #include "document/EditorTypes.h"
-#include "document/SceneXml.h"
+#include "core/Xml.h"
 #include "document/XmlValues.h"
 
 #include <charconv>
@@ -16,7 +16,7 @@ namespace ui {
 namespace {
 
 // ---- 文字列の読み書きの下請け -----------------------------------------------
-// 数値の並び・真偽値の表記はシーン文書と同じ規則（document/SceneXml の
+// 数値の並び・真偽値の表記はシーン文書と同じ規則（core/Xml の
 // parseNumbers / parseBool / formatNumbers / formatBool / formatInt）で読み書きする。
 bool isNumeric(PropType t) {
     switch (t) {
