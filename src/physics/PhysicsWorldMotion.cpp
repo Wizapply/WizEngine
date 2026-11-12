@@ -78,7 +78,7 @@ void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
             p_->bodies.body(p)->SetFixed(fixed);
             if (fixed) p_->bodies.body(p)->ForceToRest();
             else wakeUp(p_->bodies.body(p).get(), 0);
-            if (p_->bodies.active(p)) updateStaticPairs(*p_->bodies.body(p));  // 固定物どうしのペア
+            p_->bodies.notifyBodyFixedChanged(p);
         }
         return;
     }
@@ -89,8 +89,7 @@ void PhysicsWorld::setBodyFixed(std::size_t id, bool fixed) {
         wakeUp(p_->bodies.body(id).get(), 0);
         p_->sleeping.resetTimer(id);  // 固定を外した直後に眠らせない
     }
-    // 固定物どうしのペア: 固定にしたら掃除、外したら作り直させる。
-    if (p_->bodies.active(id)) updateStaticPairs(*p_->bodies.body(id));
+    p_->bodies.notifyBodyFixedChanged(id);
 }
 
 bool PhysicsWorld::bodyFixed(std::size_t id) const {

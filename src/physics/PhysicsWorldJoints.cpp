@@ -504,8 +504,7 @@ std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
 }
 
 void PhysicsWorld::removeAllJoints() {
-    diagSteps_ = 0;  // 次のシミュレート開始で診断行を出し直す
-    diagNanReported_ = false;
+    p_->diag.restart();  // 次のシミュレート開始で診断行を出し直す
     bool anyLoad = false;
     for (auto& j : joints_) {
         // 破断したリンクも無効化されて系に残っている（走行中の RemoveLink は
@@ -603,11 +602,22 @@ std::vector<std::size_t> PhysicsWorld::takeBrokenJoints() {
     return out;
 }
 
+void PhysicsWorld::logJointReactions() const {
+    for (std::size_t j = 0; j < joints_.size(); ++j) {
+        double f = 0.0, t = 0.0;
+        const bool ok = jointReaction(j, f, t);
+        LOGE("physics", "  joint #%zu type %d: reaction %s (force %.3g torque %.3g)%s",
+             j, int(joints_[j].type),
+             ok ? (std::isfinite(f + t) ? "finite" : "NaN") : "n/a", f, t,
+             joints_[j].manual.kind != JointRec::Manual::Kind::None ? " [manual]" : "");
+    }
+}
+
 void PhysicsWorld::checkJointBreaks() {
     // 開始直後はソルバが収束途中で反力が跳ねる（Multicore で静止荷重 59 N の
     // 棒が 1 ステップ目に 325 N を返した）ので、最初の数ステップは見ない。
     constexpr int kWarmupSteps = 10;
-    if (diagSteps_ < kWarmupSteps) return;
+    if (p_->diag.steps() < kWarmupSteps) return;
     for (std::size_t i = 0; i < joints_.size(); ++i) {
         JointRec& j = joints_[i];
         if (j.broken || j.breakForce <= 0.0 || j.load) continue;

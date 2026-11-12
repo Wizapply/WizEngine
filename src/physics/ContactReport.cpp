@@ -1,14 +1,16 @@
 // 接触の報告: 接触コンテナの走査と、番号の持ち主への寄せ。
 
-#include "physics/PhysicsParts.h"
+#include "physics/ContactReport.h"
+#include "physics/BodyRegistry.h"
 #include "physics/ChronoCompat.h"
+#include "physics/PhysicsSystem.h"
 
 #include <chrono/core/ChMatrix33.h>
 #include <chrono/physics/ChBody.h>
 #include <chrono/physics/ChContactContainer.h>
+#include <chrono/physics/ChSystem.h>
 
 #include <algorithm>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -39,7 +41,7 @@ public:
         if (!bodyA || !bodyB) return true;  // ボディ以外（FEA 等）は対象外
         const std::size_t ia = bodies_.indexOf(bodyA);
         const std::size_t ib = bodies_.indexOf(bodyB);
-        if (ia == PhysicsWorld::kInvalidId || ib == PhysicsWorld::kInvalidId) return true;
+        if (ia == wizengine::physics::kInvalidId || ib == wizengine::physics::kInvalidId) return true;
         ContactInfo c;
         c.a = ia;
         c.b = ib;
@@ -65,18 +67,21 @@ private:
 
 }  // namespace
 
-std::vector<ContactInfo> PhysicsWorld::activeContacts() const {
+namespace wizengine {
+namespace physics {
+
+std::vector<ContactInfo> activeContacts(const PhysicsSystem& system, const BodyRegistry& bodies) {
     std::vector<ContactInfo> contacts;
-    const auto container = p_->system.sys()->GetContactContainer();
+    const auto container = system.sys()->GetContactContainer();
     if (!container) return contacts;
-    auto collector = chrono_types::make_shared<ContactCollector>(p_->bodies, contacts);
+    auto collector = chrono_types::make_shared<ContactCollector>(bodies, contacts);
     container->ReportAllContacts(collector);
     // ソフトボディの粒子は代表番号に、子ボディ（setAlias）は持ち主に寄せる
     // （Scene はその番号しか知らない）。同じ物どうしは一致するので落ちる。
     std::size_t kept = 0;
     for (auto& c : contacts) {
-        const std::size_t a = p_->bodies.owner(c.a);
-        const std::size_t b = p_->bodies.owner(c.b);
+        const std::size_t a = bodies.owner(c.a);
+        const std::size_t b = bodies.owner(c.b);
         if (a == b) continue;
         ContactInfo out = c;
         out.a = a;
@@ -91,12 +96,15 @@ std::vector<ContactInfo> PhysicsWorld::activeContacts() const {
     return contacts;
 }
 
-std::vector<std::pair<std::size_t, std::size_t>>
-PhysicsWorld::activeContactPairs() const {
+std::vector<std::pair<std::size_t, std::size_t>> activeContactPairs(const PhysicsSystem& system,
+                                                                    const BodyRegistry& bodies) {
     std::vector<std::pair<std::size_t, std::size_t>> pairs;
-    for (const ContactInfo& c : activeContacts()) pairs.push_back({c.a, c.b});
+    for (const ContactInfo& c : activeContacts(system, bodies)) pairs.push_back({c.a, c.b});
     // 1 ペアに接触点は複数あるのが普通（箱同士は最大 4 点）。ここで 1 本化。
     std::sort(pairs.begin(), pairs.end());
     pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
     return pairs;
 }
+
+}  // namespace physics
+}  // namespace wizengine

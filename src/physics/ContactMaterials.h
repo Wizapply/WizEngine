@@ -36,9 +36,6 @@ public:
     const std::shared_ptr<chrono::ChContactMaterial>& materialOf(std::size_t id) const {
         return mats_[id] ? mats_[id] : mat_;
     }
-    const BodyOptions& options(std::size_t id) const { return options_[id]; }
-    // ボディ別の重力の印（読むのは step の重力オフ）。
-    void setGravityEnabled(std::size_t id, bool enabled) { options_[id].gravity = enabled; }
 
     void setSurfaceMaterial(float friction, float restitution);
     void setRollingFriction(float rolling, float spinning);
@@ -64,7 +61,8 @@ private:
     float restitution_ = 0.0f;
     float rolling_ = 0.0f;
     float spinning_ = 0.0f;
-    // 名簿の番号と並ぶ: 専用の材質（共有なら nullptr）とオプション。
+    // 名簿の番号と並ぶ: 専用の材質（共有なら nullptr）とオプション。オプションで
+    // 読むのは物性の欄だけ（他の欄はそれぞれの担当が onBodyAdded で受け取る）。
     std::vector<std::shared_ptr<chrono::ChContactMaterial>> mats_;
     std::vector<BodyOptions> options_;
 };

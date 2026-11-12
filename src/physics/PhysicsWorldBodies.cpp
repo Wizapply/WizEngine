@@ -143,7 +143,7 @@ void PhysicsWorld::prepareBody(ChBody& body, const BodyOptions& options) {
         }
     }
     // 重力オフ: Chrono に per-body の口があれば使う（9.0 には無い）。無くても
-    // step() が重力ぶんを毎ステップ打ち消すので、どちらでも効く。
+    // GravityOverride::cancel が重力ぶんを毎ステップ打ち消すので、どちらでも効く。
     if (!options.gravity) setUseGravity(&body, false, 0);
 }
 
@@ -151,7 +151,6 @@ void PhysicsWorld::finishBody(const std::shared_ptr<chrono::ChBody>& body,
                               const std::shared_ptr<chrono::ChContactMaterial>& mat,
                               const BodyOptions& options, bool allowSleeping) {
     registerBody(body, mat, options, allowSleeping);
-    attachBodyLoads(p_->bodies.count() - 1, options);
 }
 
 void PhysicsWorld::attachExtraShapes(ChBody& body, const std::vector<ExtraShape>& extras,

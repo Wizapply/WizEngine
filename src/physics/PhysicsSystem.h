@@ -27,6 +27,8 @@ public:
 
     PhysicsBackend backend() const { return backend_; }
     ContactMethod contact() const { return contact_; }
+    // Chrono の荷重コンテナを積分に取り込む系か（Multicore は IntLoadResidual_F を使わない）。
+    bool integratesLoads() const { return backend_ != PhysicsBackend::Multicore; }
     // backendName / contactName / solverName は HTTP スレッド（/scene、/stats）からも
     // ロック無しで読まれる（作り直しや切替の最中と重なりうる。元からの扱い）。
     const char* backendName() const;
@@ -41,6 +43,9 @@ public:
     void applyBaseSettings();
     // 許容差・接触・合成方式・積分器・ソルバを当てる。
     void applySolverSettings();
+
+    // 1 ステップ積分する。
+    void doStep(double dt);
 
     void setGravity(double gx, double gy, double gz);
     void setGravityY(double gravityY);

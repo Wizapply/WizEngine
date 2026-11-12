@@ -403,20 +403,19 @@ private:
     void createSystem();
     // 本当に系から外す（Core。Multicore は退避だけ）。disableBody から。
     void detachBody(std::size_t id);
-    // 定常荷重（force / torque）を荷重コンテナへ。finishBody から。
-    void attachBodyLoads(std::size_t id, const BodyOptions& options);
     // AddBody の**前**に呼ぶ: 衝突レイヤ（ファミリ）と重力オフ。ファミリは
     // 衝突系に登録する前に決めておく - 登録後に変えると Bullet はモデルを
     // 一度 Remove して入れ直し、Multicore の衝突系は Remove が未実装で
     // 例外を投げる（ソフトボディの粒子も同じ順序）。
     void prepareBody(chrono::ChBody& body, const BodyOptions& options);
-    // AddBody の後: 名簿へ登録し、定常荷重を付ける。
+    // AddBody の後: 名簿へ登録する（定常荷重は BodyLoads が通知で付ける）。
     void finishBody(const std::shared_ptr<chrono::ChBody>& body,
                     const std::shared_ptr<chrono::ChContactMaterial>& mat,
                     const BodyOptions& options, bool allowSleeping);
     // 破断の判定（step の末尾）。
     void checkJointBreaks();
-    void logStepDiagnostics(double dt);  // 診断ログ（step の積分の直後）
+    // ジョイントごとの反力をログへ（診断が NaN を見つけたステップに step から）。
+    void logJointReactions() const;
     // Multicore 用の手計算のモータ・ばね（step の先頭。下の JointRec::Manual）。
     void applyManualJoints(double dt);
 
@@ -440,24 +439,6 @@ private:
     const SoftBody* softOfRoot(std::size_t id) const;
     SoftBody* softOfRoot(std::size_t id);
 
-    // ---- 固定物どうしの衝突ペアを作らせない（Core = Bullet のみ）----------
-    // 理由と仕組みは PhysicsWorldStaticPairs.cpp の先頭の注記（フィルタの定義は
-    // PhysicsWorldInternal.h）。Bullet の型を見せないためにここでは前方宣言だけ。
-    struct StaticPairFilter;
-    // 新しい系の Bullet ワールドにフィルタを付ける（createSystem から。
-    // Multicore では外したまま）。
-    void attachStaticPairFilter();
-    // 固定ボディの集合を全部作り直し、既にできた固定どうしのペアを消す
-    // （衝突系の初期化 = 最初のステップの直後に 1 回）。
-    void syncStaticPairs();
-    // 1 個のボディの固定状態が変わった / 登録されたあとに呼ぶ。固定になったら
-    // 集合に足してペアを掃除、固定でなくなったら集合から外して衝突モデルを
-    // 入れ直す（消したペアを Bullet に作り直させる）。
-    void updateStaticPairs(chrono::ChBody& body);
-    // 衝突モデルを手放す前（EnableCollision(false) / RemoveBody）に呼ぶ:
-    // 解放された Bullet 側の実体のアドレスを集合に残さない。
-    void forgetStaticPairs(chrono::ChBody& body);
-
     // ---- テレインの内部（中身は PhysicsWorldInternal.h。Eigen と terrain の型を見せない）--
     struct TerrainProxyRec;   // ボディ 1 個の形の記録 + 点ごとの反力キャッシュ
     struct TerrainState;      // 格子・ゴースト・材質・判定の設定
@@ -479,18 +460,12 @@ private:
 
     // 担当の入れ物（Chrono の系と名簿。中身は PhysicsParts.h）。
     struct Parts;
-    // p_ より先に宣言する = p_ の持つ系（Bullet のペアキャッシュがこれを指す）より
-    // 後に壊れる。
-    std::shared_ptr<StaticPairFilter> staticPairs_;
     // 他のメンバより先に宣言する = 系は他のメンバ（ジョイント・テレイン・荷重など）が
     // 全部壊れた後に壊れる。
     std::unique_ptr<Parts> p_;
     // 荷重コンテナ（ChLoad。Core のみ）。ジョイント（ブッシュ）とボディの
-    // 定常荷重で分けてある - ジョイントは停止で全部捨てるため。
+    // 定常荷重（BodyLoads）で分けてある - ジョイントは停止で全部捨てるため。
     std::shared_ptr<chrono::ChLoadContainer> jointLoads_;
-    std::shared_ptr<chrono::ChLoadContainer> bodyLoads_;
-    // 名簿の番号と並ぶ: そのボディの定常荷重（無ければ空）。
-    std::vector<std::vector<std::shared_ptr<chrono::ChLoadBase>>> loadsOf_;
     std::vector<SoftBody> softBodies_;  // root の昇順（softOfRoot が二分探索で引く）
     // 名簿の番号と並ぶ: テレインに当たる形の記録（無ければ null = テレインの
     // 接触の対象外）。shared_ptr なのは型の中身を PhysicsWorldInternal.h に閉じる
@@ -555,8 +530,4 @@ private:
         bool valid = false;
     };
     std::vector<CableRec> cables_;
-    int diagSteps_ = 0;  // 診断ログ用のステップ数（removeAllJoints で 0 に）
-    bool diagNanReported_ = false;
-    double linearDamping_ = 0.0;
-    double angularDamping_ = 0.0;
 };

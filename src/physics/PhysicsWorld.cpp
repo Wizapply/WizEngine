@@ -1,14 +1,7 @@
-// PhysicsWorld の窓口: 構築・1 ステップの順番・全体を起こす・機能の有無・眠りと材質の中継。
+// PhysicsWorld の窓口: 構築・1 ステップの順番・全体を起こす・機能の有無・小さな担当の中継。
 
 #include "physics/PhysicsWorldInternal.h"
-
-#include <chrono/collision/ChCollisionSystem.h>
-#include <chrono/physics/ChBody.h>
-
-#include <cmath>
-
-using namespace chrono;
-using namespace wizengine::physics::compat;
+#include "physics/ContactReport.h"
 
 PhysicsFeatures physicsFeatures() {
     PhysicsFeatures f;
@@ -41,7 +34,7 @@ PhysicsWorld::PhysicsWorld(PhysicsBackend backend, ContactMethod contact)
 }
 
 // Parts が完全型のここで定義する。メンバは PhysicsWorld.h の宣言の逆順に壊れる
-// （p_ の持つ系はほかのメンバの後、staticPairs_ は系の後）。
+// （p_ の持つ系はほかのメンバの後。Parts の中の順は PhysicsParts.h）。
 PhysicsWorld::~PhysicsWorld() = default;
 
 void PhysicsWorld::wakeAll() {
@@ -62,63 +55,14 @@ void PhysicsWorld::step(double dt) {
     for (auto& soft : softBodies_) solveSoftSprings(soft, dt);
     // Multicore 用の手計算のモータ・ばね（Core では空）。
     applyManualJoints(dt);
-    // ボディ別の重力オフ: Chrono 9 には per-body の口が無い（SetNoGravity は
-    // 消えた）ので、重力ぶんを毎ステップ打ち消す（両バックエンド共通）。
-    {
-        const ChVector3d g = p_->system.sys()->GetGravitationalAcceleration();
-        if (g.Length2() > 0.0) {
-            for (std::size_t i = 0; i < p_->bodies.count(); ++i) {
-                if (p_->materials.options(i).gravity || !p_->bodies.active(i)) continue;
-                auto& b = p_->bodies.body(i);
-                if (b->IsFixed() || p_->bodies.isGroupMember(i)) continue;
-                if (b->IsSleeping()) continue;
-                setLinVel(b.get(), getLinVel(b.get(), 0) - g * dt, 0);
-            }
-        }
-    }
-
-    // 固定物どうしのペアの掃除: 衝突系の初期化（BindAll）は最初の
-    // DoStepDynamics の中で起きるので、その前後で「初期化済みなのに集合が
-    // まだ」を見て 1 回だけ作る（初期化を別の呼び出しが先に済ませていても
-    // 拾えるよう、前でも見る）。最初の 1 ステップだけは固定どうしの判定が
-    // 走る。
-#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
-    auto staticPairsPending = [this]() {
-        if (!staticPairs_ || !staticPairs_->world || staticPairs_->ready) return false;
-        const auto coll = p_->system.sys()->GetCollisionSystem();
-        return coll && coll->IsInitialized();
-    };
-    if (staticPairsPending()) syncStaticPairs();
-#endif
-
-    p_->system.sys()->DoStepDynamics(dt);
-
-#ifdef WIZ_HAVE_BULLET_PAIR_FILTER
-    if (staticPairsPending()) syncStaticPairs();
-#endif
-
-    logStepDiagnostics(dt);
-
+    p_->gravity.cancel(dt);
+    p_->staticPairs.syncIfPending();
+    p_->system.doStep(dt);
+    p_->staticPairs.syncIfPending();
+    if (p_->diag.afterStep(dt, joints_.size())) logJointReactions();
     // 破断: 反力が閾値を超えたジョイントを外す（このステップの反力を見る）。
     checkJointBreaks();
-
-    // Damping after the solve: scale each body's velocity towards zero. exp()
-    // makes the decay frame-rate independent, so changing the physics rate
-    // does not change how quickly things slow down. Sleeping bodies are left
-    // alone - they are not moving anyway, and touching them would wake the
-    // bookkeeping for nothing.
-    if (linearDamping_ <= 0.0 && angularDamping_ <= 0.0) return;
-    const double linScale = std::exp(-linearDamping_ * dt);
-    const double angScale = std::exp(-angularDamping_ * dt);
-    for (auto& b : p_->bodies.all()) {
-        if (b->IsFixed() || b->IsSleeping()) continue;
-        if (linearDamping_ > 0.0) {
-            setLinVel(b.get(), getLinVel(b.get(), 0) * linScale, 0);
-        }
-        if (angularDamping_ > 0.0) {
-            setAngVel(b.get(), getAngVel(b.get(), 0) * angScale, 0);
-        }
-    }
+    p_->damping.apply(dt);
 }
 
 // ---- 眠り --------------------------------------------------------------------
@@ -148,4 +92,22 @@ void PhysicsWorld::setSurfaceMaterial(float friction, float restitution) {
 void PhysicsWorld::setRollingFriction(float rolling, float spinning) {
     p_->materials.setRollingFriction(rolling, spinning);
     refreshTerrainMaterials();
+}
+
+// ---- 重力オフ・減衰・接触の報告 ----------------------------------------------
+
+void PhysicsWorld::setBodyGravity(std::size_t id, bool enabled) {
+    p_->gravity.setEnabled(id, enabled);
+}
+
+void PhysicsWorld::setDamping(double linearPerSecond, double angularPerSecond) {
+    p_->damping.set(linearPerSecond, angularPerSecond);
+}
+
+std::vector<ContactInfo> PhysicsWorld::activeContacts() const {
+    return wizengine::physics::activeContacts(p_->system, p_->bodies);
+}
+
+std::vector<std::pair<std::size_t, std::size_t>> PhysicsWorld::activeContactPairs() const {
+    return wizengine::physics::activeContactPairs(p_->system, p_->bodies);
 }
