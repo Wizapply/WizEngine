@@ -32,9 +32,9 @@
     <div class="sbTabs">
       <button id="tabScene" class="sbTab active" onclick="showTab('scene')">Scene</button>
       <button id="tabEditor" class="sbTab" onclick="showTab('editor')">Inspector</button>
-      <!-- World/Physics: シーン全体の設定（シミュレート設定・World・描画・
+      <!-- World: シーン全体の設定（シミュレート設定・World・描画・
            ソルバ・レート・配信）。内部 id は tabPhysics / panePhysics のまま。 -->
-      <button id="tabPhysics" class="sbTab" onclick="showTab('physics')">World/Physics</button>
+      <button id="tabPhysics" class="sbTab" onclick="showTab('physics')">⚙&#xFE0E; World</button>
     </div>
 
     <div id="paneScene" class="sbPane">
@@ -103,7 +103,7 @@
     <!-- ================= Inspector タブ =================
          Unity と同じく「選択しているオブジェクトの内容」だけを出す。
          シーン全体の設定（World = 環境光とシーン全体のイベント、描画 =
-         <visual>）は World/Physics タブ、配置とシーンの保存/全消しは下部の
+         <visual>）は World タブ、配置とシーンの保存/全消しは下部の
          アセットパネル、ギズモ設定は映像左上ツールバーの ⚙ で開く（下の
          secGizmo を出し入れするだけ）。 -->
     <div id="paneEditor" class="sbPane" hidden>
@@ -282,7 +282,7 @@
             <input id="edSurfCoh" class="num" type="number" step="1" min="0"
                    onchange="applySurface()">
           </div>
-          <!-- SMC（ペナルティ法）のときだけ効く材質。World/Physics タブの contact が
+          <!-- SMC（ペナルティ法）のときだけ効く材質。World タブの contact が
                smc のときに見せる（NSC では無視されるので出さない）。 -->
           <div class="edRow" id="edRowSmc" hidden
                title="SMC（ペナルティ法）の材質。空欄 = シーン設定">
@@ -1161,7 +1161,7 @@
 
       <!-- World: シーン全体のプロパティ（環境光とシーン全体のイベント）。
            Inspector は「選択しているものの内容」だけにしたので、シーン全体の
-           設定はこの World/Physics タブに置く。値の実体はシーン文書の <environment>
+           設定はこの World タブに置く。値の実体はシーン文書の <environment>
            で、変更は edit.environment としてサーバーへ送る。edit.* なので
            エディタカメラのページでだけ出す（app.js の renderEditor()。判定は
            サーバーの EditorComponent が持つ）。地面とテレインはシーンの
@@ -1204,7 +1204,7 @@
       </section>
 
       <!-- 描画: シーン全体の「どう撮るか」（XML の <visual>）。World と同じく
-           World/Physics タブに置き、エディタカメラのページでだけ出す。変更は
+           World タブに置き、エディタカメラのページでだけ出す。変更は
            edit.render としてサーバーへ送る。
            プリセットの中身はサーバー（EditorTypes.h の renderPreset）が持つ
            ので、ここはボタンが名前を送るだけ。 -->
@@ -1645,6 +1645,9 @@
         <button onclick="toggleXmlEditor()"
                 title="シーンを XML で見る・編集して適用する"
                 >📄 XML</button>
+        <button onclick="openAiGen()"
+                title="依頼文から LLM（OpenAI 互換）と 3D 生成（Meshy 互換）でシーンを自動で組む"
+                >🤖 AI</button>
         <button onclick="importModel()"
                 title="URDF / OpenSim / ADAMS のモデルを今のシーンに足す（assets/ 相対のファイル名。Chrono::Parsers 付きビルド）"
                 >📥 取込</button>
@@ -1655,6 +1658,43 @@
       <span id="asStatus" class="xmStatus"></span>
     </div>
     <div id="assetList" class="asList"></div>
+  </div>
+  <!-- AI シーン生成（web/autogen.js）。#stage の外に置く = 映像の入力・
+       自前カーソルの対象外（普通のフォーム）。見た目は .ndBack / .ndWin の
+       流儀。生成はサーバーの専用スレッドで回り、状態は /scene の "ai"。 -->
+  <div id="aiGen" hidden>
+    <div class="ndBack" onclick="closeAiGen()" title="クリックで閉じる"></div>
+    <div class="ndWin">
+      <div class="ndHead">
+        <span class="ndTitle">🤖&#xFE0E; AI シーン生成</span>
+        <span id="aiConf" class="aiConf"></span>
+        <button onclick="closeAiGen()" title="閉じる（Esc）">✕</button>
+      </div>
+      <div class="aiBody">
+        <div class="aiRow">
+          <label><input type="radio" name="aiMode" value="new" checked> 新規
+            <span class="aiSub">（今のシーンを置き換え）</span></label>
+          <label><input type="radio" name="aiMode" value="edit"> 編集
+            <span class="aiSub">（今のシーンを直す）</span></label>
+          <label><input type="radio" name="aiMode" value="append"> 追加
+            <span class="aiSub">（今のシーンに足す）</span></label>
+        </div>
+        <div class="aiRow">
+          <label id="aiMeshesLbl"><input type="checkbox" id="aiMeshes" checked>
+            3D モデルを生成する（Meshy 互換。1 個あたり数分・有料）</label>
+        </div>
+        <textarea id="aiPrompt" spellcheck="false" rows="5"
+                  placeholder="例: 木のテーブルの上にリンゴとマグカップ。テーブルの横に椅子を 2 脚。夕方の光で。"></textarea>
+        <div class="aiRow">
+          <button id="aiGo" onclick="aiGenerate()">▶ 生成</button>
+          <button id="aiStop" onclick="aiCancel()" disabled>■ キャンセル</button>
+          <div class="aiBar"><div id="aiBarFill"></div></div>
+          <span id="aiStage" class="aiSub"></span>
+        </div>
+        <pre id="aiLog" class="aiLog"></pre>
+        <div class="ndHint">結果は「✓ 適用」と同じく現在のシーンへ反映されます（ファイルには書きません。残すなら 💾 保存）。生成したモデルは assets/generated/ に保存され、同じ説明文なら次回は再生成しません。LLM が数値を誤ることがあるので、重なった物は自動で上へ載せ直します。接続先とキーはサーバーの config.json の "ai" 節で設定します（キーは環境変数でも可）。</div>
+      </div>
+    </div>
   </div>
   <div id="perf">measuring...</div>
   <div id="link">connecting...</div>
@@ -1668,5 +1708,6 @@
 <script src="terrain-files.js"></script>
 <script src="terrain-brush.js"></script>
 <script src="terrain-scatter.js"></script>
+<script src="autogen.js"></script>
 </body>
 </html>

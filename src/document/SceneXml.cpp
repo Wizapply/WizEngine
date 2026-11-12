@@ -364,6 +364,16 @@ void Element::set(const char* key, std::string value) {
     attributes_.emplace_back(key, std::move(value));
 }
 
+bool Element::erase(const char* key) {
+    for (auto it = attributes_.begin(); it != attributes_.end(); ++it) {
+        if (it->first == key) {
+            attributes_.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
 void Element::setNumber(const char* key, double value, int precision) {
     set(key, formatNumber(value, precision));
 }

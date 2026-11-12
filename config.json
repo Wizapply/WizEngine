@@ -1,0 +1,87 @@
+// Charon の起動設定（実行環境・システムに関わる設定はすべてここ）。
+//
+// 置き場所: wizengine を起動するフォルダ（assets/ と同じ場所）。ビルドは
+// このファイルを build/config.json へ**無いときだけ**コピーするので、
+// 編集するのはビルド先のコピー（上書きされない）。別のファイルを使うなら
+// wizengine --config <path>。
+//
+// 書き方: JSON + コメント（// と /* */）。書かないキーは既定値（このファイルに
+// 書いてある値と同じ）。知らないキー・型違い・範囲外は起動ログに警告が出て、
+// 既定値 / 丸めた値で続ける。JSON として壊れているときだけ起動を止める。
+//
+// exe 引数（--physics-cores, --max-cameras, --codec, モードとポートの位置引数
+// など）はここより優先される（従来の起動スクリプトがそのまま効く）。
+//
+// ※ API キーを書いたファイルはリポジトリに入れないこと。空のままにして
+//    環境変数（WIZ_LLM_API_KEY / OPENAI_API_KEY、WIZ_MESHY_API_KEY /
+//    MESHY_API_KEY）で渡してもよい（ここに書いた値が優先）。
+{
+  "server": {
+    "mode": "web",               // web | window | stream | rtsp
+    "httpPort": 8080,            // ブラウザの UI（全カメラで 1 ポート、/cam0/ ...）
+    "streamHost": "127.0.0.1",   // mode = stream の送り先
+    "streamPort": 5000,
+    "rtspUrl": "rtsp://127.0.0.1:8554/wiz"  // mode = rtsp の送り先
+  },
+
+  "video": {
+    "width": 1920,               // 描画解像度（偶数）。ブラウザは拡大して表示する
+    "height": 1080,
+    "fps": 60,                   // 描画のペース（物理のレートはシーンの <option rate>）
+    "codec": "h264",             // h264（全ブラウザ）| h265 | av1 | vp9（CPU）
+    "encoder": "",               // GStreamer の要素名（例 amfh264enc）。空 = 自動
+    "bitrate": 8000000,          // bit/s。ブラウザからカメラごとに下げられる
+    "gpuConvert": true           // RGBA -> NV12 の変換を GPU で
+  },
+
+  "cpu": {
+    "physicsCores": "",          // 物理を回すコア（"0-11" / "0,2,4"）。空 = 指定なし
+    "renderCores": "",           // 描画とエンコードのコア
+    "physicsThreads": 0          // 物理のスレッド数。0 = physicsCores の数（無ければ自動）
+  },
+
+  "log": {
+    "level": "info"              // debug | info | warn | error（環境変数 WIZENGINE_LOG が優先）
+  },
+
+  "scene": {
+    "startupScene": "default",   // 起動時に読む assets/scenes/<名前>.xml。"" = 空のシーン
+    "startMode": "simulate",     // simulate | editor
+    "maxCameras": 5,             // カメラのスロット数（1〜16）
+    "editorCamera": 0,           // 編集を受け付けるカメラ番号
+    "idleWhenUnwatched": true    // web モードで視聴者がいない間は全部止める
+  },
+
+  "physics": {
+    "backend": "core",           // core | multicore（シーンが何も要求しないときの系）
+    "multicoreForSoftBodies": true,  // ソフトボディがあれば Multicore（ビルドにあれば）
+    "multicoreMinBodies": 200,   // 剛体がこの数以上で Multicore。0 = 無効
+    "terrainForcesCore": true    // テレインのあるシーンは Core
+  },
+
+  "ai": {
+    "llm": {                     // OpenAI 互換 Chat Completions
+      "url": "https://api.openai.com/v1",  // Ollama なら http://127.0.0.1:11434/v1
+      "model": "",               // 必須（空 = AI シーン生成は無効）
+      "apiKey": "",              // 空 = 環境変数（ローカルのサーバーなら不要）
+      "temperature": null,       // null = 送らない（推論系のモデルは 1 以外を受けない）
+      "timeoutSec": 300,         // 1 回の応答を待つ上限
+      "repairs": 2,              // 壊れた XML・警告を LLM に直させる回数
+      "maxSceneKB": 96           // 編集 / 追加で LLM に渡す今のシーンの上限
+    },
+    "meshy": {                   // Meshy 互換 Text to 3D（apiKey が空なら使わない）
+      "url": "https://api.meshy.ai",
+      "apiKey": "",
+      "refine": false,           // true = テクスチャ付けまで（時間と費用が倍以上）
+      "artStyle": "realistic",   // 空 = 送らない
+      "aiModel": "",             // 空 = 提供元の既定
+      "targetPolycount": 0,      // 0 = 送らない
+      "pollSec": 5,
+      "timeoutSec": 900,         // 1 モデルを待つ上限
+      "maxDownloadMB": 128
+    },
+    "maxMeshes": 4,              // 1 回の生成で新しく作るモデルの上限（0〜16）
+    "caFile": "",                // HTTPS の検証に使う CA 束（社内プロキシ等）。空 = OS の既定
+    "generatedDir": "generated"  // 生成したモデルの置き場（assets/ の中）
+  }
+}

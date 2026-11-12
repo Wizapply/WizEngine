@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cctype>
 #include <optional>
 #include <atomic>
@@ -13,6 +14,7 @@
 #include <csignal>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -40,6 +42,10 @@
 #include "components/VehicleComponent.h"
 #include "components/PrefabComponent.h"
 #include "components/ScatterComponent.h"
+#include "components/AutoGenComponent.h"
+#include "app/AppConfig.h"
+#include "autogen/AiConfig.h"
+#include "autogen/HttpClient.h"
 #include "physics/PhysicsTuning.h"
 #include "physics/PhysicsWorld.h"
 #include "render/Renderer.h"
@@ -122,12 +128,11 @@ int main(int argc, char** argv) {
     }
 }
 
-static // ---- Streaming defaults -----------------------------------------------
-// Engine-level output settings (deliberately NOT in SceneConfig.h - they
-// describe how the engine ships pixels, not what is in the world). Codec can
-// be overridden at launch with --codec, the encoder element (and thereby the
-// GPU) with --encoder, and resolution/fps/bitrate per camera from the
-// browser's System > Stream section.
+// ---- 起動設定（config.json）------------------------------------------------
+// 実行環境・システムに関わる設定（出力モードとポート・映像・CPU コア・ログ・
+// カメラのスロット・起動シーン・物理バックエンドの選び方・AI の接続先）は全部
+// config.json（app/AppConfig.h）。exe 引数は従来どおり使え、config.json より
+// 優先される。
 //
 // Codec guide: H264 = the compatibility baseline (every browser and device,
 // hardware encode). H265 = better quality per bit, viewers Chrome 136+/
@@ -136,53 +141,88 @@ static // ---- Streaming defaults ----------------------------------------------
 // AV1-capable GPU (RDNA3+/RTX40+/Arc) and rtpav1pay. VP9 = the software
 // (CPU-encode) fallback. H265/AV1 fall back to H264 with a warning when
 // their pieces are missing.
-constexpr VideoCodec kDefaultCodec = VideoCodec::H264;
-// 既定 1080p60 に見合う値（720p の頃は 4Mbps だった）。回線が細いときは
-// ブラウザの Physics > Stream からカメラごとに下げられる。
-constexpr int kVideoBitrate = 8000000;  // bits per second
-// Colour conversion (RGBA -> NV12) on the GPU instead of a CPU core per
-// camera. Automatically ignored (CPU path) when the encoder cannot take
-// D3D11 memory - software encoders, VP9, non-Windows.
-constexpr bool kGpuConvert = true;
+static std::optional<VideoCodec> codecFromName(std::string v) {
+    for (auto& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    if (v == "h264") return VideoCodec::H264;
+    if (v == "h265" || v == "hevc") return VideoCodec::H265;
+    if (v == "av1") return VideoCodec::AV1;
+    if (v == "vp9") return VideoCodec::VP9;
+    return std::nullopt;
+}
+
+static void printUsage() {
+    std::printf(
+        "usage: wizengine [web [httpPort] | window | stream [host] [port] | "
+        "rtsp [url]]\n"
+        "                 [--config FILE] [--physics-cores SPEC] "
+        "[--render-cores SPEC]\n"
+        "                 [--physics-threads N] [--max-cameras N]\n"
+        "                 [--codec CODEC] [--encoder ELEMENT]\n\n"
+        "All settings live in config.json (next to assets/; --config picks "
+        "another file).\nThe options above override it for one run.\n\n"
+        "SPEC is a core list: \"0-11\", \"0,2,4\", \"3\" or \"0-3,8,12-13\".\n"
+        "CODEC is h264 (default; every browser), h265 (Chrome/Safari only),\n"
+        "av1 (needs an AV1-capable GPU) or vp9 (software).\n"
+        "ELEMENT is a GStreamer encoder element for that codec (amfh264enc = "
+        "primary GPU,\namfh264device1enc = next, ...; list them with "
+        "gst-inspect-1.0 amfcodec).\n");
+}
 
 int run(int argc, char** argv) {
-    // Render resolution. The browser scales this up to fill the window, so it
-    // stays cheap to render, encode and stream whatever the display size.
-    // Raise it if the upscaled picture looks too soft (1920x1080 is ~2.2x the
-    // pixels, and costs roughly that much more everywhere).
-    constexpr int kWidth = 1920;
-    constexpr int kHeight = 1080;
-    constexpr int kFps = 60;
+    // ---- 1. config.json の場所（--config）と --help だけ先に見る -------------
+    std::string configPath = "config.json";
+    bool configExplicit = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h" || arg == "/?") {
+            printUsage();
+            return 0;
+        }
+        if (arg == "--config" && i + 1 < argc) {
+            configPath = argv[++i];
+            configExplicit = true;
+        }
+    }
 
-    // Usage:
-    //   wizengine web [httpPort]         -> browser only: open the control UI
-    //                                       (WebRTC video, no GStreamer output)
+    // ---- 2. config.json を読む ----------------------------------------------
+    wizengine::AppConfig cfg;
+    {
+        const wizengine::ConfigLoad load = wizengine::loadAppConfig(configPath, cfg);
+        if (!load.found) {
+            if (configExplicit) {
+                throw std::runtime_error("config file not found: " + configPath);
+            }
+            LOGI("app", "config.json not found in the working directory - using "
+                        "built-in defaults");
+        } else if (!load.error.empty()) {
+            // 壊れた設定で黙って既定値のまま動くと、どの値が効いているのか
+            // 分からなくなるので止める（main が理由を出して Enter を待つ）。
+            throw std::runtime_error(configPath + ": " + load.error);
+        } else {
+            LOGI("app", "config: %s", configPath.c_str());
+        }
+        for (const auto& w : load.warnings) {
+            LOGW("app", "config: %s", w.c_str());
+        }
+    }
+    // ログの段階: 環境変数 WIZENGINE_LOG があればそちら（logging::init が読んだ
+    // まま）、無ければ config.json の log.level。
+    if (!std::getenv("WIZENGINE_LOG")) {
+        using wizengine::logging::Level;
+        const std::string& lv = cfg.logLevel;
+        wizengine::logging::setLevel(lv == "debug"  ? Level::Debug
+                                     : lv == "warn" ? Level::Warn
+                                     : lv == "error" ? Level::Error
+                                                     : Level::Info);
+    }
+    // API キーは config.json が空なら環境変数から。
+    wizengine::autogen::fillAiKeysFromEnvironment(cfg.ai);
+
+    // ---- 3. exe 引数で上書き（従来の起動スクリプトがそのまま効く）------------
+    //   wizengine web [httpPort]         -> browser only (WebRTC video)
     //   wizengine window                 -> local preview window on this PC
-    //   wizengine stream [host] [port]   -> RTP/UDP stream (default 127.0.0.1:5000)
-    //   wizengine rtsp [url]             -> publish H.264 to an RTSP server
-    // Default (no args) is web. The control UI is always available regardless.
-    //
-    // httpPort is the FIRST port: camera i is served on httpPort + i, so a
-    // second instance needs a base far enough away not to overlap (with three
-    // cameras, 8080 occupies 8080-8082).
-    //
-    // Options, accepted after the mode in any order. These are deployment
-    // settings rather than scene content, which is why they live here and not
-    // in SceneConfig.h or the scene document:
-    //   --physics-cores <spec>   cores the solver may use ("0-11", "0,2,4", "3")
-    //   --render-cores  <spec>   cores for rendering and encoding
-    //   --physics-threads <n>    solver worker threads (default: one per core)
-    //   --max-cameras <n>        camera slots /cam0/../camN-1/ (1-16, default:
-    //                            SceneConfig.h の kMaxCameras)
-    //   --help                   print this list
-    // Options first, so the positional parsing below only sees the rest.
-    std::string physicsCoreSpec, renderCoreSpec;
-    int physicsThreads = 0;
-    int maxCameras = 0;  // 0 = SceneConfig.h の既定（kMaxCameras）
-    // Codec from --codec; unset = kDefaultCodec above. The codec decides
-    // the compression standard; --encoder then picks the concrete element
-    // (and thereby the GPU) within it.
-    std::optional<VideoCodec> codecOverride;
+    //   wizengine stream [host] [port]   -> RTP/UDP stream
+    //   wizengine rtsp [url]             -> publish to an RTSP server
     std::vector<std::string> positional;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -191,92 +231,80 @@ int run(int argc, char** argv) {
             LOGW("app", "%s needs a value - ignoring", what);
             return {};
         };
-        if (arg == "--physics-cores") {
-            physicsCoreSpec = next("--physics-cores");
+        if (arg == "--config") {
+            next("--config");  // 1. で読んだ
+        } else if (arg == "--physics-cores") {
+            cfg.cpu.physicsCores = next("--physics-cores");
         } else if (arg == "--render-cores") {
-            renderCoreSpec = next("--render-cores");
+            cfg.cpu.renderCores = next("--render-cores");
         } else if (arg == "--physics-threads") {
             const std::string v = next("--physics-threads");
-            if (!v.empty()) physicsThreads = std::atoi(v.c_str());
+            // windows.h の max マクロと衝突するので std::max は使わない。
+            const int n = v.empty() ? cfg.cpu.physicsThreads : std::atoi(v.c_str());
+            cfg.cpu.physicsThreads = n < 0 ? 0 : n;
         } else if (arg == "--max-cameras") {
             const std::string v = next("--max-cameras");
-            if (!v.empty()) {
-                maxCameras = std::atoi(v.c_str());
-                if (maxCameras < 1 || maxCameras > 16) {
-                    LOGW("app",
-                         "--max-cameras %s is out of range (1-16) - using the "
-                         "scene default",
-                         v.c_str());
-                    maxCameras = 0;
-                }
+            const int n = v.empty() ? 0 : std::atoi(v.c_str());
+            if (n >= 1 && n <= 16) {
+                cfg.scene.maxCameras = std::size_t(n);
+            } else if (!v.empty()) {
+                LOGW("app", "--max-cameras %s is out of range (1-16) - ignoring",
+                     v.c_str());
             }
         } else if (arg == "--encoder") {
             const std::string v = next("--encoder");
-            if (!v.empty()) WebRtcStreamer::setEncoderOverride(v);
+            if (!v.empty()) cfg.video.encoder = v;
         } else if (arg == "--codec") {
-            std::string v = next("--codec");
-            for (auto& ch : v)
-                ch = char(std::tolower(static_cast<unsigned char>(ch)));
-            if (v == "h264") codecOverride = VideoCodec::H264;
-            else if (v == "h265" || v == "hevc") codecOverride = VideoCodec::H265;
-            else if (v == "av1") codecOverride = VideoCodec::AV1;
-            else if (v == "vp9") codecOverride = VideoCodec::VP9;
-            else if (!v.empty())
-                LOGW("app",
-                     "--codec %s is not one of h264/h265/av1/vp9 - using the "
-                     "scene default",
+            const std::string v = next("--codec");
+            if (codecFromName(v)) {
+                cfg.video.codec = v;
+            } else if (!v.empty()) {
+                LOGW("app", "--codec %s is not one of h264/h265/av1/vp9 - ignoring",
                      v.c_str());
-        } else if (arg == "--help" || arg == "-h" || arg == "/?") {
-            std::printf(
-                "usage: wizengine [web [httpPort] | window | stream [host] "
-                "[port] | rtsp [url]]\n"
-                "                 [--physics-cores SPEC] [--render-cores SPEC]\n"
-                "                 [--physics-threads N] [--max-cameras N]\n"
-                "                 [--codec CODEC] [--encoder ELEMENT]\n\n"
-                "SPEC is a core list: \"0-11\", \"0,2,4\", \"3\" or "
-                "\"0-3,8,12-13\".\n"
-                "Pinning keeps the solver and the video encoder off each "
-                "other's cores.\n"
-                "--max-cameras N sets the camera slots (pages /cam0/ .. "
-                "/camN-1/, 1-16;\ndefault from SceneConfig.h). Video views "
-                "are created when a camera is added.\n"
-                "CODEC is h264 (default; every browser), h265 (Chrome/"
-                "Safari only),\nav1 (needs an AV1-capable GPU) or vp9 "
-                "(software). Unavailable codecs\nfall back to h264.\n"
-                "ELEMENT is a GStreamer encoder element for that codec. "
-                "GStreamer "
-                "registers one\nper GPU (amfh264enc = primary, "
-                "amfh264device1enc = next, ...), so this\npicks the encoding "
-                "GPU. List them with: gst-inspect-1.0 amfcodec\n");
-            return 0;
+            }
         } else {
             positional.push_back(arg);
         }
     }
-
-    const std::string modeArg = positional.empty() ? "web" : positional[0];
-    OutputMode outputMode = OutputMode::None;
-    std::string host = "127.0.0.1";
-    int port = 5000;
-    int httpPort = 8080;  // base port for the browser UI, see below
-    std::string rtspUrl = "rtsp://127.0.0.1:8554/wiz";
-    if (modeArg == "window") {
-        outputMode = OutputMode::Window;
-    } else if (modeArg == "stream") {
-        outputMode = OutputMode::Stream;
-        if (argc > 2) host = argv[2];
-        if (argc > 3) port = std::stoi(argv[3]);
-    } else if (modeArg == "rtsp") {
-        outputMode = OutputMode::Rtsp;
-        if (positional.size() > 1) rtspUrl = positional[1];
-    } else if (modeArg == "web" && positional.size() > 1) {
-        httpPort = std::atoi(positional[1].c_str());
-        if (httpPort < 1 || httpPort > 65535) {
-            LOGW("http", "port '%s' is out of range - using 8080",
-                 positional[1].c_str());
-            httpPort = 8080;
+    if (!positional.empty()) {
+        cfg.server.mode = positional[0];
+        if (cfg.server.mode == "stream") {
+            if (positional.size() > 1) cfg.server.streamHost = positional[1];
+            if (positional.size() > 2) cfg.server.streamPort = std::atoi(positional[2].c_str());
+        } else if (cfg.server.mode == "rtsp") {
+            if (positional.size() > 1) cfg.server.rtspUrl = positional[1];
+        } else if (cfg.server.mode == "web" && positional.size() > 1) {
+            const int p = std::atoi(positional[1].c_str());
+            if (p >= 1 && p <= 65535) {
+                cfg.server.httpPort = p;
+            } else {
+                LOGW("http", "port '%s' is out of range - using %d",
+                     positional[1].c_str(), cfg.server.httpPort);
+            }
+        } else if (cfg.server.mode != "web" && cfg.server.mode != "window") {
+            LOGW("app", "unknown mode '%s' - using web", cfg.server.mode.c_str());
+            cfg.server.mode = "web";
         }
     }
+    if (cfg.scene.editorCamera >= cfg.scene.maxCameras) cfg.scene.editorCamera = 0;
+    if (!cfg.video.encoder.empty()) WebRtcStreamer::setEncoderOverride(cfg.video.encoder);
+
+    // 以下は確定した設定の写し（従来の変数名のまま使う）。
+    const int kWidth = cfg.video.width;
+    const int kHeight = cfg.video.height;
+    const int kFps = cfg.video.fps;
+    const VideoCodec videoCodec = codecFromName(cfg.video.codec).value_or(VideoCodec::H264);
+    const std::string& physicsCoreSpec = cfg.cpu.physicsCores;
+    const std::string& renderCoreSpec = cfg.cpu.renderCores;
+    const int physicsThreads = cfg.cpu.physicsThreads;
+    OutputMode outputMode = OutputMode::None;
+    const std::string& host = cfg.server.streamHost;
+    const int port = cfg.server.streamPort;
+    const int httpPort = cfg.server.httpPort;
+    const std::string& rtspUrl = cfg.server.rtspUrl;
+    if (cfg.server.mode == "window") outputMode = OutputMode::Window;
+    else if (cfg.server.mode == "stream") outputMode = OutputMode::Stream;
+    else if (cfg.server.mode == "rtsp") outputMode = OutputMode::Rtsp;
     const std::string materialPath = "shaded.filamat";
 
     // Everything below is loaded from the working directory, so running the
@@ -337,8 +365,8 @@ int run(int argc, char** argv) {
 
     installStopHandler();
 
-    // Backend (core / multicore) is part of the scene configuration.
-    const PhysicsBackend requested = scenePhysicsBackend();
+    // Backend (core / multicore): config.json の physics.backend。
+    const PhysicsBackend requested = cfg.scene.backend;
     PhysicsWorld physics(requested);
     if (wizengine::engineCodename()[0] != '\0') {
         LOGI("app", "%s %s \"%s\"", wizengine::productName(), wizengine::engineVersion(),
@@ -351,8 +379,9 @@ int run(int argc, char** argv) {
          requested == PhysicsBackend::Multicore ? "multicore" : "core",
          multicoreAvailable() ? "yes" : "no", physics.backendName());
     wizengine::Renderer renderer(kWidth, kHeight, materialPath);
-    // カメラスロット数は --max-cameras（未指定 = 0 なら SceneConfig の既定）。
-    Scene scene(physics, renderer, std::size_t(maxCameras));
+    // カメラのスロット・起動シーンとモード・休止・バックエンドの選び方
+    // （config.json の scene / physics）。
+    Scene scene(physics, renderer, cfg.scene);
     // ---- CPU cores -------------------------------------------------------
     // Pin before anything starts: Chrono sizes its worker pool at build time,
     // and those workers inherit the affinity of the thread that creates them.
@@ -455,6 +484,14 @@ int run(int argc, char** argv) {
     scene.addComponent(std::make_unique<PrefabComponent>(vehicleComp));
     // テレインの散布物（木や小物）の描画。
     scene.addComponent(std::make_unique<ScatterComponent>());
+    // AI のシーン自動構築（ai.generate / ai.cancel）。/scene に状態を出す
+    // ため生ポインタも持つ（所有は Scene）。
+    auto aiOwner = std::make_unique<AutoGenComponent>(cfg.ai);
+    AutoGenComponent* aiComp = aiOwner.get();
+    scene.addComponent(std::move(aiOwner));
+    if (!wizengine::net::httpsSupported()) {
+        LOGI("ai", "this build has no OpenSSL - only http:// AI endpoints can be used");
+    }
 
     PerfStats stats;
     stats.substeps.store(scene.substeps());
@@ -483,10 +520,9 @@ int run(int argc, char** argv) {
                 ep->viewIndex = kNoView;
             }
 
-            WebRtcStreamer::setPreferGpuConvert(kGpuConvert);
+            WebRtcStreamer::setPreferGpuConvert(cfg.video.gpuConvert);
             ep->webrtc = std::make_unique<WebRtcStreamer>(
-                kWidth, kHeight, kFps, codecOverride.value_or(kDefaultCodec),
-                kVideoBitrate);
+                kWidth, kHeight, kFps, videoCodec, cfg.video.bitrate);
             ep->http = std::make_unique<HttpServer>("assets/web");
             listener->mount(*ep->http, "/cam" + std::to_string(i));
 
@@ -562,6 +598,8 @@ int run(int argc, char** argv) {
                     // at a time can view a given camera.
                     j["busy"].push_back(e->http->hasViewer());
                 }
+                // AI のシーン自動構築の状態（🤖 AI モーダルが描く）。
+                j["ai"] = aiComp->statusJson();
                 return j.dump();
             });
 
@@ -995,6 +1033,9 @@ int run(int argc, char** argv) {
 
     if (inputThread.joinable()) inputThread.join();
     if (physicsThread.joinable()) physicsThread.join();
+    // AI の生成がまだ通信中でも、以後は結果を Scene へ渡さない（スレッドは
+    // 切り離してあるので待たない）。
+    aiComp->shutdown();
     // Readbacks are asynchronous, so let the in-flight ones land before the
     // encoders and their buffers go away.
     renderer.finishPendingReadbacks();

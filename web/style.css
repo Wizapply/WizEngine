@@ -274,6 +274,9 @@
     border-radius: 8px 8px 0 0;
     position: relative; top: 1px;  /* overlaps the strip border when active */
   }
+  /* World タブは文字の幅だけ（他のタブより狭く）。残りの幅は
+     Scene / Inspector が分け合う。 */
+  #tabPhysics { flex: 0 0 auto; }
   .sbTab:hover:enabled { background: #1c1e24; color: #c3c8d0; }
   .sbTab.active {
     background: #17181c;        /* = sidebar bg: tab and pane become one */
@@ -988,3 +991,54 @@
     .tune, .hint, #assets { display: none; }
     #perf { font-size: 11px; line-height: 1.5; }
   }
+
+  /* ---- AI シーン生成のモーダル（web/autogen.js）-------------------------- */
+  /* #stage の外（普通のフォーム）。ノードエディタと同じ .ndBack / .ndWin を
+     使い、ウィンドウだけ小さめにする。 */
+  #aiGen {
+    position: fixed; inset: 0; z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #aiGen[hidden] { display: none; }
+  #aiGen .ndBack { cursor: pointer; }
+  #aiGen .ndWin { width: min(760px, calc(100% - 32px)); height: auto; max-height: 90%; }
+  #aiGen .ndHead button {
+    margin: 0 0 0 auto; padding: 3px 8px; font-size: 11px;
+    background: #2a2d34; color: #dfe2e7; border: 1px solid #3a3d45; border-radius: 4px;
+  }
+  .aiConf {
+    font-size: 11px; color: #9aa3b2; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .aiConf.bad { color: #e0a060; }
+  .aiBody {
+    display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+    overflow: auto; min-height: 0;
+  }
+  .aiRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; }
+  .aiRow label { display: inline-flex; align-items: center; gap: 4px; }
+  .aiSub { color: #7b7f88; font-size: 11px; }
+  #aiPrompt {
+    width: 100%; box-sizing: border-box; resize: vertical; min-height: 90px;
+    padding: 8px 10px; border: 1px solid #3a3d45; border-radius: 6px; outline: none;
+    background: #101216; color: #dfe2e7; font: 13px/1.5 system-ui, sans-serif;
+  }
+  #aiPrompt:focus { border-color: #4a70ad; }
+  .aiRow button {
+    padding: 5px 14px; font-size: 12px; border-radius: 4px;
+    background: #2f5ea8; color: #fff; border: 1px solid #3d6fc0;
+  }
+  .aiRow button#aiStop { background: #2a2d34; border-color: #3a3d45; color: #dfe2e7; }
+  .aiRow button:disabled { opacity: .45; }
+  .aiBar {
+    flex: 1 1 120px; height: 6px; min-width: 80px; border-radius: 3px;
+    background: #2a2d34; overflow: hidden;
+  }
+  #aiBarFill { height: 100%; width: 0; background: #4a8ae0; transition: width .4s; }
+  .aiLog {
+    margin: 0; padding: 8px 10px; min-height: 60px; max-height: 220px; overflow: auto;
+    background: #101216; color: #aeb5c1; border-radius: 6px;
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  #aiGen .ndHint { padding: 0; }

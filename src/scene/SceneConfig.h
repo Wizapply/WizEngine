@@ -7,7 +7,7 @@
 // ここにあるのは「実行環境と起動時の既定値」だけ。**シーンの中身**
 // （オブジェクトの配置・glTF モデルの割り当て・ジョイント・イベント）は
 // このヘッダではなく assets/scenes/*.xml が持つ（CLAUDE.md の
-// 「シーン文書（XML）」の章）。起動時に読む文書は下の kStartupScene。
+// 「シーン文書（XML）」の章）。起動時に読む文書は config.json の "scene"."startupScene"。
 //
 // Everything here is a compile-time value or a small inline factory - editing
 // a number and rebuilding is the whole workflow. Runtime-tunable values
@@ -20,8 +20,8 @@
 
 #include "scene/BoxController.h"
 #include "scene/CameraObject.h"
-#include "document/EditorTypes.h"     // AppMode, LightDesc
-#include "physics/PhysicsWorld.h"    // PhysicsBackend
+#include "document/EditorTypes.h"     // LightDesc
+#include "physics/PhysicsWorld.h"    // （以前から。Scene*.cpp が経由で使う）
 #include "scene/SceneMath.h"      // eulerDegreesFromDirection (lightConfigs)
 
 // ---- Contact material ----------------------------------------------------
@@ -76,28 +76,9 @@ inline std::vector<CameraObject::Config> cameraConfigs() {
     return {a, b, c};
 }
 
-// ---- カメラの上限 -----------------------------------------------------------
-// ページ（HTTP のパス）と WebRTC の受け口は起動時にこの数だけ作られる固定
-// プール（どちらも軽い。エンコーダのパイプラインは従来から視聴者が来た
-// 時点で作られる）。**動画ビュー（スワップチェーン + 読み戻しバッファ、
-// 1 枚あたり数 MB）は予備スロットぶんを起動時には作らず**、エディタで
-// 「カメラを追加」した時点（またはそのページに視聴者が来た時点）で描画
-// スレッドが生成する（main.cpp の「動画ビューの遅延生成」）。一度作った
-// ビューは返さない: カメラの「削除」は一覧から消すだけで、次の「追加」が
-// 同じスロットとビューを再利用する。cameraConfigs() のぶんが最初から有効。
-//
-// ここにあるのは**既定値**。スロット数は実行環境の割り当てなので、exe 引数
-// `--max-cameras N`（1〜16）で起動時に上書きできる（main.cpp が解析して
-// Scene のコンストラクタへ渡す。CPU コアの固定と同じ整理）。
-constexpr std::size_t kMaxCameras = 5;
-
-// ---- エディタカメラ --------------------------------------------------------
-// エディタ操作（モード切替・配置・ギズモ・ジョイント設計・シーンの保存/読込）
-// を受け付けるカメラ番号。ギズモが出るのもこのカメラの選択だけ。他のカメラは
-// エディタ中も今までどおり見る・選ぶはできるが、シーンは書き換えられない。
-// 「複数人で同じシーンを見ながら、編集するのは 1 人」という使い方の前提。
-// 範囲外の番号を書いた場合は 0 に丸められる。
-constexpr std::size_t kEditorCamera = 0;
+// ---- カメラの上限・エディタカメラ -----------------------------------------
+// 実行環境の設定なので config.json の "scene"（scene/SceneSystemConfig.h の
+// maxCameras / editorCamera）。cameraConfigs() のぶんが最初から有効なカメラ。
 
 // ---- Lights --------------------------------------------------------------
 // One entry per light; add or remove entries freely. These are the direct
@@ -175,27 +156,9 @@ inline const std::vector<filament::math::float3>& cameraColors() {
 // overridden at launch with --codec / --encoder, and per camera from the
 // browser's System > Stream section.
 
-// 物理バックエンドの既定。シーンが何も要求しないときに使う系で、Scene が
-// 文書の中身を見て上書きする（Scene::requiredBackend）:
-//   - Core を要する機能（FEA ケーブル・ChLoad・直接法・HHT・モーダル、
-//     kTerrainForcesCore ならテレイン）があれば Core。
-//   - なければ、ソフトボディがある（kMulticoreForSoftBodies）か、ボディの
-//     数が kMulticoreMinBodies 以上なら Multicore（ビルドにあれば）。
-//   - どちらでもなければこの既定。
-// Core（ChSystemNSC + Bullet）は Chrono の全機能が使え、スリープも効き、
-// 数十個の剛体なら Multicore より速いか同等。Multicore はソルバと衝突判定を
-// OpenMP で並列化するので数百〜数千個で効くが、スリープ非対応・ChLoad と
-// TSDA を積分に取り込まない・ボディ削除が不完全（下の「Chrono の B 群」）。
-// Multicore には MULTICORE モジュール付きの Chrono と CMake
-// -DWIZ_USE_MULTICORE=ON が要る。無ければ自動で Core。
-constexpr PhysicsBackend kBackend = PhysicsBackend::Core;
-
-// Multicore を自動で選ぶ条件（Core を要する機能が無いときだけ見る）。
-// ソフトボディは 1 個で resolution^3 個（既定 4^3 = 64、最大 512）の粒子 =
-// 剛体なので、1 個でも Multicore へ。剛体だけのシーンは合計（プレハブの
-// collide 部品も 1 個と数える）がこの数以上で Multicore。0 で無効。
-constexpr bool kMulticoreForSoftBodies = true;
-constexpr int kMulticoreMinBodies = 200;
+// 物理バックエンドの既定と Multicore を自動で選ぶ条件は実行環境の設定なので
+// config.json の "physics"（scene/SceneSystemConfig.h の backend /
+// multicoreForSoftBodies / multicoreMinBodies / terrainForcesCore）。
 
 // ---- テレイン（文書の <terrain>）-----------------------------------------
 // テレインの当たり判定は高さ格子との自前の接触（PhysicsWorld::setTerrain +
@@ -207,12 +170,8 @@ constexpr int kMulticoreMinBodies = 200;
 // （衝突モデルの外接箱）で粗く当たる（シミュレート開始時に該当する物を
 // LOGW で 1 回知らせる）。衝突レイヤ（<geom layer nocollide>）は見ない（未対応）。
 //
-// テレインのあるシーンは Core にする（Scene::requiredBackend の Core を要する
-// 理由に "terrain (custom contact; Multicore untested)" が加わる）。自前の
-// 接触は Multicore では張らない（PhysicsWorld::setTerrain が無効の番号を
-// 返す）ので、false にして Multicore が選ばれると、テレインは見えるが
-// 何も当たらない（Multicore の自前接触は chrono-install に無く未検証）。
-constexpr bool kTerrainForcesCore = true;
+// テレインのあるシーンを Core にするかは config.json の
+// "physics"."terrainForcesCore"（SceneSystemConfig）。
 // 描画のチャンク 1 辺のクアッド数（Renderer::addTerrain の quadsPerChunk）。
 // **描画専用**（当たり判定は上の自前の接触なのでチャンクに分けない）。
 // 1 チャンク 65^2 頂点。解像度の上限（editor::kTerrainMaxResolution = 1024）
@@ -220,25 +179,9 @@ constexpr bool kTerrainForcesCore = true;
 // （Scene.cpp が static_assert で照合する）。
 constexpr int kTerrainChunkQuads = 64;
 
-// In web mode, do nothing at all while no browser holds the viewer session:
-// no physics steps, no rendering, no encoding. Set false to keep simulating in
-// the background.
-constexpr bool kIdleWhenUnwatched = true;
-
-// ---- モード --------------------------------------------------------------
-// 起動時にどちらのモードで立ち上げるか。Simulate は従来どおり、置いてある
-// 物がいきなり落ちてくる状態。Editor は物理を止めた状態で始まるので、
-// 配置やジョイントの設計から入りたいときはこちら（ブラウザからいつでも
-// 切り替えられるので、好みの問題）。
-constexpr wizengine::editor::AppMode kStartMode =
-    wizengine::editor::AppMode::Simulate;
-
-// 起動時に読み込むシーン文書（assets/scenes の名前。拡張子は書かない）。
-// シーンの中身（配置・モデル・ジョイント・イベント）はコードではなく XML が
-// 持つので、既定シーンもただのファイル（assets/scenes/default.xml、リポジトリ
-// 同梱）。読めなければ警告を出して空のシーン（地面のみ）で起動する。
-// 空文字列にすると常に空のシーンで起動する。
-constexpr const char* kStartupScene = "default";
+// 視聴者がいない間の休止・起動時のモード・起動時のシーンは実行環境の設定
+// なので config.json の "scene"（scene/SceneSystemConfig.h の
+// idleWhenUnwatched / startMode / startupScene）。
 
 // 重力（-Y 方向、m/s^2）。エディタのシミュレート設定の初期値でもある。
 constexpr double kGravityY = -9.81;

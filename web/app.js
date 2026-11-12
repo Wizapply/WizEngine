@@ -1334,7 +1334,7 @@
     document.getElementById('secPrefab').hidden = !on;
     const banner = document.getElementById('vhPrefab');
     banner.hidden = !on;
-    // World 節と描画節は World/Physics タブにあるので、ここでは触らない
+    // World 節と描画節は World タブにあるので、ここでは触らない
     // （secObj / secJoint は renderEditor が毎回決め直す）。
     if (!on) {
       prefabListKey = '';
@@ -1462,7 +1462,7 @@
         const unit = l.kind === 'sun' ? 'lx' : 'lm';
         html += '<div class="item' + (edSel ? ' edsel' : '') + '"' +
                 (canPick
-                  ? ' onclick="selectLight(' + l.index + ')"' +
+                  ? ' data-pick="light" data-light="' + l.index + '"' +
                     ' title="クリックで選択（位置・向き・色を編集）"'
                   : ' style="cursor:default"') +
                 '><span class="dot" style="background:' + l.color + '"></span>' +
@@ -1479,13 +1479,18 @@
     if (!objFilter) {
       const canPick = owner && sceneData.mode === 'editor' && isEditorCam();
       const eSel = myEditorSel();
+      // 選んでいる間は丸をこのページのカメラの色にする（オブジェクトの行が
+      // 選択中に掴んだカメラの色になるのと同じ見え方）。
+      const myColor = colorOf(sceneData.camera);
       const row = (kind, icon, label, sub, title) =>
         '<div class="item' + (eSel.kind === kind ? ' edsel' : '') +
         '" data-scene-item="' + kind + '"' +
         (canPick
-          ? ' onclick="selectSceneItem(\'' + kind + '\', true)" title="' + title + '"'
+          ? ' data-pick="' + kind + '" title="' + title + '"'
           : ' style="cursor:default"') +
-        '><span class="dot"></span><span>' + icon + ' ' + label + '</span>' +
+        '><span class="dot"' +
+        (eSel.kind === kind ? ' style="background:' + myColor + '"' : '') +
+        '></span><span>' + icon + ' ' + label + '</span>' +
         '<span class="sub">' + sub + '</span></div>';
       const g = sceneData.ground;
       if (g && g.enabled !== false) {
@@ -1516,7 +1521,7 @@
         (o.soft ? '<span class="tag" title="ソフトボディ">🫧</span>' : '') +
         (o.prefab ? '<span class="tag" title="プレハブ: ' + o.prefab + '">🧩</span>' : '');
       html += '<div class="item' + (isMine ? ' sel' : '') + '" data-index="' + o.index +
-              '" onclick="selectObject(' + o.index + ')">' + dot +
+              '" data-pick="object">' + dot +
               '<span>' + labelOf(o) + (o.fixed ? ' ⚓' : '') + tag + '</span>' + ev +
               '<span class="sub">' + o.y.toFixed(2) + 'm</span></div>';
     }
@@ -1524,8 +1529,73 @@
       html += '<div class="item" style="cursor:default;opacity:.5">… ' +
               (rows.length - shown.length) + ' more (use the filter)</div>';
     }
-    document.getElementById('objList').innerHTML = html;
+    // 中身が前回と同じなら DOM を触らない。毎回 innerHTML で作り直すと、
+    // 押してから離すまでの間に行が差し替わったクリックが消え（「選択
+    // されない」）、ホバーの表示もちらつく。エディタ中は中身がほぼ変わら
+    // ないので、ほとんどのポーリングで何もしない。
+    if (html !== objListHtml) {
+      objListHtml = html;
+      document.getElementById('objList').innerHTML = html;
+    }
   }
+  let objListHtml = null;  // 前回 #objList に入れた HTML（null = 次で必ず書く）
+
+  // 階層一覧の行の選択（ライト / 地面 / テレイン / オブジェクト）。行ごとの
+  // onclick ではなく一覧で 1 つ受ける: マウスとペンは**押した瞬間**に選ぶ
+  // （押してから離すまでの間に行が作り直されても取りこぼさない）。タッチは
+  // 押しただけではスクロールの始まりか分からないので、タップ（click）で選ぶ。
+  // 選んだ行はすぐ光らせ、送信が済んだら 500ms を待たずに /scene を取り直す。
+  let objPickByDown = false;
+  function pickHierarchyRow(row) {
+    const kind = row.dataset.pick;
+    const list = document.getElementById('objList');
+    let on = true;  // false = もう一度押して解除
+    if (kind === 'object') {
+      const index = parseInt(row.dataset.index, 10);
+      on = myCameraSelection() !== index;
+      selectObject(index);
+    } else if (kind === 'light') {
+      const index = parseInt(row.dataset.light, 10);
+      const s = myEditorSel();
+      on = !(s.kind === 'light' && s.index === index);
+      selectLight(index);
+    } else {
+      on = myEditorSel().kind !== kind;
+      selectSceneItem(kind, true);
+    }
+    // 先に見た目だけ変える（オブジェクト選択とエディタ選択は排他なので
+    // 両方の印を消す）。サーバーの答えは次のポーリングで上書きされる -
+    // キャッシュを捨てて、同じ HTML でも必ず書き直させる。
+    for (const el of list.querySelectorAll('.item.sel, .item.edsel')) {
+      el.classList.remove('sel', 'edsel');
+    }
+    for (const dot of list.querySelectorAll('[data-scene-item] .dot')) {
+      dot.style.background = '';
+    }
+    if (on) {
+      row.classList.add(kind === 'object' ? 'sel' : 'edsel');
+      const dot = row.querySelector('.dot');
+      if (dot && (kind === 'ground' || kind === 'terrain')) {
+        const me = sceneData && sceneData.cameras && sceneData.cameras[sceneData.camera];
+        dot.style.background = me ? me.color : '';
+      }
+    }
+    objListHtml = null;
+    setTimeout(pollScene, 120);
+  }
+  document.getElementById('objList').addEventListener('pointerdown', (e) => {
+    objPickByDown = false;
+    if (e.button !== 0 || e.pointerType === 'touch') return;
+    const row = e.target.closest ? e.target.closest('[data-pick]') : null;
+    if (!row) return;
+    objPickByDown = true;
+    pickHierarchyRow(row);
+  });
+  document.getElementById('objList').addEventListener('click', (e) => {
+    if (objPickByDown) { objPickByDown = false; return; }  // 押したときに選び済み
+    const row = e.target.closest ? e.target.closest('[data-pick]') : null;
+    if (row) pickHierarchyRow(row);
+  });
 
   // 選択中のオブジェクトの設計値。サーバが選択ぶんだけ丸ごと送ってくれる
   // （objects[] は番号が飛ぶことがあるので、配列の位置では引けない）。
@@ -2226,7 +2296,7 @@
     send('edit.import', { file: f.trim() });
   }
 
-  // シミュレート設定（World/Physics タブ）。物理レートはここでは送らない - Rate
+  // シミュレート設定（World タブ）。物理レートはここでは送らない - Rate
   // セクション（rate コマンド）が受け持ち、サーバー側で保存値にも映る。
   function applySim() {
     send('edit.sim', {
@@ -2408,7 +2478,7 @@
     if (!editorHere && !document.getElementById('paneEditor').hidden) {
       showTab('scene');  // 隠したタブを開いたままにしない
     }
-    // シーン全体の設定（World・描画）は World/Physics タブにあるが、送るのは
+    // シーン全体の設定（World・描画）は World タブにあるが、送るのは
     // edit.environment / edit.render / edit.event.* = エディタカメラの
     // ページ専用の操作（サーバーが他のページからのぶんを弾く）。押しても
     // 効かない欄は出さない - Inspector にあった頃と同じ見え方。
@@ -2652,7 +2722,7 @@
     // シミュレートへ戻したら、編集のための窓（カメラのプレビュー）は閉じる。
     if (!editing) closeCamPopups();
 
-    // イベント節（Inspector と World/Physics タブの World 節）。オブジェクトと
+    // イベント節（Inspector と World タブの World 節）。オブジェクトと
     // World は「付いているアセット」、ライト / カメラはそれを対象にしている
     // ノードの一覧（付け先になれない）。
     renderEventAttachments('edWorldEvents', 'edWorldEventPick', worldEvents(), -1);
@@ -2726,7 +2796,7 @@
         }).join('')
       : '<div class="edHint">このオブジェクトのケーブルはまだありません。</div>';
 
-    // シミュレート設定（World/Physics タブへ移設済み。全カメラで見える・変えられる）。
+    // シミュレート設定（World タブへ移設済み。全カメラで見える・変えられる）。
     const s = sceneData.sim;
     if (s) {
       setField('edGravity', round2(s.gravity));
@@ -3084,7 +3154,7 @@
     ];
   }
 
-  // Inspector の「イベント」一覧と、World/Physics タブの World 節（シーン全体の
+  // Inspector の「イベント」一覧と、World タブの World 節（シーン全体の
   // イベント）の右クリック（開く / 外す）。行は renderEventAttachments が
   // data-event / data-owner を付けて出す。
   const onEventRowMenu = (e) => {

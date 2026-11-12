@@ -201,17 +201,17 @@ bool Scene::dispatchCommand(std::size_t camIndex, const nlohmann::json& msg) {
 }
 
 Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
-             std::size_t maxCameras)
+             SceneSystemConfig sys)
     : physics_(physics),
       renderer_(renderer),
       terrainLibrary_(std::make_unique<wizengine::terrain::TerrainLibrary>(
           std::filesystem::u8path(wizengine::assetPath("terrains")))),
       terrainUndo_(std::make_unique<wizengine::terrain::TerrainUndoStack>()) {
-    // スロット数: exe 引数（--max-cameras、0 = 未指定）が優先、無ければ
-    // SceneConfig.h の kMaxCameras。カメラ 0（エディタカメラ）は必ず要るので
-    // 1 未満にはしない。極端な値はページ・受け口・スレッドを無駄に増やす
-    // だけなので 16 で止める。
-    std::size_t slots = maxCameras > 0 ? maxCameras : kMaxCameras;
+    sys_ = std::move(sys);
+    // スロット数（config.json の "scene"."maxCameras"、exe 引数 --max-cameras で
+    // 上書き）。カメラ 0（エディタカメラ）は必ず要るので 1 未満にはしない。
+    // 極端な値はページ・受け口・スレッドを無駄に増やすだけなので 16 で止める。
+    std::size_t slots = sys_.maxCameras;
     if (slots < 1) slots = 1;
     if (slots > 16) {
         LOGW("scene", "max cameras %zu is excessive - clamped to 16", slots);
@@ -244,7 +244,11 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
 
 // 前方宣言の型（TerrainLibrary / TerrainUndoStack）の unique_ptr を壊すので、
 // 完全な型が見えるここで定義する。
-Scene::~Scene() = default;
+// 係（コンポーネント）を**メンバより先に**壊す。メンバは宣言の逆順で
+// 壊れるので、既定のままだと editor_（components_ の後ろに宣言）が先に
+// 消え、その間に別スレッドを持つ係（AutoGenComponent の生成スレッドが
+// 結果を EditorState へ積む）が消えたものを触りうる。
+Scene::~Scene() { components_.clear(); }
 
 bool Scene::cameraRay(std::size_t cameraIndex, double ndcX, double ndcY,
                       scenemath::Basis& basis, scenemath::Vec3& dir) const {
@@ -352,12 +356,8 @@ std::size_t Scene::pickBoxAt(double ndcX, double ndcY,
     return best;
 }
 
-PhysicsBackend scenePhysicsBackend() {
-    return kBackend;
-}
-
 std::size_t Scene::editorCamera() const {
-    return kEditorCamera < cameras_.size() ? kEditorCamera : 0;
+    return sys_.editorCamera < cameras_.size() ? sys_.editorCamera : 0;
 }
 
 // 実行時に変わりうる値は EditorState の設定が正。SceneConfig.h の定数は
@@ -384,7 +384,7 @@ double Scene::contactRecovery() const {
 }
 
 bool Scene::idleWhenUnwatched() const {
-    return kIdleWhenUnwatched;
+    return sys_.idleWhenUnwatched;
 }
 
 void Scene::build() {
@@ -406,7 +406,7 @@ void Scene::build() {
         s.sleeping = kSleepingEnabled;
         editor_.setSim(s);
     }
-    editor_.setMode(kStartMode);
+    editor_.setMode(sys_.startMode);
     editor_.refreshSceneFiles();
     editor_.refreshEventLibrary();
     // テレインの一覧（アセットパネルのタイル）。起動シーンが読めなかった・
@@ -453,22 +453,23 @@ void Scene::build() {
     // ---- シーンの中身は文書（XML）から ------------------------------------
     // 以前ここにあった格子の自動生成は廃止した。オブジェクトの配置・glTF
     // モデルの割り当てはすべて assets/scenes/*.xml が持ち、コード側は
-    // kStartupScene（既定 "default"）を読むだけ。読めなければ警告を出して
+    // config.json の "scene"."startupScene"（既定 "default"）を読むだけ。読めなければ警告を出して
     // 空のシーン（地面のみ）で起動する - ブラウザから別のシーンを読み込めば
     // よいので、起動は止めない。
-    if (kStartupScene[0] != '\0') {
+    const std::string& startup = sys_.startupScene;
+    if (!startup.empty()) {
         ed::SceneDocument doc;
         std::string reason;
-        if (readSceneDocument(kStartupScene, doc, reason)) {
+        if (readSceneDocument(startup, doc, reason)) {
             loadDocument(doc, false);
-            editor_.setSceneFile(kStartupScene);
-            editor_.setStatus(std::string("読み込みました: ") + kStartupScene +
+            editor_.setSceneFile(startup);
+            editor_.setStatus("読み込みました: " + startup +
                               terrainLoadCaveat() + terrainCombineCaveat(true));
             LOGI("scene", "startup scene '%s' loaded (%zu bodies, %zu meshes)",
-                 kStartupScene, doc.bodies.size(), doc.meshes.size());
+                 startup.c_str(), doc.bodies.size(), doc.meshes.size());
         } else {
             LOGW("scene", "startup scene '%s' not loaded: %s (starting empty)",
-                 kStartupScene, reason.c_str());
+                 startup.c_str(), reason.c_str());
         }
     }
     // 起動シーンが Core 専用の機能（ケーブルなど）を使っていれば、ここで
@@ -1001,9 +1002,9 @@ std::vector<double> Scene::modalFrequencies() {
 // ---- バックエンドの自動切替（B）---------------------------------------------
 // 1. Multicore が扱えない機能を文書が使っていれば Core。
 // 2. なければ、ソフトボディがある・ボディが多い（SceneConfig.h の
-//    kMulticoreForSoftBodies / kMulticoreMinBodies）なら Multicore（ビルドに
+//    multicoreForSoftBodies / multicoreMinBodies）なら Multicore（ビルドに
 //    あれば）。
-// 3. どちらでもなければ既定（kBackend）。
+// 3. どちらでもなければ既定（SceneSystemConfig::backend）。
 // 接触の解き方（nsc / smc）も系の種類なので一緒に見る。呼ぶのは物理スレッド
 // （シミュレート開始・設定変更・読込・ジョイント / ケーブルの編集）。
 // オブジェクトの増減では呼ばない: シミュレート中に系を作り直すと全部が設計値
@@ -1032,9 +1033,9 @@ PhysicsBackend Scene::requiredBackend(ContactMethod& contact, std::string& reaso
     if (ed::solverNeedsCore(s.solver)) why.push_back("solver '" + s.solver + "'");
     if (ed::integratorNeedsCore(s.integrator)) why.push_back("integrator '" + s.integrator + "'");
     if (s.modal > 0) why.push_back("modal analysis");
-    // テレイン。SceneConfig.h の kTerrainForcesCore。当たり判定は自前の接触
+    // テレイン。SceneSystemConfig::terrainForcesCore。当たり判定は自前の接触
     // （CustomCollisionCallback。Multicore では PhysicsWorld が張らない）。
-    if (kTerrainForcesCore && terrainLoaded()) {
+    if (sys_.terrainForcesCore && terrainLoaded()) {
         why.push_back("terrain (custom contact; Multicore untested)");
     }
     if (!why.empty()) {
@@ -1063,19 +1064,21 @@ PhysicsBackend Scene::requiredBackend(ContactMethod& contact, std::string& reaso
             rigid += obj.childPhysIds.size();  // 固定の持ち主の collide 部品
         }
         const std::size_t total = rigid + particles;
-        if (kMulticoreForSoftBodies && softs > 0) {
+        if (sys_.multicoreForSoftBodies && softs > 0) {
             reason = std::to_string(softs) + " soft " + (softs == 1 ? "body" : "bodies") + ", " +
                      std::to_string(particles) + " particles";
             return PhysicsBackend::Multicore;
         }
-        if (kMulticoreMinBodies > 0 && total >= std::size_t(kMulticoreMinBodies)) {
-            reason = std::to_string(total) + " bodies (>= " + std::to_string(kMulticoreMinBodies) + ")";
+        if (sys_.multicoreMinBodies > 0 &&
+            total >= std::size_t(sys_.multicoreMinBodies)) {
+            reason = std::to_string(total) + " bodies (>= " +
+                     std::to_string(sys_.multicoreMinBodies) + ")";
             return PhysicsBackend::Multicore;
         }
     }
 
     // 3. 既定
-    PhysicsBackend want = scenePhysicsBackend();
+    PhysicsBackend want = sys_.backend;
     if (want == PhysicsBackend::Multicore && !multicoreAvailable()) {
         want = PhysicsBackend::Core;  // ビルドに無い（PhysicsWorld も Core に落とす）
     }
