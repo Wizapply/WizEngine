@@ -6,7 +6,8 @@
 #include <vector>
 
 #include "core/Clamp.h"
-#include "document/EditorTypes.h"
+#include "core/SceneLimits.h"
+#include "core/Vec3d.h"
 #include "ui/UiProps.h"  // ElementDesc / KeyDesc の PropSet
 #include "ui/UiValue.h"  // kCanvasAttrs の ValueSpec
 
@@ -90,8 +91,8 @@ struct CanvasDesc {
     double height = kCanvasDefaultHeight;      // 基準の高さ（設計上の画素）
     int order = 0;                             // Canvas どうしの重なり順（大きいほど手前）
     double distance = kCanvasDefaultDistance;  // camera: カメラからの距離（m）
-    editor::Vec3d pos;                         // world: 置き場所（m）
-    editor::Vec3d rot;                         // world: 向き（オイラー角、度）
+    Vec3d pos;                                 // world: 置き場所（m）
+    Vec3d rot;                                 // world: 向き（オイラー角、度）
     double sizeX = kCanvasDefaultSizeX;        // world / camera: 板の幅（m）
     double sizeY = kCanvasDefaultSizeY;        // world / camera: 板の高さ（m）
     std::string ui;                            // 共用の UI の名前。空 = 下の elements を使う
@@ -123,7 +124,7 @@ inline const CanvasAttrInfo kCanvasAttrs[] = {
      }},
     // カメラの番号はスロットの範囲（0..kMaxCameraSlots-1）。
     {kCanvasCamerasAttr,
-     {PropType::IndexList, numberValue(0), 0.0, double(editor::kMaxCameraSlots - 1)},
+     {PropType::IndexList, numberValue(0), 0.0, double(kMaxCameraSlots - 1)},
      "表示するカメラ",
      [](const CanvasDesc& c) {
          if (!c.invalidCameras.empty()) return textValue(c.invalidCameras);
@@ -152,8 +153,8 @@ inline const CanvasAttrInfo kCanvasAttrs[] = {
      [](const CanvasDesc& c) { return numberValue(c.distance); },
      [](CanvasDesc& c, const PropValue& v) { c.distance = v.v[0]; }},
     {"pos",
-     {PropType::Vec3, numberValue(0, 0, 0), -editor::kPlacementMaxMeters,
-      editor::kPlacementMaxMeters},
+     {PropType::Vec3, numberValue(0, 0, 0), -kPlacementMaxMeters,
+      kPlacementMaxMeters},
      "位置",
      [](const CanvasDesc& c) { return numberValue(c.pos.x, c.pos.y, c.pos.z); },
      [](CanvasDesc& c, const PropValue& v) { c.pos = {v.v[0], v.v[1], v.v[2]}; }},
