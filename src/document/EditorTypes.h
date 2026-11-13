@@ -6,17 +6,20 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "core/AssetFileRule.h"
 #include "core/Clamp.h"
 #include "core/Guid.h"
-#include "core/Hex.h"
+#include "core/HexColor.h"
+#include "core/Json.h"
 #include "core/SafeName.h"
+#include "core/SceneLimits.h"
+#include "core/Vec3d.h"
 #include "formula/Formula.h"
 #include "vehicle/VehicleTypes.h"
 
@@ -33,6 +36,18 @@
 // 保存/読み込みは全部この型の JSON 化で済ませる（assets/scenes/*.json）。
 namespace wizengine {
 namespace editor {
+
+// core へ移した汎用の部品の旧名（editor:: / ed:: の呼び手のため。定義は core の
+// 1 か所だけ。新しいコードは core の名前を使う）。
+using wizengine::assetFileAllowed;
+using wizengine::clampAngleDegrees;
+using wizengine::jsonInt;
+using wizengine::jsonNumber;
+using wizengine::jsonString;
+using wizengine::kMaxCameraSlots;
+using wizengine::kPlacementMaxMeters;
+using wizengine::stringList;
+using wizengine::Vec3d;
 
 // エディタ（配置・設計）とシミュレート（実行）の2モード。
 enum class AppMode { Editor, Simulate };
@@ -201,10 +216,6 @@ struct GizmoSettings {
     // 線が部品に重なって見づらいので消せるようにする。描くのはサーバー
     // （全ビュー共通）なので、エディタ / シミュレートとも同じ設定に従う。
     bool jointLines = true;
-};
-
-struct Vec3d {
-    double x = 0.0, y = 0.0, z = 0.0;
 };
 
 struct Color3 {
@@ -839,10 +850,6 @@ inline RenderDesc renderPreset(const std::string& name) {
 }
 
 // ---- カメラ -----------------------------------------------------------------
-// カメラのスロット数の上限（exe 引数 --max-cameras の上限。Scene がスロット数を
-// ここで止め、UI の Canvas の「表示するカメラ」もこの番号の範囲で持つ）。
-inline constexpr int kMaxCameraSlots = 16;
-
 // 1 台ぶんの姿勢。実体（CameraObject）と同じオービット表現のまま保存する。
 // UI が見せる「位置・向き」へは Scene.cpp が変換する（eye = target + radius *
 // 軌道ベクトル、pitch/yaw ⇄ elevation/azimuth）。active=false のスロットは
@@ -1249,45 +1256,7 @@ inline EmitterDesc clampEmitter(EmitterDesc e) {
 // 「どのキーが出るか」がそのまま保存フォーマットとブラウザ API になるので、
 // 一箇所で読めるほうがよい。
 
-// 型が違っても投げない数値・整数の取り出し。/input は誰でも叩けるので、
-// 文字列などを混ぜたリクエストで nlohmann の value() が type_error を投げ、
-// 処理スレッドごと落ちる - それを既定値へ落として続行するための口。
-inline double jsonNumber(const nlohmann::json& j, const char* key,
-                         double fallback) {
-    if (!j.is_object()) return fallback;
-    const auto it = j.find(key);
-    return (it != j.end() && it->is_number()) ? it->get<double>() : fallback;
-}
-// int に入らない値（NaN・無限・範囲外）も fallback（double から int への変換は
-// 範囲外で未定義）。小数は 0 の向きへ切り捨てる。
-inline int jsonInt(const nlohmann::json& j, const char* key, int fallback) {
-    if (!j.is_object()) return fallback;
-    const auto it = j.find(key);
-    if (it == j.end() || !it->is_number()) return fallback;
-    const double v = it->get<double>();
-    // NaN はどの比較も偽 = fallback。
-    if (!(v > double(std::numeric_limits<int>::min()) - 1.0 &&
-          v < double(std::numeric_limits<int>::max()) + 1.0))
-        return fallback;
-    return int(v);
-}
-// 文字列版（型が違えば fallback。nlohmann の value() のように投げない）。
-inline std::string jsonString(const nlohmann::json& j, const char* key,
-                              const std::string& fallback) {
-    if (!j.is_object()) return fallback;
-    const auto it = j.find(key);
-    return (it != j.end() && it->is_string()) ? it->get<std::string>() : fallback;
-}
-// 文字列の配列（イベントアセット名の一覧）。文字列以外の要素は捨てる
-// - /input は誰でも叩けるので、型を信じない、の同じ流儀。
-inline std::vector<std::string> stringList(const nlohmann::json& j) {
-    std::vector<std::string> out;
-    if (!j.is_array()) return out;
-    for (const auto& e : j) {
-        if (e.is_string()) out.push_back(e.get<std::string>());
-    }
-    return out;
-}
+// 型を信じない取り出し（jsonNumber / jsonInt / jsonString / stringList）は core/Json.h。
 
 inline nlohmann::json toJson(const Vec3d& v) {
     return nlohmann::json{{"x", v.x}, {"y", v.y}, {"z", v.z}};
@@ -1312,17 +1281,14 @@ inline std::string colorToHex(const Color3& c) {
     std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", ch(c.r), ch(c.g), ch(c.b));
     return std::string(buf);
 }
+// 読み方は core/HexColor.h の parseHexColor（形が違えば fallback）。
 inline Color3 colorFromHex(const std::string& hex, const Color3& fallback) {
-    if (hex.size() != 7 || hex[0] != '#') return fallback;
-    int v[6];
-    for (int i = 0; i < 6; ++i) {
-        v[i] = hexDigitValue(hex[std::size_t(i) + 1]);  // core/Hex.h
-        if (v[i] < 0) return fallback;
-    }
+    float rgb[3];
+    if (!parseHexColor(hex, rgb)) return fallback;
     Color3 c;
-    c.r = float(v[0] * 16 + v[1]) / 255.0f;
-    c.g = float(v[2] * 16 + v[3]) / 255.0f;
-    c.b = float(v[4] * 16 + v[5]) / 255.0f;
+    c.r = rgb[0];
+    c.g = rgb[1];
+    c.b = rgb[2];
     return c;
 }
 
@@ -1726,19 +1692,6 @@ inline WireDesc wireFromJson(const nlohmann::json& j, const WireDesc& base) {
     w.from = jsonInt(j, "from", w.from);
     w.to = jsonInt(j, "to", w.to);
     return w;
-}
-
-// 文書に書いてよいファイル参照（<mesh file> / <ground texture> /
-// <environment hdr>）は assets/ からの相対パスだけ。".." と絶対パス
-// （/ 始まり・ドライブレター）を弾いて、読み込み先を assets/ の下に
-// 閉じ込める（保存名の正規化と同じ動機。文書もブラウザの入力欄も
-// 手で書けるので、XML の読み込みと edit.* の両方がこれを通す）。
-inline bool assetFileAllowed(const std::string& file) {
-    if (file.empty()) return false;
-    if (file[0] == '/' || file[0] == '\\') return false;
-    if (file.size() > 1 && file[1] == ':') return false;  // C:\ ...
-    if (file.find("..") != std::string::npos) return false;
-    return true;
 }
 
 // 地面と環境光。キーは XML の属性名と同じ（size = 物理の半寸法、visual =
@@ -2505,15 +2458,8 @@ inline LightDesc clampLight(LightDesc l) {
     return l;
 }
 
-// 置き場所の位置の上限（各軸 ±この値 m。地面・テレイン・world の UI の板）。
-inline constexpr double kPlacementMaxMeters = 10000.0;
-
-// 置き場所の角度（度）。有限でなければ 0、±360 の外は 1 周ぶん畳む
-// （地面・テレインの rotation。オイラー角の意味は変えない）。
-inline double clampAngleDegrees(double v) {
-    if (!(v == v) || v > 1e9 || v < -1e9) return 0.0;
-    return std::fmod(v, 360.0);
-}
+// 置き場所の位置の上限は core/SceneLimits.h の kPlacementMaxMeters、角度 1 つの
+// 丸めは core/Clamp.h の clampAngleDegrees。
 inline Vec3d clampAngles(Vec3d r) {
     return {clampAngleDegrees(r.x), clampAngleDegrees(r.y), clampAngleDegrees(r.z)};
 }
