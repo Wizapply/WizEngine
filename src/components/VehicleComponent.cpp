@@ -1,5 +1,6 @@
 #include "components/VehicleComponent.h"
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -25,21 +26,7 @@ chrono::ChVector3d toChrono(const veh::Vec3& v) {
 
 }  // namespace
 
-VehicleComponent::VehicleComponent() {
-    if (veh::LuaRuntime::available()) {
-        lua_ = std::make_unique<veh::LuaRuntime>();
-        if (lua_->ok()) {
-            LOGI("vehicle", "node formulas: %s (jit %s)", lua_->version().c_str(),
-                 lua_->jitEnabled() ? "on" : "OFF - formulas will run slowly");
-        } else {
-            LOGW("vehicle", "node formulas: LuaJIT state could not be created - "
-                            "using the C++ interpreter");
-            lua_.reset();
-        }
-    } else {
-        LOGI("vehicle", "node formulas: built without LuaJIT - using the C++ interpreter");
-    }
-}
+VehicleComponent::VehicleComponent() = default;
 
 bool VehicleComponent::onCommand(Scene& scene, std::size_t camIndex,
                                  const nlohmann::json& msg) {
@@ -87,17 +74,14 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
     input.steer = steer_.load();
     input.handbrake = handbrake_.load();
 
-    // 計算式（またはタイヤの参照）が変わっていたら作り直す。式のコンパイルは
-    // 生成時なので、これがノードエディタの編集を実行へ届ける唯一の経路。
-    const std::uint64_t fv = scene.editor().formulaVersion();
-    if (fv != formulaVersion_) {
-        if (!models_.empty()) LOGI("vehicle", "formulas changed - rebuilding vehicles");
+    // 車両の設計値（タイヤの設定・読込など）が変わっていたら作り直す。
+    // これが Inspector / XML の編集を走行中の車へ届ける経路。
+    const std::uint64_t vv = scene.editor().vehicleVersion();
+    if (vv != vehicleVersion_) {
+        if (!models_.empty()) LOGI("vehicle", "vehicle settings changed - rebuilding vehicles");
         models_.clear();
-        reportedFailures_.clear();
-        formulaVersion_ = fv;
+        vehicleVersion_ = vv;
     }
-    std::vector<veh::FormulaGraphDesc> library;  // 生成するときだけ取る
-    bool libraryLoaded = false;
 
     // テレインの高さ格子。共有ポインタをステップに 1 回だけ取り（末端の
     // terrainFieldMutex_ を 1 回）、車輪のレイはロックの外でこれを辿る
@@ -146,12 +130,7 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
         }
         auto it = models_.find(i);
         if (it == models_.end()) {
-            if (!libraryLoaded) {
-                library = scene.editor().formulaAssets();
-                libraryLoaded = true;
-            }
-            it = models_.emplace(i, std::make_unique<veh::VehicleModel>(
-                                        obj.desc.vehicle, lua_.get(), &library))
+            it = models_.emplace(i, std::make_unique<veh::VehicleModel>(obj.desc.vehicle))
                      .first;
             LOGI("vehicle", "object %zu '%s': vehicle created (%zu wheels, %d ticks)",
                  i, obj.desc.name.c_str(), it->second->wheelCount(),
@@ -159,20 +138,18 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
             for (const std::string& d : it->second->diagnostics()) {
                 LOGI("vehicle", "  %s", d.c_str());
             }
-            reportedFailures_[i] = 0;
         }
         veh::VehicleModel& model = *it->second;
-        if (const int fails = model.formulaFailures(); fails > reportedFailures_[i]) {
-            // 式が NaN や実行時エラーを出したら 1 回だけ知らせる（毎ステップ
-            // 出すとログが埋まる）。そのティックは組み込みで代用している。
-            if (reportedFailures_[i] == 0) {
-                LOGW("vehicle", "object %zu '%s': tire formula failed (%d ticks so far) - "
-                                "falling back to the built-in tire model for those ticks",
-                     i, obj.desc.name.c_str(), fails);
-            }
-            reportedFailures_[i] = fails;
+        // 制御器が書いた項目だけ置き換える（このステップ限り）。
+        veh::VehicleInput in = input;
+        if (const auto cd = controlDrive_.find(i); cd != controlDrive_.end()) {
+            const ControlDrive& c = cd->second;
+            if (c.mask & kDriveThrottle) in.throttle = c.input.throttle;
+            if (c.mask & kDriveBrake) in.brake = c.input.brake;
+            if (c.mask & kDriveSteer) in.steer = c.input.steer;
+            if (c.mask & kDriveHandbrake) in.handbrake = c.input.handbrake;
         }
-        model.setInput(input);
+        model.setInput(in);
 
         const BodyTransform t = physics.bodyTransform(obj.physId);
         veh::ChassisState chassis;
@@ -372,15 +349,32 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
     for (auto it = models_.begin(); it != models_.end();) {
         const std::size_t i = it->first;
         if (!scene.objectAlive(i) || !scene.object(i).desc.hasVehicle) {
-            reportedFailures_.erase(i);
             it = models_.erase(it);
         } else {
             ++it;
         }
     }
     count_.store(count);
+    controlDrive_.clear();  // 制御器は毎ステップ書き直す
     std::lock_guard<std::mutex> lk(visMutex_);
     visuals_.swap(vis);
+}
+
+void VehicleComponent::setControlDrive(std::size_t objectIndex, int mask,
+                                       const veh::VehicleInput& input) {
+    ControlDrive& c = controlDrive_[objectIndex];
+    c.mask |= mask;
+    if (mask & kDriveThrottle) c.input.throttle = input.throttle;
+    if (mask & kDriveBrake) c.input.brake = input.brake;
+    if (mask & kDriveSteer) c.input.steer = input.steer;
+    if (mask & kDriveHandbrake) c.input.handbrake = input.handbrake;
+}
+
+bool VehicleComponent::telemetry(std::size_t objectIndex, veh::VehicleTelemetry& out) const {
+    const auto it = models_.find(objectIndex);
+    if (it == models_.end()) return false;
+    out = it->second->telemetry();
+    return true;
 }
 
 void VehicleComponent::onPhysicsPassEnd(Scene& scene) {

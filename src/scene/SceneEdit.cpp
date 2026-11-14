@@ -3,6 +3,9 @@
 // プレハブ部品の移動。ブラウザからの入口は EditorComponent → EditorState。
 #include "scene/SceneInternal.h"
 
+#include "control/ControlTemplates.h"
+#include "formula/FormulaText.h"
+
 #include <filesystem>
 
 using namespace chrono;
@@ -1002,45 +1005,97 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     if (op.kind == "formula.add") {
         const std::string name = a.value("name", "");
         if (name.empty()) return;
-        wizengine::vehicle::FormulaGraphDesc g;
-        if (a.value("template", "") == "tire") {
-            g = wizengine::vehicle::defaultTireFormulaGraph(name);
-        } else if (a.value("template", "") == "pressure") {
-            g = wizengine::vehicle::defaultPressureFormulaGraph(name);
-        } else {
-            g.name = name;
+        // 雛形（ControlTemplates.h）。無指定 = 空の計算式。
+        const std::string tpl = a.value("template", "empty");
+        wizengine::formula::FormulaGraphDesc g;
+        std::string err;
+        if (!wizengine::control::templateGraph(tpl.empty() ? "empty" : tpl, name,
+                                               a.value("target", ""), g, err)) {
+            LOGW("control", "formula template: %s", err.c_str());
+            editor_.setStatus("雛形から作れません: " + err);
+            return;
         }
         if (!editor_.addFormulaAsset(std::move(g))) {
             editor_.setStatus("同じ名前の計算式があります: " + name);
+            return;
+        }
+        if (!tpl.empty() && tpl != "empty") {
+            // 雛形はすぐ回るように制御器として付けておく（スコープに出る）。
+            ed::ControllerDesc c;
+            c.formula = name;
+            editor_.addController(c);
+            editor_.setStatus("雛形から作成して制御器にしました: " + name);
             return;
         }
         editor_.setStatus("計算式を作成: " + name);
         return;
     }
 
+    // 数式のテキストで計算式を作る / 置き換える（FormulaText.h）。テキストは
+    // INPUT スレッドで一度検証済み（壊れていればここへ来ない）。中身を丸ごと
+    // 差し替えるので、ノードの id と位置は振り直しになる。
+    if (op.kind == "formula.text") {
+        const std::string name = a.value("name", "");
+        const std::string text = a.value("text", "");
+        wizengine::formula::FormulaGraphDesc g;
+        std::string err;
+        std::vector<std::string> warns;
+        if (name.empty() || !wizengine::formula::formulaFromText(text, name, g, err, &warns)) {
+            editor_.setStatus("式を起こせません: " + err);
+            return;
+        }
+        g.source = text;
+        for (const std::string& w : warns) LOGI("control", "formula '%s': %s", name.c_str(), w.c_str());
+        const bool existed = editor_.hasFormulaAsset(name);
+        if (!editor_.replaceFormulaAsset(std::move(g))) {
+            editor_.setStatus("計算式を保存できません: " + name);
+            return;
+        }
+        editor_.setStatus(std::string(existed ? "式で置き換えました: " : "式から作成しました: ") +
+                          name + (warns.empty() ? "" : "（注意 " + std::to_string(warns.size()) +
+                                                           " 件はログへ）"));
+        return;
+    }
+
+    // ---- 制御器 --------------------------------------------------------------
+    if (op.kind == "control.add") {
+        const std::string formula = a.value("formula", "");
+        if (!editor_.hasFormulaAsset(formula)) {
+            editor_.setStatus("計算式が見つかりません: " + formula);
+            return;
+        }
+        ed::ControllerDesc c = ed::controllerFromJson(a, ed::ControllerDesc{});
+        if (!editor_.addController(c)) {
+            editor_.setStatus("この計算式は既に制御器です: " + formula);
+            return;
+        }
+        editor_.setStatus("制御器にしました: " + formula);
+        return;
+    }
+    if (op.kind == "control.remove") {
+        const std::string formula = a.value("formula", "");
+        if (editor_.removeController(formula)) {
+            editor_.setStatus("制御器を外しました: " + formula + "（計算式は残ります）");
+        }
+        return;
+    }
+    if (op.kind == "control.set") {
+        editor_.updateController(a.value("formula", ""), a);  // 連投されるので無言
+        return;
+    }
+
     if (op.kind == "formula.remove") {
         const std::string name = a.value("name", "");
         if (name.empty() || !editor_.removeFormulaAsset(name)) return;
-        // タイヤの参照を外す（消えた名前を指したままにしない = 組み込みへ）。
-        {
-            std::lock_guard<std::mutex> lk(objectsMutex_);
-            for (auto& o : boxes_) {
-                if (!o.desc.hasVehicle) continue;
-                for (auto& ax : o.desc.vehicle.axles) {
-                    if (ax.tire.formula == name) ax.tire.formula.clear();
-                    if (ax.tire.pressureFormula == name) ax.tire.pressureFormula.clear();
-                }
-            }
-        }
-        editor_.bumpFormulaVersion();
+        editor_.removeController(name);  // 制御器も外す（消えた式を指したままにしない）
         editor_.setStatus("計算式を削除: " + name);
         return;
     }
 
     if (op.kind == "fnode.add") {
         const std::string asset = a.value("asset", "");
-        wizengine::vehicle::FormulaNodeDesc n =
-            ed::clampFormulaNode(ed::formulaNodeFromJson(a, wizengine::vehicle::FormulaNodeDesc{}));
+        wizengine::formula::FormulaNodeDesc n =
+            ed::clampFormulaNode(ed::formulaNodeFromJson(a, wizengine::formula::FormulaNodeDesc{}));
         n.kind = a.value("type", "");
         const int id = editor_.addFormulaNode(asset, n);
         if (id < 0) {
@@ -1070,7 +1125,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
 
     if (op.kind == "fwire.add" || op.kind == "fwire.remove") {
         const std::string asset = a.value("asset", "");
-        const wizengine::vehicle::FormulaWireDesc w = ed::formulaWireFromJson(a);
+        const wizengine::formula::FormulaWireDesc w = ed::formulaWireFromJson(a);
         if (op.kind == "fwire.add") {
             if (editor_.addFormulaWire(asset, w)) {
                 editor_.setStatus("ノードを接続: #" + std::to_string(w.from) + " → #" +
@@ -1246,45 +1301,25 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                             : "#" + std::to_string(index) + " の車両を外しました";
             } else {
                 // 軸（-1 = 全軸）のタイヤ設定。送られてきたキーだけ変える:
-                // formula（計算式）・soft（ソフトタイヤ）・stiffness（径方向剛性）。
+                // soft（ソフトタイヤ）・stiffness（径方向剛性）・pressure（空気圧）。
                 const int axle = ed::jsonInt(a, "axle", -1);
-                const bool hasFormula = a.contains("formula") && a["formula"].is_string();
                 const bool hasSoft = a.contains("soft") && a["soft"].is_boolean();
                 const bool hasStiffness = a.contains("stiffness") && a["stiffness"].is_number();
                 const bool hasPressure = a.contains("pressure") && a["pressure"].is_number();
-                const bool hasPressureFormula =
-                    a.contains("pressureFormula") && a["pressureFormula"].is_string();
-                const std::string formula = hasFormula ? a["formula"].get<std::string>() : "";
-                const std::string pressureFormula =
-                    hasPressureFormula ? a["pressureFormula"].get<std::string>() : "";
-                if (hasFormula && !formula.empty() && !editor_.hasFormulaAsset(formula)) {
-                    status = "計算式が見つかりません: " + formula;
-                } else if (hasPressureFormula && !pressureFormula.empty() &&
-                           !editor_.hasFormulaAsset(pressureFormula)) {
-                    status = "計算式が見つかりません: " + pressureFormula;
-                } else if (!obj.desc.hasVehicle) {
+                if (!obj.desc.hasVehicle) {
                     status = "#" + std::to_string(index) + " は車両ではありません";
                 } else {
                     auto& axles = obj.desc.vehicle.axles;
                     for (std::size_t i = 0; i < axles.size(); ++i) {
                         if (axle >= 0 && std::size_t(axle) != i) continue;
-                        if (hasFormula) axles[i].tire.formula = formula;
                         if (hasSoft) axles[i].tire.soft = a["soft"].get<bool>();
                         if (hasStiffness) {
                             axles[i].tire.stiffness = a["stiffness"].get<double>();
                         }
                         if (hasPressure) axles[i].tire.pressure = a["pressure"].get<double>();
-                        if (hasPressureFormula) axles[i].tire.pressureFormula = pressureFormula;
                     }
                     obj.desc.vehicle = wizengine::vehicle::clampVehicle(obj.desc.vehicle);
-                    if (hasFormula) {
-                        status = "#" + std::to_string(index) + " のタイヤ式: " +
-                                 (formula.empty() ? "(組み込み)" : formula);
-                    } else if (hasPressureFormula) {
-                        status = "#" + std::to_string(index) + " の空気圧式: " +
-                                 (pressureFormula.empty() ? "(組み込み・等温変化)"
-                                                          : pressureFormula);
-                    } else if (hasPressure) {
+                    if (hasPressure) {
                         status = "#" + std::to_string(index) + " の空気圧を更新";
                     } else if (hasSoft) {
                         status = "#" + std::to_string(index) + " のタイヤ: " +
@@ -1295,7 +1330,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                 }
             }
         }
-        editor_.bumpFormulaVersion();  // 車両モデルを作り直させる
+        editor_.bumpVehicleVersion();  // 車両モデルを作り直させる
         editor_.setStatus(status);
         return;
     }
@@ -1535,6 +1570,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         resetCamerasToDefaults();
         resetEventsToDefaults();
         editor_.setFormulaAssets({});  // 計算式もシーンの一部
+        editor_.setControllers({});
         editor_.setPrefabAssets({});
         editor_.setPrefabEditObject(-1);
         editor_.clearSel();

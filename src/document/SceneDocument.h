@@ -47,9 +47,10 @@
 //                                        file（assets/ 相対）が持ち、ここは参照だけ。
 //                                        子要素を書いても無視（警告）。下の
 //                                        parseEventAssetXml / eventAssetToXmlText
-//       <formula name="tire_mf"> <node .../> <wire .../> </formula>
-//                                    ... 計算式アセット（vehicle/FormulaXml.h）。
-//                                        <tire formula="tire_mf"> が参照する
+//       <formula name="arm_pid"> <source line/> <node .../> <wire .../> </formula>
+//                                    ... 計算式アセット（formula/FormulaXml.h）。
+//                                        <control> の <controller formula> が参照する。
+//                                        <source> は数式エディタで書いた元のテキスト
 //       <prefab name="sedan"> <part name type pos euler size rgba socket collide/> </prefab>
 //                                    ... <geom> を書かない <body mass> は「部品だけの
 //                                        フレーム」（ShapeKind::None。階段など）
@@ -108,6 +109,15 @@
 //                gear / screw / spring / bushing（Chrono の ChLink* / ChLoad*）
 //     </equality>
 //     <events>  <event name="pickup"/>  </events>   ... ワールドに付ける
+//     <control>
+//       <controller formula="arm_pid" period="0.01" enabled="true"/>
+//                                    ... 制御器（Simulink のブロック線図に相当）。
+//                                        <asset> の <formula> を名前で参照し、
+//                                        シミュレート中に period 秒ごと（0 = 毎
+//                                        ステップ）に回す。式の in / out の name が
+//                                        センサ / アクチュエータ
+//                                        （control/ControlSignals.h）
+//     </control>
 //   </wizengine>
 //
 //   * 角度は全部「度」。<body euler> と <light euler> はエディタが持つ
@@ -230,10 +240,13 @@ struct SceneDocument {
     std::vector<EventAssetDesc> eventAssets;
     std::vector<std::string> worldEvents;
     // 計算式アセット（<asset> の <formula>）。車両のタイヤが名前で参照する。
-    std::vector<wizengine::vehicle::FormulaGraphDesc> formulas;
+    std::vector<wizengine::formula::FormulaGraphDesc> formulas;
     // プレハブ（<asset> の <prefab>）。<body> の <prefab name/> が名前で参照する。
     // 部品の size は BodyDesc と同じ「全長」（geom の半寸法とは違う）。
     std::vector<PrefabDesc> prefabs;
+    // 制御器（ルートの <control> の <controller>）。計算式アセットを名前で
+    // 参照し、シミュレート中に回す（control/ControlSignals.h の信号名）。
+    std::vector<ControllerDesc> controllers;
     // 「節が無い」と「空の節」の区別。ライト / カメラ / イベントの節を持た
     // ない文書（旧 v1 の保存や手書きの最小 XML）は初期構成へ戻す意味に
     // なるので、空配列と同じにはできない。

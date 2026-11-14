@@ -12,7 +12,6 @@
 
 #include "document/EditorTypes.h"
 #include "scene/SceneComponent.h"
-#include "vehicle/LuaFormula.h"
 #include "vehicle/VehicleModel.h"
 
 // 車両（BodyDesc::hasVehicle のオブジェクト）を走らせ、車輪を描く
@@ -66,19 +65,32 @@ public:
     };
     Snapshot snapshot() const;
 
+    // ---- 制御器から（PHYSICS スレッド専用。ControlComponent が使う）--------
+    // このステップの運転入力を上書きする。mask は kDrive* の論理和で、立てた
+    // 項目だけブラウザの入力（WASD・パッド）を置き換える。ControlComponent は
+    // 車両より先に登録されていて毎ステップ書き、ここは使ったら消す。
+    static constexpr int kDriveThrottle = 1, kDriveBrake = 2, kDriveSteer = 4,
+                         kDriveHandbrake = 8;
+    void setControlDrive(std::size_t objectIndex, int mask,
+                         const wizengine::vehicle::VehicleInput& input);
+    // 直前のステップの計測値（無ければ false）。
+    bool telemetry(std::size_t objectIndex, wizengine::vehicle::VehicleTelemetry& out) const;
+
 private:
+    struct ControlDrive {
+        int mask = 0;
+        wizengine::vehicle::VehicleInput input;
+    };
+    std::map<std::size_t, ControlDrive> controlDrive_;  // PHYSICS 専用
+
     // ブラウザからの目標値（INPUT → PHYSICS）。
     std::atomic<double> throttle_{0.0};
     std::atomic<double> brake_{0.0};
     std::atomic<double> steer_{0.0};
     std::atomic<double> handbrake_{0.0};
 
-    // ノード式の実行エンジン（LuaJIT）。Lua ステートは物理スレッド専用で、
-    // VehicleModel の生成（式のコンパイル）と onPhysicsStep の中でしか触らない。
-    std::unique_ptr<wizengine::vehicle::LuaRuntime> lua_;
     // 実行状態（PHYSICS スレッド専用）。キーはオブジェクト番号。
     std::map<std::size_t, std::unique_ptr<wizengine::vehicle::VehicleModel>> models_;
-    std::map<std::size_t, int> reportedFailures_;  // 式の失敗を 1 回だけ報告
     // 診断: 車体が何かに接触していたら 1 秒に 1 回ログに出す（階段で跳ねる、
     // などの切り分け用。レイキャストの車輪は接触しないので、出るなら車体）。
     unsigned contactCheck_ = 0;
@@ -87,10 +99,10 @@ private:
     // 取り直す（毎ステップのロックを避ける。イベントの graphVersion と同じ流儀）。
     std::vector<wizengine::editor::PrefabDesc> prefabs_;
     std::uint64_t prefabVersion_ = ~std::uint64_t(0);
-    // 取り込んだ計算式の版（EditorState::formulaVersion）。変わっていたら
-    // 車両モデルを作り直す = 編集がシミュレート中にもすぐ効く（走行状態は
-    // 一度リセットされる）。
-    std::uint64_t formulaVersion_ = ~std::uint64_t(0);
+    // 取り込んだ車両の設計値の版（EditorState::vehicleVersion）。変わって
+    // いたら車両モデルを作り直す = 編集がシミュレート中にもすぐ効く（走行
+    // 状態は一度リセットされる）。
+    std::uint64_t vehicleVersion_ = ~std::uint64_t(0);
 
     // 車輪の見た目（PHYSICS → RENDER）。キーはオブジェクト番号。
     std::mutex visMutex_;

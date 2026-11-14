@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -53,6 +54,10 @@ public:
     // 同じ MJCF 風の XML）。ブラウザで開けば、いま組んでいるシーンが
     // どういう文書になっているかがそのまま読める。
     void setSceneXmlProvider(std::function<std::string()> provider);
+    // Served at "<prefix>/control?since=N": 制御器の記録（スコープ）の差分 JSON。
+    // "<prefix>/control.csv?formula=名前": 1 つの制御器の記録を CSV で。
+    void setControlProviders(std::function<std::string(std::uint64_t)> samples,
+                             std::function<std::string(const std::string&)> csv);
 
     // True while a browser holds the viewer session (used to idle the engine
     // when nobody is watching). Also expires a viewer that stopped pinging.
@@ -78,6 +83,8 @@ private:
     std::function<std::string()> statsProvider_;
     std::function<std::string()> sceneProvider_;
     std::function<std::string()> sceneXmlProvider_;
+    std::function<std::string(std::uint64_t)> controlProvider_;
+    std::function<std::string(const std::string&)> controlCsvProvider_;
 
     // Single-viewer session state.
     static constexpr std::chrono::seconds kViewerTimeout{6};

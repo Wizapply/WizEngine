@@ -2979,7 +2979,9 @@
         ' ノード） ／ 右クリック: メニュー" onclick="openFormulaAsset(\'' +
         f.name + '\')">' +
         '<span class="ico">🧮</span><span class="name">' + ndEsc(f.name) +
-        '</span><span class="kind">formula</span></div>';
+        '</span><span class="kind">' +
+        (typeof isControllerFormula === 'function' && isControllerFormula(f.name)
+          ? 'control' : 'formula') + '</span></div>';
     }
     // プレハブ（🧩）。右クリックで選択オブジェクトに付ける / 削除。中身の
     // 編集はオブジェクトの右クリック「プレハブを編集」から。
@@ -3066,15 +3068,11 @@
       showContextMenu(e, [
         { head: '🧮 ' + fname },
         { label: 'ノードエディタで開く', onClick: () => openFormulaAsset(fname) },
+        { label: '📝 数式で編集', hint: 'テキストで書き換える',
+          onClick: () => openFormulaText(fname) },
         { sep: true },
-        { label: '＋ 選択中の車両のタイヤに付ける（全軸）',
-          hint: sel ? (sel.vehicle ? '#' + sel.index : '車両ではない') : '未選択',
-          disabled: !sel || !sel.vehicle,
-          onClick: () => attachFormulaToVehicle(fname) },
-        { label: '＋ 選択中の車両の空気圧式に付ける（全軸）',
-          hint: sel ? (sel.vehicle ? 'ソフトタイヤの体積比 → 圧力' : '車両ではない') : '未選択',
-          disabled: !sel || !sel.vehicle,
-          onClick: () => attachPressureFormulaToVehicle(fname) },
+        // 制御器（control.js）: シミュレート中に物理スレッドで回す。
+        ...(typeof controlMenuItems === 'function' ? controlMenuItems(fname) : []),
         { sep: true },
         { label: '🧮 新しい計算式…', onClick: newFormulaAsset },
         { label: '🗑 この計算式を削除', danger: true,
@@ -3221,25 +3219,16 @@
     return (sceneData && sceneData.events && sceneData.events.world) || [];
   }
   // ---- 計算式アセット（🧮）-------------------------------------------------
-  // ノード式（タイヤの「スリップ → 力」と、ソフトタイヤの空気圧「体積比 →
-  // 圧力」）。イベントと同じくサーバーが持ち、/scene の formulas =
-  // {assets:[{name,nodes,wires}], tireInputs, tireOutputs, pressureInputs,
-  // pressureOutputs}。ノードエディタは 1 つで、ndKind が「いまどちらを見て
-  // いるか」。in / out ノードの名前の選択肢は 2 つの約束を並べたもの（式が
-  // どちらに付くかは付け先で決まるので、ここでは区別しない）。
+  // ノード式（汎用の計算式。いまの使い手は制御器 = control.js）。イベントと
+  // 同じくサーバーが持ち、/scene の formulas = {assets:[{name,nodes,wires,
+  // text,fromText}], templates:[{id,label,hint,needs}], controllers, sensors,
+  // actuators}。ノードエディタは ⚡ と共用で、ndKind が「いまどちらを見て
+  // いるか」。数式のテキストでの編集は control.js の式エディタ（#fxEd）。
   function formulaAssets() {
     return (sceneData && sceneData.formulas && sceneData.formulas.assets) || [];
   }
-  function formulaNames(key) {
-    return (sceneData && sceneData.formulas && sceneData.formulas[key]) || [];
-  }
-  function tireInputs() {
-    return formulaNames('tireInputs').concat(
-      formulaNames('pressureInputs').filter((n) => !formulaNames('tireInputs').includes(n)));
-  }
-  function tireOutputs() {
-    return formulaNames('tireOutputs').concat(
-      formulaNames('pressureOutputs').filter((n) => !formulaNames('tireOutputs').includes(n)));
+  function formulaTemplates() {
+    return (sceneData && sceneData.formulas && sceneData.formulas.templates) || [];
   }
   let ndKind = 'event';   // 'event' | 'formula'
   let ndFormula = '';     // いま編集している計算式の名前
@@ -3265,28 +3254,36 @@
     ndGraphKey = '';
     openNodeEditor();
   }
+  // 新しい計算式: 雛形（サーバーの control/ControlTemplates.cpp）を番号で
+  // 選ぶ。雛形が指す相手（ジョイント / 物）は選択中・既定のものから決める。
   function newFormulaAsset() {
-    const name = prompt('新しい計算式の名前（英数字と _ -）', 'tire');
+    const tpls = formulaTemplates();
+    const name = prompt('新しい計算式の名前（英数字と _ -）', 'formula');
     if (name === null) return;
     const clean = cleanAssetName(name);
     if (!clean) return;
-    const pick = prompt('最初の中身を選んでください:\n' +
-                        '  1 = タイヤ式（Magic Formula + 摩擦楕円 + 緩和長）\n' +
-                        '  2 = 空気圧式（体積比 → 圧力、等温変化）\n' +
-                        '  空欄 = 空の式', '1');
+    let list = '最初の中身を選んでください（雛形は制御器として付き、シミュレート中に回ります）:\n';
+    tpls.forEach((t, i) => { list += '  ' + i + ' = ' + t.label + '（' + t.hint + '）\n'; });
+    list += '  t = 数式のテキストで書く';
+    const pick = prompt(list, '0');
     if (pick === null) return;
-    const tpl = String(pick).trim() === '1' ? 'tire'
-              : String(pick).trim() === '2' ? 'pressure' : '';
+    if (String(pick).trim().toLowerCase() === 't') {
+      if (typeof openFormulaText === 'function') openFormulaText(clean, true);
+      return;
+    }
+    const t = tpls[parseInt(pick, 10)] || tpls[0];
+    const msg = { name: clean, template: t ? t.id : 'empty' };
+    if (t && t.needs && typeof templateTarget === 'function') msg.target = templateTarget(t.needs);
     ndKind = 'formula';
     ndFormula = clean;
     ndGraphKey = '';
-    send('edit.formula.add', { name: clean, template: tpl });
+    send('edit.formula.add', msg);
   }
   function removeFormulaAsset(name) {
     const target = name || ndFormula;
     if (!target) return;
     if (!confirm('計算式「' + target + '」を削除します。' +
-                 'これを使っているタイヤは組み込みの式に戻ります。')) {
+                 '制御器として付いていれば外れます。')) {
       return;
     }
     send('edit.formula.remove', { name: target });
@@ -3300,27 +3297,11 @@
     if (!clean) return;
     send('edit.prefab.add', { name: clean });
   }
-  // 選択中の車両の全軸に付ける（Assets タイルの右クリック）。
-  function attachFormulaToVehicle(name) {
-    const sel = mySelectedDesc();
-    if (!sel) return;
-    send('edit.vehicle.tire', { index: sel.index, axle: -1, formula: name });
-  }
-  function attachPressureFormulaToVehicle(name) {
-    const sel = mySelectedDesc();
-    if (!sel) return;
-    send('edit.vehicle.tire', { index: sel.index, axle: -1, pressureFormula: name });
-  }
   // Inspector の「車両」節。
   function applyVehicleEnable(on) {
     const sel = mySelectedDesc();
     if (!sel) return;
     send('edit.vehicle.enable', { index: sel.index, on: !!on });
-  }
-  function applyVehicleTire(axle, name) {
-    const sel = mySelectedDesc();
-    if (!sel) return;
-    send('edit.vehicle.tire', { index: sel.index, axle: axle, formula: name || '' });
   }
   // ---- ソフトボディ（Inspector の節）----------------------------------------
   // 設定は edit.set の "soft" キー 1 個にまとめて送る（部分更新なので、触った
@@ -3373,12 +3354,9 @@
     setField('edVehicleOn', !!sel.vehicle);
     hint.hidden = !sel.vehicle;
     const axles = sel.vehicleAxles || [];
-    const names = formulaAssets().map((f) => f.name);
     const key = sel.index + '|' + (sel.vehicle ? 1 : 0) + '|' +
-      axles.map((a) => a.z + ':' + a.steer + ':' + a.driven + ':' + a.formula +
-                       ':' + (a.soft ? 1 : 0) + ':' + a.stiffness + ':' + a.pressure +
-                       ':' + a.pressureFormula).join(',') +
-      '|' + names.join(',');
+      axles.map((a) => a.z + ':' + a.steer + ':' + a.driven +
+                       ':' + (a.soft ? 1 : 0) + ':' + a.stiffness + ':' + a.pressure).join(',');
     if (key === vehicleSecKey) return;
     if (axlesEl.contains(document.activeElement) &&
         document.activeElement !== document.body) return;  // 選んでいる最中
@@ -3387,27 +3365,11 @@
     axlesEl.innerHTML = axles.map((a, i) => {
       const what = (a.z >= 0 ? '前' : '後') + (a.steer > 0 ? '・操舵' : '') +
                    (a.driven ? '・駆動' : '');
-      const options = (cur, builtin) => {
-        let o = '<option value=""' + (!cur ? ' selected' : '') + '>' + builtin + '</option>';
-        let found = !cur;
-        for (const n of names) {
-          if (n === cur) found = true;
-          o += '<option value="' + ndEsc(n) + '"' + (n === cur ? ' selected' : '') +
-               '>🧮 ' + ndEsc(n) + '</option>';
-        }
-        if (!found) o += '<option value="' + ndEsc(cur) + '" selected>? ' + ndEsc(cur) + '</option>';
-        return o;
-      };
-      const opts = options(a.formula, '(組み込み)');
-      const popts = options(a.pressureFormula, '(組み込み・等温変化)');
       const pressure = (a.pressure !== undefined) ? Math.round(a.pressure) : 320000;
       // ソフトタイヤ: 見た目が質点ばねの変形メッシュになり、物理では径方向
       // ばね（サスと直列）が効く。剛性は潰れ = 荷重 / 剛性。
       const stiff = (a.stiffness !== undefined) ? Math.round(a.stiffness) : 150000;
-      return '<div class="edRow"><span>軸 ' + i + '（' + what + '）タイヤ式</span>' +
-        '<select class="strSel" title="この軸のタイヤの計算式（🧮 アセット）" ' +
-        'onchange="applyVehicleTire(' + i + ', this.value)">' + opts + '</select></div>' +
-        '<div class="edRow"><span>軸 ' + i + ' ソフトタイヤ</span>' +
+      return '<div class="edRow"><span>軸 ' + i + '（' + what + '）ソフトタイヤ</span>' +
         '<input type="checkbox"' + (a.soft ? ' checked' : '') +
         ' title="タイヤを質点ばねの変形メッシュで描き、径方向ばねをサスと直列に効かせる"' +
         ' onchange="applyVehicleSoft(' + i + ', this.checked)"></div>' +
@@ -3418,13 +3380,10 @@
             ' onchange="applyVehicleTireStiffness(' + i + ', this.value)"></div>' +
             // 空気圧: 閉じたメッシュの体積が減ると圧力が上がり、トレッドを
             // 張り戻す（ゴムのように戻る）。0 で項ごと切る。
-            '<div class="edRow" title="基準の空気圧 (Pa、絶対圧)。潰れて体積が減ると式の圧力が上がる。0 = 空気圧なし">' +
+            '<div class="edRow" title="基準の空気圧 (Pa、絶対圧)。潰れて体積が減ると圧力が上がる（等温変化）。0 = 空気圧なし">' +
             '<span>軸 ' + i + ' 空気圧 (Pa)</span>' +
             '<input class="num" type="number" step="10000" min="0" max="1000000" value="' + pressure + '"' +
-            ' onchange="applyVehiclePressure(' + i + ', this.value)"></div>' +
-            '<div class="edRow"><span>軸 ' + i + ' 空気圧式</span>' +
-            '<select class="strSel" title="体積比 → 圧力 の計算式（🧮 アセット）。空 = 組み込みの等温変化" ' +
-            'onchange="applyVehiclePressureFormula(' + i + ', this.value)">' + popts + '</select></div>'
+            ' onchange="applyVehiclePressure(' + i + ', this.value)"></div>'
           : '');
     }).join('');
   }
@@ -3444,11 +3403,6 @@
     const v = parseFloat(value);
     if (!sel || !Number.isFinite(v)) return;
     send('edit.vehicle.tire', { index: sel.index, axle: axle, pressure: v });
-  }
-  function applyVehiclePressureFormula(axle, name) {
-    const sel = mySelectedDesc();
-    if (!sel) return;
-    send('edit.vehicle.tire', { index: sel.index, axle: axle, pressureFormula: name || '' });
   }
   function currentAsset() {
     const list = eventAssets();
@@ -3497,6 +3451,7 @@
     sel.innerHTML = h || '<option value="">(アセットがありません)</option>';
     document.getElementById('ndTitle').textContent =
       ndKind === 'formula' ? '🧮 計算式' : '⚡ イベント設計';
+    document.getElementById('ndTextBtn').hidden = ndKind !== 'formula' || !ndFormula;
     document.getElementById('ndHintEvent').hidden = ndKind === 'formula';
     document.getElementById('ndHintFormula').hidden = ndKind !== 'formula';
   }
@@ -3764,10 +3719,24 @@
     curve:     { label: '折れ線', ins: ['x'],             outs: ['y'],     group: '制御', param: 'curve' },
     lag:       { label: '一次遅れ', ins: ['x', 'tau'],    outs: ['y'],     group: '状態' },
     integrate: { label: '積分',   ins: ['x'],             outs: ['∫x dt'], group: '状態', param: 'range' },
-    magic:     { label: 'Magic Formula', ins: ['s', 'B', 'C', 'E'], outs: ['値'], group: '車両' },
-    ellipse:   { label: '摩擦楕円', ins: ['fx', 'fy', 'peak'], outs: ['fx', 'fy'], group: '車両' },
+    // 制御ブロック（Simulink の基本ブロック相当。係数は params = 空白区切り、
+    // 省略した値はサーバーの既定 = vehicle/Formula.h の「制御ブロック」）
+    time:       { label: '時刻 t',   ins: [],    outs: ['t'],   group: '制御ブロック' },
+    gain:       { label: 'ゲイン k·x', ins: ['x'], outs: ['y'],  group: '制御ブロック',
+                  param: 'list', plabel: 'k', ph: '1' },
+    saturate:   { label: '飽和',      ins: ['x'], outs: ['y'],  group: '制御ブロック',
+                  param: 'list', plabel: 'lo hi', ph: '-1 1' },
+    deadzone:   { label: '不感帯',    ins: ['x'], outs: ['y'],  group: '制御ブロック',
+                  param: 'list', plabel: 'lo hi', ph: '-0.1 0.1' },
+    delay:      { label: '単位遅延 z⁻¹', ins: ['x'], outs: ['前回'], group: '制御ブロック',
+                  param: 'list', plabel: '初期値', ph: '0' },
+    derivative: { label: '微分 dx/dt', ins: ['x'], outs: ['dx/dt'], group: '制御ブロック' },
+    ratelimit:  { label: '変化率制限', ins: ['x'], outs: ['y'], group: '制御ブロック',
+                  param: 'list', plabel: '上昇 下降 /s', ph: '1 1' },
+    pid:        { label: 'PID',       ins: ['e'], outs: ['u'],  group: '制御ブロック',
+                  param: 'list', plabel: 'kp ki kd lo hi tf', ph: '1 0 0 0 0 0' },
   };
-  const FNODE_GROUPS = ['入出力', '算術', '関数', '制御', '状態', '車両'];
+  const FNODE_GROUPS = ['入出力', '算術', '関数', '制御', '状態', '制御ブロック'];
   const FPORT_Y0 = 40;   // 1 行目のポート中心（ノード上端から）
   const FPORT_DY = 18;   // ポート行の間隔（style.css の .ndPortRow の高さ）
   function fArgs(extra) { return Object.assign({ asset: ndFormula }, extra || {}); }
@@ -3778,8 +3747,8 @@
     if (!currentFormula()) { newFormulaAsset(); return; }
     const extra = { type: type, x: Math.max(0, Math.round(x)), y: Math.max(0, Math.round(y)) };
     // 入出力ノードは最初の名前を入れておく（空のままだと 0 を出す）。
-    if (type === 'in' && tireInputs().length) extra.name = tireInputs()[0];
-    if (type === 'out' && tireOutputs().length) extra.name = tireOutputs()[0];
+    if (type === 'in') extra.name = 'time';
+    if (type === 'out') extra.name = 'scope:y';
     if (type === 'const') extra.params = [1];
     if (type === 'curve') extra.params = [0, 0, 1, 1];
     send('edit.fnode.add', fArgs(extra));
@@ -3800,17 +3769,26 @@
     }
     return items;
   }
-  // 名前の選択肢（in / out）。今の値が一覧に無ければダミーで残す。
-  function fNameSelect(id, cur, names) {
-    let found = false;
-    let h = '<select class="strSel" onchange="fPatch(' + id + ',{name:this.value})">';
-    for (const n of names) {
-      if (n === cur) found = true;
-      h += '<option value="' + ndEsc(n) + '"' + (n === cur ? ' selected' : '') + '>' +
-           ndEsc(n) + '</option>';
+  // in / out の名前: 自由入力 + 候補（<datalist>）。候補は制御器の信号名
+  // （シーンのオブジェクト / ジョイントの名前から組む）。
+  function fNameInput(id, cur, isIn) {
+    const listId = isIn ? 'fNamesIn' : 'fNamesOut';
+    let dl = document.getElementById(listId);
+    if (!dl) {
+      dl = document.createElement('datalist');
+      dl.id = listId;
+      document.body.appendChild(dl);
     }
-    if (!found) h += '<option value="' + ndEsc(cur) + '" selected>? ' + ndEsc(cur) + '</option>';
-    return h + '</select>';
+    const names =
+      typeof controlSignalSuggestions === 'function' ? controlSignalSuggestions(isIn) : [];
+    const html = names.map((n) => '<option value="' + ndEsc(n) + '">').join('');
+    if (dl.innerHTML !== html) dl.innerHTML = html;
+    return '<input class="txt fName" type="text" list="' + listId + '" value="' + ndEsc(cur) +
+           '" placeholder="' + (isIn ? 'joint:arm.angle' : 'joint:arm.target') + '" ' +
+           'title="' + (isIn ? 'センサ: time / body:名前.量 / joint:名前.量 / vehicle:名前.量'
+                             : 'アクチュエータ: joint:名前.target / body:名前.fx… / vehicle:名前.throttle… / scope:ラベル') +
+           '" spellcheck="false" ' +
+           'onchange="fPatch(' + id + ',{name:this.value})">';
   }
   function fNodeHtml(n, def) {
     const rows = Math.max(def.ins.length, def.outs.length);
@@ -3831,8 +3809,15 @@
     h += '</div>';
     const p = n.params || [];
     if (def.param === 'in' || def.param === 'out') {
-      h += '<div class="ndBody">' + ndRow('名前', fNameSelect(n.id, n.name || '',
-        def.param === 'in' ? tireInputs() : tireOutputs())) + '</div>';
+      // 名前は自由入力 + 候補（制御器のセンサ /
+      // アクチュエータ = control.js の controlSignalSuggestions）。
+      h += '<div class="ndBody">' + ndRow('名前', fNameInput(n.id, n.name || '',
+        def.param === 'in')) + '</div>';
+    } else if (def.param === 'list') {
+      h += '<div class="ndBody">' + ndRow(def.plabel, '<input class="txt" type="text" value="' +
+           ndEsc(p.join(' ')) + '" placeholder="' + ndEsc(def.ph || '') + '" ' +
+           'title="空白区切り。省略した値は既定（' + ndEsc(def.ph || '') + '）" ' +
+           'onchange="fPatch(' + n.id + ',{params:this.value})">') + '</div>';
     } else if (def.param === 'value') {
       h += '<div class="ndBody">' + ndRow('値', '<input class="num" type="number" step="any" value="' +
            (p.length ? p[0] : 0) + '" onchange="fPatch(' + n.id +
@@ -3887,7 +3872,9 @@
   }
   function renderFormulaEditor(force) {
     const g = currentFormulaGraph();
-    const key = 'f@' + JSON.stringify(g) + '@' + tireInputs().join(',') + '@' +
+    const key = 'f@' + JSON.stringify(g) + '@' +
+      (sceneData.objects || []).map((o) => o.name || '').join(',') + '@' +
+      (sceneData.joints || []).map((j) => j.name || '').join(',') + '@' +
       eventAssets().map((a) => a.name).join(',') + '@' +
       formulaAssets().map((a) => a.name).join(',');
     if (!force && key === ndGraphKey) return;

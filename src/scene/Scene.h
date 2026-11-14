@@ -174,6 +174,19 @@ public:
         bool broken = false;  // breakForce を超えて外れた
     };
     std::vector<JointStat> jointStats();
+    // 文書のジョイント番号 → 物理のジョイント番号（シミュレートしていない・
+    // 作れなかったものは PhysicsWorld::kInvalidJoint）。PHYSICS スレッド専用
+    // （制御器のアクチュエータが setJointMotorTarget に使う）。
+    std::size_t jointPhysId(std::size_t index) const {
+        return index < jointPhysIds_.size() ? jointPhysIds_[index]
+                                            : PhysicsWorld::kInvalidJoint;
+    }
+    // シミュレートの「やり直し」の回数（開始・停止・Reset で進む）。
+    // 実行状態を持つ係（制御器）が、これが変わったら状態を捨てる。
+    std::uint64_t runGeneration() {
+        std::lock_guard<std::mutex> lk(poseMutex_);
+        return rigGeneration_;
+    }
 
     // ---- バックエンドの自動切替（B）------------------------------------------
     // 既定は SceneSystemConfig::backend（config.json、Core）。Multicore が扱えない機能

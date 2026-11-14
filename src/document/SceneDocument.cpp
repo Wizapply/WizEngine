@@ -1,7 +1,7 @@
 #include "document/SceneDocument.h"
 
 #include "core/MathConstants.h"
-#include "vehicle/FormulaXml.h"
+#include "formula/FormulaXml.h"
 #include "vehicle/VehicleXml.h"
 
 #include <algorithm>
@@ -1399,7 +1399,7 @@ xml::Element toXml(const SceneDocument& doc) {
         for (const auto& a : doc.eventAssets) {
             asset.append(eventAssetElement(a));
         }
-        for (const auto& f : doc.formulas) asset.append(vehicle::formulaElement(f));
+        for (const auto& f : doc.formulas) asset.append(formula::formulaElement(f));
         for (const auto& pf : doc.prefabs) asset.append(prefabElement(pf));
         root.append(std::move(asset));
     }
@@ -1458,6 +1458,19 @@ xml::Element toXml(const SceneDocument& doc) {
         }
         root.append(std::move(ev));
     }
+
+    // 制御器。持っているときだけ書く（無い文書を太らせない）。
+    if (!doc.controllers.empty()) {
+        xml::Element ctl("control");
+        for (const auto& c : doc.controllers) {
+            xml::Element e("controller");
+            e.set("formula", c.formula);
+            e.setNumber("period", c.period);
+            if (!c.enabled) e.setBool("enabled", false);
+            ctl.append(std::move(e));
+        }
+        root.append(std::move(ctl));
+    }
     return root;
 }
 
@@ -1482,7 +1495,7 @@ SceneDocument fromXml(const xml::Element& root,
     }
 
     warnUnknownChildren(
-        root, {"option", "visual", "asset", "worldbody", "equality", "events"},
+        root, {"option", "visual", "asset", "worldbody", "equality", "events", "control"},
         "<wizengine>", warn);
 
     if (const xml::Element* o = root.first("option")) {
@@ -1503,7 +1516,7 @@ SceneDocument fromXml(const xml::Element& root,
         // 計算式アセット。名前はイベントと同じ規則（英数字と _ -）。
         for (const xml::Element* fe : asset->all("formula")) {
             std::vector<std::string> fw;
-            vehicle::FormulaGraphDesc g = vehicle::formulaFromXml(*fe, &fw);
+            formula::FormulaGraphDesc g = formula::formulaFromXml(*fe, &fw);
             for (const auto& m : fw) warn("<asset>: " + m);
             const std::string name = sanitizeEventName(g.name);
             if (name.empty()) {
@@ -1689,31 +1702,6 @@ SceneDocument fromXml(const xml::Element& root,
         }
     }
 
-    // ---- 車両のタイヤ式の参照（<asset> の <formula> か <vehicle> 内）------
-    for (const auto& b : doc.bodies) {
-        if (!b.hasVehicle) continue;
-        auto exists = [&](const std::string& name) {
-            bool found = false;
-            for (const auto& f : doc.formulas) found = found || f.name == name;
-            for (const auto& f : b.vehicle.formulas) found = found || f.name == name;
-            return found;
-        };
-        for (const auto& a : b.vehicle.axles) {
-            if (!a.tire.formula.empty() && !exists(a.tire.formula)) {
-                warn("<body name=\"" + (b.name.empty() ? std::string("(unnamed)") : b.name) +
-                     "\">: <tire formula=\"" + a.tire.formula +
-                     "\"> names a <formula> that does not exist - using the built-in "
-                     "tire model");
-            }
-            if (!a.tire.pressureFormula.empty() && !exists(a.tire.pressureFormula)) {
-                warn("<body name=\"" + (b.name.empty() ? std::string("(unnamed)") : b.name) +
-                     "\">: <tire pressureFormula=\"" + a.tire.pressureFormula +
-                     "\"> names a <formula> that does not exist - using the built-in "
-                     "isothermal pressure");
-            }
-        }
-    }
-
     // ---- イベントアセットと、その付け先 ------------------------------------
     // 中身（<asset> の <event>）はオブジェクトを読んだ後で取り込む: ノードの
     // 対象番号を、読み終えたオブジェクト・ライトの一覧と突き合わせて検証
@@ -1825,6 +1813,34 @@ SceneDocument fromXml(const xml::Element& root,
                                        (b.name.empty() ? std::string("(unnamed)")
                                                        : b.name) +
                                        "\">");
+    }
+
+    // 制御器。参照する計算式が <asset> に無いものは残す（警告だけ）: 式を
+    // 後から足せば動き出す。センサ名の検査は実行時（ControlComponent）。
+    if (const xml::Element* ctl = root.first("control")) {
+        warnUnknownChildren(*ctl, {"controller"}, "<control>", warn);
+        for (const xml::Element* e : ctl->all("controller")) {
+            ControllerDesc c;
+            c.formula = e->attr("formula");
+            c.period = e->number("period", c.period);
+            c.enabled = e->boolean("enabled", c.enabled);
+            if (sanitizeEventName(c.formula) != c.formula || c.formula.empty()) {
+                warn("<controller formula=\"" + c.formula +
+                     "\">: the name must be letters, digits, _ and - - ignored");
+                continue;
+            }
+            if (c.period < 0.0) {
+                warn("<controller formula=\"" + c.formula +
+                     "\">: period must be >= 0 - using 0 (every step)");
+            }
+            bool found = false;
+            for (const auto& f : doc.formulas) found = found || f.name == c.formula;
+            if (!found) {
+                warn("<controller formula=\"" + c.formula +
+                     "\">: no <formula> with that name in <asset>");
+            }
+            doc.controllers.push_back(clampController(c));
+        }
     }
 
     return doc;

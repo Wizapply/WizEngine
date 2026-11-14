@@ -2,6 +2,9 @@
 // 保存は document()、読込は loadDocument()、/scene は hierarchyJson()。
 #include "scene/SceneInternal.h"
 
+#include "control/ControlSignals.h"
+#include "control/ControlTemplates.h"
+#include "formula/FormulaText.h"
 #include "terrain/TerrainBrush.h"
 
 using namespace chrono;
@@ -238,19 +241,49 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             j["prefabEdit"] = e;
         }
     }
-    // 計算式アセット（ASSETS パネルの 🧮 タイル・ノードエディタ・Inspector
-    // の車両節が使う）。タイヤ式の入出力の名前も一緒に渡す（in / out ノード
-    // の選択肢）。
+    // 計算式アセット（ASSETS パネルの 🧮 タイル・ノードエディタ・式エディタが
+    // 使う）。text は同じグラフを数式のテキストに起こしたもの（FormulaText.h。
+    // 📝 式エディタの初期値）。
     {
         nlohmann::json f;
         f["assets"] = nlohmann::json::array();
-        for (const auto& g : editor_.formulaAssets()) f["assets"].push_back(ed::toJson(g));
-        f["tireInputs"] = wizengine::vehicle::tireFormulaInputs();
-        f["tireOutputs"] = wizengine::vehicle::tireFormulaOutputs();
-        // 空気圧式（体積比 → 圧力）の入出力名。ノードエディタの in / out の
-        // 選択肢に、タイヤ式のぶんと並べて出す。
-        f["pressureInputs"] = wizengine::vehicle::pressureFormulaInputs();
-        f["pressureOutputs"] = wizengine::vehicle::pressureFormulaOutputs();
+        for (const auto& g : editor_.formulaAssets()) {
+            nlohmann::json e = ed::toJson(g);
+            // 式エディタで書いたものなら元のテキスト（コメント・名前付き定数つき）、
+            // ノードで組んだ / 編集したものはグラフから起こし直したもの。
+            e["text"] = g.source.empty() ? wizengine::formula::formulaToText(g) : g.source;
+            e["fromText"] = !g.source.empty();
+            f["assets"].push_back(std::move(e));
+        }
+        // 新規作成の雛形（名前・説明）。中身はサーバー（ControlTemplates.cpp）
+        // だけが持つ = UI は名前を送るだけ。
+        f["templates"] = nlohmann::json::array();
+        for (const auto& t : wizengine::control::formulaTemplates()) {
+            // text の {joint} / {body} はそのまま（相手はブラウザが選んで置き換える）。
+            f["templates"].push_back(
+                {{"id", t.id},
+                 {"label", t.label},
+                 {"hint", t.hint},
+                 {"needs", t.needs},
+                 {"text", wizengine::control::templateText(
+                              t.id, t.needs == "joint" ? "{joint}" : "{body}")}});
+        }
+        // 制御器（計算式をブロック線図として回すもの）と、in / out の名前の
+        // 候補を組むための量の一覧（"body:<名前>." の後ろに付く）。
+        f["controllers"] = nlohmann::json::array();
+        for (const auto& c : editor_.controllers()) f["controllers"].push_back(ed::toJson(c));
+        {
+            namespace ctl = wizengine::control;
+            nlohmann::json q;
+            q["body"] = ctl::sensorQuantities(ctl::Source::Body);
+            q["joint"] = ctl::sensorQuantities(ctl::Source::Joint);
+            q["vehicle"] = ctl::sensorQuantities(ctl::Source::Vehicle);
+            f["sensors"] = q;
+            q["body"] = ctl::actuatorQuantities(ctl::Source::Body);
+            q["joint"] = ctl::actuatorQuantities(ctl::Source::Joint);
+            q["vehicle"] = ctl::actuatorQuantities(ctl::Source::Vehicle);
+            f["actuators"] = q;
+        }
         j["formulas"] = f;
     }
 
@@ -289,18 +322,16 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     if (sel < boxes_.size() && boxes_[sel].alive) {
         nlohmann::json d = ed::toJson(boxes_[sel].desc);
         d["index"] = int(sel);
-        // 車両なら軸ごとの要点（Inspector の車両節: タイヤ式の付け先）。
+        // 車両なら軸ごとの要点（Inspector の車両節: ソフトタイヤと空気圧）。
         if (boxes_[sel].desc.hasVehicle) {
             nlohmann::json axles = nlohmann::json::array();
             for (const auto& a : boxes_[sel].desc.vehicle.axles) {
                 axles.push_back({{"z", a.z},
                                  {"steer", a.steerDeg},
                                  {"driven", a.driven},
-                                 {"formula", a.tire.formula},
                                  {"soft", a.tire.soft},
                                  {"stiffness", a.tire.stiffness},
-                                 {"pressure", a.tire.pressure},
-                                 {"pressureFormula", a.tire.pressureFormula}});
+                                 {"pressure", a.tire.pressure}});
             }
             d["vehicleAxles"] = axles;
         }
@@ -474,6 +505,7 @@ ed::SceneDocument Scene::document() {
     }
     doc.formulas = editor_.formulaAssets();
     doc.prefabs = editor_.prefabAssets();
+    doc.controllers = editor_.controllers();
     return doc;
 }
 
@@ -551,32 +583,12 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     }
 
     const std::size_t base = boxes_.size();  // 追加ぶんの先頭番号
-    // 計算式アセット。<vehicle> の中に書かれた古い置き場（<formula>）は
-    // シーンのアセットへ移す（同じ名前があればそちらを優先）。次に保存
-    // したときは <asset> に出る。
-    {
-        std::vector<wizengine::vehicle::FormulaGraphDesc> formulas = doc.formulas;
-        auto has = [&formulas](const std::string& name) {
-            for (const auto& f : formulas) {
-                if (f.name == name) return true;
-            }
-            return false;
-        };
-        for (const auto& b : doc.bodies) {
-            if (!b.hasVehicle) continue;
-            for (const auto& f : b.vehicle.formulas) {
-                if (!f.name.empty() && !has(f.name)) formulas.push_back(f);
-            }
-        }
-        editor_.setFormulaAssets(std::move(formulas));
-    }
+    editor_.setFormulaAssets(doc.formulas);
+    editor_.setControllers(doc.controllers);
     editor_.setPrefabAssets(doc.prefabs);
     editor_.setPrefabEditObject(-1);
-    for (const auto& bIn : doc.bodies) {
-        ed::BodyDesc b = ed::clampBody(bIn);
-        b.vehicle.formulas.clear();  // 置き場はシーンのアセットに統一
-        createObject(b);
-    }
+    for (const auto& bIn : doc.bodies) createObject(ed::clampBody(bIn));
+    editor_.bumpVehicleVersion();  // 走っている車両モデルは作り直す
 
     std::vector<ed::JointDesc> joints;
     for (const auto& jIn : doc.joints) {
@@ -697,12 +709,33 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
         }
         editor_.setPrefabAssets(std::move(prefabs));
     }
-    const std::size_t base = boxes_.size();
-    for (const auto& bIn : doc.bodies) {
-        ed::BodyDesc b = ed::clampBody(bIn);
-        b.vehicle.formulas.clear();
-        createObject(b);
+    // 計算式と制御器。どちらも名前で付くので、同じ名前が既にあれば今の
+    // ものを残す。
+    {
+        auto formulas = editor_.formulaAssets();
+        bool added = false;
+        for (const auto& f : doc.formulas) {
+            bool dup = false;
+            for (const auto& have : formulas) dup = dup || have.name == f.name;
+            if (!dup && !f.name.empty()) {
+                formulas.push_back(f);
+                added = true;
+            }
+        }
+        if (added) editor_.setFormulaAssets(std::move(formulas));
     }
+    {
+        auto ctl = editor_.controllers();
+        for (const auto& c : doc.controllers) {
+            bool dup = false;
+            for (const auto& have : ctl) dup = dup || have.formula == c.formula;
+            if (!dup) ctl.push_back(c);
+        }
+        editor_.setControllers(std::move(ctl));
+    }
+    const std::size_t base = boxes_.size();
+    for (const auto& bIn : doc.bodies) createObject(ed::clampBody(bIn));
+    editor_.bumpVehicleVersion();
     {
         auto joints = editor_.joints();
         for (const auto& jIn : doc.joints) {

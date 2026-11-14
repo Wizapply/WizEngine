@@ -53,7 +53,6 @@
 #include "terrain/TerrainFrame.h"
 #include "terrain/TerrainLibrary.h"
 #include "terrain/TerrainUndo.h"
-#include "vehicle/TireFormula.h"
 
 namespace ed = wizengine::editor;
 

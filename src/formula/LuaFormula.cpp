@@ -1,4 +1,4 @@
-#include "vehicle/LuaFormula.h"
+#include "formula/LuaFormula.h"
 
 #include <cmath>
 #include <cstdint>
@@ -15,7 +15,7 @@ extern "C" {
 #endif
 
 namespace wizengine {
-namespace vehicle {
+namespace formula {
 
 #ifdef WIZ_HAVE_LUAJIT
 
@@ -226,5 +226,5 @@ bool LuaRuntime::evalNumber(const std::string&, double&, std::string& error) {
 
 #endif
 
-}  // namespace vehicle
+}  // namespace formula
 }  // namespace wizengine

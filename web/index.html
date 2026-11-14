@@ -402,8 +402,8 @@
           </div>
           <button class="wide" onclick="openNodeEditor()">⚡&#xFE0E; ノードエディタを開く</button>
           <!-- 車両。チェックで「車両として扱う」（既定の 2 軸構成が入る）。
-               軸ごとのタイヤ式は計算式アセット（🧮）を名前で付ける。
-               サスやエンジンの数値は 📄 XML の <vehicle> で。 -->
+               軸ごとのソフトタイヤ・剛性・空気圧はここ、サスやエンジンの
+               数値は 📄 XML の <vehicle> で。 -->
           <div class="edLabel">車両</div>
           <div class="edRow">
             <span>車両として扱う</span>
@@ -412,10 +412,10 @@
                    onchange="applyVehicleEnable(this.checked)">
           </div>
           <div id="edVehicleAxles"></div>
-          <div id="edVehicleHint" class="edHint" hidden>タイヤの「スリップ →
-            力」は計算式アセット（🧮、Assets パネル）で差し替えられます。
-            (組み込み) = C++ の Magic Formula。サス・エンジン・ギアの数値は
-            📄 XML の &lt;vehicle&gt; で編集します。</div>
+          <div id="edVehicleHint" class="edHint" hidden>タイヤは組み込みの
+            Magic Formula、空気圧は等温変化です。サス・エンジン・ギアの数値は
+            📄 XML の &lt;vehicle&gt; で編集します。アクセルやハンドルを制御器
+            から動かすなら、計算式の出力に vehicle:名前.throttle などを書きます。</div>
           <!-- ソフトボディ。チェックで箱 / 球が粒子の格子 + ばねになる
                （質点ばね方式）。数値を変えると粒子を作り直す。 -->
           <div class="edLabel">ソフトボディ</div>
@@ -1167,6 +1167,39 @@
            サーバーの EditorComponent が持つ）。地面とテレインはシーンの
            1 オブジェクトとして階層一覧（Scene タブの Objects）に出し、選んだ
            ときだけ Inspector の secGround / secTerrain に欄を出す。 -->
+      <!-- 制御器（Simulink のブロック線図に相当）: 計算式アセット（🧮）を
+           シミュレート中に物理スレッドで回す。式の in / out の名前がセンサ /
+           アクチュエータ（joint:arm.angle → … → joint:arm.target）。一覧と
+           状態（コンパイルの成否・警告・評価回数）はどのページでも見えるが、
+           付け外しと周期の変更は edit.control.* = エディタカメラのページ専用
+           （control.js の renderControl()）。 -->
+      <section class="sbSec" id="secControl">
+        <div class="sbSecHead">制御器（ブロック線図）</div>
+        <div id="ctlList" class="ndList"></div>
+        <div class="edRow" id="ctlAddRow">
+          <select id="ctlPick" class="strSel"
+                  title="制御器にする計算式（🧮 アセット）"></select>
+          <button onclick="controlAddFrom('ctlPick')"
+                  title="この計算式をシミュレート中に回す">＋ 制御器にする</button>
+        </div>
+        <div class="edRow btnRow">
+          <button onclick="openScope()" title="制御器の入出力を時系列で見る">📈 スコープ</button>
+          <span id="ctlNewFormula">
+            <button onclick="newFormulaAsset()"
+                    title="雛形（PID・一次遅れ・質量ばね・信号発生器など）から計算式を作り、制御器にする">＋ 新しい計算式</button>
+            <button onclick="openFormulaText('', true)"
+                    title="数式のテキストを書いて計算式を作る">📝 数式で書く</button>
+          </span>
+        </div>
+        <div class="edHint">計算式の <b>in</b> の名前がセンサ（<code>time</code>、
+          <code>body:名前.y</code>、<code>joint:名前.angle</code>、
+          <code>vehicle:名前.speed</code> …）、<b>out</b> の名前がアクチュエータ
+          （<code>joint:名前.target</code>、<code>body:名前.fy</code>、
+          <code>vehicle:名前.throttle</code>、記録だけなら <code>scope:ラベル</code>）。
+          単位は SI（角度は rad）。周期 0 = 物理の毎ステップ。式の中の
+          フィードバックは「単位遅延 z⁻¹」で切ります。</div>
+      </section>
+
       <section class="sbSec" id="secWorld" hidden>
         <div class="sbSecHead">World</div>
         <div class="edRow">
@@ -1535,6 +1568,9 @@
              クリックしても切り替わる）。 -->
         <select id="ndAssetSel" class="strSel" onchange="ndSelectAsset(this.value)"
                 title="編集するイベントアセット"></select>
+        <!-- 計算式のときだけ: 同じ式を数式のテキストで編集する（control.js）。 -->
+        <button id="ndTextBtn" hidden onclick="openFormulaText(ndFormula)"
+                title="この計算式を数式のテキストで編集する">📝 数式で編集</button>
         <!-- ノードの追加・イベントの作成 / 削除はキャンバスの右クリック
              （コンテキストメニュー）に一本化した。見出しに並べたボタンは
              種類が増えるほど読めなくなるので、置く場所で決まる操作は
@@ -1552,12 +1588,13 @@
       <div class="ndHint" id="ndHintFormula" hidden>右の ● （出力）から左の ●
         （入力）へドラッグで接続 ／ 線をクリックで切断 ／ 同じ入力に繋ぐと
         張り替え ／ ノードは見出しをドラッグで移動、✕ で削除。未接続の入力は
-        0。<b>入力</b>ノードの名前がタイヤから渡される値（kappa = スリップ比、
-        alpha = スリップ角、fz = 荷重、mu = 摩擦係数、fxLo..fyHi = 力の
-        許される範囲）、<b>出力</b>ノードの fx / fy が車体へ掛かる力です。
-        変更はシミュレート中でもすぐ効きます（車両の走行状態は作り直し）。
-        <b>右クリック</b>: 何もない所でノードの追加と計算式の作成 / 削除、
-        ノードの上でそのノードの削除。付け先は Inspector の「車両」節。</div>
+        0。<b>入力</b>の名前がセンサ（time / body:名前.y / joint:名前.angle …）、
+        <b>出力</b>の名前がアクチュエータ（joint:名前.target / body:名前.fy /
+        scope:ラベル …）。フィードバックは「積分」か「単位遅延 z⁻¹」を輪に
+        入れる。見出しの「📝 数式で編集」で同じ式をテキストでも書けます。
+        制御器にする（World タブ）とシミュレート中に回り、変更はすぐ効きます
+        （位置を動かしただけなら状態は保つ）。<b>右クリック</b>: 何もない所で
+        ノードの追加と計算式の作成 / 削除、ノードの上でそのノードの削除。</div>
       <div class="ndHint" id="ndHintEvent">トリガー（橙）右の ● からアクション（青）へドラッグで
         接続 ／ 線をクリックで切断 ／ ノードは見出しをドラッグで移動、✕ で削除。
         アクションの色・力はシミュレート中だけ効き、停止で設計値に戻ります。
@@ -1567,6 +1604,31 @@
         <b>右クリック</b>: 何もない所でノードの追加とイベントの作成 / 削除、
         ノードの上でそのノードの削除。</div>
       </div><!-- /.ndWin -->
+    </div>
+    <!-- スコープ（制御器の入出力の時系列）。映像を見ながら使うのでモーダル
+         にはしない: 映像の右下に浮かぶ窓で、見出しのドラッグで動かし、右下の
+         つまみで大きさを変える。データは /control?since=N の差分（control.js）。 -->
+    <div id="scopeWin" hidden>
+      <div class="scHead" id="scHead" title="ドラッグで移動">
+        <span class="scTitle">📈&#xFE0E; スコープ</span>
+        <select id="scSeries" class="strSel" onchange="scopeSelect(this.value)"
+                title="表示する制御器"></select>
+        <select id="scWindow" class="strSel" onchange="scopeSetWindow(this.value)"
+                title="表示する時間幅">
+          <option value="5">5 s</option>
+          <option value="10" selected>10 s</option>
+          <option value="30">30 s</option>
+          <option value="60">60 s</option>
+          <option value="0">全部</option>
+        </select>
+        <button id="scPause" onclick="scopeTogglePause()"
+                title="表示を止める（記録は続く）">停止</button>
+        <a id="scCsv" href="control.csv" target="_blank"
+           title="この制御器の記録を CSV でダウンロード">CSV</a>
+        <button onclick="closeScope()" title="閉じる">✕</button>
+      </div>
+      <canvas id="scCanvas"></canvas>
+      <div id="scLegend" class="scLegend"></div>
     </div>
     <!-- シーン XML エディタ。ノードエディタと同じモーダルの流儀（.ndBack /
          .ndWin）。中身は /scene.xml と同じ文書で、「✓ 適用」が edit.xml と
@@ -1592,6 +1654,39 @@
           「シーン文書（XML）」の章）。「✓ 適用」で現在の配置を置き換えます。
           打ち間違いは警告としてステータスとコンソールに出ます。ファイルへの
           保存は Assets パネルの 💾（assets/scenes/&lt;名前&gt;.xml）。</div>
+      </div><!-- /.ndWin -->
+    </div>
+    <!-- 計算式の数式エディタ（control.js）。書いた式はサーバーがノードの
+         グラフに起こす（formula/FormulaText.h）。壊れた式は適用されず、行番号
+         付きの理由がステータスに出る。 -->
+    <div id="fxEd" hidden>
+      <div class="ndBack" onclick="closeFormulaText()" title="クリックで閉じる"></div>
+      <div class="ndWin">
+        <div class="ndHead">
+          <span class="ndTitle">📝&#xFE0E; 数式で編集</span>
+          <input id="fxName" class="txt" type="text" spellcheck="false"
+                 title="計算式の名前（英数字と _ -）。既にあれば置き換える">
+          <button onclick="applyFormulaText()"
+                  title="この式でノードのグラフを作り直す（同じ名前があれば置き換え）">✓ 適用</button>
+          <select id="fxTemplate" class="strSel" onchange="insertFormulaTemplate(this.value)"
+                  title="雛形の式を差し込む（いまのテキストは置き換え）"></select>
+          <span id="fxStatus" class="xmStatus"></span>
+          <button onclick="closeFormulaText()" title="閉じる">✕</button>
+        </div>
+        <textarea id="fxText" spellcheck="false" wrap="off"
+                  placeholder="# 例: PID でジョイント arm の角度を目標へ&#10;kp = 40; ki = 10; kd = 4&#10;e = 0.5 - joint:arm.angle&#10;joint:arm.target = pid(e, kp, ki, kd, -50, 50)&#10;scope:err = e"></textarea>
+        <div class="ndHint"><b>1 行 1 文</b>（; で区切れば複数）、# はコメント。
+          <code>e = ref - y</code> は変数、<code>out u = …</code> と信号名
+          （<code>joint:arm.target = …</code>、<code>scope:ラベル = …</code>）は出力、
+          代入しない名前（<code>joint:arm.angle</code>・<code>time</code>）は入力。
+          <code>kp = 40</code> のように定数を入れた変数は係数に使えます。
+          演算子 <code>+ - * / ^ &gt; &lt;</code>、関数
+          <code>sin cos tan atan exp log sqrt abs sign min max pow atan2 clamp lerp
+          if lag derivative integrate delay gain saturate deadzone ratelimit pid curve</code>。
+          フィードバックは <code>integrate</code> か <code>delay</code> を輪に入れる
+          （例: <code>y = integrate((K*u - y) / T)</code>）。適用するとノードの
+          グラフに起こされ、ノードエディタでも見えます（テキストは保存されます。
+          ノードを編集したらグラフから起こし直したものに変わります）。</div>
       </div><!-- /.ndWin -->
     </div>
     <svg id="cursor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1709,5 +1804,6 @@
 <script src="terrain-brush.js"></script>
 <script src="terrain-scatter.js"></script>
 <script src="autogen.js"></script>
+<script src="control.js"></script>
 </body>
 </html>

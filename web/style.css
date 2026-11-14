@@ -1042,3 +1042,64 @@
     white-space: pre-wrap; word-break: break-word;
   }
   #aiGen .ndHint { padding: 0; }
+
+  /* ---- スコープ（制御器の時系列。control.js）---------------------------- */
+  #scopeWin {
+    position: absolute; right: 12px; bottom: 12px; z-index: 5;
+    width: 560px; height: 320px; min-width: 300px; min-height: 180px;
+    display: flex; flex-direction: column; resize: both; overflow: hidden;
+    background: rgba(14, 16, 20, 0.92); border: 1px solid #343a46;
+    border-radius: 6px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  }
+  #scopeWin[hidden] { display: none; }
+  #scopeWin, #scopeWin * { cursor: auto; }
+  #scopeWin button, #scopeWin a, #scopeWin select { cursor: pointer; }
+  .scHead {
+    display: flex; align-items: center; gap: 6px; padding: 4px 6px;
+    border-bottom: 1px solid #2a2f39; font-size: 12px; user-select: none;
+  }
+  #scopeWin .scHead { cursor: move; }
+  .scTitle { font-weight: 600; margin-right: 4px; white-space: nowrap; }
+  .scHead .strSel { max-width: 150px; }
+  .scHead button, .scHead a {
+    background: #1d2129; color: #d6dae1; border: 1px solid #353b47;
+    border-radius: 3px; padding: 1px 7px; font-size: 12px; text-decoration: none;
+  }
+  .scHead button:last-child { margin-left: auto; }
+  #scCanvas { flex: 1; width: 100%; min-height: 0; display: block; }
+  .scLegend {
+    display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 3px 8px 5px;
+    font-size: 11px; color: #b8bec8; max-height: 64px; overflow-y: auto;
+  }
+  .scLegend label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .scLegend .sw { width: 10px; height: 3px; border-radius: 1px; display: inline-block; }
+  .scLegend .val { color: #8b919c; font-variant-numeric: tabular-nums; }
+  /* 制御器の一覧（World タブ）。 */
+  .ctlItem { flex-direction: column; align-items: stretch; gap: 3px; }
+  .ctlTop, .ctlSub { display: flex; align-items: center; gap: 6px; }
+  .ctlTop .link { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+                  white-space: nowrap; }
+  .ctlSub { color: #8b919c; font-size: 10.5px; padding-left: 20px; }
+  .ctlSub input.num { width: 64px; }
+  #ctlList .ndItem .err { color: #e7a0a0; }
+  .ctlMsgs { font-size: 10.5px; color: #c9b27a; padding: 0 6px 4px; line-height: 1.5;
+             white-space: pre-wrap; word-break: break-all; }
+  .ctlMsgs.err { color: #e7a0a0; }
+
+  /* 数式エディタ（control.js の #fxEd）。XML エディタと同じ作り。 */
+  #fxEd {
+    position: fixed; inset: 0; z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #fxEd[hidden] { display: none; }
+  #fxEd, #fxEd * { cursor: auto; }
+  #fxEd button, #fxEd select, #fxEd .ndBack { cursor: pointer; }
+  #fxName { width: 150px; }
+  #fxText {
+    flex: 1; width: 100%; resize: none; border: 0; outline: none;
+    padding: 10px 12px; box-sizing: border-box;
+    background: #101216; color: #cdd3dd;
+    font: 13px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+    white-space: pre; tab-size: 4;
+  }
+  #ndTextBtn[hidden] { display: none; }

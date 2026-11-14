@@ -16,6 +16,7 @@
 #include "core/Guid.h"
 #include "core/Hex.h"
 #include "core/SafeName.h"
+#include "formula/Formula.h"
 #include "vehicle/VehicleTypes.h"
 
 // エディタモードが編集する「シーン文書」の型。
@@ -1720,7 +1721,7 @@ inline nlohmann::json toJson(const PrefabDesc& d) {
 }
 
 // ---- ノード式（計算式アセット）の JSON --------------------------------------
-// 型は vehicle/Formula.h（Chrono も JSON も知らない側）。ここはブラウザ API
+// 型は formula/Formula.h（Chrono も JSON も知らない側）。ここはブラウザ API
 // との変換だけ。ノードの params は数値の配列で、"1 2 3" の文字列でも受ける
 // （折れ線の点列を打ちやすいように）。
 inline std::vector<double> numberList(const nlohmann::json& j) {
@@ -1749,18 +1750,21 @@ inline std::vector<double> numberList(const nlohmann::json& j) {
     if (out.size() > 128) out.resize(128);
     return out;
 }
-// ポート名（in / out の name）: 英数字と _ だけ、32 文字まで。
+// ポート名（in / out の name）: 英数字と _ に加えて、制御器の信号名
+// （"joint:arm.angle" のような - control/ControlSignals.h）に使う : . - も
+// 通す。96 文字まで。
 inline std::string sanitizePortName(const std::string& name) {
     std::string out;
     for (const char c : name) {
         const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9') || c == '_';
+                        (c >= '0' && c <= '9') || c == '_' || c == ':' || c == '.' ||
+                        c == '-';
         if (ok) out.push_back(c);
-        if (out.size() >= 32) break;
+        if (out.size() >= 96) break;
     }
     return out;
 }
-inline nlohmann::json toJson(const wizengine::vehicle::FormulaNodeDesc& n) {
+inline nlohmann::json toJson(const wizengine::formula::FormulaNodeDesc& n) {
     nlohmann::json j;
     j["id"] = n.id;
     j["type"] = n.kind;
@@ -1770,9 +1774,9 @@ inline nlohmann::json toJson(const wizengine::vehicle::FormulaNodeDesc& n) {
     j["y"] = n.y;
     return j;
 }
-inline wizengine::vehicle::FormulaNodeDesc formulaNodeFromJson(
-    const nlohmann::json& j, const wizengine::vehicle::FormulaNodeDesc& base) {
-    wizengine::vehicle::FormulaNodeDesc n = base;
+inline wizengine::formula::FormulaNodeDesc formulaNodeFromJson(
+    const nlohmann::json& j, const wizengine::formula::FormulaNodeDesc& base) {
+    wizengine::formula::FormulaNodeDesc n = base;
     if (!j.is_object()) return n;
     n.id = jsonInt(j, "id", n.id);
     if (j.contains("type") && j["type"].is_string()) n.kind = j["type"];
@@ -1787,8 +1791,8 @@ inline wizengine::vehicle::FormulaNodeDesc formulaNodeFromJson(
     n.y = jsonNumber(j, "y", n.y);
     return n;
 }
-inline wizengine::vehicle::FormulaNodeDesc clampFormulaNode(
-    wizengine::vehicle::FormulaNodeDesc n) {
+inline wizengine::formula::FormulaNodeDesc clampFormulaNode(
+    wizengine::formula::FormulaNodeDesc n) {
     auto cl = [](double v, double lo, double hi) {
         return v < lo ? lo : (v > hi ? hi : v);
     };
@@ -1802,7 +1806,7 @@ inline wizengine::vehicle::FormulaNodeDesc clampFormulaNode(
     n.name = sanitizePortName(n.name);
     return n;
 }
-inline nlohmann::json toJson(const wizengine::vehicle::FormulaWireDesc& w) {
+inline nlohmann::json toJson(const wizengine::formula::FormulaWireDesc& w) {
     nlohmann::json j;
     j["from"] = w.from;
     j["fromPort"] = w.fromPort;
@@ -1810,15 +1814,15 @@ inline nlohmann::json toJson(const wizengine::vehicle::FormulaWireDesc& w) {
     j["port"] = w.port;
     return j;
 }
-inline wizengine::vehicle::FormulaWireDesc formulaWireFromJson(const nlohmann::json& j) {
-    wizengine::vehicle::FormulaWireDesc w;
+inline wizengine::formula::FormulaWireDesc formulaWireFromJson(const nlohmann::json& j) {
+    wizengine::formula::FormulaWireDesc w;
     w.from = jsonInt(j, "from", -1);
     w.fromPort = jsonInt(j, "fromPort", 0);
     w.to = jsonInt(j, "to", -1);
     w.port = jsonInt(j, "port", 0);
     return w;
 }
-inline nlohmann::json toJson(const wizengine::vehicle::FormulaGraphDesc& g) {
+inline nlohmann::json toJson(const wizengine::formula::FormulaGraphDesc& g) {
     nlohmann::json j;
     j["name"] = g.name;
     j["nodes"] = nlohmann::json::array();
@@ -1826,6 +1830,37 @@ inline nlohmann::json toJson(const wizengine::vehicle::FormulaGraphDesc& g) {
     j["wires"] = nlohmann::json::array();
     for (const auto& w : g.wires) j["wires"].push_back(toJson(w));
     return j;
+}
+
+// ---- 制御器（ノード式をブロック線図として回す。control/ControlSignals.h）--
+// 計算式アセットを名前で参照し、シミュレート中に物理スレッドで回す。式の
+// in / out ノードの name がセンサ / アクチュエータ（"joint:arm.angle" など）。
+// 文書ではルートの <control> の <controller formula period enabled/>。
+struct ControllerDesc {
+    std::string formula;   // 計算式アセットの名前
+    double period = 0.0;   // 実行周期 (s)。0 = 物理の毎ステップ。出力は次の実行まで保持
+    bool enabled = true;
+};
+inline ControllerDesc clampController(ControllerDesc c) {
+    c.formula = sanitizeEventName(c.formula);
+    if (!(c.period == c.period) || c.period < 0.0) c.period = 0.0;
+    if (c.period > 10.0) c.period = 10.0;
+    return c;
+}
+inline nlohmann::json toJson(const ControllerDesc& c) {
+    nlohmann::json j;
+    j["formula"] = c.formula;
+    j["period"] = c.period;
+    j["enabled"] = c.enabled;
+    return j;
+}
+// 送られてきたキーだけ上書き（部分更新）。
+inline ControllerDesc controllerFromJson(const nlohmann::json& j, ControllerDesc base) {
+    if (!j.is_object()) return base;
+    if (j.contains("formula") && j["formula"].is_string()) base.formula = j["formula"];
+    base.period = jsonNumber(j, "period", base.period);
+    if (j.contains("enabled") && j["enabled"].is_boolean()) base.enabled = j["enabled"];
+    return clampController(base);
 }
 
 inline nlohmann::json toJson(const GroundDesc& g) {

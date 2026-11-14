@@ -320,7 +320,9 @@ endif()
 #   document/   シーン文書の値型と MuJoCo 風 XML（エンジン非依存）
 #   scene/      Scene の実体管理・エディタ状態・カメラ・数学の橋渡し
 #   components/ ブラウザのコマンドを受ける SceneComponent 群
-#   vehicle/    車両モデルとノード式（純粋な数値ライブラリ。tests/vehicle が使う）
+#   vehicle/    車両モデル（純粋な数値ライブラリ。tests/vehicle が使う）
+#   formula/    ノード式（計算式アセット）の検証・実行（C++ / LuaJIT）・XML・数式テキスト
+#   control/    制御器の信号名とセンサの計算（ノード式をブロック線図として回す。純粋）
 #   terrain/    テレインの高さ格子（純粋な計算。tests/terrain が使う）
 #   app/        起動設定（config.json）の読み込み
 #   autogen/    AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換 Text to 3D。
@@ -404,15 +406,20 @@ set(WIZ_COMPONENT_SOURCES
     src/components/GizmoComponent.cpp
     src/components/PrefabComponent.cpp
     src/components/ScatterComponent.cpp
+    src/components/ControlComponent.cpp
     src/components/TerrainComponent.cpp
     src/components/VehicleComponent.cpp)
+set(WIZ_FORMULA_SOURCES
+    src/formula/Formula.cpp
+    src/formula/FormulaText.cpp
+    src/formula/FormulaXml.cpp
+    src/formula/LuaFormula.cpp)
+set(WIZ_CONTROL_SOURCES
+    src/control/ControlSignals.cpp
+    src/control/ControlTemplates.cpp)
 set(WIZ_VEHICLE_SOURCES
-    src/vehicle/Formula.cpp
-    src/vehicle/FormulaXml.cpp
-    src/vehicle/LuaFormula.cpp
     src/vehicle/Powertrain.cpp
     src/vehicle/SoftTire.cpp
-    src/vehicle/TireFormula.cpp
     src/vehicle/VehicleModel.cpp
     src/vehicle/VehicleTypes.cpp
     src/vehicle/VehicleXml.cpp
@@ -449,6 +456,8 @@ add_executable(wizengine
     ${WIZ_SCENE_SOURCES}
     ${WIZ_COMPONENT_SOURCES}
     ${WIZ_VEHICLE_SOURCES}
+    ${WIZ_FORMULA_SOURCES}
+    ${WIZ_CONTROL_SOURCES}
     ${WIZ_TERRAIN_SOURCES}
     ${WIZ_AUTOGEN_SOURCES})
 # ノード式の実行エンジン（LuaJIT）。無ければ C++ の参照インタプリタに落ちる。

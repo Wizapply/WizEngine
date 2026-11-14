@@ -39,6 +39,7 @@
 #include "components/PhysicsControlComponent.h"
 #include "components/StreamControlComponent.h"
 #include "components/TerrainComponent.h"
+#include "components/ControlComponent.h"
 #include "components/VehicleComponent.h"
 #include "components/PrefabComponent.h"
 #include "components/ScatterComponent.h"
@@ -479,6 +480,12 @@ int run(int argc, char** argv) {
     // 出すために生ポインタも持っておく（所有は Scene）。
     auto vehicleOwner = std::make_unique<VehicleComponent>();
     VehicleComponent* vehicleComp = vehicleOwner.get();
+    // 制御器（計算式をブロック線図として回す）。車両より先に登録する: 物理
+    // ステップごとに運転入力の上書きを書き、車両がそのステップで使うため。
+    // /scene と /control へ出すために生ポインタも持つ（所有は Scene）。
+    auto controlOwner = std::make_unique<ControlComponent>(vehicleComp);
+    ControlComponent* controlComp = controlOwner.get();
+    scene.addComponent(std::move(controlOwner));
     scene.addComponent(std::move(vehicleOwner));
     // プレハブ（見た目の部品）の描画。車両の車輪姿勢は VehicleComponent から。
     scene.addComponent(std::make_unique<PrefabComponent>(vehicleComp));
@@ -600,8 +607,16 @@ int run(int argc, char** argv) {
                 }
                 // AI のシーン自動構築の状態（🤖 AI モーダルが描く）。
                 j["ai"] = aiComp->statusJson();
+                // 制御器の実行状態（コンパイルの成否・警告・評価回数）。
+                j["control"] = controlComp->statusJson();
                 return j.dump();
             });
+            // 制御器の記録（スコープの時系列と CSV）。
+            ep->http->setControlProviders(
+                [controlComp](std::uint64_t since) { return controlComp->samplesJson(since); },
+                [controlComp](const std::string& formula) {
+                    return controlComp->samplesCsv(formula);
+                });
 
             // シーン文書そのもの（保存されるのと同じ XML）。ブラウザの
             // アセットパネルの「📄 XML」から開く。

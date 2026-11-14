@@ -550,8 +550,13 @@ WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクト�
   軸ごと、`<vehicle>` 直下に書けば全軸の既定値）。座標は**前 = -Z、右 = +X**
   で、axle の z は「前向きの距離」。読み込みは既定値付き、駆動軸が 1 本も無い・
   未知の節は warnings。値の範囲は `clampVehicle`。Inspector の「車両」節で
-  できるのは「車両にする / やめる」とタイヤ式の付け外しだけで、サス・
-  エンジン・ギアの数値は 📄 XML で編集する。
+  できるのは「車両にする / やめる」と軸ごとのソフトタイヤ・剛性・空気圧
+  だけで、サス・エンジン・ギアの数値は 📄 XML で編集する。設計値を変えたら
+  `EditorState::bumpVehicleVersion()`（Inspector の edit.vehicle.* と読込）で
+  VehicleComponent が車両モデルを作り直す。**タイヤ式・空気圧式をノード式で
+  差し替える仕組みは廃止した**（タイヤは組み込みの Magic Formula、空気圧は
+  等温変化だけ）。古い文書の `<tire formula / pressureFormula>` と `<vehicle>`
+  内の `<formula>` は警告して読み飛ばす。
 - **実行状態はエディタに戻ると捨てる**（`onEditorStep`）。次のシミュレート
   開始で設計値から作り直すので、XML を適用すればそのまま効く。
 - **ソフトタイヤ**（`src/vehicle/SoftTire.{h,cpp}`、`<tire soft="true"
@@ -575,14 +580,7 @@ WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクト�
   粒子の面積ベクトル = 隣接三角形の面積 × 法線 / 3 の和）、自然長 = 静止
   半径 + p V / (p_abs A_tot)（圧力ぶんの膨らみ）。力として陽に足すと
   結合剛性の分母で釣り合いが縮んで膨らみがほぼ消えるので、この形にした。
-  潰すほど急に硬くなり、離せば張り戻る（ゴムの復元）。**この「体積比 →
-  圧力」はノード式で差し替えられる**（`<tire pressureFormula="名前">`、
-  入出力の約束は `TireFormula.h` の `pressureFormulaInputs / Outputs`:
-  ratio / rate / p0 / load / deflection / radius → pressure。既定グラフは
-  `defaultPressureFormulaGraph()`、`vehicle_test --dump-pressure-formula` で
-  XML が出る。`edit.formula.add` の `template="pressure"`、🧮 タイルの右
-  クリック「空気圧式に付ける」、Inspector の軸ごとの「空気圧 / 空気圧式」。
-  失敗したステップは組み込みで代用して `formulaFailures()` に数える）。**メッシュは閉じた面**（帯 + 両側の扇）にして
+  潰すほど急に硬くなり、離せば張り戻る（ゴムの復元）。**メッシュは閉じた面**（帯 + 両側の扇）にして
   ある - 穴が開いていると向こう側の内面が背面カリングで透けて見える。
   ソフト形状のマテリアルは両面描画（`setCullingMode(NONE)`）で、フラスタム
   カリングも切ってある（`addSoftShape`）。ばねは PhysicsWorld の
@@ -607,66 +605,169 @@ WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクト�
   `vehicle_test` の 8（接地で底が地面に揃う・浮くと丸に戻る・直列ばねで
   潰れのぶん低く座る・XML 往復）。
 
-### ノード式（`src/vehicle/Formula.{h,cpp}` + LuaJIT）
+## 計算式（ノード式。`src/formula/` + LuaJIT）
 
-研究者が計算式をノードで組み替えるための仕組み。いま差し替えられるのは
-**タイヤの「スリップ → 力」**（`TireFormula.h` に入出力の約束）。ユーザーは
-Lua を見ない: ノード → Lua ソース → LuaJIT、はエンジンの中で閉じている。
+研究者が計算式をノードかテキストで組むための**汎用の部品**（特定の用途には
+依らない。以前は車両のタイヤ式・空気圧式の差し替え口だったが、それは廃止し、
+いまの使い手は制御器 = 下の章）。ユーザーは Lua を見ない: ノード → Lua
+ソース → LuaJIT、はエンジンの中で閉じている。名前空間は `wizengine::formula`。
 
-- **型は 3 つ**: `FormulaGraphDesc`（文書の値 = ノード + ワイヤー）、
-  `FormulaProgram`（検証・整列済みの線形命令列。入出力は名前で結び、lag /
-  integrate に状態スロットを割る）、`FormulaInstance`（車輪 1 本ぶんの実行口）。
-  実行口は **C++ の参照インタプリタ**（`FormulaProgram::interpret`）と
-  **LuaJIT**（`LuaFormula.h`）の 2 つで、同じ命令列から作るので結果は一致する
-  （`vehicle_test` の 7 が 3 実装の差 0 を検査）。LuaJIT の無いビルド
+- **型は 3 つ**: `FormulaGraphDesc`（文書の値 = ノード + ワイヤー + 元の
+  テキスト `source`）、`FormulaProgram`（検証・整列済みの線形命令列。入出力は
+  名前で結び、状態を持つノードに状態スロットを割る）、`FormulaInstance`
+  （1 実体の実行口）。実行口は **C++ の参照インタプリタ**
+  （`FormulaProgram::interpret`）と **LuaJIT**（`LuaFormula.h`）の 2 つで、
+  同じ命令列から作るので結果は一致する（差 0 を確認）。LuaJIT の無いビルド
   （`WIZ_HAVE_LUAJIT` 未定義）はインタプリタに落ちる（遅いが同じ結果）。
 - **語彙は全部スカラー**（`Formula.h` の冒頭に一覧）。in / out / const / dt、
   四則と min max pow atan2 gt lt、単項の neg abs sqrt sin cos tan atan exp log
-  sign、clamp / lerp / select、折れ線 curve、状態を持つ lag / integrate、
-  車両向けの magic（Pacejka）と ellipse（摩擦楕円、出力 2）。未接続の入力は
-  0（警告）、循環はエラー（式は動かず組み込みで代用）。**陰解法の部品
-  （クラッチ・デフ）はノードに分解しない** - 不安定になるので C++ に残す。
-- **Lua の作法**（`LuaFormula.cpp`）: Lua ステートは物理スレッドに 1 つ
-  （VehicleComponent が持つ）。1 グラフ = 1 関数 `function(I, O, S, dt)` で、
-  ノードは関数のローカル変数になる = トレース JIT が境界を消す。入出力と
-  状態は Lua 側で確保した FFI の double 配列で、C++ はそのアドレス（intptr →
-  double で運ぶ）に直接読み書きする。**ティック内でテーブルも文字列も作ら
-  ない**（GC を起こさない）。呼び出しは `lua_rawgeti` × 4 + `lua_pcall`。
-  LuaJIT は `third_parties/luajit`（v2.1、サブモジュール）。`cmake/LuaJIT.cmake`
-  がライブラリを探し、無ければ configure 時にビルドする（Linux は
-  `make BUILDMODE=static`、Windows は `msvcbuild.bat static` = VS の開発者環境
-  が要る）。`-DWIZ_WITH_LUAJIT=OFF` で外せる。
+  sign、clamp / lerp / select、折れ線 curve、lag / integrate、**制御ブロック**
+  （time / gain / saturate / deadzone / delay / derivative / ratelimit / pid。
+  係数は params、既定値は `Formula.cpp` の `paramDefaults`）。未接続の入力は
+  0（警告）、循環はエラー。ただし **delay（単位遅延 z⁻¹）と integrate を
+  挟んだ輪は組める**: どちらも直達しない（出力は今の状態、入力の取り込み
+  `DelayStore` / `IntegrateStore` は命令列の最後）ので、整列はこの 2 つへ入る
+  線を数えない（`formulaBreaksFeedback`。ブラウザの線の循環検査
+  `EditorState::addFormulaWire` も同じ規則）。**integrate は前進オイラー**
+  （以前は入力をその場で足して出す直達型だった）= Simulink の積分器と同じく
+  連続系 x' = f(x) を輪のまま組める。車両専用だった magic / ellipse は廃止。
+- **数式のテキスト ⇄ グラフ**（`FormulaText.{h,cpp}`）: `e = ref - y` /
+  `out u = pid(e, kp, ki, kd, -50, 50)` / `joint:arm.target = u` のような
+  1 行 1 文のテキストを再帰下降で読み、ノードのグラフに起こす
+  （`formulaFromText`。代入しない名前・信号名・"…" は入力、`out 名前` と信号名・
+  "…" の左辺は出力、`kp = 40` のような定数の変数は係数に使える名前付き定数、
+  後で代入する変数も参照できる = フィードバック。起こしたグラフは compile まで
+  通して確かめる = 壊れた式はアセットに入らない。エラーは行番号付きの英語）。
+  逆にどんなグラフもテキストに起こせる（`formulaToText`。1 回だけ使う値は
+  式へ埋め込み、何度も使う値と輪で後から参照される値は変数 v<id>、括弧は
+  優先順位で必要なところだけ）。**読み戻すと同じ計算**（差 0 を確認）。
+  テキストで作った式は元のテキストを `source` に残し（コメント・名前付き定数を
+  保つため。XML では `<formula>` の中の `<source line="…"/>` を行ごと）、
+  ノード / ワイヤーを編集したら捨てる（位置だけの移動は保つ）。/scene の
+  formulas.assets[].text は source があればそれ、無ければ formulaToText。
+- **Lua の作法**（`LuaFormula.cpp`）: Lua ステートは使い手ごとに 1 つ（物理
+  スレッド専用。ControlComponent が持つ）。1 グラフ = 1 関数
+  `function(I, O, S, dt)` で、ノードは関数のローカル変数になる = トレース JIT が
+  境界を消す。入出力と状態は Lua 側で確保した FFI の double 配列で、C++ は
+  そのアドレス（intptr → double で運ぶ）に直接読み書きする。**ティック内で
+  テーブルも文字列も作らない**（GC を起こさない）。呼び出しは `lua_rawgeti` ×
+  4 + `lua_pcall`。LuaJIT は `third_parties/luajit`（v2.1、サブモジュール）。
+  `cmake/LuaJIT.cmake` がライブラリを探し、無ければ configure 時にビルドする
+  （Linux は `make BUILDMODE=static`、Windows は `msvcbuild.bat static` = VS の
+  開発者環境が要る）。`-DWIZ_WITH_LUAJIT=OFF` で外せる。
 - **計算式はシーンのアセット**（イベントアセットと同じ扱い）。文書では
-  `<asset>` の `<formula name>`（`FormulaXml.h`。`<node id type name params pos>`
-  と `<wire from fromPort to port>`）で、`<tire formula="名前">` が名前で参照
-  する。`<vehicle>` の中に書いた `<formula>`（旧置き場）も読めるが、読込時に
-  シーンのアセットへ移す（次の保存で `<asset>` に出る）。本体は
-  `EditorState::formulaAssets()`（`formulaVersion()` は式かタイヤの参照が
-  変わるたびに進み、VehicleComponent がこれを見て**車両モデルを作り直す** =
-  シミュレート中の編集もすぐ効く。走行状態は一度リセットされる）。
-  既定の Magic Formula をノードで組んだものが
-  `defaultTireFormulaGraph()`（`vehicle_test --dump-formula` で XML が出る。
-  `assets/scenes/vehicle.xml` に貼ってある。`edit.formula.add` の
-  `template="tire"` で同じものが作れる）。
+  `<asset>` の `<formula name>`（`FormulaXml.h`。`<source line>`、
+  `<node id type name params pos>` と `<wire from fromPort to port>`）で、
+  制御器（`<control><controller formula>`）が名前で参照する。本体は
+  `EditorState::formulaAssets()`（`formulaVersion()` は式が変わるたびに進む）。
+- **雛形**（`control/ControlTemplates.{h,cpp}`、車に限らない）: 空・PID で
+  ジョイントの角度を目標へ・PD + 重力補償で物体の高さを保つ・一次遅れ系の
+  応答・質量-ばね-ダンパ・PI 制御 + 一次遅れプラント・信号発生器。中身は
+  **数式のテキスト**（`{joint}` / `{body}` を相手の名前で置き換える）で、
+  変換器を通してグラフにする = 雛形の書き損じは作成時にエラーになる。
+  `edit.formula.add {name, template, target}` が雛形から作って制御器として
+  付ける。一覧（id・表示名・説明・相手の種類・テキスト）は /scene の
+  formulas.templates。
 - **UI**: アセットパネルの **🧮 タイル**（クリックでノードエディタ、右クリックで
-  作成 / 削除 / 選択中の車両の全軸に付ける）、**ノードエディタは ⚡ と共用**
-  （見出しの選択が「⚡ イベント」「🧮 計算式」の 2 グループ、`ndKind` で
-  切替。計算式ノードは左に入力ポート・右に出力ポートが**行ごと**に並び、
-  座標は app.js の `FPORT_Y0` / `FPORT_DY` と CSS の `.ndPortRow` の高さで
-  揃える。同じ入力に繋ぐと張り替え、循環はサーバーが弾く）、**Inspector の
-  「車両」節**（「車両として扱う」チェック = `edit.vehicle.enable`、軸ごとの
-  タイヤ式の選択 = `edit.vehicle.tire`）。コマンドは edit.formula.add /
-  remove、edit.fnode.add / set / remove、edit.fwire.add / remove で、
-  すべて EditorComponent → Op → 物理スレッド（イベントと同じ配管）。入力 `fxLo fxHi fyLo fyHi`（力の
-  許される範囲: 滑りの向きに逆らわず、滑り速度を反転させない大きさまで）は
-  緩和長の**前**にクランプする - 組み込みも同じ順序で、状態が範囲を超えて
-  溜まらない（順序を変える・符号を見ないと、制動で溜まった逆向きの力が
-  停車後に車を押し戻す）。
-- **失敗は組み込みで代用**: 式が NaN や実行時エラーを出したティックは
-  組み込みのタイヤで計算し、`formulaFailures()` に数える。VehicleComponent が
-  1 回だけ LOGW。安全のため出力にももう一度 ±cap を掛ける。
-- **未**: タイヤ以外（サス・エンジン曲線）の差し替え口、vec3 型、ノードの
-  値のライブ表示（デバッグバッジ）。
+  開く / 📝 数式で編集 / 制御器にする / 外す / スコープ / 作成 / 削除）、
+  **ノードエディタは ⚡ と共用**（見出しの選択が「⚡ イベント」「🧮 計算式」の
+  2 グループ、`ndKind` で切替。計算式ノードは左に入力ポート・右に出力ポートが
+  **行ごと**に並び、座標は app.js の `FPORT_Y0` / `FPORT_DY` と CSS の
+  `.ndPortRow` の高さで揃える。同じ入力に繋ぐと張り替え、循環はサーバーが
+  弾く。見出しの「📝 数式で編集」）、**数式エディタ**（`#fxEd`、control.js。
+  名前・テキスト・雛形の差し込み・✓ 適用 = `edit.formula.text {name, text}`。
+  INPUT スレッドで一度起こして検証し、壊れていれば行番号付きの理由を
+  ステータスへ出して積まない。物理スレッドがもう一度起こして
+  `replaceFormulaAsset` で丸ごと差し替える = ノードの id と位置は振り直し）。
+  コマンドは edit.formula.add / remove / text、edit.fnode.add / set / remove、
+  edit.fwire.add / remove で、すべて EditorComponent → Op → 物理スレッド
+  （イベントと同じ配管）。
+- **未**: vec3 / 行列の信号、サブシステム（式の入れ子）、ノードの値の
+  ライブ表示（デバッグバッジ）。
+
+## 制御器（ブロック線図。`src/control/` + `components/ControlComponent`）
+
+Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（🧮 計算式アセット）を
+そのままブロック線図として使い、Chrono をプラント（制御される側）にして
+シミュレート中に回す**。ロボット（ジョイントのモータ）・浮遊体（力）・車両
+（アクセル / ブレーキ / ハンドル）の制御を 3D で確かめるためのもの。見本は
+`assets/scenes/control_arm.xml`（PID の腕と高さ制御の箱）と
+`assets/scenes/vehicle.xml` の `cruise`（クルーズコントロール、既定は無効）。
+
+- **制御器 = 計算式アセット + 実行周期**。文書ではルートの
+  `<control><controller formula="arm_pid" period="0.01" enabled="true"/></control>`
+  （`ed::ControllerDesc`、`EditorState::controllers()` / `controlVersion()`）。
+  同じ計算式は 1 回だけ付く。計算式を消すと制御器も外れる。
+- **信号は in / out ノードの name**（`control/ControlSignals.h` が唯一の定義）。
+  センサ: `time`、`body:<名前>.x y z vx vy vz wx wy wz rx ry rz speed vfwd vlat`、
+  `joint:<名前>.angle rate pos vel force torque`、`vehicle:<名前>.speed rpm gear`。
+  アクチュエータ: `joint:<名前>.target`（モータの目標値）、`body:<名前>.fx fy fz
+  tx ty tz`（ワールド）/ `lfx lfy lfz ltx lty ltz`（ローカル）、
+  `vehicle:<名前>.throttle brake steer handbrake`、記録だけの `scope:<ラベル>`。
+  **単位は SI で角度は rad**（文書の度とは違う。ジョイントの目標値も換算しない）。
+  名前はオブジェクト / ジョイントの name で引く（無い・重複は警告）。ポート名に
+  `: . -` を通すため `sanitizePortName` を広げた（96 文字まで）。
+- **時刻の意味**: ControlComponent は物理ステップの**積分の前**（`onPhysicsStep`、
+  **車両より先に登録** = 車の入力の上書きが同じステップに効く）に、周期が来た
+  制御器を評価する。センサは前のステップの結果、出力はこのステップから効く
+  （プラントが状態を持つので代数ループは無い）。**出力は次の評価まで保持して
+  毎ステップ当てる**（ゼロ次ホールド。力は毎ステップ掛け続ける必要がある）。
+  評価の dt は前回の評価からの実際の経過（周期が物理の dt の倍数でなくても
+  積分が合う）。NaN・実行時エラーのティックは出力を前回のまま（1 回だけ LOGW）。
+- **ジョイントの計測は自前**（`control/ControlMath.h` の `JointMeasure`）: body1
+  を body2 から見た相対回転の twist（軸 = ジョイントの axis を body2 のローカル
+  に固定）を、シミュレート開始時の姿勢を 0 として連続化する（±π で折り返さ
+  ない）。符号はモータが body1 に正のトルクを掛ける向き（Chrono の
+  `ChLinkMotorRotation` と手計算のトルクモータの約束）。基準は世代
+  （`Scene::runGeneration` = 開始・停止・Reset で進む）の最初のステップで全
+  ジョイントぶん取るので、途中で制御器を作り直しても角度は続く。PhysicsWorld
+  には触らない（物理のリファクタと衝突しないため）。
+- **トルクは力の対**（PhysicsWorld にトルクの口が無いので、`torqueAsCouple` で
+  重心の両側に逆向きの力を `applyForceAtPoint`）。力は `applyForce`（固定ボディ
+  には掛からない - 既存の約束）。ジョイントの目標値は値が変わったときだけ
+  `setJointMotorTarget`（Multicore の速度モータはランプを引き直すため）。
+  モータの無いジョイントへの target は警告して無視。
+- **車両**: `VehicleComponent::setControlDrive`（書いた項目だけブラウザの入力を
+  置き換える、このステップ限り）と `telemetry`（前のステップの計測値）。
+- **作り直し**: 制御器の一覧か式の中身（`formulaSignature`）が変わったときだけ
+  コンパイルし直す。ノードを動かしただけ・周期 / 有効の変更では PID の積分も
+  遅延の状態も消えない。世代が変わる（開始・Reset）と全部やり直し、記録も
+  新しい世代にする。実行エンジンは LuaJIT（ControlComponent が Lua ステートを
+  1 つ持つ、物理スレッド専用）、無ければ C++ インタプリタ。
+- **スコープ**: ControlComponent が評価ごとに `[t, 入力..., 出力...]` を記録
+  （制御器ごとに最大 5 万行、mutex_ の下）。`/control?since=N` が通し番号 N より
+  後の行を最大 4000 行返し（ブラウザは差分を積むだけ）、`/control.csv?formula=`
+  が全行を CSV で返す。`/scene` の `control` はコンパイルの成否・エラー・警告・
+  評価回数（`statusJson`）、`formulas.controllers` は文書の値、
+  `formulas.sensors / actuators` は候補を組むための量の一覧。
+- **UI**（`web/control.js`）: World タブの「制御器」節（一覧・有効・周期・
+  状態とエラー / 警告・📈・外す、「＋ 制御器にする」「＋ 新しい計算式」（雛形
+  から）「📝 数式で書く」）、映像の
+  右下に浮かぶ**スコープ窓**（`#scopeWin`、モーダルにしない = 映像を見ながら
+  使う。見出しのドラッグで移動、右下で拡縮、表示幅 5〜60 s / 全部、凡例の
+  チェックで系列の表示切替 = localStorage、停止、CSV。横 1 ピクセルに複数点
+  来たら min / max だけ描く）。ノードエディタの in / out の名前は自由入力 +
+  `<datalist>` の候補（シーンの名前から組んだ信号名）、制御
+  ブロックの係数は 1 行のテキスト欄。🧮 タイルの右クリックに「制御器にする /
+  外す」「スコープで見る」。コマンドは `edit.control.add / remove / set` と
+  `edit.formula.add {template, target}`（雛形を作って制御器として付ける。
+  上の「計算式」の章）。edit.* なのでエディタカメラのページ専用
+  （シミュレート中も可）。一覧とスコープはどのページでも見える。
+- **確認**: ブロックの C++ インタプリタと LuaJIT の結果は一致（差 0）、delay の
+  輪の整列、信号名の解析、
+  ジョイント角の連続化、`<control>` の XML 往復、同梱シーンが警告 0 件、見本の
+  2 制御器を簡単なプラント（1 自由度の回転 / 並進）で閉ループに回して収束する
+  こと、ブラウザ UI をモックのサーバーで描画・操作できることまで（いずれも
+  手元のスクラッチで。`tests/` は .gitignore 済み）。**エンジン側
+  （ControlComponent・main・Chrono への力とモータ）は Chrono / Filament の無い
+  環境で構文検査まで** - 実機でのビルドと、腕が目標角に追従する・箱が浮く・
+  車が 8 m/s で走ることの確認待ち。
+- **次の段（未）**: 実時間より速いバッチ実行と 1 ステップ実行（物理スレッドは
+  壁時計駆動なので、決定論的な再現にはここが要る）、ブロックごとの複数周期を
+  1 つの式の中で、パラメータのワークスペース（`<param>` を名前で参照）、
+  サブシステム（式を部品として入れ子にしてコンパイル時に平坦化）、ベクトル
+  信号（コンパイル時にスカラーへ展開）、離散伝達関数 / 状態空間ブロック、
+  状態機械（イベントグラフの拡張）、FMI / FMU の取り込み、制御器の C コード生成。
 
 ## 起動設定（`config.json` + `src/app/AppConfig.{h,cpp}`）
 
@@ -1402,11 +1503,13 @@ src/
                  MathBridge, RenderBridge
   components/    EditorComponent, GizmoComponent, PhysicsControlComponent,
                  StreamControlComponent, VehicleComponent, PrefabComponent,
-                 AutoGenComponent
+                 AutoGenComponent, ControlComponent
   app/           起動設定（config.json の読み込み = AppConfig）
   autogen/       AI によるシーン自動構築（LLM / Meshy の HTTP クライアント・指示文・
                  配置の後始末。Chrono も Filament も知らない）
-  vehicle/       車両モデルとノード式（純粋な数値ライブラリ。tests/vehicle が使う）
+  vehicle/       車両モデル（純粋な数値ライブラリ。tests/vehicle が使う）
+  formula/       計算式（ノード式）の検証・実行（C++ / LuaJIT）・XML・数式テキスト
+  control/       制御器の信号名・センサの計算・雛形（純粋。ControlComponent が使う）
 tests/vehicle/   車両モデルの単体テスト（-DWIZ_BUILD_TESTS=ON で本体からも回せる）
 tests/document/  シーン文書の単体テスト（同上。Chrono も Filament も要らない）
 cmake/           LuaJIT.cmake（LuaJIT の検出・ビルド）
@@ -1807,6 +1910,10 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   `assets/scenes/default.xml`）。
 - 済（試作）: 車両シミュレーション（グラフ型パワートレイン + レイキャスト式
   車輪、車輪の描画、ソフトタイヤ、シーンの剛体への接地。上の「車両」の章）。
+- 済（実機待ち）: 制御器（ブロック線図。ノード式に PID・遅延などの制御
+  ブロックを足し、センサ / アクチュエータの信号名で Chrono とつなぐ。スコープと
+  CSV。上の「制御器」の章）と、計算式の数式テキスト ⇄ ノードの変換・汎用の
+  雛形（上の「計算式」の章）。車両のタイヤ式・空気圧式の差し替えは廃止。
 - 済: イベントアセット（Node-RED 風のノードエディタ。衝突・開始・タイマー・
   掴みのトリガーと、色・力・固定・引き寄せ・ライト・カメラ注視のアクション。
   ノードは名前付きアセットにまとめ、オブジェクト / シーン全体に何本でも

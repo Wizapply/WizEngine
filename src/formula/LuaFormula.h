@@ -3,13 +3,13 @@
 #include <memory>
 #include <string>
 
-#include "vehicle/Formula.h"
+#include "formula/Formula.h"
 
 // LuaJIT でノード式を実行する側。ユーザーは Lua を見ない: FormulaProgram が
-// 生成したソース（luaSource）をここでコンパイルし、車輪ごとの実体を作る。
+// 生成したソース（luaSource）をここでコンパイルし、使い手ごとの実体を作る。
 //
 // 設計の要点:
-//   * Lua ステートは 1 つ（物理スレッド専用。VehicleComponent が持つ）。
+//   * Lua ステートは使い手ごとに 1 つ（物理スレッド専用。ControlComponent が持つ）。
 //     他のスレッドから触らない - Chrono と同じ約束。
 //   * 入出力と状態は Lua 側で確保した FFI の double 配列。C++ はその
 //     アドレスを覚えて直接読み書きするので、ティックごとのコピーも
@@ -21,7 +21,7 @@
 struct lua_State;
 
 namespace wizengine {
-namespace vehicle {
+namespace formula {
 
 class LuaRuntime {
 public:
@@ -53,5 +53,5 @@ private:
     int newBuffersRef_ = -1;  // FFI 配列を作るヘルパ関数
 };
 
-}  // namespace vehicle
+}  // namespace formula
 }  // namespace wizengine

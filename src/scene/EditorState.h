@@ -184,21 +184,22 @@ public:
     void clearNodeFireCounts();
     std::map<std::pair<std::string, int>, int> nodeFireCounts() const;
 
-    // ---- 計算式アセット（ノード式。vehicle/Formula.h）---------------------
-    // イベントアセットと同じ流儀: 名前で持ち、車両のタイヤが名前で参照する
-    // （BodyDesc::vehicle の axles[].tire.formula）。書くのは物理スレッド
-    // （Op 実行時）、読むのは HTTP スレッド（サイドバー用 JSON）と物理スレッド
-    // （車両の生成時にコンパイル）。ノード id はアセットの中で一意で、削除
-    // しても再利用しない。
-    std::vector<wizengine::vehicle::FormulaGraphDesc> formulaAssets() const;
+    // ---- 計算式アセット（ノード式。formula/Formula.h）---------------------
+    // イベントアセットと同じ流儀: 名前で持ち、制御器が名前で参照する
+    // （controllers()）。書くのは物理スレッド（Op 実行時）、読むのは HTTP
+    // スレッド（サイドバー用 JSON）と物理スレッド（制御器のコンパイル）。
+    // ノード id はアセットの中で一意で、削除しても再利用しない。
+    std::vector<wizengine::formula::FormulaGraphDesc> formulaAssets() const;
     bool hasFormulaAsset(const std::string& name) const;
-    void setFormulaAssets(std::vector<wizengine::vehicle::FormulaGraphDesc> assets);
+    void setFormulaAssets(std::vector<wizengine::formula::FormulaGraphDesc> assets);
     // graph.name が空 / 重複なら false。中身ごと登録できる（テンプレート用）。
-    bool addFormulaAsset(wizengine::vehicle::FormulaGraphDesc graph);
+    bool addFormulaAsset(wizengine::formula::FormulaGraphDesc graph);
+    // 同じ名前があれば中身を丸ごと差し替え、無ければ足す（式エディタの適用）。
+    bool replaceFormulaAsset(wizengine::formula::FormulaGraphDesc graph);
     bool removeFormulaAsset(const std::string& name);
     // id を採番して追加し、その id を返す（アセットが無い・種類が不正なら -1）。
     int addFormulaNode(const std::string& asset,
-                       wizengine::vehicle::FormulaNodeDesc node);
+                       wizengine::formula::FormulaNodeDesc node);
     // 送られてきたキー（x y name params）だけ上書き。種類と id は変えない。
     bool updateFormulaNode(const std::string& asset, int id,
                            const nlohmann::json& patch);
@@ -206,13 +207,30 @@ public:
     // 両端とポート番号を検証し、同じ入力ポートへの古い線は張り替える。
     // 循環になる線は張らない（式は前進評価なので）。
     bool addFormulaWire(const std::string& asset,
-                        const wizengine::vehicle::FormulaWireDesc& wire);
+                        const wizengine::formula::FormulaWireDesc& wire);
     bool removeFormulaWire(const std::string& asset,
-                           const wizengine::vehicle::FormulaWireDesc& wire);
-    // 式（またはタイヤの参照）が変わるたびに増える版番号。VehicleComponent が
-    // 見て、変わっていたら車両モデルを作り直す（式のコンパイルは生成時）。
+                           const wizengine::formula::FormulaWireDesc& wire);
+    // 式が変わるたびに増える版番号。ControlComponent が見て、中身
+    // （formulaSignature）が変わった制御器だけコンパイルし直す。
     std::uint64_t formulaVersion() const { return formulaVersion_.load(); }
     void bumpFormulaVersion() { formulaVersion_.fetch_add(1); }
+    // 車両の設計値（タイヤ・サスなど）や車両そのものが入れ替わるたびに進む
+    // 版番号。VehicleComponent が見て、変わっていたら車両モデルを作り直す
+    // = シミュレート中の編集もすぐ効く（走行状態は一度リセットされる）。
+    std::uint64_t vehicleVersion() const { return vehicleVersion_.load(); }
+    void bumpVehicleVersion() { vehicleVersion_.fetch_add(1); }
+
+    // ---- 制御器（計算式をブロック線図として回す。control/）-----------------
+    // 書くのは物理スレッド（Op 実行時・読込）、読むのは HTTP スレッド（JSON）と
+    // 物理スレッド（ControlComponent。controlVersion が変わったときだけ取る）。
+    // 同じ計算式を 2 回は付けない（付け先はシーン全体の 1 か所なので意味が無い）。
+    std::vector<wizengine::editor::ControllerDesc> controllers() const;
+    void setControllers(std::vector<wizengine::editor::ControllerDesc> list);
+    bool addController(const wizengine::editor::ControllerDesc& c);
+    bool removeController(const std::string& formula);
+    // 送られたキーだけ上書き（period / enabled）。
+    bool updateController(const std::string& formula, const nlohmann::json& patch);
+    std::uint64_t controlVersion() const { return controlVersion_.load(); }
 
     // ---- プレハブ（見た目の部品の集合）------------------------------------
     // イベント・計算式と同じ流儀のアセット。部品は番号で参照する（軸と同じ）。
@@ -324,11 +342,14 @@ private:
     std::vector<std::string> worldEvents_;
     // 計算式アセット（mutex_ の下）。
     struct FormulaAssetState {
-        wizengine::vehicle::FormulaGraphDesc desc;
+        wizengine::formula::FormulaGraphDesc desc;
         int nextNodeId = 1;
     };
     std::vector<FormulaAssetState> formulas_;
     std::atomic<std::uint64_t> formulaVersion_{0};
+    std::atomic<std::uint64_t> vehicleVersion_{0};
+    std::vector<wizengine::editor::ControllerDesc> controllers_;
+    std::atomic<std::uint64_t> controlVersion_{0};
     // プレハブ（mutex_ の下）。
     std::vector<wizengine::editor::PrefabDesc> prefabs_;
     std::atomic<std::uint64_t> prefabVersion_{0};

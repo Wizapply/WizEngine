@@ -1,13 +1,26 @@
-#include "vehicle/FormulaXml.h"
+#include "formula/FormulaXml.h"
 
 #include <set>
 
 namespace wizengine {
-namespace vehicle {
+namespace formula {
 
 xml::Element formulaElement(const FormulaGraphDesc& g) {
     xml::Element f("formula");
     f.set("name", g.name);
+    // 元のテキスト（式エディタで書いたもの）は 1 行ずつ <source line/> で。
+    if (!g.source.empty()) {
+        std::size_t b = 0;
+        std::string text = g.source;
+        if (text.back() != '\n') text += '\n';
+        while (b < text.size()) {
+            const std::size_t e = text.find('\n', b);
+            xml::Element line("source");
+            line.set("line", text.substr(b, e - b));
+            f.append(std::move(line));
+            b = e + 1;
+        }
+    }
     for (const FormulaNodeDesc& n : g.nodes) {
         xml::Element e("node");
         e.setInt("id", n.id);
@@ -74,6 +87,9 @@ FormulaGraphDesc formulaFromXml(const xml::Element& e,
             n.x = pos[0];
             n.y = pos[1];
             g.nodes.push_back(std::move(n));
+        } else if (c.name() == "source") {
+            // 元のテキスト 1 行ぶん（XML はテキストノードを持たないので属性で）。
+            g.source += c.attr("line") + "\n";
         } else if (c.name() == "wire") {
             FormulaWireDesc w;
             w.from = c.integer("from", 0);
@@ -92,5 +108,5 @@ FormulaGraphDesc formulaFromXml(const xml::Element& e,
     return g;
 }
 
-}  // namespace vehicle
+}  // namespace formula
 }  // namespace wizengine

@@ -3,7 +3,6 @@
 #include <string>
 #include <vector>
 
-#include "vehicle/Formula.h"
 
 // 車両の設計値（VehicleDesc）と、実行時の入出力の型。
 //
@@ -98,9 +97,6 @@ struct TireDesc {
     // ので、縮みが段の高さぶん一気に飛ばない（WheelController::updateContact。
     // vehicle_test 10: 0.12 m の段で上向き加速度のピークが 1 本 8.5 → 9 本 5 m/s²）。
     int rays = 9;
-    // 「スリップ → 力」をノード式で置き換えるときの名前（VehicleDesc::formulas
-    // の中の <formula name>）。空 = 組み込みの Magic Formula。
-    std::string formula;
     // ---- ソフトタイヤ（vehicle/SoftTire.h）---------------------------------
     // soft = true でタイヤの見た目が質点ばねの変形メッシュになり、物理では
     // 径方向ばね（サスと直列。潰れ = 荷重 / stiffness、上限は半径の 45%）が
@@ -112,12 +108,9 @@ struct TireDesc {
     int segments = 24;
     int rows = 3;
     int iterations = 3;
-    // 空気圧（メッシュの体積 → 圧力の項。TireFormula.h の pressureFormula*）。
-    // pressure は絶対圧 Pa（0 = 空気圧の項を切る）。pressureFormula は
-    // 「体積比 → 圧力」を差し替える計算式アセットの名前（空 = 組み込みの
-    // 等温変化）。
+    // 空気圧（メッシュの体積 → 圧力の項、等温変化）。pressure は絶対圧 Pa
+    // （0 = 空気圧の項を切る）。
     double pressure = 320000.0;
-    std::string pressureFormula;
 };
 
 // サスペンション（レイキャスト式）。restLength は伸びきった長さ、travel は
@@ -168,8 +161,6 @@ struct VehicleDesc {
     // 各軸は自分の値を持つので、ここは文書の読み書きの都合だけ。
     TireDesc tireDefaults;
     SuspensionDesc suspensionDefaults;
-    // ノード式（<vehicle> の <formula>）。タイヤが名前で参照する。
-    std::vector<FormulaGraphDesc> formulas;
 };
 
 // 乗用車 1 台ぶんの既定構成（前輪操舵・後輪駆動の 2 軸）。
