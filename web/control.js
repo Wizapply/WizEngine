@@ -21,6 +21,9 @@
   function controlRun() {
     return (sceneData && sceneData.control) || {};
   }
+  function controlParams() {
+    return (sceneData && sceneData.formulas && sceneData.formulas.params) || [];
+  }
   function isControllerFormula(name) {
     return controllers().some((c) => c.formula === name);
   }
@@ -44,6 +47,9 @@
     for (const j of sceneData.joints || []) {
       if (!j.name) continue;
       for (const k of q.joint || []) out.push('joint:' + j.name + '.' + k);
+    }
+    if (isIn) {
+      for (const p of controlParams()) out.push('param:' + p.name);
     }
     if (!isIn) out.push('scope:');
     return out;
@@ -214,7 +220,113 @@
                         '</option>').join('')
       : '<option value="">（計算式がありません）</option>';
   }
-  setInterval(() => { renderControl(); renderFormulaTextStatus(); }, 500);
+  setInterval(() => { renderControl(); renderParams(); renderFormulaTextStatus(); }, 500);
+
+  // ---- パラメータ（式からは param:<名前>）----------------------------------
+  // スライダーの値はシミュレート中でもすぐ効く（サーバーは式を作り直さず、
+  // 次の物理ステップから新しい値を読む）。値の変更はどのカメラのページから
+  // でもでき、追加・削除・範囲の変更はエディタカメラのページだけ。
+  let paramListKey = '';
+  const paramSendAt = {};
+  const paramPending = {};
+  function paramIsSwitch(p) {
+    return p.min === 0 && p.max === 1 && p.step === 1;
+  }
+  function paramStep(p) {
+    if (p.step > 0) return p.step;
+    const span = (p.max - p.min) || 1;
+    const raw = span / 200;
+    const k = Math.pow(10, Math.floor(Math.log10(raw)));
+    return [1, 2, 5, 10].map((m) => m * k).find((v) => v >= raw) || raw;
+  }
+  // 表示の桁はスライダーの刻みに合わせる（0〜1 なら 0.005 刻みで 3 桁、0〜7000 なら整数）。
+  function fmtParam(v, name) {
+    const p = controlParams().find((x) => x.name === name);
+    const step = p ? paramStep(p) : 0.001;
+    return v.toFixed(Math.max(0, Math.min(6, -Math.floor(Math.log10(step)))));
+  }
+  function renderParams() {
+    if (!sceneData) return;
+    const list = document.getElementById('paramList');
+    if (!list) return;
+    const here = isEditorCam();
+    document.getElementById('paramAddRow').hidden = !here;
+    const params = controlParams();
+    const key = JSON.stringify([params, here]);
+    // ドラッグ中・入力中の欄は上書きしない（入力欄の「フォーカス中は触らない」と同じ）。
+    if (key === paramListKey || list.contains(document.activeElement)) return;
+    paramListKey = key;
+    const dis = here ? '' : ' disabled';
+    list.innerHTML = params.length ? params.map((p) => {
+      const n = ndEsc(p.name);
+      const title = p.label ? '<span class="paramLabel">' + ndEsc(p.label) + '</span> ' : '';
+      if (paramIsSwitch(p)) {
+        return '<div class="ndItem ctlItem paramItem" data-param="' + n + '">' +
+          '<div class="ctlTop"><label class="paramSwitch"><input type="checkbox"' +
+          (p.value >= 0.5 ? ' checked' : '') +
+          ' onchange="paramInput(\'' + n + '\', this.checked ? 1 : 0, true)"> ' + title +
+          '<code title="式からは param:' + n + ' で読む（オン = 1 / オフ = 0）">param:' + n + '</code></label>' +
+          (here ? '<span class="x" title="パラメータを削除" onclick="paramRemove(\'' + n +
+                  '\')">✕</span>' : '') + '</div></div>';
+      }
+      return '<div class="ndItem ctlItem paramItem" data-param="' + n + '">' +
+        '<div class="ctlTop">' + title + '<code title="式からは param:' + n + ' で読む">param:' + n + '</code>' +
+        '<span class="paramVal" id="pv_' + n + '" title="クリックで値を直接入力"' +
+        ' onclick="paramPrompt(\'' + n + '\')">' + fmtParam(p.value, p.name) + '</span>' +
+        (here ? '<span class="x" title="パラメータを削除" onclick="paramRemove(\'' + n +
+                '\')">✕</span>' : '') + '</div>' +
+        '<input type="range" class="paramSlider" min="' + p.min + '" max="' + p.max +
+        '" step="' + paramStep(p) + '" value="' + p.value + '"' +
+        ' oninput="paramInput(\'' + n + '\', this.value)"' +
+        ' onchange="paramInput(\'' + n + '\', this.value, true)">' +
+        '<div class="ctlSub">範囲 <input class="num" type="number" value="' + p.min + '"' + dis +
+        ' title="最小" onchange="paramSet(\'' + n + '\',{min:parseFloat(this.value)})"> 〜 ' +
+        '<input class="num" type="number" value="' + p.max + '"' + dis +
+        ' title="最大" onchange="paramSet(\'' + n + '\',{max:parseFloat(this.value)})">' +
+        '</div></div>';
+    }).join('') : '<div class="edHint">パラメータはありません。式から <code>param:名前</code> で' +
+                  '読む値を「＋ パラメータ」で足すと、ここのスライダーで走らせながら変えられます。</div>';
+  }
+  // スライダーの連続入力は 40 ms に 1 回だけ送り、最後の値は必ず送る。
+  function paramInput(name, value, final) {
+    const v = parseFloat(value);
+    if (!isFinite(v)) return;
+    const label = document.getElementById('pv_' + name);
+    if (label) label.textContent = fmtParam(v, name);
+    const now = performance.now();
+    if (final || !paramSendAt[name] || now - paramSendAt[name] > 40) {
+      paramSendAt[name] = now;
+      clearTimeout(paramPending[name]);
+      send('edit.param.set', { name: name, value: v });
+    } else {
+      clearTimeout(paramPending[name]);
+      paramPending[name] = setTimeout(() => paramInput(name, v, true), 45);
+    }
+  }
+  function paramPrompt(name) {
+    const p = controlParams().find((x) => x.name === name);
+    if (!p) return;
+    const v = parseFloat(prompt('param:' + name + ' の値（' + p.min + ' 〜 ' + p.max + '）', String(p.value)));
+    if (isFinite(v)) paramInput(name, v, true);
+  }
+  function paramSet(name, patch) {
+    for (const k of Object.keys(patch)) {
+      if (!isFinite(patch[k])) return;
+    }
+    send('edit.param.set', Object.assign({ name: name }, patch));
+  }
+  function paramRemove(name) {
+    if (!confirm('パラメータ「' + name + '」を削除します。式の param:' + name + ' は 0 を読むようになります。')) return;
+    send('edit.param.remove', { name: name });
+  }
+  function paramAdd() {
+    const name = prompt('パラメータの名前（英数字と _。式からは param:名前 で読む）', 'gain');
+    if (!name) return;
+    const min = parseFloat(prompt('最小値', '0'));
+    const max = parseFloat(prompt('最大値', '1'));
+    if (!isFinite(min) || !isFinite(max)) return;
+    send('edit.param.add', { name: name.trim(), min: min, max: max, value: min });
+  }
 
   // ---- スコープ -------------------------------------------------------------
   // 記録はサーバーが持ち（制御器ごとに約 5 万行）、ここは since 以降の差分を

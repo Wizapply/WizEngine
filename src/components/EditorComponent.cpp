@@ -137,7 +137,10 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
     // シミュレート設定（edit.sim）だけは全カメラから変えられる。Physics タブ
     // は全ページにあり、隣に並ぶ Solver や Rate は誰でも触れるのに、これだけ
     // 効かないのは分かりにくいため。シーンの中身を書き換える操作ではない。
-    if (what != "sim" && !isEditorCam) return true;
+    // パラメータの値（edit.param.set）も同じ: 走らせながらアクセル開度や
+    // 目標値を変えるのは観察用のカメラからでも普通の使い方（追加・削除は
+    // シーンの書き換えなのでエディタカメラだけ）。
+    if (what != "sim" && what != "param.set" && !isEditorCam) return true;
     // ライトとカメラの編集は**エディタモード専用**。オブジェクトの edit.set
     // などはシミュレート中の物性いじりに使えるが、照明と視点の設計は
     // エディタの仕事、という整理（ユーザー指定）。
@@ -706,6 +709,58 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
                    {"fromPort", ed::jsonInt(msg, "fromPort", 0)},
                    {"to", ed::jsonInt(msg, "to", -1)},
                    {"port", ed::jsonInt(msg, "port", 0)}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- 制御器のパラメータ（式からは param:<name>）-------------------------
+    // add {name, value, min, max}、remove {name}、set {name, value|min|max}。
+    if (what == "param.add" || what == "param.remove" || what == "param.set") {
+        const std::string raw = (msg.contains("name") && msg["name"].is_string())
+                                    ? msg["name"].get<std::string>()
+                                    : std::string();
+        const std::string name = ed::sanitizeEventName(raw);
+        if (name.empty() || name != raw) {
+            state.setStatus("パラメータの名前は英数字と _ - で付けてください");
+            return true;
+        }
+        EditorState::Op op;
+        op.kind = what;
+        op.args = {{"name", name}};
+        for (const char* key : {"value", "min", "max", "step"}) {
+            if (msg.contains(key) && msg[key].is_number()) op.args[key] = msg[key];
+        }
+        if (msg.contains("label") && msg["label"].is_string()) {
+            op.args["label"] = ed::sanitizeLabel(msg["label"].get<std::string>(), 80);
+        }
+        if (msg.contains("move") && msg["move"].is_number_integer()) op.args["move"] = msg["move"];
+        // エディタカメラ以外のページから来た set は値だけ（範囲・表示名・並びは
+        // 制御盤の設計 = シーンの書き換えなので、他の edit.* と同じくエディタ
+        // カメラのページだけ）。
+        if (!isEditorCam) {
+            const nlohmann::json value = op.args.value("value", nlohmann::json());
+            op.args = {{"name", name}};
+            if (value.is_number()) op.args["value"] = value;
+            else return true;
+        }
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- 制御盤のグラフ -------------------------------------------------------
+    // add {title, signals, span}、remove {index}、set {index, title|signals|span|move}。
+    // 中身の検査は chartFromJson（clampChart）が持つので、ここは鍵を選んで運ぶだけ。
+    if (what == "chart.add" || what == "chart.remove" || what == "chart.set") {
+        EditorState::Op op;
+        op.kind = what;
+        op.args = nlohmann::json::object();
+        op.args["index"] = ed::jsonInt(msg, "index", -1);
+        if (msg.contains("title") && msg["title"].is_string()) op.args["title"] = msg["title"];
+        if (msg.contains("signals") && msg["signals"].is_array()) op.args["signals"] = msg["signals"];
+        if (msg.contains("span") && msg["span"].is_number()) op.args["span"] = msg["span"];
+        if (msg.contains("move") && msg["move"].is_number_integer()) op.args["move"] = msg["move"];
         op.camera = camIndex;
         state.push(std::move(op));
         return true;

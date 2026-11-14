@@ -602,6 +602,111 @@ bool EditorState::updateController(const std::string& formula, const nlohmann::j
     return false;
 }
 
+// ---- 制御器のパラメータ -------------------------------------------------------
+std::vector<wizengine::editor::ParamDesc> EditorState::params() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return params_;
+}
+
+void EditorState::setParams(std::vector<wizengine::editor::ParamDesc> list) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    params_.clear();
+    for (auto& p : list) {
+        p = wizengine::editor::clampParam(p);
+        bool dup = false;
+        for (const auto& have : params_) dup = dup || have.name == p.name;
+        if (!dup && !p.name.empty()) params_.push_back(std::move(p));
+    }
+    paramVersion_.fetch_add(1);
+}
+
+bool EditorState::addParam(const wizengine::editor::ParamDesc& in) {
+    const wizengine::editor::ParamDesc p = wizengine::editor::clampParam(in);
+    if (p.name.empty()) return false;
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (const auto& have : params_) {
+        if (have.name == p.name) return false;
+    }
+    params_.push_back(p);
+    paramVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::removeParam(const std::string& name) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const std::size_t before = params_.size();
+    params_.erase(std::remove_if(params_.begin(), params_.end(),
+                                 [&](const wizengine::editor::ParamDesc& p) {
+                                     return p.name == name;
+                                 }),
+                  params_.end());
+    if (params_.size() == before) return false;
+    paramVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::updateParam(const std::string& name, const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (auto& p : params_) {
+        if (p.name != name) continue;
+        nlohmann::json q = patch;
+        q.erase("name");  // 改名は remove + add
+        p = wizengine::editor::paramFromJson(q, p);
+        // 並び替え（move = -1 で前へ、+1 で後ろへ。制御盤のカードの順）。
+        if (patch.contains("move") && patch["move"].is_number_integer()) {
+            const std::size_t i = std::size_t(&p - params_.data());
+            const long to = long(i) + (patch["move"].get<int>() < 0 ? -1 : 1);
+            if (to >= 0 && std::size_t(to) < params_.size()) {
+                std::swap(params_[i], params_[std::size_t(to)]);
+            }
+        }
+        paramVersion_.fetch_add(1);
+        return true;
+    }
+    return false;
+}
+
+// ---- 制御盤のグラフ -------------------------------------------------------------
+std::vector<wizengine::editor::ChartDesc> EditorState::charts() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return charts_;
+}
+
+void EditorState::setCharts(std::vector<wizengine::editor::ChartDesc> list) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    charts_.clear();
+    for (auto& c : list) charts_.push_back(wizengine::editor::clampChart(c));
+    if (charts_.size() > 32) charts_.resize(32);
+}
+
+void EditorState::addChart(const wizengine::editor::ChartDesc& c) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (charts_.size() >= 32) return;
+    charts_.push_back(wizengine::editor::clampChart(c));
+}
+
+bool EditorState::removeChart(int index) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (index < 0 || std::size_t(index) >= charts_.size()) return false;
+    charts_.erase(charts_.begin() + index);
+    return true;
+}
+
+bool EditorState::updateChart(int index, const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (index < 0 || std::size_t(index) >= charts_.size()) return false;
+    charts_[std::size_t(index)] =
+        wizengine::editor::chartFromJson(patch, charts_[std::size_t(index)]);
+    // 並び替え（move = -1 で前へ、+1 で後ろへ）。
+    if (patch.contains("move") && patch["move"].is_number_integer()) {
+        const int to = index + (patch["move"].get<int>() < 0 ? -1 : 1);
+        if (to >= 0 && std::size_t(to) < charts_.size()) {
+            std::swap(charts_[std::size_t(index)], charts_[std::size_t(to)]);
+        }
+    }
+    return true;
+}
+
 // ---- プレハブ -----------------------------------------------------------------
 std::vector<wizengine::editor::PrefabDesc> EditorState::prefabAssets() const {
     std::lock_guard<std::mutex> lk(mutex_);

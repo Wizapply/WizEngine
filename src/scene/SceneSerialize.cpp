@@ -272,6 +272,10 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         // 候補を組むための量の一覧（"body:<名前>." の後ろに付く）。
         f["controllers"] = nlohmann::json::array();
         for (const auto& c : editor_.controllers()) f["controllers"].push_back(ed::toJson(c));
+        f["params"] = nlohmann::json::array();
+        for (const auto& p : editor_.params()) f["params"].push_back(ed::toJson(p));
+        f["charts"] = nlohmann::json::array();
+        for (const auto& c : editor_.charts()) f["charts"].push_back(ed::toJson(c));
         {
             namespace ctl = wizengine::control;
             nlohmann::json q;
@@ -506,6 +510,8 @@ ed::SceneDocument Scene::document() {
     doc.formulas = editor_.formulaAssets();
     doc.prefabs = editor_.prefabAssets();
     doc.controllers = editor_.controllers();
+    doc.params = editor_.params();
+    doc.charts = editor_.charts();
     return doc;
 }
 
@@ -585,6 +591,8 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     const std::size_t base = boxes_.size();  // 追加ぶんの先頭番号
     editor_.setFormulaAssets(doc.formulas);
     editor_.setControllers(doc.controllers);
+    editor_.setParams(doc.params);
+    editor_.setCharts(doc.charts);
     editor_.setPrefabAssets(doc.prefabs);
     editor_.setPrefabEditObject(-1);
     for (const auto& bIn : doc.bodies) createObject(ed::clampBody(bIn));
@@ -732,6 +740,17 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
             if (!dup) ctl.push_back(c);
         }
         editor_.setControllers(std::move(ctl));
+        // パラメータも足す（同名は今のシーンの値を残す）。
+        auto params = editor_.params();
+        for (const auto& p : doc.params) {
+            bool dup = false;
+            for (const auto& have : params) dup = dup || have.name == p.name;
+            if (!dup) params.push_back(p);
+        }
+        editor_.setParams(std::move(params));
+        auto charts = editor_.charts();
+        charts.insert(charts.end(), doc.charts.begin(), doc.charts.end());
+        editor_.setCharts(std::move(charts));
     }
     const std::size_t base = boxes_.size();
     for (const auto& bIn : doc.bodies) createObject(ed::clampBody(bIn));

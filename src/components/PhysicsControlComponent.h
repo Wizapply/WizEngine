@@ -78,7 +78,7 @@ public:
             }
         } else if (cmd == "substeps") {
             const int n = msg.value("n", 0);
-            if (n >= 1 && n <= 8) {
+            if (n >= 1 && n <= 32) {  // clampSim と同じ範囲
                 tuning_.substeps.store(n);
                 mirror([n](wizengine::editor::SimSettings& s) {
                     s.substeps = n;

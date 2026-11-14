@@ -1572,6 +1572,7 @@ void Scene::applyToRenderer() {
     // シミュレート中は A→B の 1 本（拘束が今どこを結んでいるかが見える）。
     const auto joints = editor_.joints();
     const bool editing = editor_.isEditor();
+    const bool showJointLines = editor_.gizmo().jointLines;  // ⚙ の「ジョイント線」
     renderer_.setJointLineCount(joints.size() * 2);
     auto endpoint = [&](int body, const ed::Vec3d& anchor,
                         filament::math::float3& out) {
@@ -1597,7 +1598,7 @@ void Scene::applyToRenderer() {
                                             float(j.anchor.z)};
         // 破断した拘束は線を消す（外れたことが見える）。
         const bool broken = i < jstats.size() && jstats[i].broken;
-        if (!ok || broken) {
+        if (!ok || broken || !showJointLines) {
             renderer_.setJointLine(i * 2, pa, pb, col, false);
             renderer_.setJointLine(i * 2 + 1, pa, pb, col, false);
             continue;

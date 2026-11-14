@@ -30,6 +30,7 @@ const char* sourceName(ctl::Source s) {
         case ctl::Source::Joint: return "joint";
         case ctl::Source::Vehicle: return "vehicle";
         case ctl::Source::Scope: return "scope";
+        case ctl::Source::Param: return "param";
     }
     return "?";
 }
@@ -81,6 +82,14 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
         std::lock_guard<std::mutex> lk(mutex_);
         series_.clear();
         ++run_;
+    }
+    // パラメータの値（スライダー）。変わったときだけ写す = 毎ステップ
+    // EditorState のロックを取らない。式は作り直さない。
+    const std::uint64_t pv = scene.editor().paramVersion();
+    if (pv != paramVersion_) {
+        paramVersion_ = pv;
+        params_.clear();
+        for (const auto& p : scene.editor().params()) params_[p.name] = p.value;
     }
     const std::uint64_t cv = scene.editor().controlVersion();
     const std::uint64_t fv = scene.editor().formulaVersion();
@@ -295,6 +304,18 @@ void ControlComponent::bind(Scene& scene, Runtime& rt, Binding& b, bool sensor) 
         case ctl::Source::Scope:
             b.ok = true;
             return;
+        case ctl::Source::Param: {
+            // 値は毎ステップ名前で引く（params_ の写し）。後からパラメータを
+            // 足しても読めるように ok にしておき、今無いことだけ伝える。
+            b.ok = true;
+            bool found = false;
+            for (const auto& p : scene.editor().params()) found = found || p.name == r.target;
+            if (!found) {
+                rt.warnings.push_back(label + ": no parameter with that name - reads 0 "
+                                      "(add <param name=\"" + r.target + "\"> in <control>)");
+            }
+            return;
+        }
         case ctl::Source::Body:
         case ctl::Source::Vehicle: {
             // 物理スレッドはオブジェクト一覧の唯一の書き手なのでロックは要らない。
@@ -409,6 +430,10 @@ double ControlComponent::readSensor(Scene& scene, const Binding& b) {
             }
         }
         case ctl::Source::Scope: return 0.0;
+        case ctl::Source::Param: {
+            const auto it = params_.find(r.target);
+            return it == params_.end() ? 0.0 : it->second;
+        }
     }
     return 0.0;
 }

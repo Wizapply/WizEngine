@@ -102,6 +102,16 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
         out = SignalRef{Source::Time, "", Quantity::None};
         return true;
     }
+    if (sensor && kind == "param") {
+        // パラメータの名前は . を含まない（英数字と _ -）ので、そのまま使う。
+        const std::string pname = name.substr(name.find(':') + 1);
+        if (pname.empty()) {
+            error = "\"" + name + "\": param needs a name (param:<name>)";
+            return false;
+        }
+        out = SignalRef{Source::Param, pname, Quantity::None};
+        return true;
+    }
     if (!sensor && kind == "scope") {
         // ラベルは . を含んでもよいので、split せずにそのまま使う。
         const std::string label = name.substr(name.find(':') + 1);
@@ -125,7 +135,7 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
         table = sensor ? &vehicleSensors() : &vehicleActuators();
     } else {
         error = "\"" + name + "\": unknown signal kind \"" + kind + "\" (" +
-                (sensor ? "time, body:, joint:, vehicle:" : "body:, joint:, vehicle:, scope:") +
+                (sensor ? "time, body:, joint:, vehicle:, param:" : "body:, joint:, vehicle:, scope:") +
                 ")";
         return false;
     }

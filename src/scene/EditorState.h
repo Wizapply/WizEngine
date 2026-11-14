@@ -232,6 +232,26 @@ public:
     bool updateController(const std::string& formula, const nlohmann::json& patch);
     std::uint64_t controlVersion() const { return controlVersion_.load(); }
 
+    // 制御器のパラメータ（式からは param:<名前>）。値の変更は paramVersion だけを
+    // 進める = 制御器を作り直さない（PID の積分もターボラグの状態も続く）。
+    // ControlComponent は paramVersion が変わったときだけ一覧を写す。
+    std::vector<wizengine::editor::ParamDesc> params() const;
+    void setParams(std::vector<wizengine::editor::ParamDesc> list);
+    bool addParam(const wizengine::editor::ParamDesc& p);   // 同名があれば false
+    bool removeParam(const std::string& name);
+    // 送られたキーだけ上書き（value / min / max / label / step）。move（-1 / +1）で
+    // 並び替え（制御盤のカードの順 = 文書の順）。
+    bool updateParam(const std::string& name, const nlohmann::json& patch);
+    std::uint64_t paramVersion() const { return paramVersion_.load(); }
+
+    // 制御盤のグラフ（文書の <chart>）。番号で指す（並び = 表示順）。
+    std::vector<wizengine::editor::ChartDesc> charts() const;
+    void setCharts(std::vector<wizengine::editor::ChartDesc> list);
+    void addChart(const wizengine::editor::ChartDesc& c);
+    bool removeChart(int index);
+    // 送られたキーだけ上書き（title / signals / span）。move で並びを入れ替える。
+    bool updateChart(int index, const nlohmann::json& patch);
+
     // ---- プレハブ（見た目の部品の集合）------------------------------------
     // イベント・計算式と同じ流儀のアセット。部品は番号で参照する（軸と同じ）。
     // 書くのは物理スレッド（Op 実行時とギズモのドラッグ）、読むのは HTTP
@@ -350,6 +370,9 @@ private:
     std::atomic<std::uint64_t> vehicleVersion_{0};
     std::vector<wizengine::editor::ControllerDesc> controllers_;
     std::atomic<std::uint64_t> controlVersion_{0};
+    std::vector<wizengine::editor::ParamDesc> params_;
+    std::atomic<std::uint64_t> paramVersion_{0};
+    std::vector<wizengine::editor::ChartDesc> charts_;
     // プレハブ（mutex_ の下）。
     std::vector<wizengine::editor::PrefabDesc> prefabs_;
     std::atomic<std::uint64_t> prefabVersion_{0};

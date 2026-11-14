@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -1460,13 +1461,32 @@ xml::Element toXml(const SceneDocument& doc) {
     }
 
     // 制御器。持っているときだけ書く（無い文書を太らせない）。
-    if (!doc.controllers.empty()) {
+    if (!doc.controllers.empty() || !doc.params.empty() || !doc.charts.empty()) {
         xml::Element ctl("control");
         for (const auto& c : doc.controllers) {
             xml::Element e("controller");
             e.set("formula", c.formula);
             e.setNumber("period", c.period);
             if (!c.enabled) e.setBool("enabled", false);
+            ctl.append(std::move(e));
+        }
+        for (const auto& p : doc.params) {
+            xml::Element e("param");
+            e.set("name", p.name);
+            e.setNumber("value", p.value);
+            e.setNumber("min", p.min);
+            e.setNumber("max", p.max);
+            if (p.step > 0.0) e.setNumber("step", p.step);
+            if (!p.label.empty()) e.set("label", p.label);
+            ctl.append(std::move(e));
+        }
+        for (const auto& c : doc.charts) {
+            xml::Element e("chart");
+            e.set("title", c.title);
+            std::string sig;
+            for (const auto& x : c.signals) sig += (sig.empty() ? "" : " ") + x;
+            e.set("signals", sig);
+            e.setNumber("span", c.span);
             ctl.append(std::move(e));
         }
         root.append(std::move(ctl));
@@ -1818,7 +1838,7 @@ SceneDocument fromXml(const xml::Element& root,
     // 制御器。参照する計算式が <asset> に無いものは残す（警告だけ）: 式を
     // 後から足せば動き出す。センサ名の検査は実行時（ControlComponent）。
     if (const xml::Element* ctl = root.first("control")) {
-        warnUnknownChildren(*ctl, {"controller"}, "<control>", warn);
+        warnUnknownChildren(*ctl, {"controller", "param", "chart"}, "<control>", warn);
         for (const xml::Element* e : ctl->all("controller")) {
             ControllerDesc c;
             c.formula = e->attr("formula");
@@ -1840,6 +1860,48 @@ SceneDocument fromXml(const xml::Element& root,
                      "\">: no <formula> with that name in <asset>");
             }
             doc.controllers.push_back(clampController(c));
+        }
+        for (const xml::Element* e : ctl->all("param")) {
+            ParamDesc p;
+            p.name = e->attr("name");
+            p.min = e->number("min", p.min);
+            p.max = e->number("max", p.max);
+            p.value = e->number("value", p.min);
+            p.step = e->number("step", 0.0);
+            p.label = e->attr("label");
+            if (sanitizeEventName(p.name) != p.name || p.name.empty()) {
+                warn("<param name=\"" + p.name +
+                     "\">: the name must be letters, digits, _ and - - ignored");
+                continue;
+            }
+            bool dup = false;
+            for (const auto& q : doc.params) dup = dup || q.name == p.name;
+            if (dup) {
+                warn("<param name=\"" + p.name + "\">: duplicate name - ignored");
+                continue;
+            }
+            const ParamDesc c = clampParam(p);
+            if (c.value != p.value || c.min != p.min || c.max != p.max) {
+                warn("<param name=\"" + p.name + "\">: value outside min..max (or min > max) "
+                     "- clamped");
+            }
+            doc.params.push_back(c);
+        }
+        for (const xml::Element* e : ctl->all("chart")) {
+            ChartDesc c;
+            c.title = e->attr("title");
+            c.span = e->number("span", c.span);
+            std::istringstream in(e->attr("signals"));
+            std::string tok;
+            while (in >> tok) {
+                if (sanitizeChartSignal(tok) != tok) {
+                    warn("<chart title=\"" + c.title + "\">: signal \"" + tok +
+                         "\" must be <formula>/<name> - ignored");
+                    continue;
+                }
+                c.signals.push_back(tok);
+            }
+            doc.charts.push_back(clampChart(c));
         }
     }
 

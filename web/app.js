@@ -1729,7 +1729,8 @@
       rotateStep: num('gzRotStep', 15),
       scaleStep: num('gzScaleStep', 0.1),
       grid: document.getElementById('gzGrid').checked,
-      gridStep: num('gzGridStep', 1)
+      gridStep: num('gzGridStep', 1),
+      jointLines: document.getElementById('gzJointLines').checked
     }, patch || {}));
   }
   function setGizmoMode(mode) { applyGizmo({ mode: mode }); }
@@ -2545,6 +2546,7 @@
       setField('gzScaleStep', gz.scaleStep);
       setField('gzGrid', gz.grid);
       setField('gzGridStep', gz.gridStep);
+      setField('gzJointLines', gz.jointLines !== false);
     }
     // 地面（secGround 節）と環境光（World 節）。入力欄は「フォーカス中は
     // 触らない」の既定どおり setField 経由で。

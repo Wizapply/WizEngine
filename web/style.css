@@ -1081,6 +1081,17 @@
                   white-space: nowrap; }
   .ctlSub { color: #8b919c; font-size: 10.5px; padding-left: 20px; }
   .ctlSub input.num { width: 64px; }
+  .sbSubHead { margin: 8px 0 3px; font-size: 11px; color: #9aa3b0; letter-spacing: .02em; }
+  .sbSubHead code { color: #cfd6e2; }
+  .paramItem code { font-size: 11px; color: #cfd6e2; }
+  .paramItem .paramVal { margin-left: auto; font-variant-numeric: tabular-nums;
+                         color: #f2c66d; font-size: 12px; }
+  .paramItem .paramSlider { width: 100%; margin: 2px 0; }
+  .paramItem .ctlSub { white-space: nowrap; }
+  .paramItem .ctlSub input.num { width: 62px; }
+  .paramItem .paramVal { cursor: text; }
+  .paramItem .paramLabel { font-size: 11.5px; color: #e4e8ef; }
+  .paramItem .paramSwitch { display: flex; align-items: center; gap: 5px; cursor: pointer; }
   #ctlList .ndItem .err { color: #e7a0a0; }
   .ctlMsgs { font-size: 10.5px; color: #c9b27a; padding: 0 6px 4px; line-height: 1.5;
              white-space: pre-wrap; word-break: break-all; }

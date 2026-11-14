@@ -25,6 +25,9 @@
 #ifdef WIZ_HAVE_LOADS
 #include <chrono/physics/ChLoadContainer.h>
 #include <chrono/physics/ChLoadsBody.h>
+#if __has_include(<chrono/ChVersion.h>)
+#include <chrono/ChVersion.h>  // CH_VERSION（直動モータの軸の向きが版で違う）
+#endif
 #endif
 
 #include <algorithm>
@@ -47,8 +50,9 @@ chrono::ChFrame<> worldToBodyLocal(const chrono::ChBody& body, const chrono::ChV
     return chrono::ChFrame<>(lp, lr);
 }
 
-// +X をこの向きに合わせる回転。ChLinkMotorLinear* は X 軸方向に動くので、
-// 直動モータだけはこちら（ChLinkLockPrismatic は Z）。
+// +X をこの向きに合わせる回転。ChLinkLockPointLine の線は X 軸なのでこちら
+// （ChLinkLockPrismatic は Z）。直動モータ ChLinkMotorLinear* は Chrono 8 まで X、
+// 9.0 から Z（Prismatic の motor の分岐を参照）。
 chrono::ChQuaternion<> quatFromXAxis(const chrono::ChVector3d& axis) {
     double ax = axis.x(), ay = axis.y(), az = axis.z();
     const double n = std::sqrt(ax * ax + ay * ay + az * az);
@@ -264,8 +268,15 @@ std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
         case JointType::Prismatic: {
             const bool manualForce = manualMode && spec.motor == MotorType::Force;
             if (spec.motor != MotorType::None && !manualForce) {
-                // 直動モータは X 軸方向に動く（ChLinkLockPrismatic は Z）。
+                // 直動モータが動く向きは Chrono の版で違う: 8 までは X 軸、9.0 からは
+                // Z 軸（ChLinkMotorLinear.h: "directed along Z direction of the master
+                // frame"）。X のまま渡すと 9 では軸方向がガイドで固まり、モータは
+                // 横へ押す（位置モータが動かない、で実機の検証中に見つかった）。
+#if defined(CH_VERSION) && CH_VERSION >= 0x00090000
+                const ChQuaternion<> xRot = quatFromZAxis(axis);
+#else
                 const ChQuaternion<> xRot = quatFromXAxis(axis);
+#endif
                 std::shared_ptr<chrono::ChLinkMotorLinear> m;
                 std::shared_ptr<chrono::ChFunction> fn;
                 if (spec.motor == MotorType::Speed && manualMode) {

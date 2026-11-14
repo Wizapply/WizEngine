@@ -27,6 +27,8 @@
 //       force torque           … 拘束の反力 (N) / 反トルク (N·m)（大きさ）
 //   vehicle:<名前>.<量>        … 車両（<vehicle> を持つオブジェクト）
 //       speed rpm gear         … 前向きの速さ (m/s) / エンジン回転 / ギア (-1 = R)
+//   param:<名前>               … 制御器のパラメータ（文書の <control><param>）。
+//                                ブラウザのスライダーでシミュレート中に変えられる
 //
 // ---- アクチュエータ（out ノードの name）-------------------------------------
 //   joint:<名前>.target        … モータの目標値（speed = rad/s or m/s、
@@ -45,7 +47,7 @@
 namespace wizengine {
 namespace control {
 
-enum class Source { Time, Body, Joint, Vehicle, Scope };
+enum class Source { Time, Body, Joint, Vehicle, Scope, Param };
 
 enum class Quantity {
     None,
@@ -63,7 +65,7 @@ enum class Quantity {
 
 struct SignalRef {
     Source source = Source::Time;
-    std::string target;   // オブジェクト / ジョイントの名前、scope のラベル
+    std::string target;   // オブジェクト / ジョイント / パラメータの名前、scope のラベル
     Quantity quantity = Quantity::None;
 };
 

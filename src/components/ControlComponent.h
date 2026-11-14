@@ -106,6 +106,9 @@ private:
     std::uint64_t generation_ = ~std::uint64_t(0);
     std::uint64_t controlVersion_ = ~std::uint64_t(0);
     std::uint64_t formulaVersion_ = ~std::uint64_t(0);
+    // パラメータの値の写し（param:<名前> センサ。paramVersion が変わったときだけ取る）。
+    std::uint64_t paramVersion_ = ~std::uint64_t(0);
+    std::map<std::string, double> params_;
     double time_ = 0.0;  // シミュレート開始からの時間（time センサ）
     // ジョイントの相対運動の基準（文書のジョイント番号 → 開始時の姿勢）。
     std::map<int, wizengine::control::JointMeasure> joints_;

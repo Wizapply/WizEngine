@@ -196,6 +196,10 @@ struct GizmoSettings {
     // Y=0 の格子グリッド（エディタ中の置き場の目印）。
     bool grid = true;
     double gridStep = 1.0;    // 格子の間隔 (m)
+    // ジョイントの線（A → アンカー → B）。機構の多いシーン（V6 など）では
+    // 線が部品に重なって見づらいので消せるようにする。描くのはサーバー
+    // （全ビュー共通）なので、エディタ / シミュレートとも同じ設定に従う。
+    bool jointLines = true;
 };
 
 struct Vec3d {
@@ -1863,6 +1867,125 @@ inline ControllerDesc controllerFromJson(const nlohmann::json& j, ControllerDesc
     return clampController(base);
 }
 
+// 制御器のパラメータ（文書の <control><param name value min max/>）。式からは
+// センサ param:<名前> で読み、ブラウザのスライダーで**シミュレート中に**変えられる
+// （次の物理ステップから効く。式を作り直さないので PID の積分などは消えない）。
+// アクセル開度・目標値・ゲインのように、走らせながら触りたい値の置き場。
+struct ParamDesc {
+    std::string name;
+    double value = 0.0;
+    double min = 0.0;   // スライダーの範囲（value もこの範囲に丸める）
+    double max = 1.0;
+    // 表示（制御盤・World タブ）。label は空 = name を出す。step は 0 = 自動
+    // （範囲の約 1/200）、> 0 ならその刻みに丸める。min 0・max 1・step 1 の
+    // パラメータはスイッチ（オン / オフ）として出す。
+    std::string label;
+    double step = 0.0;
+};
+// 表示用の自由な文字列（日本語可）: 制御文字を落として長さを抑える（UTF-8 の
+// 途中で切らないよう、先頭バイトの位置で切る）。
+inline std::string sanitizeLabel(const std::string& in, std::size_t maxBytes = 120) {
+    std::string out;
+    for (const char c : in) {
+        if (static_cast<unsigned char>(c) < 0x20) continue;
+        out.push_back(c);
+    }
+    if (out.size() > maxBytes) {
+        std::size_t cut = maxBytes;
+        while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) --cut;
+        out.resize(cut);
+    }
+    return out;
+}
+inline ParamDesc clampParam(ParamDesc p) {
+    p.name = sanitizeEventName(p.name);
+    p.label = sanitizeLabel(p.label, 80);
+    auto finite = [](double v, double d) { return (v == v && v < 1e300 && v > -1e300) ? v : d; };
+    p.min = finite(p.min, 0.0);
+    p.max = finite(p.max, 1.0);
+    if (p.max < p.min) std::swap(p.min, p.max);
+    if (p.max == p.min) p.max = p.min + 1.0;
+    p.step = finite(p.step, 0.0);
+    if (p.step < 0.0) p.step = 0.0;
+    if (p.step > p.max - p.min) p.step = p.max - p.min;
+    p.value = finite(p.value, p.min);
+    if (p.value < p.min) p.value = p.min;
+    if (p.value > p.max) p.value = p.max;
+    return p;
+}
+inline nlohmann::json toJson(const ParamDesc& p) {
+    nlohmann::json j;
+    j["name"] = p.name;
+    j["value"] = p.value;
+    j["min"] = p.min;
+    j["max"] = p.max;
+    j["label"] = p.label;
+    j["step"] = p.step;
+    return j;
+}
+// 送られてきたキーだけ上書き（部分更新）。
+inline ParamDesc paramFromJson(const nlohmann::json& j, ParamDesc base) {
+    if (!j.is_object()) return base;
+    if (j.contains("name") && j["name"].is_string()) base.name = j["name"];
+    base.value = jsonNumber(j, "value", base.value);
+    base.min = jsonNumber(j, "min", base.min);
+    base.max = jsonNumber(j, "max", base.max);
+    if (j.contains("label") && j["label"].is_string()) base.label = j["label"];
+    base.step = jsonNumber(j, "step", base.step);
+    return clampParam(base);
+}
+
+// 制御盤のグラフ（文書の <control><chart title signals span/>）。signals は
+// "計算式の名前/入出力の名前"（例 "dyno/scope:torque_Nm"）の並びで、制御器の
+// 記録（/control）の列を指す。span は表示する時間幅 (s)、0 = 記録の全部。
+struct ChartDesc {
+    std::string title;
+    std::vector<std::string> signals;
+    double span = 10.0;
+};
+inline std::string sanitizeChartSignal(const std::string& s) {
+    const std::size_t slash = s.find('/');
+    if (slash == std::string::npos) return "";
+    const std::string f = sanitizeEventName(s.substr(0, slash));
+    const std::string port = sanitizePortName(s.substr(slash + 1));
+    if (f.empty() || port.empty()) return "";
+    return f + "/" + port;
+}
+inline ChartDesc clampChart(ChartDesc c) {
+    c.title = sanitizeLabel(c.title, 80);
+    std::vector<std::string> sig;
+    for (const auto& s : c.signals) {
+        const std::string t = sanitizeChartSignal(s);
+        if (t.empty() || std::find(sig.begin(), sig.end(), t) != sig.end()) continue;
+        sig.push_back(t);
+        if (sig.size() >= 12) break;
+    }
+    c.signals = std::move(sig);
+    if (!(c.span == c.span) || c.span < 0.0) c.span = 0.0;
+    if (c.span > 3600.0) c.span = 3600.0;
+    return c;
+}
+inline nlohmann::json toJson(const ChartDesc& c) {
+    nlohmann::json j;
+    j["title"] = c.title;
+    j["signals"] = c.signals;
+    j["span"] = c.span;
+    return j;
+}
+// 送られてきたキーだけ上書き（部分更新）。
+inline ChartDesc chartFromJson(const nlohmann::json& j, ChartDesc base) {
+    if (!j.is_object()) return base;
+    if (j.contains("title") && j["title"].is_string()) base.title = j["title"];
+    if (j.contains("signals") && j["signals"].is_array()) {
+        base.signals.clear();
+        for (const auto& v : j["signals"]) {
+            if (v.is_string()) base.signals.push_back(v.get<std::string>());
+        }
+    }
+    base.span = jsonNumber(j, "span", base.span);
+    return clampChart(base);
+}
+
 inline nlohmann::json toJson(const GroundDesc& g) {
     nlohmann::json j;
     j["enabled"] = g.enabled;
@@ -2125,6 +2248,7 @@ inline nlohmann::json toJson(const GizmoSettings& g) {
     j["scaleStep"] = g.scaleStep;
     j["grid"] = g.grid;
     j["gridStep"] = g.gridStep;
+    j["jointLines"] = g.jointLines;
     return j;
 }
 
@@ -2144,6 +2268,9 @@ inline GizmoSettings gizmoFromJson(const nlohmann::json& j,
     g.scaleStep = j.value("scaleStep", g.scaleStep);
     g.grid = j.value("grid", g.grid);
     g.gridStep = j.value("gridStep", g.gridStep);
+    if (j.contains("jointLines") && j["jointLines"].is_boolean()) {
+        g.jointLines = j["jointLines"].get<bool>();
+    }
     // 刻みが 0 だとスナップの割り算が壊れる。
     if (g.moveStep < 1e-4) g.moveStep = 0.25;
     if (g.rotateStep < 1e-4) g.rotateStep = 15.0;
@@ -2163,7 +2290,9 @@ inline SimSettings clampSim(SimSettings s) {
     s.gravityX = cl(s.gravityX, -100.0, 100.0);
     s.gravityZ = cl(s.gravityZ, -100.0, 100.0);
     s.hz = cl(s.hz, 10, 240);
-    s.substeps = cl(s.substeps, 1, 8);
+    // 上限 32: エンジンのように 1 周期が数 ms の機構は 240 Hz × 16〜32 で回す
+    // （v6_engine.xml）。重さは substeps × iterations にほぼ比例する。
+    s.substeps = cl(s.substeps, 1, 32);
     s.iterations = cl(s.iterations, 1, 2000);
     s.envelope = cl(s.envelope, 1e-4, 0.2);
     s.recovery = cl(s.recovery, 0.0, 10.0);

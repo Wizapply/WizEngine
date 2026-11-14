@@ -1084,6 +1084,40 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         return;
     }
 
+    // ---- 制御器のパラメータ ----------------------------------------------------
+    if (op.kind == "param.add") {
+        ed::ParamDesc p = ed::paramFromJson(a, ed::ParamDesc{});
+        if (!a.contains("value")) p.value = p.min;
+        if (!editor_.addParam(ed::clampParam(p))) {
+            editor_.setStatus("同じ名前のパラメータがあります: " + p.name);
+            return;
+        }
+        editor_.setStatus("パラメータを追加: " + p.name + "（式からは param:" + p.name + "）");
+        return;
+    }
+    if (op.kind == "param.remove") {
+        const std::string name = a.value("name", "");
+        if (editor_.removeParam(name)) editor_.setStatus("パラメータを削除: " + name);
+        return;
+    }
+    if (op.kind == "param.set") {
+        editor_.updateParam(a.value("name", ""), a);  // スライダーで連投されるので無言
+        return;
+    }
+    // ---- 制御盤のグラフ --------------------------------------------------------
+    if (op.kind == "chart.add") {
+        editor_.addChart(ed::chartFromJson(a, ed::ChartDesc{}));
+        return;
+    }
+    if (op.kind == "chart.remove") {
+        editor_.removeChart(ed::jsonInt(a, "index", -1));
+        return;
+    }
+    if (op.kind == "chart.set") {
+        editor_.updateChart(ed::jsonInt(a, "index", -1), a);
+        return;
+    }
+
     if (op.kind == "formula.remove") {
         const std::string name = a.value("name", "");
         if (name.empty() || !editor_.removeFormulaAsset(name)) return;
@@ -1571,6 +1605,8 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         resetEventsToDefaults();
         editor_.setFormulaAssets({});  // 計算式もシーンの一部
         editor_.setControllers({});
+        editor_.setParams({});
+        editor_.setCharts({});
         editor_.setPrefabAssets({});
         editor_.setPrefabEditObject(-1);
         editor_.clearSel();

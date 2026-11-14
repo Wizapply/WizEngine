@@ -117,6 +117,15 @@
 //                                        ステップ）に回す。式の in / out の name が
 //                                        センサ / アクチュエータ
 //                                        （control/ControlSignals.h）
+//       <param name="throttle" value="1" min="0" max="1"/>
+//                                    ... パラメータ。式からはセンサ param:<name>
+//                                        で読み、ブラウザのスライダーでシミュレート
+//                                        中に変えられる（value は min..max に丸める）。
+//                                        label = 表示名、step = 刻み（0 = 自動。
+//                                        0..1 で step 1 はスイッチ）
+//       <chart title="トルク" signals="dyno/scope:torque_Nm dyno/scope:rpm" span="10"/>
+//                                    ... 制御盤のグラフ。signals は「計算式/入出力の
+//                                        名前」の並び、span は表示幅 (s、0 = 全部)
 //     </control>
 //   </wizengine>
 //
@@ -247,6 +256,10 @@ struct SceneDocument {
     // 制御器（ルートの <control> の <controller>）。計算式アセットを名前で
     // 参照し、シミュレート中に回す（control/ControlSignals.h の信号名）。
     std::vector<ControllerDesc> controllers;
+    // 制御器のパラメータ（<control> の <param>）。式からは param:<名前>。
+    std::vector<ParamDesc> params;
+    // 制御盤のグラフ（<control> の <chart>）。
+    std::vector<ChartDesc> charts;
     // 「節が無い」と「空の節」の区別。ライト / カメラ / イベントの節を持た
     // ない文書（旧 v1 の保存や手書きの最小 XML）は初期構成へ戻す意味に
     // なるので、空配列と同じにはできない。
