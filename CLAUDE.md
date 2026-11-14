@@ -723,7 +723,7 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   タブに置いたのは、Inspector は「選択しているものの内容」だけという整理のため。
   `label`（表示名、日本語可 = `sanitizeLabel`）と `step`（刻み、0 = 自動）を持ち、
   **min 0・max 1・step 1 のパラメータはスイッチ**として出る（`paramIsSwitch`）。
-- **制御盤**（`web/panel.js`、Scene タブの Events の下の「🎛 コントローラ」と World
+- **制御盤**（`web/panel.js`、Scene タブの Events の下の「🎛 制御盤（コントローラ）」と World
   タブの「🎛 制御盤」）: 別ウィンドウにパラメータ（スライダー / スイッチ）・
   メーター（全制御器の `scope:*` の現在値）・グラフを並べる。グラフは**文書の
   `<control><chart title signals span/>`**（`ed::ChartDesc`、`EditorState::charts()`、

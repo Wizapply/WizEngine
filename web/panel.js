@@ -1,4 +1,4 @@
-// Charon web UI: 制御盤（🎛 コントローラ）。Scene タブの Events の下のボタンで
+// Charon web UI: 制御盤。Scene タブの Events の下の「🎛 制御盤（コントローラ）」で
 // 別ウィンドウを開き、制御器のパラメータ（スライダー / スイッチ）・メーター
 // （scope:* の現在値）・グラフ（文書の <control><chart>）を並べる。
 //
