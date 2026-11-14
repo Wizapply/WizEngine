@@ -362,6 +362,17 @@
     }
     if (!owner || !sceneData || sceneData.mode !== 'editor') return;
     if (!isEditorCam()) return;  // ギズモが出ないページで切り替えても意味がない
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      // モーダル（ノードエディタ等）が開いている間は、裏のシーンを消さない。
+      const modal = ['nodeEd', 'xmlEd', 'fxEd', 'aiGen'].some((id) => {
+        const el = document.getElementById(id);
+        return el && !el.hidden;
+      });
+      if (modal) return;
+      e.preventDefault();
+      deleteSelection();
+      return;
+    }
     if (brushToolActive()) return;  // 筆の間はギズモを掴めない
     const key = e.key.toLowerCase();
     if (key === 'w') { e.preventDefault(); setGizmoMode('translate'); }
@@ -1324,7 +1335,26 @@
       { sep: true },
       { label: o.index === myCameraSelection() ? '選択を解除' : '選択',
         onClick: () => selectObject(index) },
+      { label: '⧉ 複製', onClick: () => send('edit.duplicate', { index: index }) },
+      { sep: true },
+      { label: '🗑 削除', hint: 'Delete', danger: true,
+        onClick: () => send('edit.remove', { index: index }) },
     ];
+  }
+  // Delete / Backspace キー: 選んでいるものを消す（Unity のシーンビューと同じ）。
+  // 対象は選択の種類で決める - プレハブ編集中は部品、ライト / カメラ / 地面 /
+  // テレインを選んでいればそれ、無ければオブジェクト。地面・テレイン・カメラは
+  // 右クリックの削除と同じく確認を挟む（関数側が confirm する）。
+  // 呼び手（keydown）がエディタモード × エディタカメラのページに絞ってある。
+  function deleteSelection() {
+    if (prefabEdit()) { removeSelectedPart(); return; }
+    const s = myEditorSel();
+    if (s.kind === 'light') { removeLight(); return; }
+    if (s.kind === 'camera') { removeCamera(); return; }
+    if (s.kind === 'ground') { removeGround(); return; }
+    if (s.kind === 'terrain') { removeTerrainFromScene(); return; }
+    const index = myCameraSelection();
+    if (index >= 0) send('edit.remove', { index: index });
   }
   let prefabListKey = '';
   function renderPrefabEditor() {
