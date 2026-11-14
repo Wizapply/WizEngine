@@ -230,7 +230,11 @@
   const paramSendAt = {};
   const paramPending = {};
   function paramIsSwitch(p) {
-    return p.min === 0 && p.max === 1 && p.step === 1;
+    return !p.options && p.min === 0 && p.max === 1 && p.step === 1;
+  }
+  // 選択肢（options = "A|B|C"）の項目。無ければ空。
+  function paramOptions(p) {
+    return p && p.options ? String(p.options).split('|') : [];
   }
   function paramStep(p) {
     if (p.step > 0) return p.step;
@@ -260,6 +264,18 @@
     list.innerHTML = params.length ? params.map((p) => {
       const n = ndEsc(p.name);
       const title = p.label ? '<span class="paramLabel">' + ndEsc(p.label) + '</span> ' : '';
+      const opts = paramOptions(p);
+      if (opts.length) {
+        const cur = Math.round(p.value);
+        return '<div class="ndItem ctlItem paramItem" data-param="' + n + '">' +
+          '<div class="ctlTop">' + title + '<code title="式からは param:' + n +
+          ' で読む（値は項目の番号 0, 1, 2 …）">param:' + n + '</code>' +
+          (here ? '<span class="x" title="パラメータを削除" onclick="paramRemove(\'' + n +
+                  '\')">✕</span>' : '') + '</div>' +
+          '<select class="strSel" onchange="paramInput(\'' + n + '\', this.value, true)">' +
+          opts.map((o, i) => '<option value="' + i + '"' + (i === cur ? ' selected' : '') + '>' +
+                             i + ': ' + ndEsc(o) + '</option>').join('') + '</select></div>';
+      }
       if (paramIsSwitch(p)) {
         return '<div class="ndItem ctlItem paramItem" data-param="' + n + '">' +
           '<div class="ctlTop"><label class="paramSwitch"><input type="checkbox"' +

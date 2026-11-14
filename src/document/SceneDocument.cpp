@@ -1478,6 +1478,7 @@ xml::Element toXml(const SceneDocument& doc) {
             e.setNumber("max", p.max);
             if (p.step > 0.0) e.setNumber("step", p.step);
             if (!p.label.empty()) e.set("label", p.label);
+            if (!p.options.empty()) e.set("options", p.options);
             ctl.append(std::move(e));
         }
         for (const auto& c : doc.charts) {
@@ -1869,6 +1870,7 @@ SceneDocument fromXml(const xml::Element& root,
             p.value = e->number("value", p.min);
             p.step = e->number("step", 0.0);
             p.label = e->attr("label");
+            p.options = e->attr("options");
             if (sanitizeEventName(p.name) != p.name || p.name.empty()) {
                 warn("<param name=\"" + p.name +
                      "\">: the name must be letters, digits, _ and - - ignored");
@@ -1881,7 +1883,7 @@ SceneDocument fromXml(const xml::Element& root,
                 continue;
             }
             const ParamDesc c = clampParam(p);
-            if (c.value != p.value || c.min != p.min || c.max != p.max) {
+            if (c.options.empty() && (c.value != p.value || c.min != p.min || c.max != p.max)) {
                 warn("<param name=\"" + p.name + "\">: value outside min..max (or min > max) "
                      "- clamped");
             }

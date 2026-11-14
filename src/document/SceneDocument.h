@@ -122,7 +122,8 @@
 //                                        で読み、ブラウザのスライダーでシミュレート
 //                                        中に変えられる（value は min..max に丸める）。
 //                                        label = 表示名、step = 刻み（0 = 自動。
-//                                        0..1 で step 1 はスイッチ）
+//                                        0..1 で step 1 はスイッチ。options="A|B|C"
+//                                        なら選択肢 = 値は項目の番号）
 //       <chart title="トルク" signals="dyno/scope:torque_Nm dyno/scope:rpm" span="10"/>
 //                                    ... 制御盤のグラフ。signals は「計算式/入出力の
 //                                        名前」の並び、span は表示幅 (s、0 = 全部)

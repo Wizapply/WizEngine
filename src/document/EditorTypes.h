@@ -1881,7 +1881,23 @@ struct ParamDesc {
     // パラメータはスイッチ（オン / オフ）として出す。
     std::string label;
     double step = 0.0;
+    // 選択肢（"ダイナモ|フリーラン|車両" のように | 区切り）。空でなければ値は
+    // 項目の番号（0 始まり）で、min 0・max = 項目数 - 1・step 1 に揃える。
+    // 制御盤は切り替えボタン、World タブはプルダウンで出す。
+    std::string options;
 };
+// 選択肢の文字列を項目に分ける（空の項目は落とさない = 番号がずれない）。
+inline std::vector<std::string> paramOptionList(const std::string& options) {
+    std::vector<std::string> out;
+    if (options.empty()) return out;
+    std::string cur;
+    for (const char c : options) {
+        if (c == '|') { out.push_back(cur); cur.clear(); }
+        else cur.push_back(c);
+    }
+    out.push_back(cur);
+    return out;
+}
 // 表示用の自由な文字列（日本語可）: 制御文字を落として長さを抑える（UTF-8 の
 // 途中で切らないよう、先頭バイトの位置で切る）。
 inline std::string sanitizeLabel(const std::string& in, std::size_t maxBytes = 120) {
@@ -1900,6 +1916,21 @@ inline std::string sanitizeLabel(const std::string& in, std::size_t maxBytes = 1
 inline ParamDesc clampParam(ParamDesc p) {
     p.name = sanitizeEventName(p.name);
     p.label = sanitizeLabel(p.label, 80);
+    p.options = sanitizeLabel(p.options, 400);
+    {
+        std::vector<std::string> opts = paramOptionList(p.options);
+        if (opts.size() > 16) opts.resize(16);
+        if (opts.size() < 2) {
+            p.options.clear();  // 1 個だけの選択肢は意味が無い
+        } else {
+            std::string joined;
+            for (std::size_t i = 0; i < opts.size(); ++i) joined += (i ? "|" : "") + opts[i];
+            p.options = joined;
+            p.min = 0.0;
+            p.max = double(opts.size() - 1);
+            p.step = 1.0;
+        }
+    }
     auto finite = [](double v, double d) { return (v == v && v < 1e300 && v > -1e300) ? v : d; };
     p.min = finite(p.min, 0.0);
     p.max = finite(p.max, 1.0);
@@ -1911,6 +1942,7 @@ inline ParamDesc clampParam(ParamDesc p) {
     p.value = finite(p.value, p.min);
     if (p.value < p.min) p.value = p.min;
     if (p.value > p.max) p.value = p.max;
+    if (!p.options.empty()) p.value = double(long(p.value + 0.5));  // 項目の番号
     return p;
 }
 inline nlohmann::json toJson(const ParamDesc& p) {
@@ -1921,6 +1953,7 @@ inline nlohmann::json toJson(const ParamDesc& p) {
     j["max"] = p.max;
     j["label"] = p.label;
     j["step"] = p.step;
+    j["options"] = p.options;
     return j;
 }
 // 送られてきたキーだけ上書き（部分更新）。
@@ -1932,6 +1965,11 @@ inline ParamDesc paramFromJson(const nlohmann::json& j, ParamDesc base) {
     base.max = jsonNumber(j, "max", base.max);
     if (j.contains("label") && j["label"].is_string()) base.label = j["label"];
     base.step = jsonNumber(j, "step", base.step);
+    if (j.contains("options") && j["options"].is_string()) {
+        base.options = j["options"];
+        // 選択肢を外したら刻みは自動に戻す（step 1 のままだと別の物に見える）。
+        if (base.options.empty() && !j.contains("step")) base.step = 0.0;
+    }
     return clampParam(base);
 }
 

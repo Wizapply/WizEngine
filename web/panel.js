@@ -95,6 +95,9 @@
   .pedit .sp { flex: 1; }
   .pedit button { padding: 1px 7px; font-size: 12px; }
   .pcard.add { border-style: dashed; }
+  .seg { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .seg button { flex: 1 0 auto; padding: 4px 8px; }
+  .seg button.on { background: #3d8b5a; border-color: #58b07a; color: #fff; }
   .params.editing { grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); }
   .pedit label { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
   .pcard.add h3 { margin: 0 0 6px; font-size: 12px; color: #9aa3b0; font-weight: 600; }
@@ -234,6 +237,18 @@
     }
     return out;
   }
+  // メーターと凡例の数字: 桁数を大きさに合わせる。ほぼ 0（1e-9 未満）は 0 と出す
+  // （-9.61e-14 のような積分の残りかすを見せない）。
+  function panelNum(v) {
+    const a = Math.abs(v);
+    if (!isFinite(v)) return String(v);
+    if (a < 1e-9) return '0';
+    if (a >= 1e6 || a < 1e-3) return v.toExponential(2);
+    if (a >= 1000) return v.toFixed(0);
+    if (a >= 100) return v.toFixed(1);
+    if (a >= 1) return v.toFixed(2);
+    return v.toFixed(3);
+  }
   function shortSig(n) { const c = n.indexOf(':'); return c >= 0 ? n.slice(c + 1) : n; }
   function lastValue(id) {
     const slash = id.indexOf('/');
@@ -286,13 +301,19 @@
     const box = d.getElementById('params');
     const params = controlParams();
     const editing = panelEditing();
-    const key = JSON.stringify([params.map((p) => [p.name, p.min, p.max, p.step, p.label]), editing]);
+    const key = JSON.stringify([params.map((p) => [p.name, p.min, p.max, p.step, p.label, p.options]),
+                                editing]);
     // 構造が同じなら値だけ直す（触っている欄は触らない）。
     if (key === panel.paramsKey || (editing && box.contains(d.activeElement) &&
                                      d.activeElement.closest('.pedit, .add'))) {
       for (const p of params) {
         const el = box.querySelector('[data-p="' + p.name + '"]');
         if (!el || el.contains(d.activeElement)) continue;
+        if (paramOptions(p).length) {
+          const cur = Math.round(p.value);
+          el.querySelectorAll('.seg button').forEach((b, i) => b.classList.toggle('on', i === cur));
+          continue;
+        }
         const inp = el.querySelector('input');
         if (paramIsSwitch(p)) inp.checked = p.value >= 0.5;
         else { inp.value = p.value; el.querySelector('.val').textContent = fmtParam(p.value, p.name); }
@@ -312,7 +333,25 @@
       card.className = 'pcard';
       card.dataset.p = p.name;
       const label = p.label || p.name;
-      if (paramIsSwitch(p)) {
+      const opts = paramOptions(p);
+      if (opts.length) {
+        // 選択肢: 切り替えボタン（押したものが光る）。値は項目の番号。
+        card.innerHTML = '<div class="top"><span class="lbl"></span></div><span class="nm"></span>' +
+                         '<div class="seg"></div>';
+        const seg = card.querySelector('.seg');
+        const cur = Math.round(p.value);
+        opts.forEach((o, i) => {
+          const b = d.createElement('button');
+          b.textContent = o;
+          b.title = 'param:' + p.name + ' = ' + i;
+          if (i === cur) b.classList.add('on');
+          b.addEventListener('click', () => {
+            seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+            paramInput(p.name, i, true);
+          });
+          seg.appendChild(b);
+        });
+      } else if (paramIsSwitch(p)) {
         card.innerHTML = '<div class="top"><span class="lbl"></span></div><span class="nm"></span>' +
           '<label class="sw"><input type="checkbox"><span class="knob"></span><span class="st"></span></label>';
         const inp = card.querySelector('input');
@@ -354,6 +393,7 @@
       '<div class="row">範囲 <input type="number" class="emin"> 〜 <input type="number" class="emax"></div>' +
       '<div class="row">刻み <input type="number" class="estep" min="0" title="0 = 自動（範囲の約 1/200）">' +
       '<label><input type="checkbox" class="esw"> スイッチ（オン / オフ）</label></div>' +
+      '<div class="row">選択肢 <input type="text" class="eopt" placeholder="A|B|C（| 区切り。空 = 数値）"></div>' +
       '<div class="row"><span class="sp"></span><button class="ml" title="前へ">◀</button>' +
       '<button class="mr" title="後ろへ">▶</button><button class="del" title="削除">✕ 削除</button></div>';
     const q = (c) => ed.querySelector(c);
@@ -362,8 +402,12 @@
     q('.emax').value = p.max;
     q('.estep').value = p.step || 0;
     const sw = paramIsSwitch(p);
+    const hasOpt = paramOptions(p).length > 0;
     q('.esw').checked = sw;
-    for (const c of ['.emin', '.emax', '.estep']) q(c).disabled = sw;
+    q('.esw').disabled = hasOpt;
+    q('.eopt').value = p.options || '';
+    for (const c of ['.emin', '.emax', '.estep']) q(c).disabled = sw || hasOpt;
+    q('.eopt').addEventListener('change', () => set({ options: q('.eopt').value.trim() }));
     const set = (patch) => send('edit.param.set', Object.assign({ name: p.name }, patch));
     q('.el').addEventListener('change', () => set({ label: q('.el').value }));
     q('.emin').addEventListener('change', () => {
@@ -454,7 +498,7 @@
     }
     for (const id of ids) {
       const v = lastValue(id);
-      panel.meterEls[id].textContent = v === null ? '-' : fmtNum(v);
+      panel.meterEls[id].textContent = v === null ? '-' : panelNum(v);
     }
   }
 
@@ -596,7 +640,7 @@
     // 凡例の現在値
     (c.signals || []).forEach((id, k) => {
       const v = lastValue(id);
-      if (ce.vals[k]) ce.vals[k].textContent = v === null ? '' : fmtNum(v);
+      if (ce.vals[k]) ce.vals[k].textContent = v === null ? '' : panelNum(v);
     });
     g.font = '11px system-ui, sans-serif';
     if (!sig.length) {

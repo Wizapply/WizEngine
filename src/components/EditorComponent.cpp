@@ -734,6 +734,9 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         if (msg.contains("label") && msg["label"].is_string()) {
             op.args["label"] = ed::sanitizeLabel(msg["label"].get<std::string>(), 80);
         }
+        if (msg.contains("options") && msg["options"].is_string()) {
+            op.args["options"] = ed::sanitizeLabel(msg["options"].get<std::string>(), 400);
+        }
         if (msg.contains("move") && msg["move"].is_number_integer()) op.args["move"] = msg["move"];
         // エディタカメラ以外のページから来た set は値だけ（範囲・表示名・並びは
         // 制御盤の設計 = シーンの書き換えなので、他の edit.* と同じくエディタ

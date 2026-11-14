@@ -33,13 +33,17 @@
                       EVO で排気圧へ。オーバーラップが大きく吸気圧が排気圧より高いと
                       掃気で充填が増える。過給圧はカタログのトルク曲線に合わせて較正。
                       これを無効にするとモータリング（燃焼なし）。
-       * dyno       … ダイナモ（回転数の PI 制御）。1000 → 6800 rpm を 40 秒で掃引し、
-                      吸収したトルクと出力を記録する（catalog_Nm はカタログの曲線）。
-       * パラメータ（World タブ「制御器」節のスライダー。走らせながら変えられる）:
+       * dyno       … エンジンに掛ける負荷（パラメータ mode）。ダイナモ = 回転数の PI 制御で
+                      保って吸収トルクを測る（1000 → 6800 rpm を 40 秒で掃引、catalog_Nm は
+                      カタログの曲線）/ フリーラン = 回転数の 2 乗に比例する負荷 / 車両 = 9 速 AT
+                      の車（車重・タイヤ・ギア比・路面抵抗・空気抵抗。トルコンは粘性結合）。
+                      車両はエンジンと強く結ぶので毎ステップ回す（period 0）。
+       * パラメータ（制御盤のスライダー・切り替え。走らせながら変えられる）:
+           mode     … 負荷のかけ方（ダイナモ / フリーラン / 車両）
            throttle … アクセル開度 0..1（valvetrain と combustion が param:throttle で読む）
-           dyno_rpm … 0 = 自動の掃引、0 より大きい = その回転数に保つ
-           free_run … オン = ダイナモを外して回転数の 2 乗に比例する負荷で回す（アクセル
-                      開度で回転数が上下する。全開で約 6000 rpm）
+           brake    … ブレーキ 0..1（車両）
+           gear     … ギア N・1〜9（車両。走りながら変えるとトルコンが滑って回転が合う）
+           dyno_rpm … ダイナモ: 0 = 自動の掃引、0 より大きい = その回転数に保つ
        * 制御盤（Scene タブの「🎛 制御盤（コントローラ）」）に上のパラメータとグラフ（<chart>）が出る。
      物理は 240 Hz × 16 サブステップ = 3840 Hz（6800 rpm で 1 ステップ 10.6°）。
      recovery="10" が要る: Chrono はジョイントのずれを直す速さを recovery で頭打ちに
@@ -1942,140 +1946,359 @@
       <wire from="71" to="426"/>
     </formula>
     <formula name="dyno">
-      <source line="# エンジンダイナモ（回転数を指令どおりに保ち、吸収したトルクを測る）と、フリーラン。"/>
-      <source line="# パラメータ:"/>
-      <source line="#   free_run … オン = ダイナモを外し、回転数の 2 乗に比例する負荷（車やプロペラと"/>
-      <source line="#              同じ形）で回す。アクセル開度で回転数が上下する（全開で約 6000 rpm）。"/>
-      <source line="#              800 rpm を下回るとスタータ / アイドル補助が押す。"/>
-      <source line="#   dyno_rpm … 0 = 1000 → 6800 rpm を 40 秒で掃引（全開のトルク・出力曲線）、"/>
-      <source line="#              0 より大きい = その回転数に保つ（変化は 1500 rpm/s まで）。"/>
+      <source line="# エンジンに掛ける負荷。パラメータ mode で 3 通り:"/>
+      <source line="#   0 = ダイナモ  … 回転数を指令どおりに保ち、吸収したトルクを測る（試験台）。"/>
+      <source line="#                   dyno_rpm が 0 なら 1000 → 6800 rpm を 40 秒で掃引（全開の性能曲線）、"/>
+      <source line="#                   0 より大きければその回転数に保つ（変化は 1500 rpm/s まで）。"/>
+      <source line="#   1 = フリーラン … ダイナモを外し、回転数の 2 乗に比例する負荷で回す。"/>
+      <source line="#   2 = 車両      … 9 速 AT の車につなぐ。回転数は車速とギアで決まり、アクセルは"/>
+      <source line="#                   まず車を加速させる。トルクコンバータは粘性結合（容量は回転数の"/>
+      <source line="#                   2 乗 = アイドルでは弱く這い出し、回したほど強くつながる）。"/>
+      <source line="#                   gear 0 = N（空吹かし）、brake で止める。"/>
+      <source line="# どのモードでも 800 rpm を下回るとアイドル補助が押す（ECU のアイドル制御の代わり）。"/>
+      <source line="mode = param:mode"/>
+      <source line="dyno = mode &lt; 0.5"/>
+      <source line="free = (mode &gt; 0.5) * (mode &lt; 1.5)"/>
       <source line="w = joint:crank.rate"/>
       <source line="rpm = w * 30 / pi"/>
-      <source line="free = param:free_run &gt; 0.5"/>
+      <source line="idle = clamp(30 * (83.8 - w), 0, 300)   # アイドル補助 (N m)"/>
+      <source line=""/>
+      <source line="# ---- ダイナモ"/>
       <source line="sweep = curve(time, 0, 0, 1, 1000, 4, 1000, 44, 6800, 50, 6800)"/>
       <source line="hold = clamp(param:dyno_rpm, 0, 7500)"/>
-      <source line="# フリーラン中は指令を今の回転数に追従させておく（戻したときに跳ねない・積分が溜まらない）"/>
-      <source line="rl = ratelimit(select(free, rpm, select(hold &gt; 1, hold, sweep)), 1500, 1500)"/>
-      <source line="rpm_cmd = select(free, rpm, rl)"/>
-      <source line="Tdyno = pid(rpm_cmd * pi / 30 - w, 30, 150, 0, -2000, 2000)   # ダイナモのトルク (N m)"/>
+      <source line="# ダイナモ以外のときは指令を今の回転数に追従させておく（戻したときに跳ねない・積分が溜まらない）"/>
+      <source line="rl = ratelimit(select(dyno, select(hold &gt; 1, hold, sweep), rpm), 1500, 1500)"/>
+      <source line="rpm_cmd = select(dyno, rl, rpm)"/>
+      <source line="Tdyno = pid(rpm_cmd * pi / 30 - w, 30, 150, 0, -2000, 2000)"/>
+      <source line=""/>
+      <source line="# ---- フリーラン"/>
       <source line="kload = 0.00115                   # 負荷 = kload w^2（全開の釣り合いが約 6000 rpm）"/>
-      <source line="Tload = -kload * w * abs(w) + clamp(30 * (83.8 - w), 0, 300)   # 負荷 + 800 rpm 以下の補助"/>
-      <source line="T = select(free, Tload, Tdyno)"/>
+      <source line="Tfree = -kload * w * abs(w) + idle"/>
+      <source line=""/>
+      <source line="# ---- 車両（数値は仮定: 車重・タイヤ・ギア比は RZ34 フェアレディ Z 9AT 相当）"/>
+      <source line="m = 1650; rw = 0.345; fd = 3.13; eta = 0.9   # 車重 kg・タイヤ半径 m・最終減速比・伝達効率"/>
+      <source line="crr = 0.012; cda = 0.65; rho = 1.2; g = 9.81  # 転がり抵抗・Cd×前面積 m^2・空気密度"/>
+      <source line="gear = param:gear"/>
+      <source line="brake = clamp(param:brake, 0, 1)"/>
+      <source line="ratio = curve(gear, 0, 0, 1, 5.425, 2, 3.263, 3, 2.25, 4, 1.649, 5, 1.221, 6, 1, 7, 0.862, 8, 0.713, 9, 0.597)"/>
+      <source line="ig = ratio * fd                   # 総減速比"/>
+      <source line="wt = v / rw * ig                  # 車速から決まるエンジン側の回転 (rad/s)"/>
+      <source line="cap = clamp(0.0066 * w * w, 0, 700)   # トルコンが伝えられるトルク（ストール 2500 rpm で約 450 N m）"/>
+      <source line="Tc = select(gear &gt; 0.5, clamp(200 * (w - wt), -cap, cap), 0)"/>
+      <source line="Fd = Tc * ig * eta / rw           # 駆動力 (N)。負ならエンジンブレーキ"/>
+      <source line="Fr = m * g * crr * (v &gt; 0.05) + 0.5 * rho * cda * v * v   # 転がり + 空気抵抗"/>
+      <source line="Fb = brake * 12000 * (v &gt; 0.01)   # ブレーキ（全開で約 0.75 G）"/>
+      <source line="v = integrate((Fd - Fr - Fb) / m, 0, 120)   # 車速 m/s（後退はしない）"/>
+      <source line="Tcar = -Tc + idle"/>
+      <source line=""/>
+      <source line="# エンジン内部の損失（摩擦とポンプ損失 = アクセルを戻したときのエンジンブレーキ）。"/>
+      <source line="# 全開での損失は燃焼モデルの較正（カタログのトルクは正味）に含まれているので、"/>
+      <source line="# ここで足すのは「閉じるほど増える」ぶんだけ。7000 rpm で約 57 N m（空吹かしから約 1.5 s でアイドルへ）。"/>
+      <source line="Tloss = (1 - clamp(param:throttle, 0, 1)) * (12 + 45 * (rpm / 7000) ^ 2) * sign(w)"/>
+      <source line="Tload = select(dyno, Tdyno, select(free, Tfree, Tcar))   # 外から掛ける負荷（正 = 回す向き）"/>
+      <source line="T = Tload - Tloss"/>
       <source line="joint:crank.target = T"/>
-      <source line="Tb = lag(-T, 0.3)                 # 軸トルク（サイクル平均。フリーランでは負荷のトルク）"/>
+      <source line="Tb = lag(-Tload, 0.3)             # 軸トルク = 負荷が受け取るトルク（サイクル平均。損失を引いた正味）"/>
       <source line="scope:rpm_cmd = rpm_cmd"/>
       <source line="scope:rpm = rpm"/>
       <source line="scope:torque_Nm = Tb"/>
       <source line="scope:power_PS = Tb * w / 735.5"/>
       <source line="scope:catalog_Nm = curve(rpm, 1000, 270, 1600, 475, 5200, 475, 6400, 445, 7000, 370)"/>
-      <node id="1" type="in" name="joint:crank.rate" pos="40 40"/>
-      <node id="2" type="div" pos="480 40"/>
-      <node id="3" type="mul" pos="260 40"/>
-      <node id="4" type="const" params="30" pos="40 150"/>
-      <node id="5" type="const" params="3.141592654" pos="40 260"/>
-      <node id="6" type="gt" pos="260 150"/>
-      <node id="7" type="in" name="param:free_run" pos="40 370"/>
-      <node id="8" type="const" params="0.5" pos="40 480"/>
-      <node id="9" type="curve" params="0 0 1 1000 4 1000 44 6800 50 6800" pos="260 260"/>
-      <node id="10" type="time" pos="40 590"/>
-      <node id="11" type="clamp" pos="260 370"/>
-      <node id="12" type="in" name="param:dyno_rpm" pos="40 700"/>
-      <node id="13" type="const" params="0" pos="40 810"/>
-      <node id="14" type="const" params="7500" pos="40 920"/>
-      <node id="15" type="ratelimit" params="1500 1500" pos="1140 40"/>
-      <node id="16" type="select" pos="920 40"/>
-      <node id="17" type="select" pos="700 40"/>
-      <node id="18" type="gt" pos="480 150"/>
-      <node id="19" type="const" params="1" pos="40 1030"/>
-      <node id="20" type="select" pos="1360 40"/>
-      <node id="21" type="pid" params="30 150 0 -2000 2000" pos="2240 40"/>
-      <node id="22" type="sub" pos="2020 40"/>
-      <node id="23" type="div" pos="1800 40"/>
-      <node id="24" type="mul" pos="1580 40"/>
-      <node id="25" type="add" pos="920 150"/>
-      <node id="26" type="mul" pos="480 260"/>
-      <node id="27" type="mul" pos="260 480"/>
-      <node id="28" type="const" params="-0.00115" pos="40 1140"/>
-      <node id="29" type="abs" pos="260 590"/>
-      <node id="30" type="clamp" pos="700 150"/>
-      <node id="31" type="mul" pos="480 370"/>
-      <node id="32" type="sub" pos="260 700"/>
-      <node id="33" type="const" params="83.8" pos="40 1250"/>
-      <node id="34" type="const" params="300" pos="40 1360"/>
-      <node id="35" type="select" pos="2460 40"/>
-      <node id="36" type="out" name="joint:crank.target" pos="3780 40"/>
-      <node id="37" type="lag" pos="2900 40"/>
-      <node id="38" type="neg" pos="2680 40"/>
-      <node id="39" type="const" params="0.3" pos="40 1470"/>
-      <node id="40" type="out" name="scope:rpm_cmd" pos="3780 150"/>
-      <node id="41" type="out" name="scope:rpm" pos="3780 260"/>
-      <node id="42" type="out" name="scope:torque_Nm" pos="3780 370"/>
-      <node id="43" type="div" pos="3340 40"/>
-      <node id="44" type="mul" pos="3120 40"/>
-      <node id="45" type="const" params="735.5" pos="40 1580"/>
-      <node id="46" type="out" name="scope:power_PS" pos="3780 480"/>
-      <node id="47" type="curve" params="1000 270 1600 475 5200 475 6400 445 7000 370" pos="700 260"/>
-      <node id="48" type="out" name="scope:catalog_Nm" pos="3780 590"/>
-      <wire from="4" to="3" port="1"/>
-      <wire from="3" to="2"/>
-      <wire from="5" to="2" port="1"/>
-      <wire from="7" to="6"/>
-      <wire from="8" to="6" port="1"/>
+      <source line="scope:speed_kmh = v * 3.6"/>
+      <source line="scope:gear = gear"/>
+      <source line="scope:slip_rpm = (w - wt) * 30 / pi * (gear &gt; 0.5)"/>
+      <node id="1" type="in" name="param:mode" pos="40 40"/>
+      <node id="2" type="lt" pos="260 40"/>
+      <node id="3" type="const" params="0.5" pos="40 150"/>
+      <node id="4" type="mul" pos="480 40"/>
+      <node id="5" type="gt" pos="260 150"/>
+      <node id="6" type="lt" pos="260 260"/>
+      <node id="7" type="const" params="1.5" pos="40 260"/>
+      <node id="8" type="in" name="joint:crank.rate" pos="40 370"/>
+      <node id="9" type="div" pos="480 150"/>
+      <node id="10" type="mul" pos="260 370"/>
+      <node id="11" type="const" params="30" pos="40 480"/>
+      <node id="12" type="const" params="3.141592654" pos="40 590"/>
+      <node id="13" type="clamp" pos="700 40"/>
+      <node id="14" type="mul" pos="480 260"/>
+      <node id="15" type="sub" pos="260 480"/>
+      <node id="16" type="const" params="83.8" pos="40 700"/>
+      <node id="17" type="const" params="0" pos="40 810"/>
+      <node id="18" type="const" params="300" pos="40 920"/>
+      <node id="19" type="curve" params="0 0 1 1000 4 1000 44 6800 50 6800" pos="260 590"/>
+      <node id="20" type="time" pos="40 1030"/>
+      <node id="21" type="clamp" pos="260 700"/>
+      <node id="22" type="in" name="param:dyno_rpm" pos="40 1140"/>
+      <node id="23" type="const" params="7500" pos="40 1250"/>
+      <node id="24" type="ratelimit" params="1500 1500" pos="1140 40"/>
+      <node id="25" type="select" pos="920 40"/>
+      <node id="26" type="select" pos="700 150"/>
+      <node id="27" type="gt" pos="480 370"/>
+      <node id="28" type="const" params="1" pos="40 1360"/>
+      <node id="29" type="select" pos="1360 40"/>
+      <node id="30" type="pid" params="30 150 0 -2000 2000" pos="2240 40"/>
+      <node id="31" type="sub" pos="2020 40"/>
+      <node id="32" type="div" pos="1800 40"/>
+      <node id="33" type="mul" pos="1580 40"/>
+      <node id="34" type="add" pos="920 150"/>
+      <node id="35" type="mul" pos="480 480"/>
+      <node id="36" type="mul" pos="260 810"/>
+      <node id="37" type="const" params="-0.00115" pos="40 1470"/>
+      <node id="38" type="abs" pos="260 920"/>
+      <node id="39" type="in" name="param:gear" pos="40 1580"/>
+      <node id="40" type="clamp" pos="260 1030"/>
+      <node id="41" type="in" name="param:brake" pos="40 1690"/>
+      <node id="42" type="curve"
+            params="0 0 1 5.425 2 3.263 3 2.25 4 1.649 5 1.221 6 1 7 0.862 8 0.713 9 0.597"
+            pos="260 1140"/>
+      <node id="43" type="mul" pos="480 590"/>
+      <node id="44" type="const" params="3.13" pos="40 1800"/>
+      <node id="45" type="mul" pos="700 260"/>
+      <node id="46" type="div" pos="260 1250"/>
+      <node id="47" type="const" params="0.345" pos="40 1910"/>
+      <node id="48" type="clamp" pos="700 370"/>
+      <node id="49" type="mul" pos="480 700"/>
+      <node id="50" type="mul" pos="260 1360"/>
+      <node id="51" type="const" params="0.0066" pos="40 2020"/>
+      <node id="52" type="const" params="700" pos="40 2130"/>
+      <node id="53" type="select" pos="1580 150"/>
+      <node id="54" type="gt" pos="260 1470"/>
+      <node id="55" type="clamp" pos="1360 150"/>
+      <node id="56" type="mul" pos="1140 150"/>
+      <node id="57" type="const" params="200" pos="40 2240"/>
+      <node id="58" type="sub" pos="920 260"/>
+      <node id="59" type="neg" pos="920 370"/>
+      <node id="60" type="div" pos="2240 150"/>
+      <node id="61" type="mul" pos="2020 150"/>
+      <node id="62" type="mul" pos="1800 150"/>
+      <node id="63" type="const" params="0.9" pos="40 2350"/>
+      <node id="64" type="add" pos="700 480"/>
+      <node id="65" type="mul" pos="480 810"/>
+      <node id="66" type="const" params="194.238" pos="40 2460"/>
+      <node id="67" type="gt" pos="260 1580"/>
+      <node id="68" type="const" params="0.05" pos="40 2570"/>
+      <node id="69" type="mul" pos="480 920"/>
+      <node id="70" type="mul" pos="260 1690"/>
+      <node id="71" type="const" params="0.39" pos="40 2680"/>
+      <node id="72" type="mul" pos="700 590"/>
+      <node id="73" type="mul" pos="480 1030"/>
+      <node id="74" type="const" params="12000" pos="40 2790"/>
+      <node id="75" type="gt" pos="260 1800"/>
+      <node id="76" type="const" params="0.01" pos="40 2900"/>
+      <node id="77" type="integrate" params="0 120" pos="40 3010"/>
+      <node id="78" type="div" pos="2900 40"/>
+      <node id="79" type="sub" pos="2680 40"/>
+      <node id="80" type="sub" pos="2460 40"/>
+      <node id="81" type="const" params="1650" pos="40 3120"/>
+      <node id="82" type="add" pos="2020 260"/>
+      <node id="83" type="neg" pos="1800 260"/>
+      <node id="84" type="mul" pos="1800 370"/>
+      <node id="85" type="mul" pos="1580 260"/>
+      <node id="86" type="sub" pos="480 1140"/>
+      <node id="87" type="clamp" pos="260 1910"/>
+      <node id="88" type="in" name="param:throttle" pos="40 3230"/>
+      <node id="89" type="add" pos="1360 260"/>
+      <node id="90" type="const" params="12" pos="40 3340"/>
+      <node id="91" type="mul" pos="1140 260"/>
+      <node id="92" type="const" params="45" pos="40 3450"/>
+      <node id="93" type="pow" pos="920 480"/>
+      <node id="94" type="div" pos="700 700"/>
+      <node id="95" type="const" params="7000" pos="40 3560"/>
+      <node id="96" type="const" params="2" pos="40 3670"/>
+      <node id="97" type="sign" pos="260 2020"/>
+      <node id="98" type="select" pos="2460 150"/>
+      <node id="99" type="select" pos="2240 260"/>
+      <node id="100" type="sub" pos="2680 150"/>
+      <node id="101" type="out" name="joint:crank.target" pos="3780 40"/>
+      <node id="102" type="lag" pos="2900 150"/>
+      <node id="103" type="neg" pos="2680 260"/>
+      <node id="104" type="const" params="0.3" pos="40 3780"/>
+      <node id="105" type="out" name="scope:rpm_cmd" pos="3780 150"/>
+      <node id="106" type="out" name="scope:rpm" pos="3780 260"/>
+      <node id="107" type="out" name="scope:torque_Nm" pos="3780 370"/>
+      <node id="108" type="div" pos="3340 40"/>
+      <node id="109" type="mul" pos="3120 40"/>
+      <node id="110" type="const" params="735.5" pos="40 3890"/>
+      <node id="111" type="out" name="scope:power_PS" pos="3780 480"/>
+      <node id="112" type="curve" params="1000 270 1600 475 5200 475 6400 445 7000 370"
+            pos="700 810"/>
+      <node id="113" type="out" name="scope:catalog_Nm" pos="3780 590"/>
+      <node id="114" type="mul" pos="260 2130"/>
+      <node id="115" type="const" params="3.6" pos="40 4000"/>
+      <node id="116" type="out" name="scope:speed_kmh" pos="3780 700"/>
+      <node id="117" type="out" name="scope:gear" pos="3780 810"/>
+      <node id="118" type="mul" pos="1580 370"/>
+      <node id="119" type="div" pos="1360 370"/>
+      <node id="120" type="mul" pos="1140 370"/>
+      <node id="121" type="sub" pos="920 590"/>
+      <node id="122" type="gt" pos="260 2240"/>
+      <node id="123" type="out" name="scope:slip_rpm" pos="3780 920"/>
+      <wire from="3" to="2" port="1"/>
+      <wire from="3" to="5" port="1"/>
+      <wire from="5" to="4"/>
+      <wire from="7" to="6" port="1"/>
+      <wire from="6" to="4" port="1"/>
+      <wire from="11" to="10" port="1"/>
       <wire from="10" to="9"/>
-      <wire from="12" to="11"/>
-      <wire from="13" to="11" port="1"/>
-      <wire from="14" to="11" port="2"/>
-      <wire from="19" to="18" port="1"/>
-      <wire from="18" to="17"/>
-      <wire from="17" to="16" port="2"/>
+      <wire from="12" to="9" port="1"/>
+      <wire from="11" to="14"/>
       <wire from="16" to="15"/>
-      <wire from="5" to="24" port="1"/>
-      <wire from="24" to="23"/>
-      <wire from="4" to="23" port="1"/>
-      <wire from="23" to="22"/>
+      <wire from="15" to="14" port="1"/>
+      <wire from="14" to="13"/>
+      <wire from="17" to="13" port="1"/>
+      <wire from="18" to="13" port="2"/>
+      <wire from="20" to="19"/>
       <wire from="22" to="21"/>
-      <wire from="28" to="27"/>
+      <wire from="17" to="21" port="1"/>
+      <wire from="23" to="21" port="2"/>
+      <wire from="28" to="27" port="1"/>
       <wire from="27" to="26"/>
-      <wire from="29" to="26" port="1"/>
-      <wire from="26" to="25"/>
-      <wire from="4" to="31"/>
+      <wire from="26" to="25" port="1"/>
+      <wire from="25" to="24"/>
+      <wire from="12" to="33" port="1"/>
       <wire from="33" to="32"/>
-      <wire from="32" to="31" port="1"/>
+      <wire from="11" to="32" port="1"/>
+      <wire from="32" to="31"/>
       <wire from="31" to="30"/>
-      <wire from="13" to="30" port="1"/>
-      <wire from="34" to="30" port="2"/>
-      <wire from="30" to="25" port="1"/>
-      <wire from="38" to="37"/>
-      <wire from="39" to="37" port="1"/>
-      <wire from="44" to="43"/>
-      <wire from="45" to="43" port="1"/>
-      <wire from="43" to="46"/>
-      <wire from="47" to="48"/>
-      <wire from="1" to="3"/>
-      <wire from="6" to="16"/>
-      <wire from="2" to="16" port="1"/>
-      <wire from="11" to="18"/>
-      <wire from="11" to="17" port="1"/>
-      <wire from="9" to="17" port="2"/>
-      <wire from="6" to="20"/>
-      <wire from="2" to="20" port="1"/>
-      <wire from="15" to="20" port="2"/>
-      <wire from="20" to="24"/>
-      <wire from="1" to="22" port="1"/>
-      <wire from="1" to="27" port="1"/>
-      <wire from="1" to="29"/>
-      <wire from="1" to="32" port="1"/>
-      <wire from="6" to="35"/>
-      <wire from="25" to="35" port="1"/>
-      <wire from="21" to="35" port="2"/>
-      <wire from="35" to="36"/>
-      <wire from="35" to="38"/>
-      <wire from="20" to="40"/>
-      <wire from="2" to="41"/>
-      <wire from="37" to="42"/>
-      <wire from="37" to="44"/>
-      <wire from="1" to="44" port="1"/>
-      <wire from="2" to="47"/>
+      <wire from="37" to="36"/>
+      <wire from="36" to="35"/>
+      <wire from="38" to="35" port="1"/>
+      <wire from="35" to="34"/>
+      <wire from="41" to="40"/>
+      <wire from="17" to="40" port="1"/>
+      <wire from="28" to="40" port="2"/>
+      <wire from="44" to="43" port="1"/>
+      <wire from="47" to="46" port="1"/>
+      <wire from="46" to="45"/>
+      <wire from="51" to="50"/>
+      <wire from="50" to="49"/>
+      <wire from="49" to="48"/>
+      <wire from="17" to="48" port="1"/>
+      <wire from="52" to="48" port="2"/>
+      <wire from="3" to="54" port="1"/>
+      <wire from="54" to="53"/>
+      <wire from="57" to="56"/>
+      <wire from="58" to="56" port="1"/>
+      <wire from="56" to="55"/>
+      <wire from="59" to="55" port="1"/>
+      <wire from="55" to="53" port="1"/>
+      <wire from="17" to="53" port="2"/>
+      <wire from="62" to="61"/>
+      <wire from="63" to="61" port="1"/>
+      <wire from="61" to="60"/>
+      <wire from="47" to="60" port="1"/>
+      <wire from="66" to="65"/>
+      <wire from="68" to="67" port="1"/>
+      <wire from="67" to="65" port="1"/>
+      <wire from="65" to="64"/>
+      <wire from="71" to="70"/>
+      <wire from="70" to="69"/>
+      <wire from="69" to="64" port="1"/>
+      <wire from="74" to="73" port="1"/>
+      <wire from="73" to="72"/>
+      <wire from="76" to="75" port="1"/>
+      <wire from="75" to="72" port="1"/>
+      <wire from="80" to="79"/>
+      <wire from="79" to="78"/>
+      <wire from="81" to="78" port="1"/>
+      <wire from="78" to="77"/>
+      <wire from="83" to="82"/>
+      <wire from="28" to="86"/>
+      <wire from="88" to="87"/>
+      <wire from="17" to="87" port="1"/>
+      <wire from="28" to="87" port="2"/>
+      <wire from="87" to="86" port="1"/>
+      <wire from="86" to="85"/>
+      <wire from="90" to="89"/>
+      <wire from="92" to="91"/>
+      <wire from="95" to="94" port="1"/>
+      <wire from="94" to="93"/>
+      <wire from="96" to="93" port="1"/>
+      <wire from="93" to="91" port="1"/>
+      <wire from="91" to="89" port="1"/>
+      <wire from="89" to="85" port="1"/>
+      <wire from="85" to="84"/>
+      <wire from="97" to="84" port="1"/>
+      <wire from="99" to="98" port="2"/>
+      <wire from="103" to="102"/>
+      <wire from="104" to="102" port="1"/>
+      <wire from="109" to="108"/>
+      <wire from="110" to="108" port="1"/>
+      <wire from="108" to="111"/>
+      <wire from="112" to="113"/>
+      <wire from="115" to="114" port="1"/>
+      <wire from="114" to="116"/>
+      <wire from="121" to="120"/>
+      <wire from="11" to="120" port="1"/>
+      <wire from="120" to="119"/>
+      <wire from="12" to="119" port="1"/>
+      <wire from="119" to="118"/>
+      <wire from="3" to="122" port="1"/>
+      <wire from="122" to="118" port="1"/>
+      <wire from="118" to="123"/>
+      <wire from="1" to="2"/>
+      <wire from="1" to="5"/>
+      <wire from="1" to="6"/>
+      <wire from="8" to="10"/>
+      <wire from="8" to="15" port="1"/>
+      <wire from="2" to="25"/>
+      <wire from="21" to="27"/>
+      <wire from="21" to="26" port="1"/>
+      <wire from="19" to="26" port="2"/>
+      <wire from="9" to="25" port="2"/>
+      <wire from="2" to="29"/>
+      <wire from="24" to="29" port="1"/>
+      <wire from="9" to="29" port="2"/>
+      <wire from="29" to="33"/>
+      <wire from="8" to="31" port="1"/>
+      <wire from="8" to="36" port="1"/>
+      <wire from="8" to="38"/>
+      <wire from="13" to="34" port="1"/>
+      <wire from="39" to="42"/>
+      <wire from="42" to="43"/>
+      <wire from="77" to="46"/>
+      <wire from="43" to="45" port="1"/>
+      <wire from="8" to="50" port="1"/>
+      <wire from="8" to="49" port="1"/>
+      <wire from="39" to="54"/>
+      <wire from="8" to="58"/>
+      <wire from="45" to="58" port="1"/>
+      <wire from="48" to="59"/>
+      <wire from="48" to="55" port="2"/>
+      <wire from="53" to="62"/>
+      <wire from="43" to="62" port="1"/>
+      <wire from="77" to="67"/>
+      <wire from="77" to="70" port="1"/>
+      <wire from="77" to="69" port="1"/>
+      <wire from="40" to="73"/>
+      <wire from="77" to="75"/>
+      <wire from="60" to="80"/>
+      <wire from="64" to="80" port="1"/>
+      <wire from="72" to="79" port="1"/>
+      <wire from="53" to="83"/>
+      <wire from="13" to="82" port="1"/>
+      <wire from="9" to="94"/>
+      <wire from="8" to="97"/>
+      <wire from="2" to="98"/>
+      <wire from="30" to="98" port="1"/>
+      <wire from="4" to="99"/>
+      <wire from="34" to="99" port="1"/>
+      <wire from="82" to="99" port="2"/>
+      <wire from="98" to="100"/>
+      <wire from="84" to="100" port="1"/>
+      <wire from="100" to="101"/>
+      <wire from="98" to="103"/>
+      <wire from="29" to="105"/>
+      <wire from="9" to="106"/>
+      <wire from="102" to="107"/>
+      <wire from="102" to="109"/>
+      <wire from="8" to="109" port="1"/>
+      <wire from="9" to="112"/>
+      <wire from="77" to="114"/>
+      <wire from="39" to="117"/>
+      <wire from="8" to="121"/>
+      <wire from="45" to="121" port="1"/>
+      <wire from="39" to="122"/>
     </formula>
     <prefab name="crankshaft">
       <part name="journal0" type="cylinder" pos="0 0 -0.162" euler="0 90 0" size="0.03 0.062 0.062"
@@ -2485,13 +2708,17 @@
   <control>
     <controller formula="valvetrain" period="0"/>
     <controller formula="combustion" period="0"/>
-    <controller formula="dyno" period="0.002"/>
+    <controller formula="dyno" period="0"/>
+    <param name="mode" value="0" min="0" max="2" step="1" label="負荷のかけ方" options="ダイナモ|フリーラン|車両"/>
     <param name="throttle" value="1" min="0" max="1" label="アクセル開度"/>
+    <param name="brake" value="0" min="0" max="1" label="ブレーキ（車両）"/>
+    <param name="gear" value="1" min="0" max="9" step="1" label="ギア（車両）" options="N|1|2|3|4|5|6|7|8|9"/>
     <param name="dyno_rpm" value="0" min="0" max="7000" step="50" label="ダイナモ回転数（0 = 自動掃引）"/>
-    <param name="free_run" value="0" min="0" max="1" step="1" label="フリーラン（ダイナモを外す）"/>
     <chart title="回転数 (rpm)" signals="dyno/scope:rpm dyno/scope:rpm_cmd" span="20"/>
     <chart title="軸トルク (N m) とカタログ" signals="dyno/scope:torque_Nm dyno/scope:catalog_Nm" span="20"/>
     <chart title="出力 (PS)" signals="dyno/scope:power_PS" span="20"/>
+    <chart title="車速 (km/h)" signals="dyno/scope:speed_kmh" span="30"/>
+    <chart title="ギアとトルコンの滑り (rpm)" signals="dyno/scope:slip_rpm" span="30"/>
     <chart title="筒内圧 (bar、1 番 / 4 番)" signals="combustion/scope:p1_bar combustion/scope:p4_bar" span="0.2"/>
     <chart title="吸気 VTC とオーバーラップ (度)" signals="valvetrain/scope:vtc_deg combustion/scope:overlap_deg" span="20"/>
     <chart title="バルブリフト (mm、1 番)" signals="valvetrain/scope:lift_in1_mm valvetrain/scope:lift_ex1_mm" span="0.2"/>
