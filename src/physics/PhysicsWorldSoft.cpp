@@ -97,17 +97,9 @@ std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec,
         b->SetRot(rot);
         b->SetFixed(spec.fixed);
         b->EnableCollision(true);
-        // 粒子は眠らせない: 一部だけ眠ると、ばねの相手が動いても起きずに
-        // 形が固まる（起こすのは接触だけ、という Chrono の約束のため）。
-        allowSleeping(b.get(), false, 0);
         if (auto model = b->GetCollisionModel()) {
             if (!applyNoSelfCollision(&*model, family)) familyOk = false;
         }
-        prepareBody(*b, particleOpts);
-        p_->system.sys()->AddBody(b);
-        finishBody(b, mat, particleOpts, /*allowSleeping*/ false);
-        const std::size_t id = p_->bodies.count() - 1;
-        particles.push_back(id);
         // テレインの接触: 粒子ごとに半径 radius の球（1 点接触 = round。材質は
         // 球と同じ「転がりあり」= 平らな床と粒子の接触と同じ扱い）。
         wterrain::BodyProxy proxy;
@@ -115,7 +107,10 @@ std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec,
         sp.kind = wterrain::ShapeProxy::Kind::Sphere;
         sp.radius = radius;
         proxy.shapes.push_back(sp);
-        setTerrainProxy(id, proxy);
+        // 粒子は眠らせない: 一部だけ眠ると、ばねの相手が動いても起きずに
+        // 形が固まる（起こすのは接触だけ、という Chrono の約束のため）。
+        particles.push_back(
+            p_->factory.finish(b, {particleOpts, mat, /*allowSleeping*/ false, &proxy}));
     }
     soft.root = particles.front();
     p_->bodies.defineGroup(soft.root, std::move(particles));
@@ -140,7 +135,7 @@ void PhysicsWorld::placeSoftBody(SoftBody& soft, const ChVector3d& pos,
         b->SetRot(rot);
         b->ForceToRest();
         wakeUp(b.get(), 0);
-        forgetTerrainContacts(particles[i]);
+        p_->bodies.events().bodyPlaced(particles[i]);
     }
 }
 

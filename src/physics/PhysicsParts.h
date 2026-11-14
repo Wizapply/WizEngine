@@ -3,6 +3,7 @@
 // PhysicsWorld の担当の入れ物（窓口の pimpl）。PhysicsWorld*.cpp だけが使う。
 // 宣言の逆順に壊れる: 名簿（ChBody への参照）を手放してから系を壊す。
 
+#include "physics/BodyFactory.h"
 #include "physics/BodyLoads.h"
 #include "physics/BodyMotion.h"
 #include "physics/BodyRegistry.h"
@@ -13,6 +14,7 @@
 #include "physics/PhysicsWorld.h"
 #include "physics/Sleeping.h"
 #include "physics/StaticPairs.h"
+#include "physics/TerrainContact.h"
 #include "physics/VelocityDamping.h"
 
 struct PhysicsWorld::Parts {
@@ -23,17 +25,20 @@ struct PhysicsWorld::Parts {
           sleeping(system, bodies),
           motion(bodies, sleeping),
           materials(system, bodies),
+          factory(system, bodies, sleeping, materials),
           loads(system, bodies),
           gravity(system, bodies),
           damping(bodies),
-          diag(system, bodies) {
+          diag(system, bodies),
+          terrain(system, bodies, materials) {
         // 出来事の受け手はここで登録する。受け手どうしは順番に依存しない
         // （それぞれ自分の状態と Chrono の別々の部分だけを触る）。
-        bodies.addListener(&sleeping);
-        bodies.addListener(&materials);
-        bodies.addListener(&loads);
-        bodies.addListener(&gravity);
-        bodies.addListener(&staticPairs);
+        bodies.events().add(&sleeping);
+        bodies.events().add(&materials);
+        bodies.events().add(&loads);
+        bodies.events().add(&gravity);
+        bodies.events().add(&staticPairs);
+        bodies.events().add(&terrain);
     }
 
     // system より先に宣言する = 系より後に壊れる（Bullet のペアキャッシュがフィルタを
@@ -44,8 +49,11 @@ struct PhysicsWorld::Parts {
     wizengine::physics::Sleeping sleeping;
     wizengine::physics::BodyMotion motion;
     wizengine::physics::ContactMaterials materials;
+    wizengine::physics::BodyFactory factory;
     wizengine::physics::BodyLoads loads;
     wizengine::physics::GravityOverride gravity;
     wizengine::physics::VelocityDamping damping;
     wizengine::physics::Diagnostics diag;
+    // system より先に壊れる。系が持ち続けるコールバックはデストラクタが切り離す。
+    wizengine::physics::TerrainContact terrain;
 };

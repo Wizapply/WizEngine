@@ -35,12 +35,9 @@ void Sleeping::setEnabled(bool enabled, float seconds, float minLinVel, float mi
     for (std::size_t i = 0; i < bodies_.count(); ++i) {
         auto& b = bodies_.body(i);
         // ソフトボディの粒子は常に起きている（addSoftBody 参照）。
-        if (neverSleeps_[i]) {
-            allowSleeping(b.get(), false, 0);
-            continue;
-        }
-        applyTo(*b);
-        if (!enabled) wakeUp(b.get(), 0);
+        const bool allow = !neverSleeps_[i];
+        configure(*b, allow);
+        if (allow && !enabled) wakeUp(b.get(), 0);
     }
 }
 
@@ -49,6 +46,14 @@ void Sleeping::applyTo(ChBody& body) const {
     if (enabled_) {
         body.SetSleepTime(seconds_);
         setSleepLimits(&body, minLinVel_, minAngVel_, 0);
+    }
+}
+
+void Sleeping::configure(ChBody& body, bool allow) const {
+    if (allow) {
+        applyTo(body);
+    } else {
+        allowSleeping(&body, false, 0);
     }
 }
 
@@ -100,8 +105,10 @@ void Sleeping::onSystemRecreated() {
 }
 
 void Sleeping::onBodyAdded(std::size_t id, const BodyAddInfo& info) {
-    (void)id;
     neverSleeps_.push_back(info.allowSleeping ? 0 : 1);
+    // 固定ボディは resetTimer が何もしないので、通知の中の固定物のペアの更新
+    // （固定ボディだけ）との前後には依存しない。
+    resetTimer(id);  // 新規ボディの計時は 0 = 最初のステップで眠る
 }
 
 }  // namespace physics

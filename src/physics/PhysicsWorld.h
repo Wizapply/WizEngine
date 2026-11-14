@@ -26,7 +26,6 @@ class ChNodeFEAxyzD;
 namespace wizengine {
 namespace terrain {
 class HeightField;
-struct BodyProxy;
 }
 }
 
@@ -345,7 +344,7 @@ public:
     // DoStepDynamics ごとに 1 回）。力・摩擦・スリープ・積分は Chrono のまま。
     // 接触の相手は「ゴースト」の固定ボディ（空の衝突モデル、Bullet には
     // 登録しない）で、その physId が接触の報告（activeContacts）に出る。
-    // 対象は動く（非固定の）ボディで、形の記録（proxy）を add* が書く:
+    // 対象は動く（非固定の）ボディで、形の記録（proxy）は add* が作り、追加の通知で届ける:
     //   addBox / addSphere … 本体の箱 / 球 + 追加の当たり形状（箱・球・円柱）
     //   addConvexHull      … Chrono が当たり形状にした凸包の頂点（体積重心へ
     //                        寄せた後 = ボディローカル。512 点まで間引く）+ 追加形状
@@ -391,27 +390,10 @@ public:
     TerrainContactShape terrainContactShape(std::size_t id) const;
 
 private:
-    // 追加したボディを名簿へ登録し、窓口が持つ配列にも席を作る。mat と options は
-    // 名簿の受け手へそのまま伝える（受け手が onBodyAdded で自分の配列へ書く）。
-    void registerBody(const std::shared_ptr<chrono::ChBody>& body,
-                      const std::shared_ptr<chrono::ChContactMaterial>& mat,
-                      const BodyOptions& options, bool allowSleeping);
-    // 追加の当たり形状を本体に足す（AddBody の前に呼ぶ）。
-    void attachExtraShapes(chrono::ChBody& body, const std::vector<ExtraShape>& extras,
-                           const std::shared_ptr<chrono::ChContactMaterial>& mat);
     // Chrono の系を（作り直しも含めて）組む。コンストラクタと recreate が呼ぶ。
     void createSystem();
     // 本当に系から外す（Core。Multicore は退避だけ）。disableBody から。
     void detachBody(std::size_t id);
-    // AddBody の**前**に呼ぶ: 衝突レイヤ（ファミリ）と重力オフ。ファミリは
-    // 衝突系に登録する前に決めておく - 登録後に変えると Bullet はモデルを
-    // 一度 Remove して入れ直し、Multicore の衝突系は Remove が未実装で
-    // 例外を投げる（ソフトボディの粒子も同じ順序）。
-    void prepareBody(chrono::ChBody& body, const BodyOptions& options);
-    // AddBody の後: 名簿へ登録する（定常荷重は BodyLoads が通知で付ける）。
-    void finishBody(const std::shared_ptr<chrono::ChBody>& body,
-                    const std::shared_ptr<chrono::ChContactMaterial>& mat,
-                    const BodyOptions& options, bool allowSleeping);
     // 破断の判定（step の末尾）。
     void checkJointBreaks();
     // ジョイントごとの反力をログへ（診断が NaN を見つけたステップに step から）。
@@ -439,47 +421,15 @@ private:
     const SoftBody* softOfRoot(std::size_t id) const;
     SoftBody* softOfRoot(std::size_t id);
 
-    // ---- テレインの内部（中身は PhysicsWorldInternal.h。Eigen と terrain の型を見せない）--
-    struct TerrainProxyRec;   // ボディ 1 個の形の記録 + 点ごとの反力キャッシュ
-    struct TerrainState;      // 格子・ゴースト・材質・判定の設定
-    struct TerrainCallback;   // ChSystem::CustomCollisionCallback
-    // id のボディの形を記録する（add* の最後から）。
-    void setTerrainProxy(std::size_t id, const wizengine::terrain::BodyProxy& proxy);
-    // id の「前のステップに接触した」印と反力キャッシュを 0 に戻す（置き直し・
-    // wakeAll。前回の走行の反力で次の最初のステップを始めないため）。
-    void forgetTerrainContacts(std::size_t id);
-    // テレインと接触しうるか（terrainContactShape と collectTerrainContacts の
-    // 共通の条件。眠りは見ない）。
-    bool terrainEligible(std::size_t id) const;
-    // 安全網の記録（無ければ作る。LOGW は初めての 1 体だけ）。
-    TerrainProxyRec* terrainFallbackRec(std::size_t id);
-    // テレインの 2 つの材質へシーン設定と terrainOptions を書き直す。
-    void refreshTerrainMaterials();
-    // コールバックの本体（DoStepDynamics の衝突判定の末尾）。
-    void collectTerrainContacts(chrono::ChSystem& sys);
-
     // 担当の入れ物（Chrono の系と名簿。中身は PhysicsParts.h）。
     struct Parts;
-    // 他のメンバより先に宣言する = 系は他のメンバ（ジョイント・テレイン・荷重など）が
+    // 他のメンバより先に宣言する = 系は他のメンバ（ジョイント・荷重など）が
     // 全部壊れた後に壊れる。
     std::unique_ptr<Parts> p_;
     // 荷重コンテナ（ChLoad。Core のみ）。ジョイント（ブッシュ）とボディの
     // 定常荷重（BodyLoads）で分けてある - ジョイントは停止で全部捨てるため。
     std::shared_ptr<chrono::ChLoadContainer> jointLoads_;
     std::vector<SoftBody> softBodies_;  // root の昇順（softOfRoot が二分探索で引く）
-    // 名簿の番号と並ぶ: テレインに当たる形の記録（無ければ null = テレインの
-    // 接触の対象外）。shared_ptr なのは型の中身を PhysicsWorldInternal.h に閉じる
-    // ため（ここは前方宣言だけ）。反力キャッシュは記録のときに 1 回だけ確保し、
-    // 以後は再確保しない（アドレスを Chrono の接触へ渡すため）。
-    std::vector<std::shared_ptr<TerrainProxyRec>> terrainProxies_;
-    // テレインのフレーム（setTerrainFrame）。単位なら変換を省く。
-    chrono::ChVector3d terrainFrameOrigin_{0, 0, 0};
-    chrono::ChQuaternion<> terrainFrameRot_{1, 0, 0, 0};
-    bool terrainFrameIdentity_ = true;
-    // テレイン（setTerrain が作る。recreate で捨てる）とコールバック
-    // （createSystem が Core のときだけ作って系に登録する）。
-    std::shared_ptr<TerrainState> terrain_;
-    std::shared_ptr<TerrainCallback> terrainCallback_;
     // シミュレート中だけ存在する拘束。エディタへ戻るときに全部外す。
     struct JointRec {
         std::shared_ptr<chrono::ChLinkBase> link;   // 主拘束（ばね種類ならばね。手計算なら null）

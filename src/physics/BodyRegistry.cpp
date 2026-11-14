@@ -23,12 +23,12 @@ std::size_t BodyRegistry::add(const std::shared_ptr<ChBody>& body, const BodyAdd
     groupOf_.push_back(kInvalidId);  // defineGroup が員のぶんを後から書き換える
     alias_.push_back(kInvalidId);
     bindCollision(body);
-    for (PhysicsPart* part : parts_) part->onBodyAdded(id, info);
+    events_.bodyAdded(id, info);
     return id;
 }
 
 void BodyRegistry::retire(std::size_t id) {
-    for (PhysicsPart* part : parts_) part->onBodyRetiring(id);
+    events_.bodyRetiring(id);
     const auto& b = bodies_[id];
     b->SetFixed(true);
     // Multicore の衝突系は Remove() が未実装で、Chrono 9 は
