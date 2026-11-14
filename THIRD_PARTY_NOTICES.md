@@ -25,7 +25,7 @@ Charon（旧コードネーム WizEngine）が使っている外部ソフトウ�
 | [Google Filament](https://github.com/google/filament) | 1.74.0 | Apache-2.0 | 描画エンジン。公式プレビルド（`filament` / `gltfio` / `ibl` など）をリンク |
 | [OpenSSL](https://www.openssl.org/) | 3.x（システムの版。任意） | Apache-2.0 | AI のシーン生成が HTTPS の API（OpenAI 互換 / Meshy 互換）を呼ぶため。見つかったときだけ動的リンク（`-DWIZ_WITH_OPENSSL=OFF` で外せる） |
 | [GStreamer](https://gstreamer.freedesktop.org/) | 1.x（システムの版） | LGPL-2.1-or-later | 映像のエンコードと配信。動的リンク（core / base / app / webrtc / sdp / video） |
-| [manifold3d](https://github.com/elalish/manifold) / [trimesh](https://github.com/mikedh/trimesh)（+ NumPy / SciPy / NetworkX） | 3.x / 4.x 以降 | Apache-2.0 / MIT（NumPy・SciPy・NetworkX は BSD-3-Clause） | `tools/v6_engine/` の Python スクリプトが V6 の部品メッシュ（`assets/models/v6/*.glb`）を作るときだけ使う。実行ファイルには入らない |
+| [manifold3d](https://github.com/elalish/manifold) / [trimesh](https://github.com/mikedh/trimesh)（+ NumPy / SciPy / NetworkX） | 3.x / 4.x 以降 | Apache-2.0 / MIT（NumPy・SciPy・NetworkX は BSD-3-Clause） | `samples/v6_engine/` の Python スクリプトが V6 の部品メッシュ（`assets/models/v6/*.glb`）を作るときだけ使う。実行ファイルには入らない |
 
 ## 実行時に読み込まれる GStreamer プラグイン
 
