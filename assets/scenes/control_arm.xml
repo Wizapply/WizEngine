@@ -1,66 +1,128 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 制御器（ブロック線図）の見本。シミュレートすると:
        * arm_pid … トルクモータ付きの腕 (arm) を PID で目標角へ追従させる。
-                   目標は時刻の折れ線（0 → 0.6 → -0.4 → 1.2 rad の階段）を
-                   変化率制限 2 rad/s で滑らかにしたもの。
+                   目標は 4 秒ごとに 0.9 rad ⇄ -0.2 rad を行き来する（変化率
+                   2 rad/s で滑らかに）。
        * hover   … 箱 (hover) を上向きの力で浮かせ、高さを PID で保つ
-                   （重力ぶんは m g の前向き補償）。目標高さは 1 → 2.5 → 1.5 m。
-     World タブの「制御器」節の 📈 でスコープを開くと、目標・測定値・操作量が
-     時系列で見える（CSV でも落とせる）。ゲインは 3 重極の配置（腕: 慣性
-     約 1.26 kg m² で ω = 5 rad/s、箱: 2 kg で ω = 4 rad/s。J s³ + kd s² + kp s
-     + ki = J (s + ω)³）。ノードエディタの pid ノードの
-     欄（kp ki kd lo hi tf）を書き換えれば、走らせたままでも効く。
-     信号名の約束は src/control/ControlSignals.h、ブロックは src/vehicle/Formula.h。 -->
+                   （重力ぶんは m g の前向き補償）。目標は 5 秒ごとに 2.5 m ⇄ 1.0 m。
+     どちらの式も数式のテキストで書いてある（🧮 タイルの右クリック「📝 数式で
+     編集」で読める・直せる）。World タブの「制御器」節の 📈 でスコープを開くと、
+     目標・測定値・操作量が時系列で見える（CSV でも落とせる）。
+     ゲインは 3 重極の配置（J s³ + kd s² + kp s + ki = J (s + ω)³。腕: 慣性
+     0.72 kg m² で ω = 5 rad/s、箱: 2 kg で ω = 4 rad/s）。
+     腕は柱の手前（z = 0.15）に置き、柱と重ならないようにしてある: Chrono は
+     ジョイントでつないだ物どうしの接触を切らないので、重なっていると摩擦付きの
+     接触がトルクと押し合い、プルプルしたり止まったりする。先端の球は見た目だけの
+     プレハブ（物理は腕 1 本）。
+     信号名の約束は src/control/ControlSignals.h、式の書式は src/formula/FormulaText.h。 -->
 <wizengine model="control_arm" version="4">
   <option gravity="0 -9.81 0" rate="120" substeps="2" iterations="80" envelope="0.002"
           recovery="0.2" friction="0.6" restitution="0" lineardamping="0"
           angulardamping="0" sleeping="false"/>
   <asset>
     <formula name="arm_pid">
-      <node id="1" type="time" pos="40 40"/>
-      <node id="2" type="curve" params="0 0 1 0 1.001 0.6 4 0.6 4.001 -0.4 7 -0.4 7.001 1.2 10 1.2" pos="260 40"/>
-      <node id="3" type="ratelimit" params="2 2" pos="480 40"/>
-      <node id="4" type="in" name="joint:shoulder.angle" pos="40 220"/>
-      <node id="5" type="sub" pos="700 120"/>
-      <node id="6" type="pid" params="95 160 19 -40 40 0.01" pos="920 120"/>
-      <node id="7" type="out" name="joint:shoulder.target" pos="1160 120"/>
-      <node id="8" type="out" name="scope:ref" pos="700 300"/>
-      <node id="9" type="out" name="scope:angle" pos="700 380"/>
-      <node id="10" type="out" name="scope:torque" pos="1160 260"/>
-      <wire from="1" to="2"/>
-      <wire from="2" to="3"/>
-      <wire from="3" to="5"/>
-      <wire from="4" to="5" port="1"/>
-      <wire from="5" to="6"/>
-      <wire from="6" to="7"/>
-      <wire from="3" to="8"/>
-      <wire from="4" to="9"/>
-      <wire from="6" to="10"/>
+      <source line="# PID で腕（ジョイント shoulder）の角度を目標へ。目標は 4 秒ごとに切り替わる。"/>
+      <source line="kp = 54; ki = 90; kd = 11     # 3 重極 ω = 5 rad/s（腕の慣性 0.72 kg m^2）"/>
+      <source line="umax = 30                     # トルクの上限 (N m)"/>
+      <source line="step = 0.35 + 0.55 * sign(sin(2 * pi * time / 8))   # 0.9 rad ⇄ -0.2 rad"/>
+      <source line="ref = ratelimit(step, 2, 2)   # 2 rad/s で滑らかに"/>
+      <source line="y = joint:shoulder.angle"/>
+      <source line="u = pid(ref - y, kp, ki, kd, -umax, umax, 0.02)"/>
+      <source line="joint:shoulder.target = u"/>
+      <source line="scope:ref = ref"/>
+      <source line="scope:angle = y"/>
+      <source line="scope:torque = u"/>
+      <node id="1" type="add" pos="1360 40"/>
+      <node id="2" type="const" params="0.35" pos="40 40"/>
+      <node id="3" type="mul" pos="1140 40"/>
+      <node id="4" type="const" params="0.55" pos="40 150"/>
+      <node id="5" type="sign" pos="920 40"/>
+      <node id="6" type="sin" pos="700 40"/>
+      <node id="7" type="div" pos="480 40"/>
+      <node id="8" type="mul" pos="260 40"/>
+      <node id="9" type="const" params="6.283185307" pos="40 260"/>
+      <node id="10" type="time" pos="40 370"/>
+      <node id="11" type="const" params="8" pos="40 480"/>
+      <node id="12" type="ratelimit" params="2 2" pos="1580 40"/>
+      <node id="13" type="in" name="joint:shoulder.angle" pos="40 590"/>
+      <node id="14" type="pid" params="54 90 11 -30 30 0.02" pos="2020 40"/>
+      <node id="15" type="sub" pos="1800 40"/>
+      <node id="16" type="out" name="joint:shoulder.target" pos="2460 40"/>
+      <node id="17" type="out" name="scope:ref" pos="2460 150"/>
+      <node id="18" type="out" name="scope:angle" pos="2460 260"/>
+      <node id="19" type="out" name="scope:torque" pos="2460 370"/>
+      <wire from="2" to="1"/>
+      <wire from="4" to="3"/>
+      <wire from="9" to="8"/>
+      <wire from="10" to="8" port="1"/>
+      <wire from="8" to="7"/>
+      <wire from="11" to="7" port="1"/>
+      <wire from="7" to="6"/>
+      <wire from="6" to="5"/>
+      <wire from="5" to="3" port="1"/>
+      <wire from="3" to="1" port="1"/>
+      <wire from="15" to="14"/>
+      <wire from="1" to="12"/>
+      <wire from="12" to="15"/>
+      <wire from="13" to="15" port="1"/>
+      <wire from="14" to="16"/>
+      <wire from="12" to="17"/>
+      <wire from="13" to="18"/>
+      <wire from="14" to="19"/>
     </formula>
     <formula name="hover">
-      <node id="1" type="time" pos="40 40"/>
-      <node id="2" type="curve" params="0 1 2 1 2.001 2.5 6 2.5 6.001 1.5 10 1.5" pos="260 40"/>
-      <node id="11" type="ratelimit" params="1 1" pos="480 40"/>
-      <node id="3" type="in" name="body:hover.y" pos="40 200"/>
-      <node id="4" type="sub" pos="700 100"/>
-      <node id="5" type="pid" params="96 128 24 -40 40 0.01" pos="920 100"/>
-      <!-- 重力の補償（2 kg × 9.81） -->
-      <node id="6" type="const" params="19.62" pos="920 260"/>
-      <node id="7" type="add" pos="1160 160"/>
-      <node id="8" type="out" name="body:hover.fy" pos="1380 160"/>
-      <node id="9" type="out" name="scope:ref" pos="700 300"/>
-      <node id="10" type="out" name="scope:height" pos="700 380"/>
-      <wire from="1" to="2"/>
-      <wire from="2" to="11"/>
-      <wire from="11" to="4"/>
-      <wire from="3" to="4" port="1"/>
-      <wire from="4" to="5"/>
-      <wire from="5" to="7"/>
-      <wire from="6" to="7" port="1"/>
-      <wire from="7" to="8"/>
-      <wire from="11" to="9"/>
-      <wire from="3" to="10"/>
+      <source line="# 箱 hover を上向きの力で浮かせ、高さを目標に保つ（重力ぶんは m g で補償）。"/>
+      <source line="m = 2; g = 9.81"/>
+      <source line="kp = 96; ki = 128; kd = 24    # 3 重極 ω = 4 rad/s"/>
+      <source line="step = 1.75 + 0.75 * sign(sin(2 * pi * time / 10))  # 2.5 m ⇄ 1.0 m"/>
+      <source line="ref = ratelimit(step, 1, 1)"/>
+      <source line="y = body:hover.y"/>
+      <source line="body:hover.fy = pid(ref - y, kp, ki, kd, -40, 40, 0.02) + m * g"/>
+      <source line="scope:ref = ref"/>
+      <source line="scope:height = y"/>
+      <node id="1" type="add" pos="1360 40"/>
+      <node id="2" type="const" params="1.75" pos="40 40"/>
+      <node id="3" type="mul" pos="1140 40"/>
+      <node id="4" type="const" params="0.75" pos="40 150"/>
+      <node id="5" type="sign" pos="920 40"/>
+      <node id="6" type="sin" pos="700 40"/>
+      <node id="7" type="div" pos="480 40"/>
+      <node id="8" type="mul" pos="260 40"/>
+      <node id="9" type="const" params="6.283185307" pos="40 260"/>
+      <node id="10" type="time" pos="40 370"/>
+      <node id="11" type="const" params="10" pos="40 480"/>
+      <node id="12" type="ratelimit" params="1 1" pos="1580 40"/>
+      <node id="13" type="in" name="body:hover.y" pos="40 590"/>
+      <node id="14" type="add" pos="2240 40"/>
+      <node id="15" type="pid" params="96 128 24 -40 40 0.02" pos="2020 40"/>
+      <node id="16" type="sub" pos="1800 40"/>
+      <node id="17" type="const" params="19.62" pos="40 700"/>
+      <node id="18" type="out" name="body:hover.fy" pos="2680 40"/>
+      <node id="19" type="out" name="scope:ref" pos="2680 150"/>
+      <node id="20" type="out" name="scope:height" pos="2680 260"/>
+      <wire from="2" to="1"/>
+      <wire from="4" to="3"/>
+      <wire from="9" to="8"/>
+      <wire from="10" to="8" port="1"/>
+      <wire from="8" to="7"/>
+      <wire from="11" to="7" port="1"/>
+      <wire from="7" to="6"/>
+      <wire from="6" to="5"/>
+      <wire from="5" to="3" port="1"/>
+      <wire from="3" to="1" port="1"/>
+      <wire from="16" to="15"/>
+      <wire from="15" to="14"/>
+      <wire from="17" to="14" port="1"/>
+      <wire from="14" to="18"/>
+      <wire from="1" to="12"/>
+      <wire from="12" to="16"/>
+      <wire from="13" to="16" port="1"/>
+      <wire from="12" to="19"/>
+      <wire from="13" to="20"/>
     </formula>
+    <prefab name="arm_tip">
+      <part name="tip" type="sphere" pos="0.6 0 0" size="0.22" rgba="0.3 0.6 0.9 1"/>
+    </prefab>
   </asset>
   <worldbody>
     <ground size="12" visual="10" tile="2"/>
@@ -68,15 +130,14 @@
     <light name="fill" type="point" pos="-3 4 3" intensity="60000" falloff="20" castshadow="false"/>
     <camera name="cam0" target="0 1.5 0" azimuth="20" elevation="12" radius="8"/>
 
-    <!-- 腕: 柱の上にちょうつがい（Z 軸）で留め、先に球。トルクモータで駆動 -->
+    <!-- 腕: 柱の上端の手前（z = 0.15）にちょうつがい（Z 軸）で留める。
+         トルクモータで駆動。柱とは z で 3 cm 離してある（重ならない）。 -->
     <body name="post" pos="-1 1 0" fixed="true">
       <geom type="box" size="0.08 1 0.08" mass="10" rgba="0.4 0.42 0.48 1"/>
     </body>
-    <body name="arm" pos="-0.4 2 0">
-      <geom type="box" size="0.6 0.04 0.04" mass="1" rgba="0.9 0.5 0.2 1"/>
-    </body>
-    <body name="tip" pos="0.25 2 0">
-      <geom type="sphere" size="0.1" mass="0.5" rgba="0.3 0.6 0.9 1"/>
+    <body name="arm" pos="-0.4 2 0.15">
+      <geom type="box" size="0.6 0.04 0.04" mass="1.5" rgba="0.9 0.5 0.2 1"/>
+      <prefab name="arm_tip"/>
     </body>
 
     <!-- 浮く箱: 力で高さを保つ（推力の向きはワールドの +Y） -->
@@ -85,9 +146,8 @@
     </body>
   </worldbody>
   <equality>
-    <joint name="shoulder" type="hinge" body1="arm" body2="post" anchor="-1 2 0" axis="0 0 1"
+    <joint name="shoulder" type="hinge" body1="arm" body2="post" anchor="-1 2 0.15" axis="0 0 1"
            motor="force" target="0"/>
-    <joint name="arm_tip" type="weld" body1="tip" body2="arm" anchor="0.2 2 0" axis="0 1 0"/>
   </equality>
   <control>
     <controller formula="arm_pid" period="0"/>
