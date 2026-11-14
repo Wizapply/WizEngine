@@ -30,7 +30,9 @@ public:
 
         double minElevation = -0.15;  // don't go under the ground
         double maxElevation = 1.30;   // don't flip over the pole
-        double minRadius = 2.0;
+        // 小物（エンジンの部品など）に寄れるよう 10 cm まで。near クリップは
+        // Renderer::setCamera が距離に合わせて縮める（寄っても手前が切れない）。
+        double minRadius = 0.1;
         double maxRadius = 60.0;
 
         double keyStep = 0.08;         // radians per arrow-key press

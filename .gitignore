@@ -27,3 +27,6 @@ assets/generated/
 /third_parties/chrono-install/
 /third_parties/filament-*/
 tests/
+
+# Python のキャッシュ（tools/ のスクリプト）
+__pycache__/

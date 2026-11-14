@@ -481,7 +481,12 @@ private:
     // 全ビューのカメラの投影（垂直画角・near・far）。型は Camera::setProjection
     // の引数（double）に合わせる。アスペクト比だけがビューの大きさで決まる。
     static constexpr double kFovDegrees = 45.0;
+    // near は注視点までの距離に合わせて縮める（kNearPlane が上限、距離 ×
+    // kNearPerDistance、下限 kMinNearPlane）。寄ったときに手前が切れないため。
+    // 深度は Filament の逆 Z（float）なので near を小さくしても精度は落ちない。
     static constexpr double kNearPlane = 0.1;
+    static constexpr double kMinNearPlane = 0.005;
+    static constexpr double kNearPerDistance = 0.1;
     static constexpr double kFarPlane = 2000.0;
     // 形状の既定色（リニア）。document/EditorTypes.h の Color3 の既定と同じ値
     // （層が違うので別定義。片方を変えたらもう片方も合わせる）。値は
@@ -528,6 +533,7 @@ private:
         utils::Entity cameraEntity;
 
         int width = 0, height = 0;          // this view's output size
+        double nearPlane = kNearPlane;      // いまの near（setCamera が距離で決める）
         int pendingW = 0, pendingH = 0;     // 0 = no resize requested
 
         // Two capture buffers per view, used alternately: the GPU fills one

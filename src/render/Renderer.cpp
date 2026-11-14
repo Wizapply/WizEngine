@@ -7,6 +7,8 @@
 
 #include "render/GltfLoader.h"
 
+#include <cmath>
+
 using namespace filament;
 using namespace filament::math;
 using utils::Entity;
@@ -167,7 +169,7 @@ float Renderer::verticalFovDegrees() const {
 
 void Renderer::applyProjection(ViewSlot& slot) {
     const double aspect = double(slot.width) / double(slot.height);
-    slot.camera->setProjection(kFovDegrees, aspect, kNearPlane, kFarPlane,
+    slot.camera->setProjection(kFovDegrees, aspect, slot.nearPlane, kFarPlane,
                                Camera::Fov::VERTICAL);
 }
 
@@ -233,7 +235,18 @@ void Renderer::setCamera(std::size_t viewIndex,
                          const filament::math::double3& eye,
                          const filament::math::double3& target) {
     if (viewIndex >= views_.size()) return;
-    views_[viewIndex].camera->lookAt(eye, target, {0.0, 1.0, 0.0});
+    ViewSlot& slot = views_[viewIndex];
+    slot.camera->lookAt(eye, target, {0.0, 1.0, 0.0});
+    // near は注視点までの距離の 1/10（上限 kNearPlane、下限 kMinNearPlane）。
+    // 1 割以上変わったときだけ投影を入れ直す。
+    const double d = length(target - eye);
+    double nearPlane = d * kNearPerDistance;
+    if (nearPlane > kNearPlane) nearPlane = kNearPlane;
+    if (nearPlane < kMinNearPlane) nearPlane = kMinNearPlane;
+    if (std::abs(nearPlane - slot.nearPlane) > 0.1 * slot.nearPlane) {
+        slot.nearPlane = nearPlane;
+        if (slot.width > 0 && slot.height > 0) applyProjection(slot);
+    }
 }
 
 Renderer::~Renderer() {

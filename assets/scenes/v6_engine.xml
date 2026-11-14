@@ -20,9 +20,17 @@
          （ジョイントでつないだ物どうしも接触するため）。
        * camRi / camRe / camLi / camLe … カムシャフト（DOHC、右 / 左バンクの吸気 / 排気）。
                    ワールドへ hinge の速度モータ。ローブの向きは各気筒のタイミング。
-       * valve_inN / valve_exN … 1 気筒の吸気 2 本・排気 2 本を 1 体ずつ。シリンダ軸に
-                   沿った slide の位置モータ（目標 = リフト量 m）。
-       * ヘッドは燃焼室の天井（デッキ）だけにして動弁系が見えるようにしてある。
+       * valve_inN / valve_exN … 1 気筒の吸気 2 本・排気 2 本を 1 体ずつ。バルブ軸に
+                   沿った slide の位置モータ（目標 = リフト量 m）。バルブは挟み角 32°
+                   （シリンダ軸から 16°）で傾け、カム軸はその延長上（カム軸間 約 100 mm）。
+     見た目（assets/models/v6/*.glb）: 実寸の部品を CSG で作ったメッシュ
+     （tools/v6_engine/ の meshes.py・statics.py が生成）。I 断面のコンロッド・リング溝と
+     バルブリセスのあるピストン・カウンターウェイト付きのクランクとリングギヤ・リフト式
+     どおりの形のカムローブ・バルブばね / バケット・ペントルーフの燃焼室・ポート・
+     ウォータージャケットのあるブロックとヘッド・チェーンとガイド・サージタンク・左バンクの
+     排気とターボ・架台とダイナモ。右バンク（1・3・5 番）の外側半分はカットモデル
+     （断面が赤）で、ピストン・コンロッド・クランク・バルブが外から見える。
+     環境光は assets/env/engine_studio.hdr（手続きで作ったスタジオの映り込み）。
      制御器（World タブの「制御器」節、📈 でスコープ）:
        * valvetrain … カムをクランクの半分の速さで位相ロックして回し、吸気側は電動 VTC
                       で位相を変える（全開は低中速で 30° 進角 = オーバーラップで掃気、
@@ -2300,247 +2308,73 @@
       <wire from="45" to="121" port="1"/>
       <wire from="39" to="122"/>
     </formula>
+    <mesh name="v6_crankshaft" file="models/v6/crankshaft.glb" scale="1"/>
+    <mesh name="v6_conrod" file="models/v6/conrod.glb" scale="1"/>
+    <mesh name="v6_piston_R" file="models/v6/piston_R.glb" scale="1"/>
+    <mesh name="v6_piston_L" file="models/v6/piston_L.glb" scale="1"/>
+    <mesh name="v6_valve_in" file="models/v6/valve_in.glb" scale="1"/>
+    <mesh name="v6_valve_ex" file="models/v6/valve_ex.glb" scale="1"/>
+    <mesh name="v6_camRi" file="models/v6/camRi.glb" scale="1"/>
+    <mesh name="v6_camRe" file="models/v6/camRe.glb" scale="1"/>
+    <mesh name="v6_camLi" file="models/v6/camLi.glb" scale="1"/>
+    <mesh name="v6_camLe" file="models/v6/camLe.glb" scale="1"/>
+    <mesh name="v6_block" file="models/v6/block.glb" scale="1"/>
+    <mesh name="v6_head_R" file="models/v6/head_R.glb" scale="1"/>
+    <mesh name="v6_head_L" file="models/v6/head_L.glb" scale="1"/>
+    <mesh name="v6_intake" file="models/v6/intake.glb" scale="1"/>
+    <mesh name="v6_exhaust" file="models/v6/exhaust.glb" scale="1"/>
+    <mesh name="v6_timing" file="models/v6/timing.glb" scale="1"/>
+    <mesh name="v6_stand" file="models/v6/stand.glb" scale="1"/>
     <prefab name="crankshaft">
-      <part name="journal0" type="cylinder" pos="0 0 -0.162" euler="0 90 0" size="0.03 0.062 0.062"
-            rgba="0.7 0.72 0.75 1" roughness="0.25" metallic="1"/>
-      <part name="journal1" type="cylinder" pos="0 0 -0.054" euler="0 90 0" size="0.03 0.062 0.062"
-            rgba="0.7 0.72 0.75 1" roughness="0.25" metallic="1"/>
-      <part name="journal2" type="cylinder" pos="0 0 0.054" euler="0 90 0" size="0.03 0.062 0.062"
-            rgba="0.7 0.72 0.75 1" roughness="0.25" metallic="1"/>
-      <part name="journal3" type="cylinder" pos="0 0 0.162" euler="0 90 0" size="0.03 0.062 0.062"
-            rgba="0.7 0.72 0.75 1" roughness="0.25" metallic="1"/>
-      <part name="pin1" type="cylinder" pos="0.0215 0.0372 -0.1205" euler="0 90 0"
-            size="0.024 0.052 0.052" rgba="0.75 0.77 0.8 1" roughness="0.2" metallic="1"/>
-      <part name="pin2" type="cylinder" pos="0.043 0 -0.0955" euler="0 90 0"
-            size="0.024 0.052 0.052" rgba="0.75 0.77 0.8 1" roughness="0.2" metallic="1"/>
-      <part name="pin3" type="cylinder" pos="-0.043 0 -0.0125" euler="0 90 0"
-            size="0.024 0.052 0.052" rgba="0.75 0.77 0.8 1" roughness="0.2" metallic="1"/>
-      <part name="pin4" type="cylinder" pos="-0.0215 0.0372 0.0125" euler="0 90 0"
-            size="0.024 0.052 0.052" rgba="0.75 0.77 0.8 1" roughness="0.2" metallic="1"/>
-      <part name="pin5" type="cylinder" pos="0.0215 -0.0372 0.0955" euler="0 90 0"
-            size="0.024 0.052 0.052" rgba="0.75 0.77 0.8 1" roughness="0.2" metallic="1"/>
-      <part name="pin6" type="cylinder" pos="-0.0215 -0.0372 0.1205" euler="0 90 0"
-            size="0.024 0.052 0.052" rgba="0.75 0.77 0.8 1" roughness="0.2" metallic="1"/>
-      <part name="web0" type="box" pos="0.0045 0.0078 -0.142" euler="0 0 -30"
-            size="0.07 0.128 0.018" rgba="0.33 0.35 0.38 1" roughness="0.45" metallic="1"/>
-      <part name="weight0" type="box" pos="-0.031 -0.0537 -0.142" euler="0 0 -30"
-            size="0.115 0.04 0.018" rgba="0.33 0.35 0.38 1" roughness="0.45" metallic="1"/>
-      <part name="web1" type="box" pos="0.009 0 -0.074" euler="0 0 -90"
-            size="0.07 0.128 0.018" rgba="0.33 0.35 0.38 1" roughness="0.45" metallic="1"/>
-      <part name="weight1" type="box" pos="-0.062 0 -0.074" euler="0 0 -90"
-            size="0.115 0.04 0.018" rgba="0.33 0.35 0.38 1" roughness="0.45" metallic="1"/>
-      <part name="web2" type="box" pos="-0.009 0 -0.034" euler="0 0 90"
-            size="0.07 0.128 0.018" rgba="0.33 0.35 0.38 1" roughness="0.45" metallic="1"/>
-      <part name="weight2" type="box" pos="0.062 0 -0.034" euler="0 0 90"
-            size="0.115 0.04 0.018" rgba="0.33 0.35 0.38 1" roughness="0.45" metallic="1"/>
-      <part name="web3" type="box" pos="-0.0045 0.0078 0.034" euler="0 0 30"
-            size="0.07 0.128 0.018" rgba="0.33 0.35 0.38 1" roughness="0.45" metallic="1"/>
-      <part name="weight3" type="box" pos="0.031 -0.0537 0.034" euler="0 0 30"
-            size="0.115 0.04 0.018" rgba="0.33 0.35 0.38 1" roughness="0.45" metallic="1"/>
-      <part name="web4" type="box" pos="0.0045 -0.0078 0.074" euler="0 0 -150"
-            size="0.07 0.128 0.018" rgba="0.33 0.35 0.38 1" roughness="0.45" metallic="1"/>
-      <part name="weight4" type="box" pos="-0.031 0.0537 0.074" euler="0 0 -150"
-            size="0.115 0.04 0.018" rgba="0.33 0.35 0.38 1" roughness="0.45" metallic="1"/>
-      <part name="web5" type="box" pos="-0.0045 -0.0078 0.142" euler="0 0 150"
-            size="0.07 0.128 0.018" rgba="0.33 0.35 0.38 1" roughness="0.45" metallic="1"/>
-      <part name="weight5" type="box" pos="0.031 0.0537 0.142" euler="0 0 150"
-            size="0.115 0.04 0.018" rgba="0.33 0.35 0.38 1" roughness="0.45" metallic="1"/>
-      <part name="flywheel" type="cylinder" pos="0 0 0.215" euler="0 90 0" size="0.024 0.33 0.33"
-            rgba="0.22 0.23 0.25 1" roughness="0.5" metallic="1"/>
-      <part name="flywheel_mark" type="box" pos="0 0.14 0.229" size="0.03 0.03 0.006" rgba="1 0.75 0.1 1"
-            emissive="0.5"/>
-      <part name="rear_stub" type="cylinder" pos="0 0 0.19" euler="0 90 0" size="0.04 0.06 0.06"
-            rgba="0.7 0.72 0.75 1" roughness="0.25" metallic="1"/>
-      <part name="pulley" type="cylinder" pos="0 0 -0.215" euler="0 90 0" size="0.03 0.16 0.16"
-            rgba="0.18 0.18 0.19 1" roughness="0.6"/>
-      <part name="pulley_mark" type="box" pos="0 0.065 -0.231" size="0.02 0.02 0.006" rgba="1 0.75 0.1 1"
-            emissive="0.5"/>
-      <part name="front_stub" type="cylinder" pos="0 0 -0.19" euler="0 90 0" size="0.04 0.05 0.05"
-            rgba="0.7 0.72 0.75 1" roughness="0.25" metallic="1"/>
-      <part name="chain_sprocket" type="cylinder" pos="0 0 -0.195" euler="0 90 0" size="0.01 0.06 0.06"
-            rgba="0.85 0.55 0.15 1" roughness="0.35" metallic="1"/>
+      <part name="crankshaft" type="mesh" mesh="v6_crankshaft" size="1 1 1"/>
     </prefab>
     <prefab name="conrod">
-      <part name="big_end" type="cylinder" pos="0 -0.072 0" euler="0 90 0" size="0.022 0.064 0.064"
-            rgba="0.5 0.52 0.56 1" roughness="0.35" metallic="1"/>
-      <part name="small_end" type="cylinder" pos="0 0.072 0" euler="0 90 0" size="0.022 0.032 0.032"
-            rgba="0.5 0.52 0.56 1" roughness="0.35" metallic="1"/>
+      <part name="conrod" type="mesh" mesh="v6_conrod" size="1 1 1"/>
     </prefab>
-    <prefab name="piston">
-      <part name="skirt" type="cylinder" pos="0 0.012 0" euler="0 0 90" size="0.06 0.086 0.086"
-            rgba="0.78 0.79 0.8 1" roughness="0.35" metallic="1"/>
-      <part name="crown" type="cylinder" pos="0 0.0425 0" euler="0 0 90" size="0.003 0.08 0.08"
-            rgba="0.25 0.2 0.17 1" roughness="0.8"/>
-      <part name="pin" type="cylinder" pos="0 0 0" euler="0 90 0" size="0.088 0.022 0.022"
-            rgba="0.75 0.77 0.8 1" roughness="0.2" metallic="1"/>
+    <prefab name="piston_R">
+      <part name="piston_R" type="mesh" mesh="v6_piston_R" size="1 1 1"/>
     </prefab>
-    <prefab name="engine_block">
-      <part name="deck_right" type="box" pos="0.1225 0.2122 -0.0125" euler="0 0 -30"
-            size="0.15 0.02 0.35" rgba="0.72 0.73 0.74 1" roughness="0.55" metallic="0.6"/>
-      <part name="cam_bearing_right_in0" type="box" pos="0.161 0.3169 -0.1725" euler="0 0 -30"
-            size="0.03 0.05 0.02" rgba="0.62 0.63 0.64 1" roughness="0.5" metallic="0.6"/>
-      <part name="cam_bearing_right_in1" type="box" pos="0.161 0.3169 0.1475" euler="0 0 -30"
-            size="0.03 0.05 0.02" rgba="0.62 0.63 0.64 1" roughness="0.5" metallic="0.6"/>
-      <part name="cam_bearing_right_ex0" type="box" pos="0.194 0.2979 -0.1725" euler="0 0 -30"
-            size="0.03 0.05 0.02" rgba="0.62 0.63 0.64 1" roughness="0.5" metallic="0.6"/>
-      <part name="cam_bearing_right_ex1" type="box" pos="0.194 0.2979 0.1475" euler="0 0 -30"
-            size="0.03 0.05 0.02" rgba="0.62 0.63 0.64 1" roughness="0.5" metallic="0.6"/>
-      <part name="turbine_right" type="sphere" pos="0.33 0.05 -0.06" size="0.13"
-            rgba="0.28 0.25 0.23 1" roughness="0.7" metallic="0.8"/>
-      <part name="compressor_right" type="cylinder" pos="0.33 0.05 0.035" euler="0 90 0"
-            size="0.07 0.115 0.115" rgba="0.78 0.79 0.8 1" roughness="0.3" metallic="1"/>
-      <part name="deck_left" type="box" pos="-0.1225 0.2122 0.0125" euler="0 0 30"
-            size="0.15 0.02 0.35" rgba="0.72 0.73 0.74 1" roughness="0.55" metallic="0.6"/>
-      <part name="cam_bearing_left_in0" type="box" pos="-0.161 0.3169 -0.1475" euler="0 0 30"
-            size="0.03 0.05 0.02" rgba="0.62 0.63 0.64 1" roughness="0.5" metallic="0.6"/>
-      <part name="cam_bearing_left_in1" type="box" pos="-0.161 0.3169 0.1725" euler="0 0 30"
-            size="0.03 0.05 0.02" rgba="0.62 0.63 0.64 1" roughness="0.5" metallic="0.6"/>
-      <part name="cam_bearing_left_ex0" type="box" pos="-0.194 0.2979 -0.1475" euler="0 0 30"
-            size="0.03 0.05 0.02" rgba="0.62 0.63 0.64 1" roughness="0.5" metallic="0.6"/>
-      <part name="cam_bearing_left_ex1" type="box" pos="-0.194 0.2979 0.1725" euler="0 0 30"
-            size="0.03 0.05 0.02" rgba="0.62 0.63 0.64 1" roughness="0.5" metallic="0.6"/>
-      <part name="turbine_left" type="sphere" pos="-0.33 0.05 -0.06" size="0.13"
-            rgba="0.28 0.25 0.23 1" roughness="0.7" metallic="0.8"/>
-      <part name="compressor_left" type="cylinder" pos="-0.33 0.05 0.035" euler="0 90 0"
-            size="0.07 0.115 0.115" rgba="0.78 0.79 0.8 1" roughness="0.3" metallic="1"/>
-      <part name="surge_tank" type="box" pos="0 0.305 0.01" size="0.14 0.085 0.34" rgba="0.07 0.07 0.07 1"
-            roughness="0.6"/>
-      <part name="throttle_body" type="cylinder" pos="0 0.305 -0.18" euler="0 90 0" size="0.04 0.07 0.07"
-            rgba="0.78 0.79 0.8 1" roughness="0.3" metallic="1"/>
-      <part name="chain_right0" type="box" pos="0.1274 0.1292 -0.195" euler="0 0 -35.0774"
-            size="0.008 0.3557 0.009" rgba="0.2 0.21 0.23 1" roughness="0.4" metallic="1"/>
-      <part name="chain_right1" type="box" pos="0.1987 0.3442 -0.195" euler="0 0 60"
-            size="0.008 0.038 0.009" rgba="0.2 0.21 0.23 1" roughness="0.4" metallic="1"/>
-      <part name="chain_right2" type="box" pos="0.0482 0.1749 -0.195" euler="0 0 155.0774"
-            size="0.008 0.3557 0.009" rgba="0.2 0.21 0.23 1" roughness="0.4" metallic="1"/>
-      <part name="chain_left0" type="box" pos="-0.1274 0.1292 -0.195" euler="0 0 35.0774"
-            size="0.008 0.3557 0.009" rgba="0.2 0.21 0.23 1" roughness="0.4" metallic="1"/>
-      <part name="chain_left1" type="box" pos="-0.1987 0.3442 -0.195" euler="0 0 -60"
-            size="0.008 0.038 0.009" rgba="0.2 0.21 0.23 1" roughness="0.4" metallic="1"/>
-      <part name="chain_left2" type="box" pos="-0.0482 0.1749 -0.195" euler="0 0 -155.0774"
-            size="0.008 0.3557 0.009" rgba="0.2 0.21 0.23 1" roughness="0.4" metallic="1"/>
-      <part name="oil_pan" type="box" pos="0 -0.17 0" size="0.34 0.14 0.44" rgba="0.6 0.61 0.62 1"
-            roughness="0.5" metallic="0.7"/>
-      <part name="stand0" type="box" pos="0 -0.395 -0.19" size="0.08 0.31 0.05"
-            rgba="0.15 0.3 0.6 1" roughness="0.5"/>
-      <part name="stand1" type="box" pos="0 -0.395 0.19" size="0.08 0.31 0.05"
-            rgba="0.15 0.3 0.6 1" roughness="0.5"/>
+    <prefab name="piston_L">
+      <part name="piston_L" type="mesh" mesh="v6_piston_L" size="1 1 1"/>
     </prefab>
     <prefab name="valve_in">
-      <part name="stem0" type="cylinder" pos="0 -0.002 -0.017" euler="0 0 90" size="0.096 0.006 0.006"
-            rgba="0.75 0.77 0.8 1" roughness="0.25" metallic="1"/>
-      <part name="head0" type="cylinder" pos="0 -0.0485 -0.017" euler="0 0 90" size="0.003 0.032 0.032"
-            rgba="0.85 0.75 0.45 1" roughness="0.4" metallic="1"/>
-      <part name="spring0" type="cylinder" pos="0 0.02 -0.017" euler="0 0 90" size="0.04 0.022 0.022"
-            rgba="0.2 0.45 0.75 1" roughness="0.5" metallic="0.5"/>
-      <part name="bucket0" type="cylinder" pos="0 0.05 -0.017" euler="0 0 90" size="0.008 0.03 0.03"
-            rgba="0.8 0.8 0.82 1" roughness="0.2" metallic="1"/>
-      <part name="stem1" type="cylinder" pos="0 -0.002 0.017" euler="0 0 90" size="0.096 0.006 0.006"
-            rgba="0.75 0.77 0.8 1" roughness="0.25" metallic="1"/>
-      <part name="head1" type="cylinder" pos="0 -0.0485 0.017" euler="0 0 90" size="0.003 0.032 0.032"
-            rgba="0.85 0.75 0.45 1" roughness="0.4" metallic="1"/>
-      <part name="spring1" type="cylinder" pos="0 0.02 0.017" euler="0 0 90" size="0.04 0.022 0.022"
-            rgba="0.2 0.45 0.75 1" roughness="0.5" metallic="0.5"/>
-      <part name="bucket1" type="cylinder" pos="0 0.05 0.017" euler="0 0 90" size="0.008 0.03 0.03"
-            rgba="0.8 0.8 0.82 1" roughness="0.2" metallic="1"/>
+      <part name="valve_in" type="mesh" mesh="v6_valve_in" size="1 1 1"/>
     </prefab>
     <prefab name="valve_ex">
-      <part name="stem0" type="cylinder" pos="0 -0.002 -0.017" euler="0 0 90" size="0.096 0.006 0.006"
-            rgba="0.75 0.77 0.8 1" roughness="0.25" metallic="1"/>
-      <part name="head0" type="cylinder" pos="0 -0.0485 -0.017" euler="0 0 90" size="0.003 0.028 0.028"
-            rgba="0.75 0.4 0.3 1" roughness="0.4" metallic="1"/>
-      <part name="spring0" type="cylinder" pos="0 0.02 -0.017" euler="0 0 90" size="0.04 0.022 0.022"
-            rgba="0.2 0.45 0.75 1" roughness="0.5" metallic="0.5"/>
-      <part name="bucket0" type="cylinder" pos="0 0.05 -0.017" euler="0 0 90" size="0.008 0.03 0.03"
-            rgba="0.8 0.8 0.82 1" roughness="0.2" metallic="1"/>
-      <part name="stem1" type="cylinder" pos="0 -0.002 0.017" euler="0 0 90" size="0.096 0.006 0.006"
-            rgba="0.75 0.77 0.8 1" roughness="0.25" metallic="1"/>
-      <part name="head1" type="cylinder" pos="0 -0.0485 0.017" euler="0 0 90" size="0.003 0.028 0.028"
-            rgba="0.75 0.4 0.3 1" roughness="0.4" metallic="1"/>
-      <part name="spring1" type="cylinder" pos="0 0.02 0.017" euler="0 0 90" size="0.04 0.022 0.022"
-            rgba="0.2 0.45 0.75 1" roughness="0.5" metallic="0.5"/>
-      <part name="bucket1" type="cylinder" pos="0 0.05 0.017" euler="0 0 90" size="0.008 0.03 0.03"
-            rgba="0.8 0.8 0.82 1" roughness="0.2" metallic="1"/>
+      <part name="valve_ex" type="mesh" mesh="v6_valve_ex" size="1 1 1"/>
     </prefab>
     <prefab name="camRi">
-      <part name="shaft" type="cylinder" pos="0 0 0" euler="0 90 0" size="0.40 0.026 0.026"
-            rgba="0.55 0.57 0.6 1" roughness="0.3" metallic="1"/>
-      <part name="sprocket" type="cylinder" pos="0 0 -0.1825" euler="0 90 0" size="0.012 0.085 0.085"
-            rgba="0.9 0.6 0.15 1" roughness="0.4" metallic="1"/>
-      <part name="lobe1_0" type="box" pos="0.005 0.0004 -0.125" euler="0 0 -85"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe1_1" type="box" pos="0.005 0.0004 -0.091" euler="0 0 -85"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe3_0" type="box" pos="-0.0021 -0.0045 -0.017" euler="0 0 155"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe3_1" type="box" pos="-0.0021 -0.0045 0.017" euler="0 0 155"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe5_0" type="box" pos="-0.0029 0.0041 0.091" euler="0 0 35"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe5_1" type="box" pos="-0.0029 0.0041 0.125" euler="0 0 35"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
+      <part name="camRi" type="mesh" mesh="v6_camRi" size="1 1 1"/>
     </prefab>
     <prefab name="camRe">
-      <part name="shaft" type="cylinder" pos="0 0 0" euler="0 90 0" size="0.40 0.026 0.026"
-            rgba="0.55 0.57 0.6 1" roughness="0.3" metallic="1"/>
-      <part name="sprocket" type="cylinder" pos="0 0 -0.1825" euler="0 90 0" size="0.012 0.085 0.085"
-            rgba="0.35 0.36 0.38 1" roughness="0.4" metallic="1"/>
-      <part name="lobe1_0" type="box" pos="-0.0021 0.0045 -0.125" euler="0 0 25"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe1_1" type="box" pos="-0.0021 0.0045 -0.091" euler="0 0 25"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe3_0" type="box" pos="0.005 -0.0004 -0.017" euler="0 0 -95"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe3_1" type="box" pos="0.005 -0.0004 0.017" euler="0 0 -95"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe5_0" type="box" pos="-0.0029 -0.0041 0.091" euler="0 0 145"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe5_1" type="box" pos="-0.0029 -0.0041 0.125" euler="0 0 145"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
+      <part name="camRe" type="mesh" mesh="v6_camRe" size="1 1 1"/>
     </prefab>
     <prefab name="camLi">
-      <part name="shaft" type="cylinder" pos="0 0 0" euler="0 90 0" size="0.40 0.026 0.026"
-            rgba="0.55 0.57 0.6 1" roughness="0.3" metallic="1"/>
-      <part name="sprocket" type="cylinder" pos="0 0 -0.2075" euler="0 90 0" size="0.012 0.085 0.085"
-            rgba="0.9 0.6 0.15 1" roughness="0.4" metallic="1"/>
-      <part name="lobe2_0" type="box" pos="0.005 0.0004 -0.125" euler="0 0 -85"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe2_1" type="box" pos="0.005 0.0004 -0.091" euler="0 0 -85"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe4_0" type="box" pos="-0.0021 -0.0045 -0.017" euler="0 0 155"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe4_1" type="box" pos="-0.0021 -0.0045 0.017" euler="0 0 155"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe6_0" type="box" pos="-0.0029 0.0041 0.091" euler="0 0 35"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe6_1" type="box" pos="-0.0029 0.0041 0.125" euler="0 0 35"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
+      <part name="camLi" type="mesh" mesh="v6_camLi" size="1 1 1"/>
     </prefab>
     <prefab name="camLe">
-      <part name="shaft" type="cylinder" pos="0 0 0" euler="0 90 0" size="0.40 0.026 0.026"
-            rgba="0.55 0.57 0.6 1" roughness="0.3" metallic="1"/>
-      <part name="sprocket" type="cylinder" pos="0 0 -0.2075" euler="0 90 0" size="0.012 0.085 0.085"
-            rgba="0.35 0.36 0.38 1" roughness="0.4" metallic="1"/>
-      <part name="lobe2_0" type="box" pos="-0.0021 0.0045 -0.125" euler="0 0 25"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe2_1" type="box" pos="-0.0021 0.0045 -0.091" euler="0 0 25"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe4_0" type="box" pos="0.005 -0.0004 -0.017" euler="0 0 -95"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe4_1" type="box" pos="0.005 -0.0004 0.017" euler="0 0 -95"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe6_0" type="box" pos="-0.0029 -0.0041 0.091" euler="0 0 145"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
-      <part name="lobe6_1" type="box" pos="-0.0029 -0.0041 0.125" euler="0 0 145"
-            size="0.022 0.036 0.012" rgba="0.7 0.72 0.75 1" roughness="0.2" metallic="1"/>
+      <part name="camLe" type="mesh" mesh="v6_camLe" size="1 1 1"/>
+    </prefab>
+    <prefab name="engine_block">
+      <part name="block" type="mesh" mesh="v6_block" size="1 1 1"/>
+      <part name="head_R" type="mesh" mesh="v6_head_R" size="1 1 1"/>
+      <part name="head_L" type="mesh" mesh="v6_head_L" size="1 1 1"/>
+      <part name="intake" type="mesh" mesh="v6_intake" size="1 1 1"/>
+      <part name="exhaust" type="mesh" mesh="v6_exhaust" size="1 1 1"/>
+      <part name="timing" type="mesh" mesh="v6_timing" size="1 1 1"/>
+      <part name="stand" type="mesh" mesh="v6_stand" size="1 1 1"/>
     </prefab>
   </asset>
   <worldbody>
-    <ground size="4" visual="3" tile="2"/>
-    <light name="key" type="sun" pos="0 4 0" euler="40 -30 0" intensity="100000" castshadow="true"/>
+    <environment hdr="env/engine_studio.hdr" intensity="22000" skybox="false"/>
+    <ground size="4" visual="3" tile="2" rgba="0.32 0.33 0.35 1" roughness="0.75"/>
+    <light name="key" type="sun" pos="0 4 0" euler="40 -30 0" intensity="90000" castshadow="true"/>
     <light name="fill" type="point" pos="-1.5 1.6 -1.5" intensity="40000" falloff="10" castshadow="false"/>
-    <camera name="cam0" target="0 0.6 0" azimuth="-35" elevation="18" radius="1.5"/>
-    <camera name="front" target="0 0.6 0" azimuth="180" elevation="5" radius="1.3"/>
+    <light name="rim" type="point" pos="1.4 1.5 1.2" intensity="30000" falloff="10" castshadow="false"/>
+    <camera name="cam0" target="0 0.63 0.08" azimuth="130" elevation="22" radius="1.7"/>
+    <camera name="front" target="0 0.67 0" azimuth="180" elevation="8" radius="1.2"/>
+    <camera name="left" target="-0.1 0.63 0.05" azimuth="-110" elevation="15" radius="1.5"/>
+    <camera name="detail" target="0.06 0.72 -0.02" azimuth="105" elevation="12" radius="0.55"/>
 
     <body name="block" pos="0 0.55 0" fixed="true" mass="60">
       <prefab name="engine_block"/>
@@ -2548,107 +2382,107 @@
     <body name="crank" pos="0 0.55 0" mass="2.9">
       <prefab name="crankshaft"/>
     </body>
-    <body name="camRi" pos="0.161 0.8669 -0.0125" mass="1">
+    <body name="camRi" pos="0.1331 0.8814 -0.0125" mass="1">
       <prefab name="camRi"/>
     </body>
-    <body name="camRe" pos="0.194 0.8479 -0.0125" mass="1">
+    <body name="camRe" pos="0.2205 0.8309 -0.0125" mass="1">
       <prefab name="camRe"/>
     </body>
-    <body name="camLi" pos="-0.161 0.8669 0.0125" mass="1">
+    <body name="camLi" pos="-0.1331 0.8814 0.0125" mass="1">
       <prefab name="camLi"/>
     </body>
-    <body name="camLe" pos="-0.194 0.8479 0.0125" mass="1">
+    <body name="camLe" pos="-0.2205 0.8309 0.0125" mass="1">
       <prefab name="camLe"/>
     </body>
-    <body name="valve_in1" pos="0.126 0.8063 -0.1205" euler="0 0 -30" mass="0.12">
+    <body name="valve_in1" pos="0.105 0.7689 -0.1205" euler="0 0 -14" mass="0.12">
       <prefab name="valve_in"/>
     </body>
-    <body name="valve_ex1" pos="0.159 0.7873 -0.1205" euler="0 0 -30" mass="0.12">
+    <body name="valve_ex1" pos="0.137 0.7504 -0.1205" euler="0 0 -46" mass="0.12">
       <prefab name="valve_ex"/>
     </body>
-    <body name="valve_in2" pos="-0.126 0.8063 -0.0955" euler="0 0 30" mass="0.12">
+    <body name="valve_in2" pos="-0.105 0.7689 -0.0955" euler="0 0 14" mass="0.12">
       <prefab name="valve_in"/>
     </body>
-    <body name="valve_ex2" pos="-0.159 0.7873 -0.0955" euler="0 0 30" mass="0.12">
+    <body name="valve_ex2" pos="-0.137 0.7504 -0.0955" euler="0 0 46" mass="0.12">
       <prefab name="valve_ex"/>
     </body>
-    <body name="valve_in3" pos="0.126 0.8063 -0.0125" euler="0 0 -30" mass="0.12">
+    <body name="valve_in3" pos="0.105 0.7689 -0.0125" euler="0 0 -14" mass="0.12">
       <prefab name="valve_in"/>
     </body>
-    <body name="valve_ex3" pos="0.159 0.7873 -0.0125" euler="0 0 -30" mass="0.12">
+    <body name="valve_ex3" pos="0.137 0.7504 -0.0125" euler="0 0 -46" mass="0.12">
       <prefab name="valve_ex"/>
     </body>
-    <body name="valve_in4" pos="-0.126 0.8063 0.0125" euler="0 0 30" mass="0.12">
+    <body name="valve_in4" pos="-0.105 0.7689 0.0125" euler="0 0 14" mass="0.12">
       <prefab name="valve_in"/>
     </body>
-    <body name="valve_ex4" pos="-0.159 0.7873 0.0125" euler="0 0 30" mass="0.12">
+    <body name="valve_ex4" pos="-0.137 0.7504 0.0125" euler="0 0 46" mass="0.12">
       <prefab name="valve_ex"/>
     </body>
-    <body name="valve_in5" pos="0.126 0.8063 0.0955" euler="0 0 -30" mass="0.12">
+    <body name="valve_in5" pos="0.105 0.7689 0.0955" euler="0 0 -14" mass="0.12">
       <prefab name="valve_in"/>
     </body>
-    <body name="valve_ex5" pos="0.159 0.7873 0.0955" euler="0 0 -30" mass="0.12">
+    <body name="valve_ex5" pos="0.137 0.7504 0.0955" euler="0 0 -46" mass="0.12">
       <prefab name="valve_ex"/>
     </body>
-    <body name="valve_in6" pos="-0.126 0.8063 0.1205" euler="0 0 30" mass="0.12">
+    <body name="valve_in6" pos="-0.105 0.7689 0.1205" euler="0 0 14" mass="0.12">
       <prefab name="valve_in"/>
     </body>
-    <body name="valve_ex6" pos="-0.159 0.7873 0.1205" euler="0 0 30" mass="0.12">
+    <body name="valve_ex6" pos="-0.137 0.7504 0.1205" euler="0 0 46" mass="0.12">
       <prefab name="valve_ex"/>
     </body>
     <body name="rod1" pos="0.0575 0.6496 -0.1205" euler="0 0 -30">
-      <geom type="box" size="0.009 0.072 0.011" mass="0.55" rgba="0.5 0.52 0.56 1"
-            roughness="0.35" metallic="1" layer="1" nocollide="1"/>
+      <geom type="box" size="0.004 0.072 0.003" mass="0.55" rgba="0.5 0.52 0.56 1"
+            layer="1" nocollide="1"/>
       <prefab name="conrod"/>
     </body>
     <body name="piston1" pos="0.0935 0.7119 -0.1205" euler="0 0 -30">
-      <geom type="sphere" size="0.025" mass="0.4" rgba="0.85 0.45 0.2 1" layer="1" nocollide="1"/>
-      <prefab name="piston"/>
+      <geom type="sphere" size="0.008" mass="0.4" rgba="0.85 0.45 0.2 1" layer="1" nocollide="1"/>
+      <prefab name="piston_R"/>
     </body>
     <body name="rod2" pos="-0.0079 0.6009 -0.0955" euler="0 0 44.9873">
-      <geom type="box" size="0.009 0.072 0.011" mass="0.55" rgba="0.5 0.52 0.56 1"
-            roughness="0.35" metallic="1" layer="1" nocollide="1"/>
+      <geom type="box" size="0.004 0.072 0.003" mass="0.55" rgba="0.5 0.52 0.56 1"
+            layer="1" nocollide="1"/>
       <prefab name="conrod"/>
     </body>
     <body name="piston2" pos="-0.0588 0.6518 -0.0955" euler="0 0 30">
-      <geom type="sphere" size="0.025" mass="0.4" rgba="0.25 0.55 0.85 1" layer="1" nocollide="1"/>
-      <prefab name="piston"/>
+      <geom type="sphere" size="0.008" mass="0.4" rgba="0.25 0.55 0.85 1" layer="1" nocollide="1"/>
+      <prefab name="piston_L"/>
     </body>
     <body name="rod3" pos="0.0079 0.6009 -0.0125" euler="0 0 -44.9873">
-      <geom type="box" size="0.009 0.072 0.011" mass="0.55" rgba="0.5 0.52 0.56 1"
-            roughness="0.35" metallic="1" layer="1" nocollide="1"/>
+      <geom type="box" size="0.004 0.072 0.003" mass="0.55" rgba="0.5 0.52 0.56 1"
+            layer="1" nocollide="1"/>
       <prefab name="conrod"/>
     </body>
     <body name="piston3" pos="0.0588 0.6518 -0.0125" euler="0 0 -30">
-      <geom type="sphere" size="0.025" mass="0.4" rgba="0.85 0.45 0.2 1" layer="1" nocollide="1"/>
-      <prefab name="piston"/>
+      <geom type="sphere" size="0.008" mass="0.4" rgba="0.85 0.45 0.2 1" layer="1" nocollide="1"/>
+      <prefab name="piston_R"/>
     </body>
     <body name="rod4" pos="-0.0575 0.6496 0.0125" euler="0 0 30">
-      <geom type="box" size="0.009 0.072 0.011" mass="0.55" rgba="0.5 0.52 0.56 1"
-            roughness="0.35" metallic="1" layer="1" nocollide="1"/>
+      <geom type="box" size="0.004 0.072 0.003" mass="0.55" rgba="0.5 0.52 0.56 1"
+            layer="1" nocollide="1"/>
       <prefab name="conrod"/>
     </body>
     <body name="piston4" pos="-0.0935 0.7119 0.0125" euler="0 0 30">
-      <geom type="sphere" size="0.025" mass="0.4" rgba="0.25 0.55 0.85 1" layer="1" nocollide="1"/>
-      <prefab name="piston"/>
+      <geom type="sphere" size="0.008" mass="0.4" rgba="0.25 0.55 0.85 1" layer="1" nocollide="1"/>
+      <prefab name="piston_L"/>
     </body>
     <body name="rod5" pos="0.0402 0.5823 0.0955" euler="0 0 -15.0127">
-      <geom type="box" size="0.009 0.072 0.011" mass="0.55" rgba="0.5 0.52 0.56 1"
-            roughness="0.35" metallic="1" layer="1" nocollide="1"/>
+      <geom type="box" size="0.004 0.072 0.003" mass="0.55" rgba="0.5 0.52 0.56 1"
+            layer="1" nocollide="1"/>
       <prefab name="conrod"/>
     </body>
     <body name="piston5" pos="0.0588 0.6518 0.0955" euler="0 0 -30">
-      <geom type="sphere" size="0.025" mass="0.4" rgba="0.85 0.45 0.2 1" layer="1" nocollide="1"/>
-      <prefab name="piston"/>
+      <geom type="sphere" size="0.008" mass="0.4" rgba="0.85 0.45 0.2 1" layer="1" nocollide="1"/>
+      <prefab name="piston_R"/>
     </body>
     <body name="rod6" pos="-0.0402 0.5823 0.1205" euler="0 0 15.0127">
-      <geom type="box" size="0.009 0.072 0.011" mass="0.55" rgba="0.5 0.52 0.56 1"
-            roughness="0.35" metallic="1" layer="1" nocollide="1"/>
+      <geom type="box" size="0.004 0.072 0.003" mass="0.55" rgba="0.5 0.52 0.56 1"
+            layer="1" nocollide="1"/>
       <prefab name="conrod"/>
     </body>
     <body name="piston6" pos="-0.0588 0.6518 0.1205" euler="0 0 30">
-      <geom type="sphere" size="0.025" mass="0.4" rgba="0.25 0.55 0.85 1" layer="1" nocollide="1"/>
-      <prefab name="piston"/>
+      <geom type="sphere" size="0.008" mass="0.4" rgba="0.25 0.55 0.85 1" layer="1" nocollide="1"/>
+      <prefab name="piston_L"/>
     </body>
   </worldbody>
   <equality>
@@ -2672,38 +2506,38 @@
     <joint name="rod6" type="hinge" body1="rod6" body2="crank" anchor="-0.0215 0.5128 0.1205" axis="0 0 1"/>
     <joint name="wrist6" type="pointline" body1="rod6" body2="piston6" anchor="-0.0588 0.6518 0.1205" axis="0 0 1"/>
     <joint name="bore6" type="slide" body1="piston6" body2="world" anchor="-0.0588 0.6518 0.1205" axis="-0.5 0.866 0"/>
-    <joint name="camRi" type="hinge" body1="camRi" body2="world" anchor="0.161 0.8669 -0.0125" axis="0 0 1"
+    <joint name="camRi" type="hinge" body1="camRi" body2="world" anchor="0.1331 0.8814 -0.0125" axis="0 0 1"
            motor="speed" target="0"/>
-    <joint name="camRe" type="hinge" body1="camRe" body2="world" anchor="0.194 0.8479 -0.0125" axis="0 0 1"
+    <joint name="camRe" type="hinge" body1="camRe" body2="world" anchor="0.2205 0.8309 -0.0125" axis="0 0 1"
            motor="speed" target="0"/>
-    <joint name="camLi" type="hinge" body1="camLi" body2="world" anchor="-0.161 0.8669 0.0125" axis="0 0 1"
+    <joint name="camLi" type="hinge" body1="camLi" body2="world" anchor="-0.1331 0.8814 0.0125" axis="0 0 1"
            motor="speed" target="0"/>
-    <joint name="camLe" type="hinge" body1="camLe" body2="world" anchor="-0.194 0.8479 0.0125" axis="0 0 1"
+    <joint name="camLe" type="hinge" body1="camLe" body2="world" anchor="-0.2205 0.8309 0.0125" axis="0 0 1"
            motor="speed" target="0"/>
-    <joint name="in1" type="slide" body1="valve_in1" body2="world" anchor="0.126 0.8063 -0.1205"
-           axis="-0.5 -0.866 0" motor="position" target="0"/>
-    <joint name="ex1" type="slide" body1="valve_ex1" body2="world" anchor="0.159 0.7873 -0.1205"
-           axis="-0.5 -0.866 0" motor="position" target="0"/>
-    <joint name="in2" type="slide" body1="valve_in2" body2="world" anchor="-0.126 0.8063 -0.0955"
-           axis="0.5 -0.866 0" motor="position" target="0"/>
-    <joint name="ex2" type="slide" body1="valve_ex2" body2="world" anchor="-0.159 0.7873 -0.0955"
-           axis="0.5 -0.866 0" motor="position" target="0"/>
-    <joint name="in3" type="slide" body1="valve_in3" body2="world" anchor="0.126 0.8063 -0.0125"
-           axis="-0.5 -0.866 0" motor="position" target="0"/>
-    <joint name="ex3" type="slide" body1="valve_ex3" body2="world" anchor="0.159 0.7873 -0.0125"
-           axis="-0.5 -0.866 0" motor="position" target="0"/>
-    <joint name="in4" type="slide" body1="valve_in4" body2="world" anchor="-0.126 0.8063 0.0125"
-           axis="0.5 -0.866 0" motor="position" target="0"/>
-    <joint name="ex4" type="slide" body1="valve_ex4" body2="world" anchor="-0.159 0.7873 0.0125"
-           axis="0.5 -0.866 0" motor="position" target="0"/>
-    <joint name="in5" type="slide" body1="valve_in5" body2="world" anchor="0.126 0.8063 0.0955"
-           axis="-0.5 -0.866 0" motor="position" target="0"/>
-    <joint name="ex5" type="slide" body1="valve_ex5" body2="world" anchor="0.159 0.7873 0.0955"
-           axis="-0.5 -0.866 0" motor="position" target="0"/>
-    <joint name="in6" type="slide" body1="valve_in6" body2="world" anchor="-0.126 0.8063 0.1205"
-           axis="0.5 -0.866 0" motor="position" target="0"/>
-    <joint name="ex6" type="slide" body1="valve_ex6" body2="world" anchor="-0.159 0.7873 0.1205"
-           axis="0.5 -0.866 0" motor="position" target="0"/>
+    <joint name="in1" type="slide" body1="valve_in1" body2="world" anchor="0.105 0.7689 -0.1205"
+           axis="-0.2419 -0.9703 0" motor="position" target="0"/>
+    <joint name="ex1" type="slide" body1="valve_ex1" body2="world" anchor="0.137 0.7504 -0.1205"
+           axis="-0.7193 -0.6947 0" motor="position" target="0"/>
+    <joint name="in2" type="slide" body1="valve_in2" body2="world" anchor="-0.105 0.7689 -0.0955"
+           axis="0.2419 -0.9703 0" motor="position" target="0"/>
+    <joint name="ex2" type="slide" body1="valve_ex2" body2="world" anchor="-0.137 0.7504 -0.0955"
+           axis="0.7193 -0.6947 0" motor="position" target="0"/>
+    <joint name="in3" type="slide" body1="valve_in3" body2="world" anchor="0.105 0.7689 -0.0125"
+           axis="-0.2419 -0.9703 0" motor="position" target="0"/>
+    <joint name="ex3" type="slide" body1="valve_ex3" body2="world" anchor="0.137 0.7504 -0.0125"
+           axis="-0.7193 -0.6947 0" motor="position" target="0"/>
+    <joint name="in4" type="slide" body1="valve_in4" body2="world" anchor="-0.105 0.7689 0.0125"
+           axis="0.2419 -0.9703 0" motor="position" target="0"/>
+    <joint name="ex4" type="slide" body1="valve_ex4" body2="world" anchor="-0.137 0.7504 0.0125"
+           axis="0.7193 -0.6947 0" motor="position" target="0"/>
+    <joint name="in5" type="slide" body1="valve_in5" body2="world" anchor="0.105 0.7689 0.0955"
+           axis="-0.2419 -0.9703 0" motor="position" target="0"/>
+    <joint name="ex5" type="slide" body1="valve_ex5" body2="world" anchor="0.137 0.7504 0.0955"
+           axis="-0.7193 -0.6947 0" motor="position" target="0"/>
+    <joint name="in6" type="slide" body1="valve_in6" body2="world" anchor="-0.105 0.7689 0.1205"
+           axis="0.2419 -0.9703 0" motor="position" target="0"/>
+    <joint name="ex6" type="slide" body1="valve_ex6" body2="world" anchor="-0.137 0.7504 0.1205"
+           axis="0.7193 -0.6947 0" motor="position" target="0"/>
   </equality>
   <control>
     <controller formula="valvetrain" period="0"/>
