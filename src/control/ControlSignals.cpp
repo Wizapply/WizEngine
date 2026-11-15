@@ -106,14 +106,15 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
         out = SignalRef{Source::Time, "", Quantity::None};
         return true;
     }
-    if (sensor && kind == "param") {
-        // パラメータの名前は . を含まない（英数字と _ -）ので、そのまま使う。
+    if (kind == "param" || kind == "var") {
+        // パラメータ / 変数の名前は . を含まない（英数字と _ -）ので、そのまま使う。
+        // どちらもセンサ（読む）とアクチュエータ（書く）の両方になれる。
         const std::string pname = name.substr(name.find(':') + 1);
         if (pname.empty()) {
-            error = "\"" + name + "\": param needs a name (param:<name>)";
+            error = "\"" + name + "\": " + kind + " needs a name (" + kind + ":<name>)";
             return false;
         }
-        out = SignalRef{Source::Param, pname, Quantity::None};
+        out = SignalRef{kind == "param" ? Source::Param : Source::Var, pname, Quantity::None};
         return true;
     }
     if (!sensor && kind == "scope") {
@@ -142,8 +143,8 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
         table = &emitterActuators();
     } else {
         error = "\"" + name + "\": unknown signal kind \"" + kind + "\" (" +
-                (sensor ? "time, body:, joint:, vehicle:, param:"
-                        : "body:, joint:, vehicle:, emitter:, scope:") +
+                (sensor ? "time, body:, joint:, vehicle:, param:, var:"
+                        : "body:, joint:, vehicle:, emitter:, param:, var:, scope:") +
                 ")";
         return false;
     }

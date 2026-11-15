@@ -249,6 +249,9 @@ public:
     // 送られたキーだけ上書き（value / min / max / label / step）。move（-1 / +1）で
     // 並び替え（制御盤のカードの順 = 文書の順）。
     bool updateParam(const std::string& name, const nlohmann::json& patch);
+    // 値だけをまとめて書く（制御器の param:<名前> アクチュエータ。PHYSICS スレッド）。
+    // 範囲（min / max）と選択肢の番号へ丸める。1 つでも変わったら版を 1 回進める。
+    void setParamValues(const std::map<std::string, double>& values);
     std::uint64_t paramVersion() const { return paramVersion_.load(); }
 
     // 制御盤のグラフ（文書の <chart>）。番号で指す（並び = 表示順）。

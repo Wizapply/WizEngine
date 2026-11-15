@@ -43,6 +43,15 @@
       <button class="wide" onclick="send('reset')">⟲ Reset</button>
     </div>
     <div id="simTime" title="Simulated time (resets with ⟲)">t = 0.00 s</div>
+    <!-- 時間の速さ（スローモーション）。実時間 1x から 0.01x まで。Play / Reset と
+         同じくシミュレート中だけ出る（app.js の renderEditor）。どのカメラの
+         ページからでも変えられる（Pause と同じ = シーンの書き換えではない）。
+         シーン文書には入れない。選択肢は app.js の TIME_SCALES。 -->
+    <label id="speedRow" class="speedRow"
+           title="時間の速さ（実時間に対するシミュレーションの速さ。スローモーション）">
+      <span>⏱&#xFE0E; 時間の速さ</span>
+      <select id="speedSel" onchange="setTimeScale(this.value)"></select>
+    </label>
 
     <section class="sbSec" data-sec="cameras">
       <!-- カメラの一覧。エディタモード中はクリック = 選択（ギズモで移動 /
@@ -1180,46 +1189,6 @@
            サーバーの EditorComponent が持つ）。地面とテレインはシーンの
            1 オブジェクトとして階層一覧（Scene タブの Objects）に出し、選んだ
            ときだけ Inspector の secGround / secTerrain に欄を出す。 -->
-      <!-- 制御器（Simulink のブロック線図に相当）: 計算式アセット（🧮）を
-           シミュレート中に物理スレッドで回す。式の in / out の名前がセンサ /
-           アクチュエータ（joint:arm.angle → … → joint:arm.target）。一覧と
-           状態（コンパイルの成否・警告・評価回数）はどのページでも見えるが、
-           付け外しと周期の変更は edit.control.* = エディタカメラのページ専用
-           （control.js の renderControl()）。 -->
-      <section class="sbSec" id="secControl">
-        <div class="sbSecHead">制御器（ブロック線図）</div>
-        <div id="ctlList" class="ndList"></div>
-        <div class="edRow" id="ctlAddRow">
-          <select id="ctlPick" class="strSel"
-                  title="制御器にする計算式（🧮 アセット）"></select>
-          <button onclick="controlAddFrom('ctlPick')"
-                  title="この計算式をシミュレート中に回す">＋ 制御器にする</button>
-        </div>
-        <div class="sbSubHead">パラメータ（式からは <code>param:名前</code>）</div>
-        <div id="paramList" class="ndList"></div>
-        <div class="edRow" id="paramAddRow">
-          <button onclick="paramAdd()"
-                  title="走らせながらスライダーで変えられる値を足す（アクセル開度・目標値・ゲインなど）">＋ パラメータ</button>
-        </div>
-        <div class="edRow btnRow">
-          <button onclick="openControlPanel()" title="制御盤を別ウィンドウで開く">🎛 制御盤</button>
-          <button onclick="openScope()" title="制御器の入出力を時系列で見る">📈 スコープ</button>
-          <span id="ctlNewFormula">
-            <button onclick="newFormulaAsset()"
-                    title="雛形（PID・一次遅れ・質量ばね・信号発生器など）から計算式を作り、制御器にする">＋ 新しい計算式</button>
-            <button onclick="openFormulaText('', true)"
-                    title="数式のテキストを書いて計算式を作る">📝 数式で書く</button>
-          </span>
-        </div>
-        <div class="edHint">計算式の <b>in</b> の名前がセンサ（<code>time</code>、
-          <code>body:名前.y</code>、<code>joint:名前.angle</code>、
-          <code>vehicle:名前.speed</code>、<code>param:名前</code> …）、<b>out</b> の名前がアクチュエータ
-          （<code>joint:名前.target</code>、<code>body:名前.fy</code>、
-          <code>vehicle:名前.throttle</code>、記録だけなら <code>scope:ラベル</code>）。
-          単位は SI（角度は rad）。周期 0 = 物理の毎ステップ。式の中の
-          フィードバックは「単位遅延 z⁻¹」で切ります。</div>
-      </section>
-
       <section class="sbSec" id="secWorld" hidden>
         <div class="sbSecHead">World</div>
         <div class="edRow">
@@ -1612,7 +1581,7 @@
         <b>出力</b>の名前がアクチュエータ（joint:名前.target / body:名前.fy /
         scope:ラベル …）。フィードバックは「積分」か「単位遅延 z⁻¹」を輪に
         入れる。見出しの「📝 数式で編集」で同じ式をテキストでも書けます。
-        制御器にする（World タブ）とシミュレート中に回り、変更はすぐ効きます
+        制御器にする（🎛 制御盤か 🧮 タイルの右クリック）とシミュレート中に回り、変更はすぐ効きます
         （位置を動かしただけなら状態は保つ）。<b>右クリック</b>: 何もない所で
         ノードの追加と計算式の作成 / 削除、ノードの上でそのノードの削除。</div>
       <div class="ndHint" id="ndHintEvent">トリガー（橙）右の ● からアクション（青）へドラッグで

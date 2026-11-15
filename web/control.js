@@ -14,7 +14,7 @@
 //   edit.control.add / remove / set、edit.formula.add {template, target}、
 //   edit.formula.text {name, text}（数式のテキスト → グラフ）
 
-  // ---- 一覧（World タブの「制御器」節）--------------------------------------
+  // ---- 制御器の一覧（表示は panel.js の制御盤）------------------------------
   function controllers() {
     return (sceneData && sceneData.formulas && sceneData.formulas.controllers) || [];
   }
@@ -48,9 +48,12 @@
       if (!j.name) continue;
       for (const k of q.joint || []) out.push('joint:' + j.name + '.' + k);
     }
-    if (isIn) {
-      for (const p of controlParams()) out.push('param:' + p.name);
+    // パラメータは読むのも書くのもできる。変数（var:）も同じで、今ある名前を候補に。
+    for (const p of controlParams()) out.push('param:' + p.name);
+    if (typeof fVarNames === 'function') {
+      for (const v of fVarNames()) out.push('var:' + v);
     }
+    out.push('var:');
     if (!isIn) {
       // パーティクルのエミッタ（<worldbody> の <emitter>）
       for (const m of sceneData.emitters || []) {
@@ -72,10 +75,6 @@
   function controlAdd(name, period) {
     if (!name) return;
     send('edit.control.add', { formula: name, period: period || 0 });
-  }
-  function controlAddFrom(selectId) {
-    const el = document.getElementById(selectId);
-    if (el && el.value) controlAdd(el.value, 0);
   }
   function controlRemove(name) {
     send('edit.control.remove', { formula: name });
@@ -161,79 +160,12 @@
     return items;
   }
 
-  let ctlListKey = '';
-  function renderControl() {
-    if (!sceneData) return;
-    const here = isEditorCam();
-    const list = document.getElementById('ctlList');
-    const pick = document.getElementById('ctlPick');
-    if (!list || !pick) return;
-    document.getElementById('ctlAddRow').hidden = !here;
-    document.getElementById('ctlNewFormula').hidden = !here;
-
-    const ctl = controllers();
-    const run = controlRun();
-    const key = JSON.stringify([ctl, (run.controllers || []).map((c) =>
-      [c.formula, c.ok, c.errors, c.warnings, c.execs, c.failures]), here,
-      formulaAssets().map((f) => f.name)]);
-    // 打っている途中の欄（周期）は上書きしない。
-    const ae = document.activeElement;
-    if (key === ctlListKey || (list.contains(ae) && ae.type === 'number') || ae === pick) {
-      return;
-    }
-    ctlListKey = key;
-
-    const dis = here ? '' : ' disabled';
-    list.innerHTML = ctl.length ? ctl.map((c) => {
-      const r = controlRunOf(c.formula);
-      const n = ndEsc(c.formula);
-      let state = '<span class="sub">停止中</span>';
-      if (r) {
-        state = r.ok
-          ? '<span class="sub" title="評価回数（このシミュレート）">' +
-            (r.execs || 0) + ' 回' + (r.failures ? ' / 失敗 ' + r.failures : '') + '</span>'
-          : '<span class="sub err">エラー</span>';
-      }
-      // 1 行目: 有効・名前・スコープ・外す。2 行目: 周期と実行状態
-      // （サイドバーは狭いので 1 行に詰めると名前が折り返す）。
-      let h = '<div class="ndItem ctlItem" data-formula="' + n + '">' +
-        '<div class="ctlTop">' +
-        '<input type="checkbox" title="有効（外すと止まる。出力も掛けない）"' +
-        (c.enabled ? ' checked' : '') + dis +
-        ' onchange="controlSet(\'' + n + '\',{enabled:this.checked})">' +
-        '<span class="link" title="ノードエディタで開く" onclick="openFormulaAsset(\'' + n +
-        '\')">🧮 ' + n + '</span>' +
-        '<span class="x" title="スコープ" onclick="openScope(\'' + n + '\')">📈</span>' +
-        (here ? '<span class="x" title="制御器から外す（計算式は残る）" onclick="controlRemove(\'' +
-                n + '\')">✕</span>' : '') +
-        '</div><div class="ctlSub">周期 ' +
-        '<input class="num" type="number" min="0" max="10" step="0.001" value="' +
-        (c.period || 0) + '" title="実行周期 (s)。0 = 物理の毎ステップ"' + dis +
-        ' onchange="controlSet(\'' + n + '\',{period:parseFloat(this.value)||0})"> s' +
-        state + '</div></div>';
-      if (r && r.errors && r.errors.length) {
-        h += '<div class="ctlMsgs err">' + r.errors.map(ndEsc).join('\n') + '</div>';
-      }
-      if (r && r.warnings && r.warnings.length) {
-        h += '<div class="ctlMsgs">' + r.warnings.map(ndEsc).join('\n') + '</div>';
-      }
-      return h;
-    }).join('') : '<div class="edHint">制御器はありません。🧮 計算式を「制御器にする」か、' +
-                  '「＋ 新しい計算式」で雛形から作ります。</div>';
-
-    const free = formulaAssets().filter((f) => !isControllerFormula(f.name));
-    pick.innerHTML = free.length
-      ? free.map((f) => '<option value="' + ndEsc(f.name) + '">🧮 ' + ndEsc(f.name) +
-                        '</option>').join('')
-      : '<option value="">（計算式がありません）</option>';
-  }
-  setInterval(() => { renderControl(); renderParams(); renderFormulaTextStatus(); }, 500);
+  setInterval(renderFormulaTextStatus, 500);
 
   // ---- パラメータ（式からは param:<名前>）----------------------------------
-  // スライダーの値はシミュレート中でもすぐ効く（サーバーは式を作り直さず、
+  // スライダー（制御盤）の値はシミュレート中でもすぐ効く（サーバーは式を作り直さず、
   // 次の物理ステップから新しい値を読む）。値の変更はどのカメラのページから
   // でもでき、追加・削除・範囲の変更はエディタカメラのページだけ。
-  let paramListKey = '';
   const paramSendAt = {};
   const paramPending = {};
   function paramIsSwitch(p) {
@@ -256,66 +188,10 @@
     const step = p ? paramStep(p) : 0.001;
     return v.toFixed(Math.max(0, Math.min(6, -Math.floor(Math.log10(step)))));
   }
-  function renderParams() {
-    if (!sceneData) return;
-    const list = document.getElementById('paramList');
-    if (!list) return;
-    const here = isEditorCam();
-    document.getElementById('paramAddRow').hidden = !here;
-    const params = controlParams();
-    const key = JSON.stringify([params, here]);
-    // ドラッグ中・入力中の欄は上書きしない（入力欄の「フォーカス中は触らない」と同じ）。
-    if (key === paramListKey || list.contains(document.activeElement)) return;
-    paramListKey = key;
-    const dis = here ? '' : ' disabled';
-    list.innerHTML = params.length ? params.map((p) => {
-      const n = ndEsc(p.name);
-      const title = p.label ? '<span class="paramLabel">' + ndEsc(p.label) + '</span> ' : '';
-      const opts = paramOptions(p);
-      if (opts.length) {
-        const cur = Math.round(p.value);
-        return '<div class="ndItem ctlItem paramItem" data-param="' + n + '">' +
-          '<div class="ctlTop">' + title + '<code title="式からは param:' + n +
-          ' で読む（値は項目の番号 0, 1, 2 …）">param:' + n + '</code>' +
-          (here ? '<span class="x" title="パラメータを削除" onclick="paramRemove(\'' + n +
-                  '\')">✕</span>' : '') + '</div>' +
-          '<select class="strSel" onchange="paramInput(\'' + n + '\', this.value, true)">' +
-          opts.map((o, i) => '<option value="' + i + '"' + (i === cur ? ' selected' : '') + '>' +
-                             i + ': ' + ndEsc(o) + '</option>').join('') + '</select></div>';
-      }
-      if (paramIsSwitch(p)) {
-        return '<div class="ndItem ctlItem paramItem" data-param="' + n + '">' +
-          '<div class="ctlTop"><label class="paramSwitch"><input type="checkbox"' +
-          (p.value >= 0.5 ? ' checked' : '') +
-          ' onchange="paramInput(\'' + n + '\', this.checked ? 1 : 0, true)"> ' + title +
-          '<code title="式からは param:' + n + ' で読む（オン = 1 / オフ = 0）">param:' + n + '</code></label>' +
-          (here ? '<span class="x" title="パラメータを削除" onclick="paramRemove(\'' + n +
-                  '\')">✕</span>' : '') + '</div></div>';
-      }
-      return '<div class="ndItem ctlItem paramItem" data-param="' + n + '">' +
-        '<div class="ctlTop">' + title + '<code title="式からは param:' + n + ' で読む">param:' + n + '</code>' +
-        '<span class="paramVal" id="pv_' + n + '" title="クリックで値を直接入力"' +
-        ' onclick="paramPrompt(\'' + n + '\')">' + fmtParam(p.value, p.name) + '</span>' +
-        (here ? '<span class="x" title="パラメータを削除" onclick="paramRemove(\'' + n +
-                '\')">✕</span>' : '') + '</div>' +
-        '<input type="range" class="paramSlider" min="' + p.min + '" max="' + p.max +
-        '" step="' + paramStep(p) + '" value="' + p.value + '"' +
-        ' oninput="paramInput(\'' + n + '\', this.value)"' +
-        ' onchange="paramInput(\'' + n + '\', this.value, true)">' +
-        '<div class="ctlSub">範囲 <input class="num" type="number" value="' + p.min + '"' + dis +
-        ' title="最小" onchange="paramSet(\'' + n + '\',{min:parseFloat(this.value)})"> 〜 ' +
-        '<input class="num" type="number" value="' + p.max + '"' + dis +
-        ' title="最大" onchange="paramSet(\'' + n + '\',{max:parseFloat(this.value)})">' +
-        '</div></div>';
-    }).join('') : '<div class="edHint">パラメータはありません。式から <code>param:名前</code> で' +
-                  '読む値を「＋ パラメータ」で足すと、ここのスライダーで走らせながら変えられます。</div>';
-  }
   // スライダーの連続入力は 40 ms に 1 回だけ送り、最後の値は必ず送る。
   function paramInput(name, value, final) {
     const v = parseFloat(value);
     if (!isFinite(v)) return;
-    const label = document.getElementById('pv_' + name);
-    if (label) label.textContent = fmtParam(v, name);
     const now = performance.now();
     if (final || !paramSendAt[name] || now - paramSendAt[name] > 40) {
       paramSendAt[name] = now;
@@ -326,31 +202,6 @@
       paramPending[name] = setTimeout(() => paramInput(name, v, true), 45);
     }
   }
-  function paramPrompt(name) {
-    const p = controlParams().find((x) => x.name === name);
-    if (!p) return;
-    const v = parseFloat(prompt('param:' + name + ' の値（' + p.min + ' 〜 ' + p.max + '）', String(p.value)));
-    if (isFinite(v)) paramInput(name, v, true);
-  }
-  function paramSet(name, patch) {
-    for (const k of Object.keys(patch)) {
-      if (!isFinite(patch[k])) return;
-    }
-    send('edit.param.set', Object.assign({ name: name }, patch));
-  }
-  function paramRemove(name) {
-    if (!confirm('パラメータ「' + name + '」を削除します。式の param:' + name + ' は 0 を読むようになります。')) return;
-    send('edit.param.remove', { name: name });
-  }
-  function paramAdd() {
-    const name = prompt('パラメータの名前（英数字と _。式からは param:名前 で読む）', 'gain');
-    if (!name) return;
-    const min = parseFloat(prompt('最小値', '0'));
-    const max = parseFloat(prompt('最大値', '1'));
-    if (!isFinite(min) || !isFinite(max)) return;
-    send('edit.param.add', { name: name.trim(), min: min, max: max, value: min });
-  }
-
   // ---- スコープ -------------------------------------------------------------
   // 記録はサーバーが持ち（制御器ごとに約 5 万行）、ここは since 以降の差分を
   // 積むだけ。表示は requestAnimationFrame で、データが来たときだけ描く。

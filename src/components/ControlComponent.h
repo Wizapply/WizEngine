@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -34,6 +35,14 @@ class EffectsComponent;
 //          力・トルクは毎ステップ掛け続ける必要があるため）
 //       3. 評価した時刻の入出力をスコープ用に記録
 //   onEditorStep  (PHYSICS) … 実行状態を捨てる（次のシミュレート開始で作り直す）
+//
+// 変数（var:<名前>）: 制御器の間で共有する値の表（vars_）。出力を当てる
+// （applyOutputs）ときに書くので、一覧の上の制御器が書いた値は同じステップの
+// 下の制御器が読み、同じ式の中で「読んでから書く」と前回の値を読む = 状態を
+// 持つ変数になる。開始・Reset で空に戻る（読むと 0）。
+// パラメータへの書き込み（param:<名前> アクチュエータ）: 値が変わったときだけ
+// 自分の写し（params_）へすぐ入れ（後の制御器が同じステップで読む）、ステップの
+// 終わりにまとめて EditorState へ（制御盤のスライダーが動く・保存される）。
 //
 // 時刻の意味: センサは「前のステップの終わり」の値で、出力は「このステップ」
 // に効く。プラント（Chrono）が状態を持つので、制御ループに代数ループは無い。
@@ -115,6 +124,8 @@ private:
     // パラメータの値の写し（param:<名前> センサ。paramVersion が変わったときだけ取る）。
     std::uint64_t paramVersion_ = ~std::uint64_t(0);
     std::map<std::string, double> params_;
+    std::map<std::string, double> paramWrites_;  // このステップに式が書いた param:
+    std::map<std::string, double> vars_;         // 変数（var:<名前>）の表
     double time_ = 0.0;  // シミュレート開始からの時間（time センサ）
     // ジョイントの相対運動の基準（文書のジョイント番号 → 開始時の姿勢）。
     std::map<int, wizengine::control::JointMeasure> joints_;
@@ -122,7 +133,7 @@ private:
     // このステップで測った結果（同じジョイントを 2 度測らない = 角度の連続化が
     // 1 ステップに 1 回だけ進む）。
     std::map<int, wizengine::control::JointMeasure::Result> jointResults_;
-    int statusTick_ = 0;
+    std::chrono::steady_clock::time_point lastStatus_{};
     bool jointStatsFetched_ = false;
     std::vector<double> jointForce_, jointTorque_;
 

@@ -368,6 +368,12 @@ public:
     // 物理スレッドが進めているシミュレーション時刻（PHYSICS スレッド専用。
     // 呼ばれたステップの始まりの時刻）。
     double physicsSimTime() const { return simClock_; }
+    // 時間の速さ = 実時間 1 秒に進めるシミュレーション時間（0.01〜1。スロー
+    // モーション）。物理ループ（main.cpp）が毎パス PhysicsTuning から写す。
+    // 描画の補間（1 パスを何秒の実時間で描くか）とカメラの注文の保持時間が
+    // これで伸びる = 0.01 倍でも物の動きが滑らかで、追従カメラが外れない。
+    void setTimeScale(double s) { timeScale_.store(s); }
+    double timeScale() const { return timeScale_.load(); }
 
     // Whiten strength for a grabbed object (kSelectedWhiten in SceneConfig.h).
     float selectedWhiten() const;
@@ -1170,6 +1176,7 @@ private:
         std::vector<std::vector<float>> cables;  // latestCables_ と同じ並び
         double simTime = 0.0;   // このフレームのシミュレーション時刻 (s)
         double wallTime = 0.0;  // 公開した実時間（steady_clock の秒）
+        double timeScale = 1.0; // 公開したときの時間の速さ（補間の進み方）
         std::uint64_t cut = 0;  // 作ったときの poseCut_
         bool valid = false;
     };
@@ -1178,6 +1185,7 @@ private:
     // 置き直しなどがあった = 補間しない。poseMutex_ の下。
     std::uint64_t poseCut_ = 0;
     double simClock_ = 0.0;  // PHYSICS: stepPhysics が進めるシミュレーション時刻
+    std::atomic<double> timeScale_{1.0};  // setTimeScale（どのスレッドからも読む）
     // RENDER スレッド専用: このフレームに描く姿勢（buildRenderFrame が作る）。
     std::vector<BodyTransform> renderPoses_;
     std::vector<std::vector<float>> renderSoft_;

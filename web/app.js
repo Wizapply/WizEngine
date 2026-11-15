@@ -78,6 +78,37 @@
     // taller glyph metrics and made the button grow on "Pause".
     b.textContent = paused ? '\u25b6\ufe0e Play' : '\u23f8\ufe0e Pause';
   }
+  // ---- 時間の速さ（スローモーション）-------------------------------------
+  // サーバーは 0.01〜1 の任意の値を受ける（timescale {scale}）が、選択肢は
+  // この刻みだけ。物理の刻み（dt）は変えないので、結果は速さによらず同じ。
+  const TIME_SCALES = [1, 0.5, 0.25, 0.1, 0.05, 0.02, 0.01];
+  function timeScaleLabel(v) { return (v >= 0.1 ? +v.toFixed(2) : +v.toFixed(3)) + 'x'; }
+  (function buildTimeScaleSelect() {
+    const sel = document.getElementById('speedSel');
+    sel.innerHTML = TIME_SCALES.map((v) =>
+      '<option value="' + v + '">' + timeScaleLabel(v) + '</option>').join('');
+    sel.value = '1';
+  })();
+  function showTimeScale(v) {
+    const sel = document.getElementById('speedSel');
+    document.getElementById('speedRow').classList.toggle('slow', v < 0.999);
+    if (document.activeElement === sel) return;  // 選んでいる最中は触らない
+    let opt = Array.from(sel.options).find((o) => Math.abs(+o.value - v) < 1e-6);
+    if (!opt) {  // 選択肢に無い値（手で /input を叩いた等）もそのまま見せる
+      sel.querySelectorAll('option.custom').forEach((o) => o.remove());
+      opt = document.createElement('option');
+      opt.className = 'custom';
+      opt.value = String(v);
+      opt.textContent = timeScaleLabel(v);
+      sel.appendChild(opt);
+    }
+    sel.value = opt.value;
+  }
+  function setTimeScale(v) {
+    const scale = Math.min(1, Math.max(0.01, +v || 1));
+    send('timescale', { scale: scale });
+    showTimeScale(scale);
+  }
   function togglePause() {
     send('pause');
     setPlayLabel(document.getElementById('btnPlay')
@@ -830,6 +861,7 @@
       }
       curIter = s.iterations;
       if (s.paused !== undefined) setPlayLabel(s.paused);
+      if (s.timeScale !== undefined) showTimeScale(s.timeScale);
       if (s.versions && !versionsShown) {
         versionsShown = true;
         const v = s.versions;
@@ -886,7 +918,9 @@
       document.getElementById('recVal').textContent = fmt(s.recovery, 2);
       // エディタ中は物理を回していないので、遅い扱いにしない。
       const editing = s.mode === 'editor';
-      const slowPhysics = !editing && s.realtime < 0.95;
+      // 遅れの判定は時間の速さに対して（0.1x で回しているのは遅れではない）。
+      const scale = s.timeScale !== undefined ? s.timeScale : 1;
+      const slowPhysics = !editing && s.realtime < 0.95 * scale;
       const slowRender = s.renderFps < s.targetFps * 0.9;
       document.getElementById('perf').innerHTML =
         '<span>mode <b>' + (editing ? '✎ editor' : '▶ simulate') + '</b></span>' +
@@ -895,7 +929,8 @@
           fmt(s.physicsHz) + ' Hz</b> (' + fmt(s.physicsMs, 2) + ' ms, x' +
           s.substeps + ' substeps)</span>' +
         '<span class="' + (slowPhysics ? 'warn' : '') + '">speed <b>' +
-          fmt(s.realtime, 2) + 'x</b></span>' +
+          fmt(s.realtime, s.realtime < 0.095 ? 3 : 2) + 'x</b>' +
+          (scale < 0.999 ? ' / ' + timeScaleLabel(scale) : '') + '</span>' +
         '<span class="' + (slowRender ? 'warn' : '') + '">render <b>' +
           fmt(s.renderFps) + ' fps</b> (' + fmt(s.renderMs, 2) + ' ms)</span>' +
         '<span>solver <b>' + fmt(s.solverMs, 2) + ' ms</b></span>' +
@@ -2524,6 +2559,7 @@
     vEdit.classList.toggle('active', editing);
     vSim.classList.toggle('active', !editing);
     vEdit.disabled = vSim.disabled = !owner;
+    document.getElementById('speedSel').disabled = !owner;
     let editTitle = '物理を止めて配置・設計する';
     if (!editorHere) {
       const eCamIdx =
@@ -2541,6 +2577,7 @@
     // 使わない。無効化ではなく行ごと非表示にする。
     document.querySelector('.playRow').style.display = editing ? 'none' : '';
     document.getElementById('simTime').style.display = editing ? 'none' : '';
+    document.getElementById('speedRow').hidden = editing;
     document.getElementById('btnPlay').disabled = editing || !owner;
 
     // ギズモ。モード切替は映像左上のツールバー（Unity のシーンビューと同じ
@@ -3288,16 +3325,18 @@
   }
   // 新しい計算式: 雛形（サーバーの control/ControlTemplates.cpp）を番号で
   // 選ぶ。雛形が指す相手（ジョイント / 物）は選択中・既定のものから決める。
-  function newFormulaAsset() {
+  // host = ダイアログを出す窓（制御盤の窓から呼ぶとき。省略 = このページ）。
+  function newFormulaAsset(host) {
+    const W = host && typeof host.prompt === 'function' ? host : window;
     const tpls = formulaTemplates();
-    const name = prompt('新しい計算式の名前（英数字と _ -）', 'formula');
+    const name = W.prompt('新しい計算式の名前（英数字と _ -）', 'formula');
     if (name === null) return;
     const clean = cleanAssetName(name);
     if (!clean) return;
     let list = '最初の中身を選んでください（雛形は制御器として付き、シミュレート中に回ります）:\n';
     tpls.forEach((t, i) => { list += '  ' + i + ' = ' + t.label + '（' + t.hint + '）\n'; });
     list += '  t = 数式のテキストで書く';
-    const pick = prompt(list, '0');
+    const pick = W.prompt(list, '0');
     if (pick === null) return;
     if (String(pick).trim().toLowerCase() === 't') {
       if (typeof openFormulaText === 'function') openFormulaText(clean, true);
@@ -3775,18 +3814,55 @@
   function fPatch(id, patch) {
     send('edit.fnode.set', fArgs(Object.assign({ id: id }, patch)));
   }
-  function fAddNodeAt(type, x, y) {
+  function fAddNodeAt(type, x, y, name) {
     if (!currentFormula()) { newFormulaAsset(); return; }
     const extra = { type: type, x: Math.max(0, Math.round(x)), y: Math.max(0, Math.round(y)) };
     // 入出力ノードは最初の名前を入れておく（空のままだと 0 を出す）。
-    if (type === 'in') extra.name = 'time';
-    if (type === 'out') extra.name = 'scope:y';
+    if (type === 'in') extra.name = name || 'time';
+    if (type === 'out') extra.name = name || 'scope:y';
     if (type === 'const') extra.params = [1];
     if (type === 'curve') extra.params = [0, 0, 1, 1];
     send('edit.fnode.add', fArgs(extra));
   }
   function fRemoveWire(from, fromPort, to, port) {
     send('edit.fwire.remove', fArgs({ from: from, fromPort: fromPort, to: to, port: port }));
+  }
+  // 変数（var:<名前>）のノード。中身は in / out ノード（名前が var:…）で、制御器の
+  // 間で共有する値を読む / 書く（サーバーの control/ControlSignals.h の「変数」）。
+  // 既にある変数の名前を既定に出す（同じ名前を打ち間違えないように）。
+  function fVarNames() {
+    const set = new Set();
+    for (const f of formulaAssets()) {
+      for (const n of f.nodes || []) {
+        if ((n.type === 'in' || n.type === 'out') && (n.name || '').startsWith('var:')) {
+          set.add(n.name.slice(4));
+        }
+      }
+    }
+    const live = sceneData && sceneData.control && sceneData.control.vars;
+    if (live) Object.keys(live).forEach((k) => set.add(k));
+    return Array.from(set).filter((s) => s).sort();
+  }
+  function fAddVarNode(write, x, y) {
+    const have = fVarNames();
+    const name = prompt((write ? '書く' : '読む') + '変数の名前（英数字と _ -。どの計算式からも同じ名前で読み書きできる）' +
+                        (have.length ? '\n今ある変数: ' + have.join(', ') : ''),
+                        have[0] || 'x');
+    if (name === null) return;
+    const clean = String(name).trim().replace(/[^A-Za-z0-9_-]/g, '');
+    if (!clean) return;
+    fAddNodeAt(write ? 'out' : 'in', x, y, 'var:' + clean);
+  }
+  function fAddParamWriteNode(x, y) {
+    const params = typeof controlParams === 'function' ? controlParams() : [];
+    if (!params.length) {
+      alert('パラメータがありません。制御盤の「✎ 編集」でパラメータを足してから使ってください。');
+      return;
+    }
+    const name = prompt('書き換えるパラメータの名前（' + params.map((p) => p.name).join(', ') + '）',
+                        params[0].name);
+    if (name === null || !params.some((p) => p.name === name.trim())) return;
+    fAddNodeAt('out', x, y, 'param:' + name.trim());
   }
   function fNodeMenuItems(x, y) {
     const items = [];
@@ -3797,6 +3873,14 @@
         if (def.group !== g) continue;
         items.push({ label: def.label, hint: k,
                      onClick: () => fAddNodeAt(k, x, y) });
+      }
+      if (g === '入出力') {
+        items.push({ label: '📦 変数を読む', hint: 'var:名前',
+                     onClick: () => fAddVarNode(false, x, y) });
+        items.push({ label: '📦 変数に書く', hint: 'var:名前',
+                     onClick: () => fAddVarNode(true, x, y) });
+        items.push({ label: '🎛 パラメータを書き換える', hint: 'param:名前',
+                     onClick: () => fAddParamWriteNode(x, y) });
       }
     }
     return items;
@@ -3817,16 +3901,23 @@
     if (dl.innerHTML !== html) dl.innerHTML = html;
     return '<input class="txt fName" type="text" list="' + listId + '" value="' + ndEsc(cur) +
            '" placeholder="' + (isIn ? 'joint:arm.angle' : 'joint:arm.target') + '" ' +
-           'title="' + (isIn ? 'センサ: time / body:名前.量 / joint:名前.量 / vehicle:名前.量'
-                             : 'アクチュエータ: joint:名前.target / body:名前.fx… / vehicle:名前.throttle… / scope:ラベル') +
+           'title="' + (isIn ? 'センサ: time / body:名前.量 / joint:名前.量 / vehicle:名前.量 / param:名前 / var:変数'
+                             : 'アクチュエータ: joint:名前.target / body:名前.fx… / vehicle:名前.throttle… / param:名前 / var:変数 / scope:ラベル') +
            '" spellcheck="false" ' +
            'onchange="fPatch(' + id + ',{name:this.value})">';
   }
   function fNodeHtml(n, def) {
     const rows = Math.max(def.ins.length, def.outs.length);
     const io = n.type === 'in' || n.type === 'out';
-    const title = io ? (n.type === 'in' ? '入力 ' : '出力 ') + (n.name || '?') : def.label;
-    let h = '<div class="ndNode fml' + (io ? ' io' : '') + '" data-id="' + n.id +
+    // var: の入出力は「変数」として見せる（中身は同じ in / out ノード）。
+    const isVar = io && (n.name || '').startsWith('var:');
+    const isParamWrite = n.type === 'out' && (n.name || '').startsWith('param:');
+    const title = isVar
+      ? '📦 変数 ' + n.name.slice(4) + (n.type === 'in' ? ' を読む' : ' に書く')
+      : isParamWrite ? '🎛 パラメータ ' + n.name.slice(6) + ' に書く'
+      : io ? (n.type === 'in' ? '入力 ' : '出力 ') + (n.name || '?') : def.label;
+    let h = '<div class="ndNode fml' + (io ? ' io' : '') + (isVar ? ' var' : '') +
+            '" data-id="' + n.id +
             '" style="left:' + n.x + 'px;top:' + n.y + 'px">';
     h += '<div class="ndTitleRow" data-drag="' + n.id + '" title="ドラッグで移動（' +
          n.type + ' #' + n.id + '）">' +
@@ -3875,6 +3966,32 @@
            'title="出力 ' + ndEsc(def.outs[i]) + ' - ここから入力へドラッグで接続"></span>';
     });
     return h + '</div>';
+  }
+  // キャンバス（#ndNodes と線の #ndWires）の広さをノードの範囲に合わせる。CSS の
+  // 2000 x 1400 は最小。それより外に置いたノードは、線の SVG がはみ出しを切るので
+  // 線が描かれなかった（数式から起こした大きな計算式で起きた）。
+  const ND_MIN_W = 2000, ND_MIN_H = 1400;
+  function ndFitCanvas(nodes) {
+    let w = ND_MIN_W, h = ND_MIN_H;
+    for (const n of nodes || []) {
+      w = Math.max(w, (n.x || 0) + NODE_W + 400);
+      h = Math.max(h, (n.y || 0) + 600);
+    }
+    ndSetCanvasSize(w, h);
+  }
+  function ndSetCanvasSize(w, h) {
+    for (const id of ['ndNodes', 'ndWires']) {
+      const el = document.getElementById(id);
+      el.style.width = Math.ceil(w) + 'px';
+      el.style.height = Math.ceil(h) + 'px';
+    }
+  }
+  // ドラッグで端へ寄せたら広げる（縮めるのは次の組み直しのとき）。
+  function ndGrowCanvas(x, y) {
+    const el = document.getElementById('ndNodes');
+    const w = Math.max(el.offsetWidth, x + NODE_W + 400);
+    const h = Math.max(el.offsetHeight, y + 600);
+    if (w > el.offsetWidth || h > el.offsetHeight) ndSetCanvasSize(w, h);
   }
   function fDrawWires(posOverride) {
     const g = currentFormulaGraph();
@@ -3929,6 +4046,7 @@
         ? 'この計算式にはノードがありません。キャンバスを右クリックして追加してください。'
         : '計算式がありません。右クリックの「新しい計算式…」で作るか、Assets パネルの 🧮 タイルから選んでください。') +
       '</div>';
+    ndFitCanvas(g.nodes);
     fDrawWires();
   }
   // vec の 1 成分だけを変える（カメラの距離と仰角は別々の行）。
@@ -4215,6 +4333,7 @@
         ? 'このイベントにはノードがありません。上のパレットから追加してください。'
         : 'イベントアセットがありません。「＋新規」で作るか、Assets パネルの ⚡ タイルから選んでください。') +
       '</div>';
+    ndFitCanvas(g.nodes);
     ndDrawWires();
   }
 
@@ -4277,6 +4396,7 @@
         ndDrag.y = Math.max(0, Math.round(p.y - ndDrag.offY));
         ndDrag.el.style.left = ndDrag.x + 'px';
         ndDrag.el.style.top = ndDrag.y + 'px';
+        ndGrowCanvas(ndDrag.x, ndDrag.y);
         ndRedrawLocal();
         return;
       }

@@ -1,6 +1,7 @@
 #include "components/ControlComponent.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <set>
@@ -33,6 +34,7 @@ const char* sourceName(ctl::Source s) {
         case ctl::Source::Scope: return "scope";
         case ctl::Source::Param: return "param";
         case ctl::Source::Emitter: return "emitter";
+        case ctl::Source::Var: return "var";
     }
     return "?";
 }
@@ -63,6 +65,7 @@ void ControlComponent::onEditorStep(Scene& scene, double dt) {
     if (runtimes_.empty() && joints_.empty()) return;
     runtimes_.clear();
     joints_.clear();
+    vars_.clear();
     time_ = 0.0;
     // 次のシミュレート開始で必ず作り直す。
     generation_ = ~std::uint64_t(0);
@@ -79,6 +82,7 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
         generation_ = gen;
         runtimes_.clear();
         joints_.clear();
+        vars_.clear();
         time_ = 0.0;
         controlVersion_ = ~std::uint64_t(0);
         std::lock_guard<std::mutex> lk(mutex_);
@@ -168,9 +172,22 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
         }
         applyOutputs(scene, rt, dt);
     }
+    // 式が書いたパラメータを EditorState へ（制御盤のスライダー・保存）。版が進むので
+    // 次のステップで params_ を写し直す = 範囲で丸めた値がここへ戻る。
+    if (!paramWrites_.empty()) {
+        scene.editor().setParamValues(paramWrites_);
+        paramWrites_.clear();
+    }
     time_ += dt;
-    // 評価回数などの表示は 0.5 秒に 1 回くらい更新すれば足りる。
-    if (executed && (++statusTick_ % 64) == 0) publishStatus();
+    // 評価回数・変数の値などの表示は実時間で 0.2 秒に 1 回（物理のレートに
+    // よらない。以前の「64 ステップに 1 回」は 30 Hz のシーンで 2 秒おきだった）。
+    if (executed) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastStatus_ >= std::chrono::milliseconds(200)) {
+            lastStatus_ = now;
+            publishStatus();
+        }
+    }
 }
 
 // ---- 作り直し -----------------------------------------------------------------
@@ -315,11 +332,15 @@ void ControlComponent::bind(Scene& scene, Runtime& rt, Binding& b, bool sensor) 
             bool found = false;
             for (const auto& p : scene.editor().params()) found = found || p.name == r.target;
             if (!found) {
-                rt.warnings.push_back(label + ": no parameter with that name - reads 0 "
-                                      "(add <param name=\"" + r.target + "\"> in <control>)");
+                rt.warnings.push_back(label + ": no parameter with that name - " +
+                                      (sensor ? "reads 0" : "ignored") +
+                                      " (add <param name=\"" + r.target + "\"> in <control>)");
             }
             return;
         }
+        case ctl::Source::Var:
+            b.ok = true;  // 宣言は要らない（最初に書くまでは 0）
+            return;
         case ctl::Source::Body:
         case ctl::Source::Vehicle: {
             // 物理スレッドはオブジェクト一覧の唯一の書き手なのでロックは要らない。
@@ -451,6 +472,10 @@ double ControlComponent::readSensor(Scene& scene, const Binding& b) {
             const auto it = params_.find(r.target);
             return it == params_.end() ? 0.0 : it->second;
         }
+        case ctl::Source::Var: {
+            const auto it = vars_.find(r.target);
+            return it == vars_.end() ? 0.0 : it->second;
+        }
     }
     return 0.0;
 }
@@ -509,6 +534,19 @@ void ControlComponent::applyOutputs(Scene& scene, Runtime& rt, double dt) {
             case ctl::Source::Emitter:
                 // 見た目だけ（パーティクルの量）。毎ステップ書く = ゼロ次ホールド。
                 if (effects_) effects_->setRate(b.emitter, v);
+                break;
+            case ctl::Source::Var:
+                // 表へすぐ書く = 後の制御器が同じステップで読む。
+                vars_[b.ref.target] = v;
+                break;
+            case ctl::Source::Param:
+                // 値が変わったときだけ書く（同じ値を出し続けている間はスライダーで
+                // 上書きできる）。後の制御器が同じステップで読めるよう写しにも入れる。
+                if (b.applied && b.lastApplied == v) break;
+                b.applied = true;
+                b.lastApplied = v;
+                params_[b.ref.target] = v;
+                paramWrites_[b.ref.target] = v;
                 break;
             case ctl::Source::Vehicle: {
                 Drive& d = drives[b.object];
@@ -577,10 +615,13 @@ void ControlComponent::publishStatus() {
         for (double v : rt.outVals) c["last"].push_back(std::isfinite(v) ? v : 0.0);
         list.push_back(std::move(c));
     }
+    nlohmann::json vars = nlohmann::json::object();
+    for (const auto& kv : vars_) vars[kv.first] = std::isfinite(kv.second) ? kv.second : 0.0;
     std::lock_guard<std::mutex> lk(mutex_);
     status_ = nlohmann::json::object();
     status_["running"] = !runtimes_.empty();
     status_["controllers"] = std::move(list);
+    status_["vars"] = std::move(vars);
 }
 
 nlohmann::json ControlComponent::statusJson() const {

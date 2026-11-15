@@ -568,6 +568,7 @@ int run(int argc, char** argv) {
                 j["realtime"] = stats.realtime.load();
                 j["simTime"] = stats.simTime.load();
                 j["paused"] = tuning.paused.load();
+                j["timeScale"] = tuning.timeScale.load();
                 // 車両の計測値（車両があるときだけ）。オーバーレイの
                 // 「car」欄がこれを出す。
                 if (const auto v = vehicleComp->snapshot(); v.present) {
@@ -696,6 +697,9 @@ int run(int argc, char** argv) {
         // If the machine simply cannot keep up, we cap the catch-up
         // (kMaxCatchUp) and drop the backlog - the sim then does run slower
         // than real time, which the "speed" figure in the overlay reports.
+        //
+        // 時間の速さ（PhysicsTuning::timeScale、0.01〜1）を掛けた実時間を積む
+        // = スローモーション。dt は変えない（物理の結果は速さによらず同じ）。
         constexpr int kMaxCatchUp = 4;
 
         auto prev = std::chrono::steady_clock::now();
@@ -706,7 +710,13 @@ int run(int argc, char** argv) {
         double busyMs = 0.0;
         double solverMs = 0.0;
         double collisionMs = 0.0;
-        double simAdvanced = 0.0;  // simulated seconds in this window
+        // 時間の速さを掛けた実時間（= 進めるはずだったシミュレーション時間）と、
+        // 追いつけずに捨てた時間（どちらもこの窓の中、シミュレーション秒）。
+        // 速度表示は (scaledWall - dropped) / 窓の実時間 で出す: 0.01 倍では
+        // 0.5 秒の窓に 1 ステップ入るか入らないかなので、進んだステップを
+        // 数えると 0 と 0.02 の間でばたつく。
+        double scaledWall = 0.0;
+        double dropped = 0.0;
         double simTotal = 0.0;     // simulated seconds since start (see PerfStats)
 
         // Chrono が投げた例外（未実装の口・壊れた拘束など）はこのスレッドで
@@ -773,7 +783,15 @@ int run(int argc, char** argv) {
             double elapsed = std::chrono::duration<double>(now - prev).count();
             prev = now;
             if (elapsed > 0.25) elapsed = 0.25;  // ignore huge stalls
-            if (!tuning.paused.load()) accumulator += elapsed;
+            // 時間の速さ（スローモーション）: 実時間にこれを掛けて積む。
+            double timeScale = tuning.timeScale.load();
+            if (!(timeScale >= 0.01)) timeScale = 0.01;  // NaN も弾く
+            if (timeScale > 1.0) timeScale = 1.0;
+            scene.setTimeScale(timeScale);
+            if (!tuning.paused.load()) {
+                accumulator += elapsed * timeScale;
+                scaledWall += elapsed * timeScale;
+            }
 
             if (const int iters = tuning.pendingIterations.exchange(0);
                 iters > 0) {
@@ -829,15 +847,16 @@ int run(int argc, char** argv) {
                     }
                 });
                 if (!stepOk) {
+                    dropped += accumulator;
                     accumulator = 0.0;
                     break;
                 }
                 accumulator -= stepDt;
-                simAdvanced += stepDt;
                 simTotal += stepDt;
                 ++stepped;
             }
             if (accumulator >= stepDt) {
+                dropped += accumulator;
                 accumulator = 0.0;  // behind and out of catch-up budget
             }
             // このパスの終わりの姿勢を描画の補間用に公開する（描画は前回と
@@ -860,8 +879,11 @@ int run(int argc, char** argv) {
                 stats.physicsMs.store(updates > 0 ? busyMs / updates : 0.0);
                 stats.solverMs.store(updates > 0 ? solverMs / updates : 0.0);
                 stats.collisionMs.store(updates > 0 ? collisionMs / updates : 0.0);
-                stats.realtime.store(
-                    tuning.paused.load() ? 1.0 : simAdvanced / windowSec);
+                // 実時間に対する速さ（時間の速さ込み）。間に合っていれば
+                // timeScale と同じ値、遅れていればそれより小さい。
+                double rt = (scaledWall - dropped) / windowSec;
+                if (rt < 0.0) rt = 0.0;
+                stats.realtime.store(tuning.paused.load() ? timeScale : rt);
                 // Same thread that steps Chrono, so this read is safe.
                 stats.asleep.store(static_cast<int>(physics.sleepingCount()));
                 stats.bodies.store(static_cast<int>(physics.bodyCount()));
@@ -870,13 +892,18 @@ int run(int argc, char** argv) {
                 busyMs = 0.0;
                 solverMs = 0.0;
                 collisionMs = 0.0;
-                simAdvanced = 0.0;
+                scaledWall = 0.0;
+                dropped = 0.0;
             }
 
             // Nothing to do until the next step is due; keep the thread from
             // spinning while still waking up promptly.
             if (accumulator < stepDt) {
-                const double waitSec = stepDt - accumulator;
+                // 次のステップまでの実時間 = 足りないシミュレーション時間 ÷ 速さ。
+                // スローモーションでも編集・Pause・速さの変更に素早く応じる
+                // よう、1 回の眠りは 20 ms まで。
+                double waitSec = (stepDt - accumulator) / timeScale;
+                if (waitSec > 0.04) waitSec = 0.04;
                 std::this_thread::sleep_for(std::chrono::duration<double>(
                     waitSec > 0.002 ? waitSec * 0.5 : 0.0005));
             }

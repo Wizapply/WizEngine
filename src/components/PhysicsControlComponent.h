@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include <nlohmann/json.hpp>
 
 #include "core/Log.h"
@@ -7,7 +9,7 @@
 #include "scene/Scene.h"
 #include "scene/SceneComponent.h"
 
-// Routes the engine-tuning commands from the browser (reset, pause, solver,
+// Routes the engine-tuning commands from the browser (reset, pause, timescale, solver,
 // envelope, recovery, rate, substeps) into the shared PhysicsTuning state,
 // which the physics loop in main.cpp applies at a step boundary.
 //
@@ -42,6 +44,19 @@ public:
             tuning_.reset.store(true);
         } else if (cmd == "pause") {
             tuning_.paused.store(!tuning_.paused.load());
+        } else if (cmd == "timescale") {
+            // 時間の速さ。どのカメラのページからでも可（Pause と同じ = シーンの
+            // 書き換えではない）。/input は誰でも叩けるので型を信じない。
+            const auto it = msg.find("scale");
+            if (it != msg.end() && it->is_number()) {
+                double v = it->get<double>();
+                if (std::isfinite(v)) {
+                    if (v < 0.01) v = 0.01;
+                    if (v > 1.0) v = 1.0;
+                    tuning_.timeScale.store(v);
+                    LOGI("physics", "time scale -> %.3fx", v);
+                }
+            }
         } else if (cmd == "solver") {
             const int iters = msg.value("iterations", 0);
             if (iters > 0 && iters <= 2000) {

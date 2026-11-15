@@ -548,41 +548,111 @@ struct Builder {
     }
 };
 
-// 依存の深さで左から並べる（delay / integrate へ入る線は数えない = 輪を切る）。
+// ノードエディタでの高さの見積もり（web/app.js の fNodeHtml と同じ作り: 見出し +
+// ポートの行 + 欄のある種類は欄の 1 行）。列の中で重ならないように積むのに使う。
+double nodeHeight(const FormulaNodeDesc& n) {
+    static const std::set<std::string> withField = {
+        "in", "out", "const", "curve", "integrate", "gain", "saturate", "deadzone",
+        "delay", "ratelimit", "pid"};
+    int rows = 1;
+    if (const FormulaKindInfo* k = formulaKind(n.kind)) rows = std::max({1, k->inputs, k->outputs});
+    return 34.0 + 18.0 * rows + 8.0 + (withField.count(n.kind) ? 42.0 : 0.0);
+}
+
+// 自動の配置（Sugiyama 風の簡易版）。
+//   列 = 依存の深さ（delay / integrate へ入る線は数えない = 輪を切る）。
+//   入力・定数のように前の無いノードは「使う先のいちばん左の列」のすぐ左へ
+//   寄せる（全部を左端に積むと、線がキャンバスを横断して読めなくなる）。
+//   出力は一番右の列に揃える（読む人が右端を探せばよい）。
+//   列の中の並びは、つながる相手の高さの平均（重心）で揃えて線を真っ直ぐに
+//   近づけ、ノードの高さぶん下へずらして重ならないようにする。
 void layout(FormulaGraphDesc& g) {
-    std::map<int, const FormulaNodeDesc*> byId;
-    for (const auto& n : g.nodes) byId[n.id] = &n;
-    std::map<int, int> depth;
-    std::function<int(int, int)> depthOf = [&](int id, int guard) -> int {
-        const auto it = depth.find(id);
-        if (it != depth.end()) return it->second;
+    const std::size_t N = g.nodes.size();
+    if (N == 0) return;
+    std::map<int, std::size_t> idx;
+    for (std::size_t i = 0; i < N; ++i) idx[g.nodes[i].id] = i;
+    std::vector<std::vector<std::size_t>> preds(N), succs(N);
+    for (const auto& w : g.wires) {
+        const auto a = idx.find(w.from), b = idx.find(w.to);
+        if (a == idx.end() || b == idx.end() || a->second == b->second) continue;
+        if (formulaBreaksFeedback(g.nodes[b->second].kind)) continue;  // 輪を切る線
+        preds[b->second].push_back(a->second);
+        succs[a->second].push_back(b->second);
+    }
+    // 深さ（最長経路）。輪は上で切ってあるが、念のため深さに上限を付ける。
+    std::vector<int> depth(N, -1);
+    std::function<int(std::size_t, int)> depthOf = [&](std::size_t i, int guard) -> int {
+        if (depth[i] >= 0) return depth[i];
         if (guard > 4096) return 0;
         int d = 0;
-        const auto n = byId.find(id);
-        if (n != byId.end() && !formulaBreaksFeedback(n->second->kind)) {
-            for (const auto& w : g.wires) {
-                if (w.to == id) d = std::max(d, depthOf(w.from, guard + 1) + 1);
-            }
-        }
-        depth[id] = d;
+        for (std::size_t p : preds[i]) d = std::max(d, depthOf(p, guard + 1) + 1);
+        depth[i] = d;
         return d;
     };
-    std::map<int, int> rows;
-    for (auto& n : g.nodes) {
-        int d = depthOf(n.id, 0);
-        // 出力は一番右の列に揃える（読む人が右端を探せばよい）。
-        if (n.kind == "out") d = -1;
-        n.x = d < 0 ? 0 : 40 + d * 220;
-        n.y = 0;
-        if (d >= 0) n.y = 40 + 110 * rows[d]++;
+    for (std::size_t i = 0; i < N; ++i) depthOf(i, 0);
+    // 前の無いノードを使う先の左へ寄せる。
+    for (std::size_t i = 0; i < N; ++i) {
+        if (!preds[i].empty() || succs[i].empty() || g.nodes[i].kind == "out") continue;
+        int m = 1 << 30;
+        for (std::size_t s2 : succs[i]) m = std::min(m, depth[s2]);
+        depth[i] = std::max(0, m - 1);
     }
     int maxDepth = 0;
-    for (const auto& kv : depth) maxDepth = std::max(maxDepth, kv.second);
-    int row = 0;
-    for (auto& n : g.nodes) {
-        if (n.kind != "out") continue;
-        n.x = 40 + (maxDepth + 1) * 220;
-        n.y = 40 + 110 * row++;
+    for (std::size_t i = 0; i < N; ++i) {
+        if (g.nodes[i].kind != "out") maxDepth = std::max(maxDepth, depth[i]);
+    }
+    for (std::size_t i = 0; i < N; ++i) {
+        if (g.nodes[i].kind == "out") depth[i] = maxDepth + 1;
+    }
+    std::vector<std::vector<std::size_t>> cols(std::size_t(maxDepth) + 2);
+    for (std::size_t i = 0; i < N; ++i) cols[std::size_t(depth[i])].push_back(i);  // 書いた順
+
+    constexpr double kGap = 16.0, kTop = 40.0;
+    std::vector<double> y(N, 0.0);
+    std::vector<bool> placed(N, false);
+    // 1 列を「望む高さ」の順に並べ、上から重ならないように積む。
+    auto placeColumn = [&](std::vector<std::size_t>& col, const std::vector<double>& want) {
+        std::stable_sort(col.begin(), col.end(),
+                         [&](std::size_t a, std::size_t b) { return want[a] < want[b]; });
+        double cursor = kTop;
+        for (std::size_t i : col) {
+            y[i] = std::max(cursor, want[i]);
+            cursor = y[i] + nodeHeight(g.nodes[i]) + kGap;
+            placed[i] = true;
+        }
+    };
+    auto mean = [&](const std::vector<std::size_t>& list, double fallback) {
+        double sum = 0.0;
+        int n = 0;
+        for (std::size_t j : list) {
+            if (!placed[j]) continue;
+            sum += y[j];
+            ++n;
+        }
+        return n ? sum / n : fallback;
+    };
+    std::vector<double> want(N, 0.0);
+    // 左から: 前の相手の重心へ。前の無いノードは書いた順に積む（仮置き）。
+    for (auto& col : cols) {
+        double order = kTop;
+        for (std::size_t i : col) {
+            want[i] = mean(preds[i], order);
+            order += nodeHeight(g.nodes[i]) + kGap;
+        }
+        placeColumn(col, want);
+    }
+    // 右から: 前の無いノード（入力・定数）を使う先の重心へ寄せ直す。
+    for (std::size_t c = cols.size(); c-- > 0;) {
+        for (std::size_t i : cols[c]) {
+            want[i] = preds[i].empty() ? mean(succs[i], y[i]) : y[i];
+        }
+        placeColumn(cols[c], want);
+    }
+    for (std::size_t c = 0; c < cols.size(); ++c) {
+        for (std::size_t i : cols[c]) {
+            g.nodes[i].x = 40.0 + 230.0 * double(c);
+            g.nodes[i].y = std::round(y[i]);
+        }
     }
 }
 

@@ -520,6 +520,7 @@ void Scene::endPhysicsPass() {
         frameCur_.cables = latestCables_;
         frameCur_.simTime = simClock_;
         frameCur_.wallTime = wall;
+        frameCur_.timeScale = timeScale_.load();
         frameCur_.cut = poseCut_;
         frameCur_.valid = true;
     }
@@ -929,7 +930,9 @@ void Scene::buildRenderFrame() {
     // 1 パスぶん遅れて描く: 今回のフレームを公開した瞬間は前回の姿勢
     // （α = 0）、そこから 1 パスぶんの時間をかけて今回の姿勢（α = 1）へ。
     // 先読み（外挿）はしない - 次のパスが遅れたら今回の姿勢で待つ。
-    double alpha = (now - frameCur_.wallTime) / span;
+    // スローモーション（時間の速さ < 1）では 1 パスのシミュレーション時間を
+    // 速さで割った実時間をかけて描く = 0.01 倍でもコマ送りにならない。
+    double alpha = (now - frameCur_.wallTime) * frameCur_.timeScale / span;
     if (alpha < 0.0) alpha = 0.0;
     if (alpha > 1.0) alpha = 1.0;
     renderAlpha_ = alpha;
@@ -1408,8 +1411,11 @@ void Scene::updateCameraRigs(const std::vector<BodyTransform>& poses,
         out = &poses[std::size_t(index)];
         return true;
     };
-    auto fresh = [now](double stamp) {
-        return stamp >= 0.0 && now - stamp <= ed::kCameraHoldSeconds;
+    // 注文の保持時間は実時間で数えるので、スローモーションでは速さで割って
+    // 伸ばす（0.01 倍の 30 Hz では注文が 3.3 秒に 1 回しか来ない）。
+    const double hold = ed::kCameraHoldSeconds / std::max(0.01, timeScale());
+    auto fresh = [now, hold](double stamp) {
+        return stamp >= 0.0 && now - stamp <= hold;
     };
 
     for (std::size_t i = 0; i < cameras_.size(); ++i) {

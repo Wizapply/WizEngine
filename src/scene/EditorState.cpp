@@ -679,6 +679,23 @@ bool EditorState::updateParam(const std::string& name, const nlohmann::json& pat
     return false;
 }
 
+void EditorState::setParamValues(const std::map<std::string, double>& values) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    bool changed = false;
+    for (auto& p : params_) {
+        const auto it = values.find(p.name);
+        if (it == values.end()) continue;
+        wizengine::editor::ParamDesc q = p;
+        q.value = it->second;
+        q = wizengine::editor::clampParam(q);
+        if (q.value != p.value) {
+            p.value = q.value;
+            changed = true;
+        }
+    }
+    if (changed) paramVersion_.fetch_add(1);
+}
+
 // ---- 制御盤のグラフ -------------------------------------------------------------
 std::vector<wizengine::editor::ChartDesc> EditorState::charts() const {
     std::lock_guard<std::mutex> lk(mutex_);
