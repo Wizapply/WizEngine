@@ -697,6 +697,8 @@
     resize: vertical;
     display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;
     overflow-y: hidden; scrollbar-gutter: stable; padding: 8px 2px 2px;
+    /* 横には流さない（タイルは折り返す。はみ出しが出ても横スクロールにしない）。 */
+    overflow-x: hidden;
     scrollbar-width: thin; scrollbar-color: #3a3d45 transparent;
     /* overscroll-behavior はここに書かない（上の #assets.active .asList）。 */
   }
@@ -724,7 +726,9 @@
   /* 区分の見出し（🧱 作成 / 📍 ローカル / 🌐 グローバル）。タイルの折り返しの
      中で 1 行を丸ごと使う。色の帯で区分を見分ける。 */
   .asSec {
-    flex: 0 0 100%; display: flex; align-items: baseline; gap: 8px;
+    /* 幅 100% に padding と帯を含める（content-box のままだと 15px はみ出して
+       一覧が横にスクロールできてしまう）。 */
+    flex: 0 0 100%; box-sizing: border-box; min-width: 0; display: flex; align-items: baseline; gap: 8px;
     margin: 6px 0 0; padding: 3px 6px; font-size: 11px; color: #9aa0aa;
     border-left: 3px solid #4a4e58; background: rgba(255,255,255,.03); border-radius: 3px;
   }
@@ -733,7 +737,7 @@
   .asSec span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .asSec.local { border-left-color: #47935c; }
   .asSec.global { border-left-color: #4a70ad; }
-  .asEmpty { flex: 0 0 100%; font-size: 11px; color: #6b6f78; padding: 2px 8px; }
+  .asEmpty { flex: 0 0 100%; box-sizing: border-box; font-size: 11px; color: #6b6f78; padding: 2px 8px; }
   /* テレインのタイルの名前の変更（.name と差し替える input）。 */
   .asItem .asRename {
     display: block; width: 100%; box-sizing: border-box; margin-top: 2px;

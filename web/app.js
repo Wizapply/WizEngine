@@ -2598,8 +2598,11 @@
     vEdit.title = editTitle;
 
     // ヘッダーのシーンタイトル。保存名がまだ無いシーンは「(無題)」。
-    document.getElementById('vhTitle').textContent =
-      sceneData.sceneFile || '(無題のシーン)';
+    // ブラウザのタイトル（タブ）にも同じ名前を出す: 「シーン名 - Charon」。
+    const sceneTitle = sceneData.sceneFile || '(無題のシーン)';
+    document.getElementById('vhTitle').textContent = sceneTitle;
+    const docTitle = sceneTitle + ' - Charon';
+    if (document.title !== docTitle) document.title = docTitle;
 
     // エディタ中は時間が進まないので、Play / Reset ボタンとタイムスタンプは
     // 使わない。無効化ではなく行ごと非表示にする。
