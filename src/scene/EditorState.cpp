@@ -90,6 +90,19 @@ std::size_t EditorState::cableCount() const {
     return cables_.size();
 }
 
+std::vector<wizengine::editor::EmitterDesc> EditorState::emitters() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return emitters_;
+}
+
+void EditorState::setEmitters(std::vector<wizengine::editor::EmitterDesc> emitters) {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        emitters_ = std::move(emitters);
+    }
+    emitterVersion_.fetch_add(1);
+}
+
 // ---- イベントアセット -------------------------------------------------------
 // 変更は必ず graphVersion_ を進める（物理スレッドが実行キャッシュを取り直す
 // 合図）。mutex_ の下で書き、読みはコピーで返す - ジョイントと同じ流儀。

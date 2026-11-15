@@ -372,6 +372,7 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererMeshes.cpp
     src/render/RendererLines.cpp
     src/render/RendererOverlays.cpp
+    src/render/RendererParticles.cpp
     src/render/RendererGround.cpp
     src/render/RendererTerrain.cpp
     src/render/RendererTerrainSurface.cpp
@@ -403,6 +404,7 @@ set(WIZ_SCENE_SOURCES
 set(WIZ_COMPONENT_SOURCES
     src/components/AutoGenComponent.cpp
     src/components/EditorComponent.cpp
+    src/components/EffectsComponent.cpp
     src/components/GizmoComponent.cpp
     src/components/PrefabComponent.cpp
     src/components/ScatterComponent.cpp

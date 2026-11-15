@@ -40,6 +40,7 @@
 #include "components/StreamControlComponent.h"
 #include "components/TerrainComponent.h"
 #include "components/ControlComponent.h"
+#include "components/EffectsComponent.h"
 #include "components/VehicleComponent.h"
 #include "components/PrefabComponent.h"
 #include "components/ScatterComponent.h"
@@ -486,6 +487,11 @@ int run(int argc, char** argv) {
     auto controlOwner = std::make_unique<ControlComponent>(vehicleComp);
     ControlComponent* controlComp = controlOwner.get();
     scene.addComponent(std::move(controlOwner));
+    // パーティクルのエミッタ（見た目だけ）。制御器の emitter:<名前>.rate が
+    // そのステップの量を書くので、制御器より後に登録する。
+    auto effectsOwner = std::make_unique<EffectsComponent>();
+    controlComp->setEffects(effectsOwner.get());
+    scene.addComponent(std::move(effectsOwner));
     scene.addComponent(std::move(vehicleOwner));
     // プレハブ（見た目の部品）の描画。車両の車輪姿勢は VehicleComponent から。
     scene.addComponent(std::make_unique<PrefabComponent>(vehicleComp));

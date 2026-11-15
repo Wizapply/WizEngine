@@ -995,6 +995,59 @@ CableDesc cableFromXml(const xml::Element& e, const std::vector<BodyDesc>& bodie
     return clampCable(c);
 }
 
+// ---- パーティクルのエミッタ（WizEngine の拡張。見た目だけ）------------------
+// 付け先は body（名前・番号・world）。既定と同じ値は書かない。
+xml::Element emitterElement(const EmitterDesc& m, const std::vector<BodyDesc>& bodies) {
+    xml::Element e("emitter");
+    const EmitterDesc d;
+    if (!m.name.empty()) e.set("name", m.name);
+    e.set("body", bodyRefText(bodies, m.body));
+    if (!isZero(m.position)) setVec3(e, "pos", m.position);
+    if (!isZero(m.rotation)) setVec3(e, "euler", m.rotation);
+    e.setNumber("radius", m.radius);
+    if (m.height != d.height) e.setNumber("height", m.height);
+    if (m.rate != d.rate) e.setNumber("rate", m.rate);
+    if (m.life != d.life) e.setNumber("life", m.life);
+    if (m.size != d.size) e.setNumber("size", m.size);
+    if (m.grow != d.grow) e.setNumber("grow", m.grow);
+    if (m.speed != d.speed) e.setNumber("speed", m.speed);
+    if (m.inherit != d.inherit) e.setNumber("inherit", m.inherit);
+    setColor(e, "rgba", m.color);
+    setColor(e, "rgba2", m.color2);
+    if (m.intensity != d.intensity) e.setNumber("intensity", m.intensity);
+    if (m.light != d.light) e.setNumber("light", m.light);
+    if (m.lightRange != d.lightRange) e.setNumber("lightrange", m.lightRange);
+    if (m.max != d.max) e.setInt("max", m.max);
+    return e;
+}
+EmitterDesc emitterFromXml(const xml::Element& e, const std::vector<BodyDesc>& bodies,
+                           Warn& warn) {
+    EmitterDesc m;
+    m.name = e.attr("name");
+    m.body = bodyRefIndex(bodies, e.attr("body", "world"), "body", warn);
+    m.position = getVec3(e, "pos", m.position);
+    m.rotation = getVec3(e, "euler", m.rotation);
+    m.radius = e.number("radius", m.radius);
+    m.height = e.number("height", m.height);
+    m.rate = e.number("rate", m.rate);
+    m.life = e.number("life", m.life);
+    m.size = e.number("size", m.size);
+    m.grow = e.number("grow", m.grow);
+    m.speed = e.number("speed", m.speed);
+    m.inherit = e.number("inherit", m.inherit);
+    m.color = getColor(e, "rgba", m.color);
+    m.color2 = getColor(e, "rgba2", m.color2);
+    m.intensity = e.number("intensity", m.intensity);
+    m.light = e.number("light", m.light);
+    m.lightRange = e.number("lightrange", m.lightRange);
+    m.max = e.integer("max", m.max);
+    if (m.name.empty()) {
+        warn("<emitter>: no name - controllers can only drive it by name "
+             "(emitter:<name>.rate), so it only uses its own rate");
+    }
+    return clampEmitter(m);
+}
+
 // イベントグラフ（MuJoCo には無い WizEngine の拡張）。種類ごとに意味のある
 // 属性だけを書く - 使わない欄まで並べると、手で読むときに嘘の情報になる。
 xml::Element nodeElement(const NodeDesc& n) {
@@ -1438,6 +1491,7 @@ xml::Element toXml(const SceneDocument& doc) {
     }
     for (const auto& b : doc.bodies) world.append(bodyElement(b));
     for (const auto& c : doc.cables) world.append(cableElement(c, doc.bodies));
+    for (const auto& m : doc.emitters) world.append(emitterElement(m, doc.bodies));
     root.append(std::move(world));
 
     if (!doc.joints.empty()) {
@@ -1614,7 +1668,7 @@ SceneDocument fromXml(const xml::Element& root,
     if (const xml::Element* world = root.first("worldbody")) {
         warnUnknownChildren(*world,
                             {"environment", "ground", "terrain", "light", "camera",
-                             "body", "cable"},
+                             "body", "cable", "emitter"},
                             "<worldbody>", warn);
 
         // 環境光と地面は worldbody 直下の単一要素。2 個目以降は警告して無視。
@@ -1700,6 +1754,10 @@ SceneDocument fromXml(const xml::Element& root,
         // ケーブル（FEA）。端の参照は body を全部読んだ後で解く。
         for (const xml::Element* c : world->all("cable")) {
             doc.cables.push_back(cableFromXml(*c, doc.bodies, warn));
+        }
+        // パーティクルのエミッタ（見た目だけ）。付け先も body を全部読んだ後で解く。
+        for (const xml::Element* m : world->all("emitter")) {
+            doc.emitters.push_back(emitterFromXml(*m, doc.bodies, warn));
         }
     }
 

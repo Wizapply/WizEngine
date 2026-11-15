@@ -1185,6 +1185,56 @@ inline CableDesc clampCable(CableDesc c) {
     return c;
 }
 
+// ---- パーティクルのエミッタ（見た目だけの粒子を出す口）---------------------
+// 物理には何も返さない飾り（炎・火花・煙）。粒子は付け先（body、-1 = ワールド）の
+// ローカルの範囲で生まれ、その瞬間の付け先の速度（inherit 倍）にばらつき
+// （speed）を足した速度で飛び、life 秒かけて size → size × grow に広がりながら
+// color → color2 へ変わって消える。出す量は rate（粒子 / 秒）で、制御器の
+// アクチュエータ emitter:<名前>.rate が書けばそのステップはその値が勝つ
+// （燃焼の式が「燃えている間だけ」出す、など）。描画は加算合成（光って見える）。
+// 範囲はローカル +Y を軸にした円柱（pos を底面の中心に、半径 radius・高さ
+// height）、height = 0 なら半径 radius の球。light > 0 なら範囲の中心に点光源を
+// 置き、明るさを「生きている粒子の量」に合わせて揺らす（周りの部品を照らす）。
+// 文書では <worldbody> の <emitter>。
+struct EmitterDesc {
+    std::string name;
+    int body = -1;                      // 付け先のオブジェクト番号（-1 = ワールド）
+    Vec3d position{0.0, 0.0, 0.0};      // 付け先のローカル
+    Vec3d rotation{0.0, 0.0, 0.0};      // オイラー角（度）
+    double radius = 0.02;               // m
+    double height = 0.0;                // m（0 = 球）
+    double rate = 0.0;                  // 粒子 / 秒（制御器が書けばそちらが勝つ）
+    double life = 0.05;                 // 寿命 (s、シミュレーションの時間)
+    double size = 0.01;                 // 生まれたときの大きさ（直径 m）
+    double grow = 3.0;                  // 消えるときの大きさの倍率
+    double speed = 0.3;                 // ばらつきの速さ (m/s)
+    double inherit = 1.0;               // 付け先の速度を受け継ぐ割合
+    Color3 color{1.0f, 0.85f, 0.5f};    // 生まれたとき（リニア）
+    Color3 color2{0.9f, 0.18f, 0.03f};  // 消えるとき
+    double intensity = 4.0;             // 色の倍率（1 を超えると光って見える）
+    double light = 0.0;                 // 点光源の最大の明るさ (lm、0 = 無し)
+    double lightRange = 0.3;            // 点光源の届く距離 (m)
+    int max = 256;                      // 同時に生きている粒子の上限
+};
+inline EmitterDesc clampEmitter(EmitterDesc e) {
+    auto cl = [](double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); };
+    e.radius = cl(e.radius, 0.0, 10.0);
+    e.height = cl(e.height, 0.0, 10.0);
+    e.rate = cl(e.rate, 0.0, 1.0e6);
+    e.life = cl(e.life, 0.001, 30.0);
+    e.size = cl(e.size, 0.0001, 10.0);
+    e.grow = cl(e.grow, 0.0, 100.0);
+    e.speed = cl(e.speed, 0.0, 1000.0);
+    e.inherit = cl(e.inherit, 0.0, 1.0);
+    e.intensity = cl(e.intensity, 0.0, 1000.0);
+    e.light = cl(e.light, 0.0, 1.0e7);
+    e.lightRange = cl(e.lightRange, 0.01, 100.0);
+    if (e.max < 1) e.max = 1;
+    if (e.max > 4096) e.max = 4096;
+    if (e.body < -1) e.body = -1;
+    return e;
+}
+
 // ---- JSON 変換 ------------------------------------------------------------
 // nlohmann の ADL 版（to_json/from_json）ではなく明示的な関数にしてある。
 // 「どのキーが出るか」がそのまま保存フォーマットとブラウザ API になるので、
@@ -1508,6 +1558,28 @@ inline nlohmann::json toJson(const CableDesc& c) {
     j["damping"] = c.damping;
     j["collide"] = c.collide;
     j["color"] = colorToHex(c.color);
+    return j;
+}
+inline nlohmann::json toJson(const EmitterDesc& e) {
+    nlohmann::json j;
+    j["name"] = e.name;
+    j["body"] = e.body;
+    j["pos"] = toJson(e.position);
+    j["rot"] = toJson(e.rotation);
+    j["radius"] = e.radius;
+    j["height"] = e.height;
+    j["rate"] = e.rate;
+    j["life"] = e.life;
+    j["size"] = e.size;
+    j["grow"] = e.grow;
+    j["speed"] = e.speed;
+    j["inherit"] = e.inherit;
+    j["color"] = colorToHex(e.color);
+    j["color2"] = colorToHex(e.color2);
+    j["intensity"] = e.intensity;
+    j["light"] = e.light;
+    j["lightRange"] = e.lightRange;
+    j["max"] = e.max;
     return j;
 }
 inline CableDesc cableFromJson(const nlohmann::json& j, const CableDesc& base) {

@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "components/VehicleComponent.h"
+#include "components/EffectsComponent.h"
 #include "core/Log.h"
 #include "scene/Scene.h"
 
@@ -31,6 +32,7 @@ const char* sourceName(ctl::Source s) {
         case ctl::Source::Vehicle: return "vehicle";
         case ctl::Source::Scope: return "scope";
         case ctl::Source::Param: return "param";
+        case ctl::Source::Emitter: return "emitter";
     }
     return "?";
 }
@@ -93,9 +95,11 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
     }
     const std::uint64_t cv = scene.editor().controlVersion();
     const std::uint64_t fv = scene.editor().formulaVersion();
-    if (cv != controlVersion_ || fv != formulaVersion_) {
+    const std::uint64_t ev = scene.editor().emitterVersion();
+    if (cv != controlVersion_ || fv != formulaVersion_ || ev != emitterVersion_) {
         controlVersion_ = cv;
         formulaVersion_ = fv;
+        emitterVersion_ = ev;
         rebuild(scene);
     }
     if (runtimes_.empty()) {
@@ -346,6 +350,18 @@ void ControlComponent::bind(Scene& scene, Runtime& rt, Binding& b, bool sensor) 
             b.ok = true;
             return;
         }
+        case ctl::Source::Emitter: {
+            const auto emitters = scene.editor().emitters();
+            for (std::size_t i = 0; i < emitters.size(); ++i) {
+                if (emitters[i].name != r.target) continue;
+                b.emitter = int(i);
+                b.ok = effects_ != nullptr;
+                return;
+            }
+            rt.warnings.push_back(label + ": no emitter with that name - ignored "
+                                  "(add <emitter name=\"" + r.target + "\"> in <worldbody>)");
+            return;
+        }
         case ctl::Source::Joint: {
             const auto joints = scene.editor().joints();
             for (std::size_t j = 0; j < joints.size(); ++j) {
@@ -430,6 +446,7 @@ double ControlComponent::readSensor(Scene& scene, const Binding& b) {
             }
         }
         case ctl::Source::Scope: return 0.0;
+        case ctl::Source::Emitter: return 0.0;
         case ctl::Source::Param: {
             const auto it = params_.find(r.target);
             return it == params_.end() ? 0.0 : it->second;
@@ -489,6 +506,10 @@ void ControlComponent::applyOutputs(Scene& scene, Runtime& rt, double dt) {
                 }
                 break;
             }
+            case ctl::Source::Emitter:
+                // 見た目だけ（パーティクルの量）。毎ステップ書く = ゼロ次ホールド。
+                if (effects_) effects_->setRate(b.emitter, v);
+                break;
             case ctl::Source::Vehicle: {
                 Drive& d = drives[b.object];
                 switch (b.ref.quantity) {

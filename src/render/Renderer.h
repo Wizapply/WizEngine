@@ -425,6 +425,23 @@ public:
                         const std::vector<filament::math::float4>& colors,
                         const std::vector<uint16_t>& indices);
 
+    // ---- パーティクル（加算合成の光る粒子。炎・火花など見た目だけ）------
+    // 粒子 1 個 = 中心・直径・色。描き方は「直交する 3 枚の円盤」で、中心の
+    // 頂点が色・縁の頂点が黒（particle.mat が加算で足す）= どの向きから見ても
+    // 柔らかい光の玉になる（テクスチャ不要）。全ビューに映る（エディタ専用
+    // レイヤではない）。addParticleMesh は最大数を決めて 1 回、setParticles は
+    // 毎フレーム呼んでよい: 転送するのは「今の数と前回の数の大きい方」だけで、
+    // 残りの席は面積 0 の三角形（何も描かない）のまま = 実行中にプリミティブ数を
+    // 変える版依存の API を使わない（線バッチと同じ方針）。RENDER スレッド。
+    struct Particle {
+        filament::math::float3 position{0.0f, 0.0f, 0.0f};
+        float diameter = 0.01f;
+        filament::math::float3 color{1.0f, 1.0f, 1.0f};  // リニア。1 を超えてよい
+    };
+    std::size_t addParticleMesh(std::size_t maxParticles);
+    // particles が最大数を超えたぶんは描かない。
+    void setParticles(std::size_t id, const std::vector<Particle>& particles);
+
     // ---- レイヤ ----------------------------------------------------------
     // ギズモのように「エディタカメラのビューにだけ」見せたい物のための
     // レイヤ分け。シーンは全ビュー共有のままなので、レンダラブルの
@@ -647,6 +664,19 @@ private:
         bool inScene = false;
     };
     std::vector<OverlayMesh> overlayMeshes_;
+    // パーティクルのメッシュ（席の数は作るときに決まり、以後変えない）。
+    struct ParticleMesh {
+        utils::Entity entity;
+        filament::VertexBuffer* vb = nullptr;
+        filament::IndexBuffer* ib = nullptr;
+        filament::MaterialInstance* mi = nullptr;
+        std::size_t capacity = 0;   // 粒子の席の数
+        std::size_t lastCount = 0;  // 前回描いた数（次の転送でそこまで消す）
+    };
+    std::vector<ParticleMesh> particleMeshes_;
+    filament::Material* particleMaterial_ = nullptr;
+    // particle.filamat の読み込み（コンストラクタが 1 回だけ。無ければ AssetError）。
+    void loadParticleMaterial();
     filament::Material* overlayMaterial_ = nullptr;
     bool overlayWarned_ = false;  // 形の壊れたメッシュの警告を出したか（1 回だけ）
     // overlay.filamat の読み込み（コンストラクタが 1 回だけ呼ぶ）。無い・空・壊れている場合は

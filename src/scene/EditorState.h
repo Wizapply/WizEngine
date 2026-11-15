@@ -116,6 +116,13 @@ public:
     bool removeCable(int index);
     std::size_t cableCount() const;
 
+    // ---- パーティクルのエミッタ（見た目だけ。<worldbody> の <emitter>）------
+    // 書き換えるたびに emitterVersion が進む（EffectsComponent が粒子と光を
+    // 作り直す合図。制御器の emitter:<名前> の結び直しにも使う）。
+    std::vector<wizengine::editor::EmitterDesc> emitters() const;
+    void setEmitters(std::vector<wizengine::editor::EmitterDesc> emitters);
+    std::uint64_t emitterVersion() const { return emitterVersion_.load(); }
+
     // ---- イベントアセット（ノードベースのスクリプト）------------------------
     // ノードとワイヤーの束を「アセット」として名前で持つ（EditorTypes.h の
     // EventAssetDesc）。アセットは付けて初めて動く: オブジェクトに付いたぶんは
@@ -349,6 +356,8 @@ private:
     std::atomic<int> pendingCount_{0};
     std::vector<wizengine::editor::JointDesc> joints_;
     std::vector<wizengine::editor::CableDesc> cables_;  // 同上（mutex_ の下）
+    std::vector<wizengine::editor::EmitterDesc> emitters_;  // 同上
+    std::atomic<std::uint64_t> emitterVersion_{0};
     // イベントアセット（mutex_ の下）。nextNodeId はアセットごとの採番、
     // fireCounts_ は（アセット名, ノード id）-> 発火回数。
     struct EventAssetState {

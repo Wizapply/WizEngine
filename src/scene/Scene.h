@@ -360,6 +360,14 @@ public:
     // 物理とは別に描画用の値を持つ部品（VehicleComponent の車輪）が、車体と
     // 同じ割合で補間するために読む。
     double renderAlpha() const { return renderAlpha_; }
+    // このフレームが描くシミュレーション時刻（RENDER スレッド専用。補間した
+    // 姿勢と同じ時刻 = 前回と今回の物理フレームの間を renderAlpha で分けた値。
+    // 補間していないときは最新のフレームの時刻）。見た目だけの粒子の年齢を
+    // 物理の時計で数えるため（EffectsComponent）。
+    double renderSimTime() const { return renderSimTime_; }
+    // 物理スレッドが進めているシミュレーション時刻（PHYSICS スレッド専用。
+    // 呼ばれたステップの始まりの時刻）。
+    double physicsSimTime() const { return simClock_; }
 
     // Whiten strength for a grabbed object (kSelectedWhiten in SceneConfig.h).
     float selectedWhiten() const;
@@ -1175,6 +1183,7 @@ private:
     std::vector<std::vector<float>> renderSoft_;
     std::vector<std::vector<float>> renderCables_;
     double renderAlpha_ = -1.0;
+    double renderSimTime_ = 0.0;
 
     // ---- カメラのアクション（CameraLookAt / Behind / Orbit）---------------
     // イベントの「そのステップのカメラへの注文」。物理スレッドがノードの発火で

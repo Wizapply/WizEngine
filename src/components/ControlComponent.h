@@ -19,6 +19,7 @@
 #include "formula/LuaFormula.h"
 
 class VehicleComponent;
+class EffectsComponent;
 
 // 制御器（Simulink のブロック線図に相当）を回す SceneComponent。
 //
@@ -51,6 +52,8 @@ class VehicleComponent;
 class ControlComponent : public SceneComponent {
 public:
     explicit ControlComponent(VehicleComponent* vehicles);
+    // パーティクルのエミッタ（emitter:<名前>.rate の書き先）。main が登録時に渡す。
+    void setEffects(EffectsComponent* effects) { effects_ = effects; }
     ~ControlComponent() override;
 
     void onPhysicsStep(Scene& scene, double dt) override;
@@ -71,6 +74,7 @@ private:
         bool ok = false;
         int object = -1;  // オブジェクト番号（body / vehicle）
         int joint = -1;   // 文書のジョイント番号
+        int emitter = -1; // エミッタの番号（emitter:<名前>）
         double lastApplied = 0.0;  // joint target: 前回渡した値（同じなら渡さない）
         bool applied = false;
     };
@@ -99,6 +103,8 @@ private:
     void publishStatus();
 
     VehicleComponent* vehicles_;
+    EffectsComponent* effects_ = nullptr;
+    std::uint64_t emitterVersion_ = ~std::uint64_t(0);
     std::unique_ptr<wizengine::formula::LuaRuntime> lua_;
 
     // ---- PHYSICS スレッド専用 ----

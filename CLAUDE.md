@@ -715,7 +715,8 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   `param:<名前>`（下のパラメータ）。
   アクチュエータ: `joint:<名前>.target`（モータの目標値）、`body:<名前>.fx fy fz
   tx ty tz`（ワールド）/ `lfx lfy lfz ltx lty ltz`（ローカル）、
-  `vehicle:<名前>.throttle brake steer handbrake`、記録だけの `scope:<ラベル>`。
+  `vehicle:<名前>.throttle brake steer handbrake`、パーティクルの量
+  `emitter:<名前>.rate`（下の「パーティクル」の章）、記録だけの `scope:<ラベル>`。
   **単位は SI で角度は rad**（文書の度とは違う。ジョイントの目標値も換算しない）。
   名前はオブジェクト / ジョイントの name で引く（無い・重複は警告）。ポート名に
   `: . -` を通すため `sanitizePortName` を広げた（96 文字まで）。
@@ -860,7 +861,12 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   exhaust_bar`。**既定の値で目標過給圧のマップ（= 以前の較正値）を再現する**
   ように定数を合わせてある（タービンのノズル 110000・軸の慣性 3e-5 kg m² など。
   排気温度の式は経験式）。式の名前は `p1`〜`p6`（筒内圧）・`p4` と重ならない
-  ように、タービンの入口 / 出口は `pt3` / `pt4`。
+  ように、タービンの入口 / 出口は `pt3` / `pt4`。**炎のパーティクル**: 6 気筒の
+  ピストンに `<emitter name="flameN">`（頂面の上の燃焼室、粒子はその場に残る =
+  inherit 0）を付け、`combustion` が燃えている間（点火〜燃焼期間）だけ
+  `emitter:flameN.rate` を出す（1 回の燃焼で約 60 粒 × 吸気圧、角度の幅を時間に
+  直すので回転数によらず同じ数）。右バンク（カットモデルの側）は点光源も持ち、
+  頂面と筒を照らす。パラメータ `flame`（スイッチ）で消せる。
   Chrono で確認: 全開の掃引で 1700〜6800 rpm がカタログの曲線に 1.3% 以内
   （それより下は掃引が速くターボが追いつかない = ラグ）、ダイナモで 3000 rpm に
   保って開度 1 → 0.3 にすると 476 → 64 Nm（部分負荷では流量が足りずターボが
@@ -1305,6 +1311,40 @@ Chrono の「中規模」の機能（新モジュールのリンクか設計変�
   手口で直す）。実機での確認は Multicore → Core の切替が起きること、
   ケーブルが垂れること、ブッシュの箱が止まること、荷重の箱が押されることの順。
 
+## パーティクル（`<emitter>` + `components/EffectsComponent` + `Renderer::setParticles`）
+
+炎・火花のような**見た目だけの粒子**（物理には何も返さない）。文書は `<worldbody>` の
+`<emitter name body pos euler radius height rate life size grow speed inherit rgba
+rgba2 intensity light lightrange max>`（`ed::EmitterDesc`、`EditorState::emitters()` /
+`emitterVersion()`、/scene の `emitters`）。付け先（body、world = -1）のローカルの範囲
+（+Y を軸にした円柱、height 0 なら球）で生まれ、その瞬間の付け先の速度
+（`inherit` 倍、ω × r 込み）にばらつき（`speed`）を足して**等速で飛ぶだけ**（力も
+衝突も無い）。`life` 秒で `size` → `size × grow`、色は `rgba` → `rgba2`、明るさは
+`intensity` 倍（1 を超えると光って見える = ブルームが拾う）。量は `rate`（粒子 /
+秒）か、**制御器のアクチュエータ `emitter:<名前>.rate`**（書いたステップはそちらが
+勝つ = 燃焼の式が燃えている間だけ出す、など）。見本は `v6_engine.xml` の炎。
+
+- **2 つのスレッドに分ける**。PHYSICS（`onPhysicsStep`、**制御器より後に登録** =
+  そのステップの量を読む）が端数を持ち越しながら粒子を生み（付け先の姿勢と
+  速度はそのステップの物理から。生まれる時刻はステップの中で均等にばらす =
+  高い回転数でも 1 か所に固まらない）、mutex の下の溜まりへ渡す。RENDER
+  （`onRender`）が受け取って**描くフレームのシミュレーション時刻**
+  （`Scene::renderSimTime`、補間した姿勢と同じ時刻）で年齢を数える =
+  実時間より遅く回るシーンでも炎の長さ（クランク角）が変わらず、まだ描く
+  フレームに届いていない粒子（年齢が負）は待つ。シミュレートの開始・停止・
+  Reset（`runGeneration`）で全部消える。
+- **描画は加算合成**（`assets/materials/particle.mat`、unlit・`blending : add`・
+  奥行きは書かない）。粒子 1 個 = **直交する 3 枚の円盤**（中心の頂点だけ色、縁は
+  黒 = 補間がそのまま柔らかい減衰。テクスチャ不要、どの向きから見ても玉）。
+  `Renderer::addParticleMesh(最大数)` は 1 回、`setParticles` は毎フレームで、
+  転送は「今の数と前回の数の大きい方」だけ、残りの席は面積 0（線バッチと同じ =
+  実行中にプリミティブ数を変える版依存の API を使わない）。全ビューに映る。
+- **点光源**（`light` > 0）: 範囲の中心に置き、生きている粒子の明るさの重みの
+  合計（6 で最大）で明るさを揺らす。影は落とさない（壁越しにも照らす）。
+- **未**: 力（重力・浮力・抵抗）、当たり判定、テクスチャ付きの粒子、カメラに
+  向く板（ビューが共有なので 3 枚の円盤で代える）、エディタでの配置 UI
+  （いまは 📄 XML で書く）。
+
 ## ソフトボディ（`src/scene/SoftLattice.{h,cpp}` + `PhysicsWorld::addSoftBody` + `Renderer::addSoftShape`）
 
 **質点ばね方式**。Chrono の FEA モジュールは使わず、小さな球の剛体
@@ -1677,7 +1717,7 @@ src/
                  MathBridge, RenderBridge
   components/    EditorComponent, GizmoComponent, PhysicsControlComponent,
                  StreamControlComponent, VehicleComponent, PrefabComponent,
-                 AutoGenComponent, ControlComponent
+                 AutoGenComponent, ControlComponent, EffectsComponent（パーティクル）
   app/           起動設定（config.json の読み込み = AppConfig）
   autogen/       AI によるシーン自動構築（LLM / Meshy の HTTP クライアント・指示文・
                  配置の後始末。Chrono も Filament も知らない）

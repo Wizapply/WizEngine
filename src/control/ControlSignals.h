@@ -40,6 +40,9 @@
 //   vehicle:<名前>.throttle brake steer handbrake
 //                              … 運転の入力（0..1、steer は -1..1 で + が左）。
 //                                書いた項目だけブラウザの入力を置き換える
+//   emitter:<名前>.rate        … パーティクルのエミッタ（<worldbody> の <emitter>）が
+//                                このステップに出す量 (粒子 / 秒)。書いている間は
+//                                文書の rate より勝つ（見た目だけ。物理に影響なし）
 //   scope:<ラベル>             … 記録だけ（スコープに出る）
 //
 // 名前は「最初の : の前」が種類、「最後の . の後」が量、その間が対象の名前
@@ -47,7 +50,7 @@
 namespace wizengine {
 namespace control {
 
-enum class Source { Time, Body, Joint, Vehicle, Scope, Param };
+enum class Source { Time, Body, Joint, Vehicle, Scope, Param, Emitter };
 
 enum class Quantity {
     None,
@@ -61,6 +64,7 @@ enum class Quantity {
     Target,
     Fx, Fy, Fz, Tx, Ty, Tz, LFx, LFy, LFz, LTx, LTy, LTz,
     Throttle, Brake, Steer, Handbrake,
+    EmitRate,
 };
 
 struct SignalRef {

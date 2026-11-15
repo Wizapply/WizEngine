@@ -923,6 +923,7 @@ void Scene::buildRenderFrame() {
         renderSoft_ = latestSoft_;
         renderCables_ = latestCables_;
         renderAlpha_ = -1.0;
+        renderSimTime_ = frameCur_.valid ? frameCur_.simTime : 0.0;
         return;
     }
     // 1 パスぶん遅れて描く: 今回のフレームを公開した瞬間は前回の姿勢
@@ -932,6 +933,7 @@ void Scene::buildRenderFrame() {
     if (alpha < 0.0) alpha = 0.0;
     if (alpha > 1.0) alpha = 1.0;
     renderAlpha_ = alpha;
+    renderSimTime_ = framePrev_.simTime + alpha * span;
 
     const std::vector<BodyTransform>& a = framePrev_.poses;
     const std::vector<BodyTransform>& b = frameCur_.poses;

@@ -189,6 +189,17 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         }
     }
 
+    // パーティクルのエミッタ（見た目だけ。制御器の emitter:<名前>.rate の候補）。
+    j["emitters"] = nlohmann::json::array();
+    {
+        const auto emitters = editor_.emitters();
+        for (std::size_t i = 0; i < emitters.size(); ++i) {
+            nlohmann::json e = ed::toJson(emitters[i]);
+            e["index"] = int(i);
+            j["emitters"].push_back(e);
+        }
+    }
+
     // イベントアセット（ASSETS パネルのタイル・Inspector の付け外し・
     // ノードエディタが描く）。発火回数付き: シミュレート中にどのノードが
     // 動いたかが見える（Node-RED のデバッグバッジに相当）。
@@ -286,6 +297,7 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             q["body"] = ctl::actuatorQuantities(ctl::Source::Body);
             q["joint"] = ctl::actuatorQuantities(ctl::Source::Joint);
             q["vehicle"] = ctl::actuatorQuantities(ctl::Source::Vehicle);
+            q["emitter"] = ctl::actuatorQuantities(ctl::Source::Emitter);
             f["actuators"] = q;
         }
         j["formulas"] = f;
@@ -446,6 +458,16 @@ ed::SceneDocument Scene::document() {
         fix(c.bodyB);
         doc.cables.push_back(c);
     }
+    // パーティクルのエミッタ。付け先が消えていたらワールド（-1）に付け替える。
+    for (const auto& mIn : editor_.emitters()) {
+        ed::EmitterDesc m = mIn;
+        if (m.body >= 0) {
+            m.body = (std::size_t(m.body) < remap.size() && remap[std::size_t(m.body)] >= 0)
+                         ? remap[std::size_t(m.body)]
+                         : -1;
+        }
+        doc.emitters.push_back(m);
+    }
 
     // ---- イベントアセット --------------------------------------------------
     // 中身（ノード）はそのまま。ノードの対象番号だけ詰めた番号へ付け替える
@@ -526,6 +548,7 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     physics_.removeAllJoints();
     editor_.setJoints({});
     editor_.setCables({});
+    editor_.setEmitters({});
     for (std::size_t i = 0; i < boxes_.size(); ++i) destroyObject(i);
     for (auto& c : controllers_) c->setSelected(BoxController::kNone);
     editor_.clearSel();
@@ -616,6 +639,15 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
             cables.push_back(c);
         }
         editor_.setCables(std::move(cables));
+    }
+    {
+        std::vector<ed::EmitterDesc> emitters;
+        for (const auto& mIn : doc.emitters) {
+            ed::EmitterDesc m = mIn;
+            if (m.body >= 0) m.body += int(base);
+            emitters.push_back(m);
+        }
+        editor_.setEmitters(std::move(emitters));
     }
 
     // イベントアセット。中身のノードの対象番号は、ジョイントと同じく今回
@@ -774,6 +806,15 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
             cables.push_back(c);
         }
         editor_.setCables(std::move(cables));
+    }
+    {
+        auto emitters = editor_.emitters();
+        for (const auto& mIn : doc.emitters) {
+            ed::EmitterDesc m = mIn;
+            if (m.body >= 0) m.body += int(base);
+            emitters.push_back(m);
+        }
+        editor_.setEmitters(std::move(emitters));
     }
     editor_.bumpGraphVersion();
     syncBackend();

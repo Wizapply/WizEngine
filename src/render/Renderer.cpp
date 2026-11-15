@@ -113,6 +113,7 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
     // 欠けていれば、エディタで初めて線を出したときではなく起動時に止まる。
     loadLineMaterial();
     loadOverlayMaterial();
+    loadParticleMaterial();
 
     // Direct lights are no longer created here: the scene owns them as
     // editable light descriptors (Scene::LightItem, saved in the scene
@@ -330,6 +331,13 @@ Renderer::~Renderer() {
     }
     overlayMeshes_.clear();
     if (overlayMaterial_) engine_->destroy(overlayMaterial_);
+    for (auto& mesh : particleMeshes_) {
+        bool inScene = true;
+        destroyRenderable(*engine_, *scene_, mesh.entity, mesh.vb, mesh.ib, inScene);
+        if (mesh.mi) engine_->destroy(mesh.mi);
+    }
+    particleMeshes_.clear();
+    if (particleMaterial_) engine_->destroy(particleMaterial_);
     if (lineMaterial_) engine_->destroy(lineMaterial_);
     for (auto* mi : highlightInstances_) engine_->destroy(mi);
     engine_->destroy(material_);

@@ -51,7 +51,14 @@
     if (isIn) {
       for (const p of controlParams()) out.push('param:' + p.name);
     }
-    if (!isIn) out.push('scope:');
+    if (!isIn) {
+      // パーティクルのエミッタ（<worldbody> の <emitter>）
+      for (const m of sceneData.emitters || []) {
+        if (!m.name) continue;
+        for (const k of q.emitter || []) out.push('emitter:' + m.name + '.' + k);
+      }
+      out.push('scope:');
+    }
     return out;
   }
 

@@ -242,6 +242,16 @@ void Scene::destroyObject(std::size_t index) {
         }
     }
 
+    // パーティクルのエミッタがこの物に付いていたらワールドに付け替える。
+    {
+        auto emitters = editor_.emitters();
+        bool changed = false;
+        for (auto& m : emitters) {
+            if (m.body == idx) { m.body = -1; changed = true; }
+        }
+        if (changed) editor_.setEmitters(std::move(emitters));
+    }
+
     // このオブジェクトを見張る / 動かすイベントノードも一緒に掃除する
     // （付いていたアセットは desc ごと残るが、実体の一覧からは外れる）。
     pruneGraphForRemoved(ed::NodeTargetKind::Object, int(index));

@@ -95,6 +95,13 @@
 //                                        none（自由端）。Core バックエンド専用
 //                                        （Multicore は FEA を扱えない = 自動で
 //                                        Core に切り替わる）
+//       <emitter name="flame1" body="piston1" pos="0 0.05 0" radius="0.03"
+//                height="0.01" rate="0" life="0.05" size="0.01" grow="3"
+//                speed="0.3" inherit="1" rgba="1 0.85 0.5 1" rgba2="0.9 0.18 0.03 1"
+//                intensity="4" light="0" lightrange="0.3" max="256"/>
+//                                    ... パーティクルのエミッタ（見た目だけ。
+//                                        EditorTypes.h の EmitterDesc）。量は
+//                                        rate か、制御器の emitter:<名前>.rate
 //     </worldbody>
 //     <equality>
 //       <joint type body1 body2 anchor axis
@@ -245,6 +252,9 @@ struct SceneDocument {
     // ケーブル（<worldbody> の <cable>）。端の bodyA / bodyB はオブジェクト
     // 番号（-1 = 地面、-2 = 自由端）。
     std::vector<CableDesc> cables;
+    // パーティクルのエミッタ（<worldbody> の <emitter>）。body はオブジェクト
+    // 番号（-1 = ワールド）。物理には関わらない見た目だけの物。
+    std::vector<EmitterDesc> emitters;
     // イベントアセット（<asset> の <event>）と、ワールドに付いているぶん
     // （ルートの <events>）。オブジェクトに付いているぶんは BodyDesc::events。
     std::vector<EventAssetDesc> eventAssets;
