@@ -160,6 +160,20 @@ public:
     static std::string eventsDir();
     // ライブラリのファイル（assets/ 相対、"events/<名前>.xml"）。名前が不正なら空。
     static std::string eventLibraryFile(const std::string& name);
+    // ---- グローバル（ライブラリ）の計算式・プレハブ・メッシュ -------------------
+    // 計算式は assets/formulas/<名前>.xml、プレハブは assets/prefabs/<名前>.xml
+    // （イベントの assets/events と同じ流儀。一覧は拡張子を落とした名前）。
+    // メッシュは assets/ 以下の .glb / .gltf ファイル（assets/ 相対のパス。
+    // web / scenes / events / formulas / prefabs / terrains は見ない）。
+    // どれも refreshLibraries で取り直す（起動・共通化・削除・保存・ブラウザの
+    // タブに戻ったとき）。
+    std::vector<std::string> formulaLibrary() const;
+    std::vector<std::string> prefabLibrary() const;
+    std::vector<std::string> meshLibrary() const;
+    void refreshLibraries();  // イベントも含めて全部
+    // ライブラリのファイル（assets/ 相対）。名前が不正なら空。
+    static std::string formulaLibraryFile(const std::string& name);
+    static std::string prefabLibraryFile(const std::string& name);
     // シーン全体に付いているアセット名。
     std::vector<std::string> worldEvents() const;
     bool attachWorldEvent(const std::string& name);
@@ -371,6 +385,7 @@ private:
     };
     std::vector<EventAssetState> events_;
     std::vector<std::string> eventLibrary_;  // mutex_ の下
+    std::vector<std::string> formulaLibrary_, prefabLibrary_, meshLibrary_;  // mutex_ の下
     std::vector<std::string> worldEvents_;
     // 計算式アセット（mutex_ の下）。
     struct FormulaAssetState {

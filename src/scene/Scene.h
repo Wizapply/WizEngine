@@ -585,6 +585,28 @@ private:
     // edit.event.share / unshare / import / libdelete / refresh と、
     // event.add の shared。扱ったら true。
     bool applySharedEventOp(const EditorState::Op& op);
+    // ---- グローバル（ライブラリ）の計算式・プレハブ・メッシュ（SceneLibrary.cpp）
+    // 計算式は assets/formulas/<名前>.xml、プレハブは assets/prefabs/<名前>.xml が
+    // 中身を持ち、シーンの XML は file 属性の参照だけ。すべて PHYSICS thread。
+    // g.file / d.file の中身を読んで入れる（名前と file はそのまま）。読めれば
+    // そのときの中身を変更の目印（libBaseline_）に覚える。プレハブは部品が使う
+    // メッシュの宣言を、このシーンに無ければ足す。
+    bool readLibraryFormula(wizengine::formula::FormulaGraphDesc& g, std::string& reason);
+    bool readLibraryPrefab(wizengine::editor::PrefabDesc& d, std::string& reason);
+    // 読込: file のあるものの中身をライブラリから入れる（読めなければ空のまま
+    // 参照を残し、missing を数える）。
+    void resolveLibraryAssets(std::vector<wizengine::formula::FormulaGraphDesc>& formulas,
+                              std::vector<wizengine::editor::PrefabDesc>& prefabs,
+                              std::size_t& missing);
+    // 保存: グローバルの計算式・プレハブのうち、読んだとき / 書いたときから
+    // 中身が変わったものだけをファイルへ書く。written に書いた名前。
+    bool saveLibraryAssets(const wizengine::editor::SceneDocument& doc, std::string& written,
+                           std::string& reason);
+    // edit.lib.share / unshare / import / delete / refresh（kind = event / formula /
+    // prefab）と edit.mesh.add。扱ったら true。
+    bool applyLibraryOp(const EditorState::Op& op);
+    void addMeshDeclaration(const nlohmann::json& args);
+    std::vector<wizengine::editor::MeshAssetDesc> meshDescs();
     // 実行状態（タイマー・接触の記憶・発火カウント）と、アクションが加えた
     // 実行時の上書き（色・ライト・固定）を捨てて設計値へ戻す。
     // シミュレートの開始・停止・Reset で呼ぶ。
@@ -1156,6 +1178,9 @@ private:
     std::unique_ptr<wizengine::terrain::TerrainLibrary> terrainLibrary_;
     std::unique_ptr<wizengine::terrain::TerrainUndoStack> terrainUndo_;
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る
+    // グローバルの計算式・プレハブの「読んだ / 書いたときの中身」（"formula:名前" /
+    // "prefab:名前" → 正規化した XML）。保存で比べて変わったものだけ書く。PHYSICS。
+    std::map<std::string, std::string> libBaseline_;
     std::mutex poseMutex_;
     std::vector<BodyTransform> latestPoses_;  // one per box, in box order
     // ソフトボディの粒子位置（3 個で 1 粒子、オブジェクト番号ごと。剛体は

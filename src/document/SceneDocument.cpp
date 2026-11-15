@@ -1291,9 +1291,15 @@ PartDesc partFromXml(const xml::Element& e, const std::vector<MeshAssetDesc>& me
     }
     return clampPart(p);
 }
-xml::Element prefabElement(const PrefabDesc& d) {
+// プレハブを書き出す（<asset> の中）。グローバル（file あり）は参照だけ。
+// withContents = true はライブラリのファイルそのもの（prefabToLibraryXmlText）。
+xml::Element prefabElement(const PrefabDesc& d, bool withContents = false) {
     xml::Element e("prefab");
     e.set("name", d.name);
+    if (!d.file.empty() && !withContents) {
+        e.set("file", d.file);
+        return e;
+    }
     for (const auto& p : d.parts) e.append(partElement(p));
     return e;
 }
@@ -1609,6 +1615,11 @@ SceneDocument fromXml(const xml::Element& root,
                 continue;
             }
             g.name = name;
+            if (!g.file.empty() && !assetFileAllowed(g.file)) {
+                warn("<asset>: <formula name=\"" + name + "\"> file=\"" + g.file +
+                     "\" is not allowed (assets-relative paths only) - ignored");
+                continue;
+            }
             doc.formulas.push_back(std::move(g));
         }
         for (const xml::Element* me : asset->all("mesh")) {
@@ -1655,9 +1666,24 @@ SceneDocument fromXml(const xml::Element& root,
                 continue;
             }
             const std::string label = "<prefab name=\"" + name + "\">";
-            warnUnknownChildren(*pe, {"part"}, label.c_str(), warn);
             PrefabDesc d;
             d.name = name;
+            // 参照（グローバルのプレハブ）。中身はファイルから入れる（Scene）。
+            if (pe->has("file")) {
+                d.file = pe->attr("file");
+                if (!assetFileAllowed(d.file)) {
+                    warn("<asset>: " + label + " file=\"" + d.file +
+                         "\" is not allowed (assets-relative paths only) - ignored");
+                    continue;
+                }
+                if (!pe->children().empty()) {
+                    warn("<asset>: " + label + " file=\"" + d.file +
+                         "\" - the <part> written here are ignored (the file holds them)");
+                }
+                doc.prefabs.push_back(std::move(d));
+                continue;
+            }
+            warnUnknownChildren(*pe, {"part"}, label.c_str(), warn);
             for (const xml::Element* part : pe->all("part")) {
                 d.parts.push_back(partFromXml(*part, doc.meshes, label, warn));
             }
@@ -1973,6 +1999,94 @@ bool parseXml(const std::string& text, SceneDocument& out, std::string& error,
     xml::Element root;
     if (!xml::parse(text, root, error)) return false;
     out = fromXml(root, warnings);
+    return true;
+}
+
+// ---- 計算式・プレハブのライブラリのファイル ------------------------------------
+std::string formulaToLibraryXmlText(const formula::FormulaGraphDesc& graph) {
+    formula::FormulaGraphDesc g = graph;
+    g.file.clear();  // ファイルの中は中身そのもの
+    return xml::write(formula::formulaElement(g));
+}
+
+bool parseFormulaLibraryXml(const std::string& text, formula::FormulaGraphDesc& out,
+                            std::string& error, std::vector<std::string>* warnings) {
+    xml::Element root;
+    if (!xml::parse(text, root, error)) return false;
+    Warn warn(warnings);
+    if (root.name() != "formula") {
+        warn("formula file: the root element is <" + root.name() +
+             ">, expected <formula> - reading it anyway");
+    }
+    xml::Element body = root;
+    body.erase("file");  // ファイルの中で自分を参照していても中身として読む
+    std::vector<std::string> fw;
+    out = formula::formulaFromXml(body, &fw);
+    for (const auto& m : fw) warn(m);
+    out.name = sanitizeEventName(out.name);
+    out.file.clear();
+    return true;
+}
+
+std::string prefabToLibraryXmlText(const PrefabDesc& prefab,
+                                   const std::vector<MeshAssetDesc>& sceneMeshes) {
+    PrefabDesc d = prefab;
+    d.file.clear();
+    xml::Element e = prefabElement(d, true);
+    // メッシュの部品が使う宣言も入れる = どのシーンで読んでも同じ見た目
+    // （読む側は同じ名前の宣言が無ければ足す）。
+    std::vector<xml::Element> decls;
+    std::set<std::string> done;
+    for (const auto& p : d.parts) {
+        if (p.kind != PartKind::Mesh || p.mesh.empty() || done.count(p.mesh)) continue;
+        done.insert(p.mesh);
+        for (const auto& m : sceneMeshes) {
+            if (m.name != p.mesh) continue;
+            xml::Element me("mesh");
+            me.set("name", m.name);
+            me.set("file", m.file);
+            if (m.scale != 1.0) me.setNumber("scale", m.scale);
+            decls.push_back(std::move(me));
+        }
+    }
+    xml::Element out("prefab");
+    out.set("name", d.name);
+    for (auto& m : decls) out.append(std::move(m));
+    for (const auto& c : e.children()) out.append(c);
+    return xml::write(out);
+}
+
+bool parsePrefabLibraryXml(const std::string& text, PrefabDesc& out,
+                           std::vector<MeshAssetDesc>& meshes, std::string& error,
+                           std::vector<std::string>* warnings) {
+    xml::Element root;
+    if (!xml::parse(text, root, error)) return false;
+    Warn warn(warnings);
+    if (root.name() != "prefab") {
+        warn("prefab file: the root element is <" + root.name() +
+             ">, expected <prefab> - reading its <part> anyway");
+    }
+    warnUnknownChildren(root, {"mesh", "part"}, "<prefab>", warn);
+    meshes.clear();
+    for (const xml::Element* me : root.all("mesh")) {
+        MeshAssetDesc m;
+        m.name = me->attr("name");
+        m.file = me->attr("file");
+        m.scale = me->number("scale", 1.0);
+        if (m.scale <= 1e-9) m.scale = 1.0;
+        if (m.name.empty() || !assetFileAllowed(m.file)) {
+            warn("prefab file: <mesh name=\"" + m.name + "\" file=\"" + m.file +
+                 "\"> needs a name and an assets-relative file - ignored");
+            continue;
+        }
+        meshes.push_back(std::move(m));
+    }
+    out = PrefabDesc{};
+    out.name = sanitizeEventName(root.attr("name"));
+    const std::string label = "<prefab name=\"" + out.name + "\">";
+    for (const xml::Element* part : root.all("part")) {
+        out.parts.push_back(partFromXml(*part, meshes, label, warn));
+    }
     return true;
 }
 

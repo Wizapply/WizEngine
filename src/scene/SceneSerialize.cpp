@@ -223,6 +223,11 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         // イベントライブラリ（assets/events/*.xml の名前）。アセットパネルが
         // 今のシーンに無いものを「読み込める」タイルとして出す。
         ev["library"] = editor_.eventLibrary();
+        // グローバル（ライブラリ）の一覧をまとめて（アセットパネルの「グローバル」）。
+        j["library"] = {{"events", editor_.eventLibrary()},
+                        {"formulas", editor_.formulaLibrary()},
+                        {"prefabs", editor_.prefabLibrary()},
+                        {"meshes", editor_.meshLibrary()}};
         j["events"] = ev;
     }
     // プレハブ（ASSETS パネルの 🧩 タイル）と、プレハブ編集モードの中身
@@ -234,6 +239,7 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             nlohmann::json e;
             e["name"] = d.name;
             e["parts"] = int(d.parts.size());
+            e["file"] = d.file;  // 空 = ローカル、あり = グローバル（ライブラリ）
             pf["assets"].push_back(e);
         }
         j["prefabs"] = pf;
@@ -264,6 +270,7 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             // ノードで組んだ / 編集したものはグラフから起こし直したもの。
             e["text"] = g.source.empty() ? wizengine::formula::formulaToText(g) : g.source;
             e["fromText"] = !g.source.empty();
+            e["file"] = g.file;  // 空 = ローカル、あり = グローバル（ライブラリ）
             f["assets"].push_back(std::move(e));
         }
         // 新規作成の雛形（名前・説明）。中身はサーバー（ControlTemplates.cpp）
@@ -612,11 +619,24 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     }
 
     const std::size_t base = boxes_.size();  // 追加ぶんの先頭番号
-    editor_.setFormulaAssets(doc.formulas);
+    {
+        // グローバル（ライブラリ）の計算式・プレハブは中身をファイルから入れる
+        // （読めなければ空のまま参照を残す。イベントの共通化と同じ扱い）。
+        libBaseline_.clear();
+        auto formulas = doc.formulas;
+        auto prefabs = doc.prefabs;
+        std::size_t missing = 0;
+        resolveLibraryAssets(formulas, prefabs, missing);
+        if (missing > 0) {
+            terrainLoadCaveat_ += "（グローバルの計算式 / プレハブ " + std::to_string(missing) +
+                                  " 件のファイルが読めません - コンソール参照）";
+        }
+        editor_.setFormulaAssets(std::move(formulas));
+        editor_.setPrefabAssets(std::move(prefabs));
+    }
     editor_.setControllers(doc.controllers);
     editor_.setParams(doc.params);
     editor_.setCharts(doc.charts);
-    editor_.setPrefabAssets(doc.prefabs);
     editor_.setPrefabEditObject(-1);
     for (const auto& bIn : doc.bodies) createObject(ed::clampBody(bIn));
     editor_.bumpVehicleVersion();  // 走っている車両モデルは作り直す
@@ -740,9 +760,16 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
             meshes_.push_back(std::move(a));
         }
     }
+    // 足す側の文書がグローバルの計算式・プレハブを参照していれば中身を入れる。
+    auto docFormulas = doc.formulas;
+    auto docPrefabs = doc.prefabs;
+    {
+        std::size_t missing = 0;
+        resolveLibraryAssets(docFormulas, docPrefabs, missing);
+    }
     {
         auto prefabs = editor_.prefabAssets();
-        for (const auto& p : doc.prefabs) {
+        for (const auto& p : docPrefabs) {
             bool dup = false;
             for (const auto& have : prefabs) dup = dup || have.name == p.name;
             if (!dup) prefabs.push_back(p);
@@ -754,7 +781,7 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
     {
         auto formulas = editor_.formulaAssets();
         bool added = false;
-        for (const auto& f : doc.formulas) {
+        for (const auto& f : docFormulas) {
             bool dup = false;
             for (const auto& have : formulas) dup = dup || have.name == f.name;
             if (!dup && !f.name.empty()) {

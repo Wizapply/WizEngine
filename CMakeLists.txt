@@ -391,6 +391,7 @@ set(WIZ_SCENE_SOURCES
     src/scene/Scene.cpp
     src/scene/SceneEdit.cpp
     src/scene/SceneEvents.cpp
+    src/scene/SceneLibrary.cpp
     src/scene/SceneSerialize.cpp
     src/scene/SceneTerrain.cpp
     src/scene/SceneTerrainEdit.cpp

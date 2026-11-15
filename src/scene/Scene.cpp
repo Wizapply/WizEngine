@@ -408,7 +408,7 @@ void Scene::build() {
     }
     editor_.setMode(sys_.startMode);
     editor_.refreshSceneFiles();
-    editor_.refreshEventLibrary();
+    editor_.refreshLibraries();  // イベント・計算式・プレハブ・メッシュの一覧
     // テレインの一覧（アセットパネルのタイル）。起動シーンが読めなかった・
     // テレインを持たないときも一覧は要るので、読込とは別に 1 回取る。
     refreshTerrainFiles();

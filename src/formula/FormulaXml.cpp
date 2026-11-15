@@ -8,6 +8,11 @@ namespace formula {
 xml::Element formulaElement(const FormulaGraphDesc& g) {
     xml::Element f("formula");
     f.set("name", g.name);
+    // グローバル（ライブラリ）の計算式は参照だけ（中身はファイルが持つ）。
+    if (!g.file.empty()) {
+        f.set("file", g.file);
+        return f;
+    }
     // 元のテキスト（式エディタで書いたもの）は 1 行ずつ <source line/> で。
     if (!g.source.empty()) {
         std::size_t b = 0;
@@ -51,6 +56,16 @@ FormulaGraphDesc formulaFromXml(const xml::Element& e,
     g.name = e.attr("name");
     const std::string label = "<formula name=\"" + g.name + "\">";
     if (g.name.empty()) warn(label + ": needs a name");
+    // 参照（グローバルの計算式）。中身はファイルから入れるので、ここに書いた
+    // ノードは読まない。パスの検査は呼び手（文書 / Scene）が行う。
+    if (e.has("file")) {
+        g.file = e.attr("file");
+        if (!e.children().empty()) {
+            warn(label + ": file=\"" + g.file + "\" - the <node> / <wire> written here "
+                 "are ignored (the file holds them)");
+        }
+        return g;
+    }
 
     std::set<int> ids;
     int nextId = 1;

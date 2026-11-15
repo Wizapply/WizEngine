@@ -664,7 +664,6 @@
     cursor: pointer; user-select: none;
   }
   .asHead:hover { color: #b8bcc4; }
-  .asHint { font-size: 11px; color: #7b7f88; text-transform: none; }
   #assets.collapsed .asList { display: none; }
   #assets.collapsed .asBar { display: none; }
   #assets.collapsed .caret { transform: rotate(0deg); }
@@ -694,7 +693,7 @@
      クリックでアクティブになった間だけ auto に切り替える（上の
      #assets.active .asList）。hidden でも resize のつまみは効く。 */
   .asList {
-    height: 132px; min-height: 56px; max-height: 60vh;
+    height: 240px; min-height: 56px; max-height: 60vh;
     resize: vertical;
     display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;
     overflow-y: hidden; scrollbar-gutter: stable; padding: 8px 2px 2px;
@@ -722,6 +721,19 @@
   }
   .asItem.lib { opacity: 0.55; border-style: dashed; }
   .asItem.lib:hover { opacity: 0.9; }
+  /* 区分の見出し（🧱 作成 / 📍 ローカル / 🌐 グローバル）。タイルの折り返しの
+     中で 1 行を丸ごと使う。色の帯で区分を見分ける。 */
+  .asSec {
+    flex: 0 0 100%; display: flex; align-items: baseline; gap: 8px;
+    margin: 6px 0 0; padding: 3px 6px; font-size: 11px; color: #9aa0aa;
+    border-left: 3px solid #4a4e58; background: rgba(255,255,255,.03); border-radius: 3px;
+  }
+  .asSec:first-child { margin-top: 0; }
+  .asSec b { color: #dfe2e7; font-weight: 600; white-space: nowrap; }
+  .asSec span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .asSec.local { border-left-color: #47935c; }
+  .asSec.global { border-left-color: #4a70ad; }
+  .asEmpty { flex: 0 0 100%; font-size: 11px; color: #6b6f78; padding: 2px 8px; }
   /* テレインのタイルの名前の変更（.name と差し替える input）。 */
   .asItem .asRename {
     display: block; width: 100%; box-sizing: border-box; margin-top: 2px;

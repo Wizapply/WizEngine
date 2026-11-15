@@ -809,7 +809,7 @@ bool Scene::applySharedEventOp(const EditorState::Op& op) {
     };
 
     if (op.kind == "event.refresh") {
-        editor_.refreshEventLibrary();  // ブラウザのタブに戻ったとき。ステータスは変えない
+        editor_.refreshLibraries();  // ブラウザのタブに戻ったとき。ステータスは変えない
         return true;
     }
 

@@ -316,6 +316,22 @@ std::string eventAssetToXmlText(const EventAssetDesc& asset);
 bool parseEventAssetXml(const std::string& text, EventAssetDesc& out, std::string& error,
                         std::vector<std::string>* warnings = nullptr);
 
+// ---- 計算式・プレハブのライブラリのファイル ------------------------------------
+// グローバル（全シーンで使える）の計算式は assets/formulas/<名前>.xml、プレハブは
+// assets/prefabs/<名前>.xml。中身はシーンの <asset> の <formula> / <prefab> と
+// 同じ書式で、ルートがその要素になっただけ。シーンの XML は file 属性の参照だけを
+// 書く（イベントライブラリと同じ流儀）。プレハブのファイルには、メッシュの部品が
+// 使う <mesh name file scale/> の宣言も入れる（どのシーンで読んでも同じ見た目。
+// 読む側のシーンに同じ名前の宣言が無ければ足す）。
+std::string formulaToLibraryXmlText(const formula::FormulaGraphDesc& graph);
+bool parseFormulaLibraryXml(const std::string& text, formula::FormulaGraphDesc& out,
+                            std::string& error, std::vector<std::string>* warnings = nullptr);
+std::string prefabToLibraryXmlText(const PrefabDesc& prefab,
+                                   const std::vector<MeshAssetDesc>& sceneMeshes);
+bool parsePrefabLibraryXml(const std::string& text, PrefabDesc& out,
+                           std::vector<MeshAssetDesc>& meshes, std::string& error,
+                           std::vector<std::string>* warnings = nullptr);
+
 // ---- 旧 JSON 文書（version 1〜3）--------------------------------------------
 // 既に保存してある assets/scenes/*.json を読むための取り込み口。書き出しは
 // もう JSON では行わない（保存は常に XML）。

@@ -457,6 +457,43 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         return true;
     }
 
+    // グローバル（ライブラリ）のアセット: kind = event / formula / prefab。
+    // share = グローバルにする、unshare = このシーン専用（ローカル）に戻す、
+    // import = グローバルのものをこのシーンで使う、delete = ライブラリのファイルを
+    // ごみ箱へ、refresh = 一覧の取り直し。実体は Scene::applyLibraryOp。
+    if (what == "lib.share" || what == "lib.unshare" || what == "lib.import" ||
+        what == "lib.delete" || what == "lib.refresh") {
+        EditorState::Op op;
+        op.kind = what;
+        if (what != "lib.refresh") {
+            const std::string kind = ed::jsonString(msg, "kind", "");
+            if (kind != "event" && kind != "formula" && kind != "prefab") return true;
+            const std::string name = ed::sanitizeEventName(ed::jsonString(msg, "name", ""));
+            if (name.empty()) return true;
+            op.args["kind"] = kind;
+            op.args["name"] = name;
+        }
+        if (msg.contains("overwrite") && msg["overwrite"].is_boolean()) {
+            op.args["overwrite"] = msg["overwrite"].get<bool>();
+        }
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+    // assets/ のメッシュファイルをこのシーンに宣言する（グローバルのメッシュを置く前）。
+    if (what == "mesh.add") {
+        const std::string file = ed::jsonString(msg, "file", "");
+        if (!ed::assetFileAllowed(file)) return true;
+        EditorState::Op op;
+        op.kind = "mesh.add";
+        op.args["file"] = file;
+        op.args["name"] = ed::sanitizeEventName(ed::jsonString(msg, "name", ""));
+        op.args["scale"] = ed::jsonNumber(msg, "scale", 1.0);
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
     // イベントライブラリ（共通化したイベント。assets/events/<名前>.xml）:
     // share = 今のシーンのイベントを共通化、unshare = このシーン専用に戻す、
     // import = ライブラリから読み込む、libdelete = ライブラリのファイルを
@@ -1056,9 +1093,20 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         return true;
     }
 
-    if (what == "clear") {
+    // clear = 空のシーンへ。new = 空のシーンへして名前を付ける（アセットパネルの
+    // 「新規シーン」。ファイルはまだ書かない - 💾 保存でその名前に書く）。
+    if (what == "clear" || what == "new") {
         EditorState::Op op;
         op.kind = "clear";
+        if (what == "new") {
+            const std::string name =
+                EditorState::sanitizeSceneName(msg.value("name", std::string()));
+            if (name.empty()) {
+                state.setStatus("新規シーン: 名前は英数字と _ - で付けてください");
+                return true;
+            }
+            op.args = {{"name", name}};
+        }
         op.camera = camIndex;
         state.push(std::move(op));
         return true;

@@ -82,6 +82,10 @@ struct FormulaGraphDesc {
     // ワイヤーを編集したら空にする（グラフとずれたテキストを見せないため。
     // 位置だけの移動は保つ）。空なら式エディタは formulaToText で起こし直す。
     std::string source;
+    // グローバル（ライブラリ）の計算式なら assets/ 相対のファイル名
+    // （"formulas/<名前>.xml"）。シーンの XML は <formula name file/> の参照だけを
+    // 書き、中身はファイルが持つ（読込側の Scene が入れる）。空 = このシーン専用。
+    std::string file;
 };
 
 // ノード語彙の定義（名前・入出力の数・状態の有無）。未知の名前は nullptr。

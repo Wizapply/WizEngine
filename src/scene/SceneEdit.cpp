@@ -908,6 +908,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     }
 
     if (applySharedEventOp(op)) return;
+    if (applyLibraryOp(op)) return;
 
     if (op.kind == "event.remove") {
         const std::string name = a.value("name", "");
@@ -1620,8 +1621,13 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         editor_.setPrefabAssets({});
         editor_.setPrefabEditObject(-1);
         editor_.clearSel();
-        editor_.setSceneFile("");
-        editor_.setStatus("シーンを空にしました");
+        // edit.new は名前付きの空のシーン（保存先がその名前になる）。
+        const std::string newName =
+            a.is_object() ? a.value("name", std::string()) : std::string();
+        editor_.setSceneFile(newName);
+        editor_.setStatus(newName.empty()
+                              ? std::string("シーンを空にしました")
+                              : "新規シーン「" + newName + "」（💾 保存でファイルに書きます）");
         // テレインも初期値（= 無し）へ。地面が既定へ戻るのと同じ扱い。
         // .terrain ファイルは消さない（外すだけ）。
         // publishTerrainField は最後に syncBackend を呼ぶ（Core 専用の物もソフト
@@ -1691,6 +1697,17 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             editor_.setStatus("保存できません（共通イベントのファイルを書けません）: " + reason);
             return;
         }
+        // グローバルの計算式・プレハブも同じく、変わったものだけ先に書く。
+        std::string libWritten;
+        if (!saveLibraryAssets(doc, libWritten, reason)) {
+            LOGW("editor", "save '%s': global asset not written: %s", name.c_str(),
+                 reason.c_str());
+            editor_.setStatus("保存できません（グローバルのファイルを書けません）: " + reason);
+            return;
+        }
+        if (!libWritten.empty()) {
+            eventsWritten += (eventsWritten.empty() ? "" : " ") + libWritten;
+        }
         if (EditorState::writeText(path, ed::toXmlText(doc), reason)) {
             editor_.setSceneFile(name);
             editor_.setStatus("保存しました: " + name + ".xml" +
@@ -1699,7 +1716,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                                    : "（テレイン " + terrainWritten + " を書きました）") +
                               (eventsWritten.empty()
                                    ? std::string()
-                                   : "（共通イベント " + eventsWritten + " を書きました）"));
+                                   : "（グローバル " + eventsWritten + " を書きました）"));
         } else {
             editor_.setStatus("保存できません: " + reason);
         }

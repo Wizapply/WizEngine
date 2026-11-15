@@ -1230,6 +1230,7 @@
       const row = document.createElement('div');
       const edSel = eSel.kind === 'camera' && eSel.index === c.index;
       row.className = 'item' + (isMe ? ' sel' : '') + (edSel ? ' edsel' : '');
+      row.dataset.cam = c.index;  // 右クリックのメニューが引く
       row.innerHTML =
         '<span class="dot" style="background:' + c.color + '"></span>' +
         '<span>' + cameraName(c.index) + (isMe ? ' (this)' : '') + '</span>' +
@@ -1241,7 +1242,8 @@
       //     移動はダブルクリック、映像の確認は目アイコン（別ウィンドウ）。
       //   * それ以外（シミュレート中・他のカメラのページ）… 従来どおり
       //     そのカメラのページへ移動。
-      // 数値での編集・削除・追加は Inspector のカメラ節。
+      // 数値での編集は Inspector のカメラ節、削除は右クリックか Inspector、
+      // 追加は見出しの ＋。
       if (!isMe) {
         const canEditHere =
           owner && sceneData.mode === 'editor' && isEditorCam();
@@ -1270,7 +1272,7 @@
       el.appendChild(row);
     }
     // 見出し横の ＋（追加）。エディタモード×Editor Camera のページでだけ
-    // 出す。削除は選択して Inspector の「選択カメラ」節から。
+    // 出す。削除は行の右クリックか、選択して Inspector の「選択カメラ」節から。
     const hdr = document.getElementById('camAddDel');
     const editing = owner && sceneData.mode === 'editor' && isEditorCam();
     hdr.hidden = !editing;
@@ -1851,13 +1853,10 @@
     const m = ((sceneData && sceneData.meshes) || [])[i];
     if (m) addObject('model', m.name);
   }
+  // 大きさ・色は送らない = サーバーの既定（edit.add: 0.5 m、BodyDesc の色）で
+  // 置き、置いた後に Inspector で決める。
   function addObject(shape, mesh, soft) {
-    const msg = {
-      shape: shape,
-      size: num('edNewSize', 0.5),
-      color: document.getElementById('edNewColor').value,
-      mass: 1.0
-    };
+    const msg = { shape: shape, mass: 1.0 };
     // glTF モデルの配置（アセットパネルの mesh タイル）。size は当たり判定の
     // 大きさで、見た目の大きさは文書の <mesh scale> が決める。
     if (mesh) msg.mesh = mesh;
@@ -2025,9 +2024,10 @@
     applyLightEdit({ spotInnerDeg: num('ltInner', 25),
                      spotOuterDeg: num('ltOuter', 35) });
   }
-  function removeLight() {
+  function removeLightAt(index) { send('edit.light.remove', { index: index }); }
+  function removeLight() {  // Inspector の 🗑・Delete キー（選択中のライト）
     const l = sceneData && sceneData.selectedLight;
-    if (l) send('edit.light.remove', { index: l.index });
+    if (l) removeLightAt(l.index);
   }
 
   function addCamera() { send('edit.camera.add'); }
@@ -2459,10 +2459,43 @@
   // プリセットは名前だけ送る（中身の定義はサーバーが持つ = UI とずれない）。
   function applyRenderPreset(name) { send('edit.render', { preset: name }); }
 
+  // 保存は今のシーンの名前（新規シーン・読込で決まる）へ。無題ならここで聞く。
+  function cleanSceneName(s) {
+    return String(s || '').trim().replace(/[^A-Za-z0-9_-]/g, '');
+  }
   function saveScene() {
-    const name = document.getElementById('edSceneName').value.trim();
-    if (!name) return;
+    let name = (sceneData && sceneData.sceneFile) || '';
+    if (!name) {
+      const raw = prompt('シーンの名前（英数字と _ -）', 'my_scene');
+      if (raw === null) return;
+      name = cleanSceneName(raw);
+      if (!name) return;
+      if (sceneFileExists(name) &&
+          !confirm('シーン「' + name + '」は既にあります。上書きしますか？')) {
+        return;
+      }
+    }
     send('edit.save', { name: name });
+  }
+  function sceneFileExists(name) {
+    return ((sceneData && sceneData.files) || []).includes(name);
+  }
+  // 新規シーン: 名前を決めて空のシーンから始める（ファイルは 💾 保存で書く）。
+  function newScene() {
+    const raw = prompt('新しいシーンの名前（英数字と _ -）。今のシーンは閉じます' +
+                       '（保存していない変更は失われます）。', 'new_scene');
+    if (raw === null) return;
+    const name = cleanSceneName(raw);
+    if (!name) {
+      alert('名前は英数字と _ - で付けてください。');
+      return;
+    }
+    if (sceneFileExists(name) &&
+        !confirm('シーン「' + name + '」は既にあります。このまま保存すると上書きします。続けますか？')) {
+      return;
+    }
+    discardTerrain();
+    send('edit.new', { name: name });
   }
   // 読込はアセットパネルのタイルのダブルクリック（assetLoad）が受け持つ。
   // シーンの中身は MuJoCo 風の XML が正（assets/scenes/<名前>.xml）。保存
@@ -2495,11 +2528,6 @@
     discardTerrain();
     send('edit.xml', { text: document.getElementById('xmText').value });
     document.getElementById('xmStatus').textContent = '適用中...';
-  }
-  function clearScene() {
-    if (!confirm('シーンのオブジェクトとジョイントを全部消します。よろしいですか？')) return;
-    discardTerrain();
-    send('edit.clear');
   }
 
   const JOINT_LABEL = {
@@ -2909,12 +2937,14 @@
       setField('hzCustom', s.hz);
     }
 
-    // シーン名の欄（アセットパネルの操作列）は、空のときだけ今の
-    // ファイル名を入れる。保存済みの一覧はアセットパネルのタイルが
-    // 受け持つ（ダブルクリックで読込）。
-    if (sceneData.sceneFile &&
-        !document.getElementById('edSceneName').value) {
-      setField('edSceneName', sceneData.sceneFile);
+    // 💾 保存の行き先を見出しに（無題なら押したときに名前を聞く）。
+    {
+      const b = document.getElementById('asSave');
+      if (b) {
+        b.title = sceneData.sceneFile
+          ? 'assets/scenes/' + sceneData.sceneFile + '.xml へ保存（上書き）'
+          : '名前を付けて assets/scenes/ へ保存';
+      }
     }
   }
 
@@ -2940,142 +2970,146 @@
     const events = eventAssets();
     const formulas = formulaAssets();
     const prefabs = (sceneData.prefabs && sceneData.prefabs.assets) || [];
+    const lib = sceneData.library || {};
+    const libFormulas = lib.formulas || [], libPrefabs = lib.prefabs || [];
+    const libMeshes = lib.meshes || [];
     currentAsset();  // ndAsset を今ある一覧に合わせる（タイルの選択表示用）
     currentFormula();
     const key = files.join('|') + '@' + (sceneData.sceneFile || '') + '#' +
-      meshes.map((m) => m.name).join('|') + '%' +
+      meshes.map((m) => m.name + '=' + m.file).join('|') + '%' +
       events.map((e) => e.name + ':' + (e.nodes || []).length + ':' + (e.file || '') +
                         (e.dirty ? '*' : '')).join('|') + '!' + eventLibrary().join('|') +
       '&' + ndAsset + '$' +
-      formulas.map((f) => f.name + ':' + (f.nodes || []).length).join('|') +
+      formulas.map((f) => f.name + ':' + (f.nodes || []).length + ':' + (f.file || '')).join('|') +
       '&' + ndFormula + ndKind + '^' +
-      prefabs.map((p) => p.name + ':' + p.parts).join('|') + '~' +
+      prefabs.map((p) => p.name + ':' + p.parts + ':' + (p.file || '')).join('|') + '~' +
+      libFormulas.join('|') + '~' + libPrefabs.join('|') + '~' + libMeshes.join('|') + '~' +
       terrainTilesKey();
     if (key === assetListKey) return;  // 変化が無ければ DOM を組み直さない
     assetListKey = key;
 
-    // シーン名はサーバー側で英数字と _ - に正規化済みなので、そのまま
-    // 属性へ埋め込んで安全。
-    let html =
-      '<div class="asItem" title="クリックでカメラ正面に配置" ' +
-      'onclick="addObject(\'box\')"><span class="ico">📦</span>' +
-      '<span class="name">Box</span><span class="kind">primitive</span></div>' +
-      '<div class="asItem" title="クリックでカメラ正面に配置" ' +
-      'onclick="addObject(\'sphere\')"><span class="ico">⚪</span>' +
-      '<span class="name">Sphere</span><span class="kind">primitive</span></div>' +
+    // 3 つの区分に分けて並べる:
+    //   🧱 作成       … 組み込み（プリミティブ・ライト・地面など。クリックで置く）
+    //   📍 ローカル    … このシーンだけの物（中身がシーンの XML に入る）
+    //   🌐 グローバル  … 全シーン共通の物（中身が assets/ のファイル。このシーンで
+    //                    使っている物は濃く、まだ使っていない物は薄く出す）
+    // 名前はサーバー側で英数字と _ - に正規化済み（シーン・イベント・計算式・
+    // プレハブ）なので属性へ埋めてよい。メッシュとテレインは XML 由来なので
+    // エスケープし、onclick へは配列番号か data 属性で渡す。
+    const BADGE = '<span class="asBadge">🌐</span>';
+    const tile = (attrs, title, ico, name, kind, cls) =>
+      '<div class="asItem' + (cls ? ' ' + cls : '') + '" ' + attrs + ' title="' +
+      ndEsc(title) + '"><span class="ico">' + ico + '</span><span class="name">' +
+      name + '</span><span class="kind">' + kind + '</span></div>';
+
+    // ---- 🧱 作成（組み込み）------------------------------------------------
+    let create =
+      tile('onclick="addObject(\'box\')"', 'クリックでカメラ正面に配置', '📦', 'Box', 'primitive') +
+      tile('onclick="addObject(\'sphere\')"', 'クリックでカメラ正面に配置', '⚪', 'Sphere', 'primitive') +
       // ソフトボディ（質点ばね）。箱 / 球の格子で、置いた直後から柔らかい。
-      '<div class="asItem" title="柔らかい箱を配置（粒子の格子 + ばね）" ' +
-      'onclick="addObject(\'box\', null, true)"><span class="ico">🫧</span>' +
-      '<span class="name">Soft Box</span><span class="kind">soft body</span></div>' +
-      '<div class="asItem" title="柔らかい球を配置（粒子の格子 + ばね）" ' +
-      'onclick="addObject(\'sphere\', null, true)"><span class="ico">🫧</span>' +
-      '<span class="name">Soft Ball</span><span class="kind">soft body</span></div>' +
-      // 階段: 専用のオブジェクトではなく「1 段目の固定の箱 + 2 段目以降を
-      // 当たり判定付きの箱で並べたプレハブ stairs」。プレハブ編集で段を動かせる。
-      '<div class="asItem" title="階段を配置（1 段目の固定の箱にプレハブ stairs を付ける。' +
-      '6 段、カメラの正面から奥へ上る。段は「プレハブを編集」で動かせる）" ' +
-      'onclick="addObject(\'stairs\')"><span class="ico">🪜</span>' +
-      '<span class="name">Stairs</span><span class="kind">prefab</span></div>' +
-      // ライト。クリックでカメラ正面（Sun は原点上空）に追加され、そのまま
-      // 選択されるので、置いた直後にギズモ / Inspector で調整できる。
-      '<div class="asItem" title="点光源を追加（全方向に光る）" ' +
-      'onclick="addLight(\'point\')"><span class="ico">💡</span>' +
-      '<span class="name">Point Light</span><span class="kind">light</span></div>' +
-      '<div class="asItem" title="スポットライトを追加（円錐に光る）" ' +
-      'onclick="addLight(\'spot\')"><span class="ico">🔦</span>' +
-      '<span class="name">Spot Light</span><span class="kind">light</span></div>' +
-      '<div class="asItem" title="平行光を追加（太陽。位置は光に影響しない）" ' +
-      'onclick="addLight(\'sun\')"><span class="ico">☀&#xFE0E;</span>' +
-      '<span class="name">Sun</span><span class="kind">light</span></div>' +
-      // 地面とテレイン（シーンに 1 つずつのオブジェクト）。Ground は削除して
-      // いれば戻し、あれば選ぶ。Terrain は新しい平らなテレインを作る（今の
-      // テレインがあれば取り替える。既存のファイルは下の ⛰ タイルから開く）。
-      '<div class="asItem" title="地面（y = 0 の床）。削除していれば戻し、あれば選択" ' +
-      'onclick="addGround()"><span class="ico">▭</span>' +
-      '<span class="name">Ground</span><span class="kind">ground</span></div>' +
-      '<div class="asItem" title="新しいテレイン（平ら・既定の大きさ）を作ってシーンに置く。' +
-      '名前を聞きます" onclick="newTerrain()"><span class="ico">⛰&#xFE0E;</span>' +
-      '<span class="name">Terrain</span><span class="kind">new terrain</span></div>';
-    // シーン文書の <asset><mesh/>。クリックでそのモデルのオブジェクトを
-    // カメラ正面に配置する。名前は XML 由来（手で書ける）なので HTML には
-    // エスケープして出し、onclick へは配列番号だけを埋め込む（名前を JS
-    // 文字列に埋め込むと引用符入りの名前で壊れる）。
+      tile('onclick="addObject(\'box\', null, true)"', '柔らかい箱を配置（粒子の格子 + ばね）',
+           '🫧', 'Soft Box', 'soft body') +
+      tile('onclick="addObject(\'sphere\', null, true)"', '柔らかい球を配置（粒子の格子 + ばね）',
+           '🫧', 'Soft Ball', 'soft body') +
+      // 階段: プレハブ stairs（当たり判定付きの箱の部品）を付けた固定の物。
+      tile('onclick="addObject(\'stairs\')"', '階段を配置（プレハブ stairs。段は「プレハブを編集」で動かせる）',
+           '🪜', 'Stairs', 'prefab') +
+      // ライト。追加するとそのまま選択されるので、ギズモ / Inspector で調整できる。
+      tile('onclick="addLight(\'point\')"', '点光源を追加（全方向に光る）', '💡', 'Point Light', 'light') +
+      tile('onclick="addLight(\'spot\')"', 'スポットライトを追加（円錐に光る）', '🔦', 'Spot Light', 'light') +
+      tile('onclick="addLight(\'sun\')"', '平行光を追加（太陽。位置は光に影響しない）',
+           '☀&#xFE0E;', 'Sun', 'light') +
+      // 地面とテレイン（シーンに 1 つずつのオブジェクト）。
+      tile('onclick="addGround()"', '地面（y = 0 の床）。削除していれば戻し、あれば選択',
+           '▭', 'Ground', 'ground') +
+      tile('onclick="newTerrain()"', '新しいテレイン（平ら・既定の大きさ）を作ってシーンに置く。名前を聞きます',
+           '⛰&#xFE0E;', 'Terrain', 'new terrain');
+
+    // ---- 📍 ローカル（このシーンだけ）----------------------------------------
+    let local = '';
+    // シーンが宣言しているメッシュ（<asset><mesh/>）。クリックで配置。
     meshes.forEach((m, i) => {
-      html += '<div class="asItem" title="クリックでカメラ正面に配置（' +
-        ndEsc(m.file) + '）" onclick="addMeshAsset(' + i + ')">' +
-        '<span class="ico">🧊</span><span class="name">' + ndEsc(m.name) +
-        '</span><span class="kind">mesh</span></div>';
+      local += tile('onclick="addMeshAsset(' + i + ')"',
+                    'クリックでカメラ正面に配置（' + m.file + '）', '🧊', ndEsc(m.name), 'mesh');
     });
-    // イベントアセット（ノードで組むスクリプト）。クリックでノードエディタが
-    // そのアセットに切り替わり、**右クリックで作成・削除・付ける**
-    // （data-event がその対象。名前はサーバー側で英数字と _ - に正規化済み
-    // なので、そのまま属性へ埋めてよい）。
-    // 共通化したもの（file あり = イベントライブラリのファイル）は 🔗 と
-    // "shared"、ファイルへ書いていない変更があれば名前に *（シーンの保存で書く）。
-    for (const e of events) {
+    // イベントアセット（ノードで組むスクリプト）。クリックでノードエディタ、
+    // 右クリックで付ける・グローバルにする・削除。
+    const eventTile = (e) => {
       const cur = e.name === ndAsset;
-      const shared = !!e.file;
-      html += '<div class="asItem' + (cur ? ' sel' : '') +
-        '" data-event="' + e.name +
-        '" title="クリック: ノードエディタで開く（' + (e.nodes || []).length +
-        ' ノード）' + (shared ? '\n共通（' + ndEsc(e.file) + '）' +
-                         (e.dirty ? '・未保存（シーンの保存で書きます）' : '') : '') +
-        ' ／ 右クリック: メニュー" onclick="openEventAsset(\'' +
-        e.name + '\')">' +
-        '<span class="ico">⚡&#xFE0E;' + (shared ? '<span class="asBadge">🔗</span>' : '') +
-        '</span><span class="name">' + ndEsc(e.name) + (e.dirty ? ' *' : '') +
-        '</span><span class="kind">' + (shared ? 'shared event' : 'event') + '</span></div>';
-    }
-    // イベントライブラリにあって、このシーンにはまだ無いもの（薄く出す）。
-    // クリックでシーンに読み込む（共通のまま = 参照）。
-    const inScene = new Set(events.map((e) => e.name));
-    for (const n of eventLibrary()) {
-      if (inScene.has(n)) continue;
-      html += '<div class="asItem lib" data-evlib="' + ndEsc(n) +
-        '" title="共通イベント（assets/events/' + ndEsc(n) + '.xml）\nクリック: ' +
-        'このシーンに読み込む ／ 右クリック: メニュー" ' +
-        'onclick="importEventAsset(this.dataset.evlib)">' +
-        '<span class="ico">⚡&#xFE0E;<span class="asBadge">🔗</span></span>' +
-        '<span class="name">' + ndEsc(n) + '</span><span class="kind">library</span></div>';
-    }
-    // 計算式アセット（🧮）。クリックでノードエディタが開き、右クリックで
-    // 作成・削除・選択中の車両に付ける。
-    for (const f of formulas) {
+      const global = !!e.file;
+      return tile('data-event="' + e.name + '" onclick="openEventAsset(\'' + e.name + '\')"',
+        'クリック: ノードエディタで開く（' + (e.nodes || []).length + ' ノード）' +
+        (global ? '\nグローバル（' + e.file + '）' +
+                  (e.dirty ? '・未保存（シーンの保存で書きます）' : '') : '') +
+        ' ／ 右クリック: メニュー',
+        '⚡&#xFE0E;' + (global ? BADGE : ''), ndEsc(e.name) + (e.dirty ? ' *' : ''),
+        'event', cur ? 'sel' : '');
+    };
+    const formulaTile = (f) => {
       const cur = ndKind === 'formula' && f.name === ndFormula;
-      html += '<div class="asItem' + (cur ? ' sel' : '') +
-        '" data-formula="' + f.name +
-        '" title="クリック: ノードエディタで開く（' + (f.nodes || []).length +
-        ' ノード） ／ 右クリック: メニュー" onclick="openFormulaAsset(\'' +
-        f.name + '\')">' +
-        '<span class="ico">🧮</span><span class="name">' + ndEsc(f.name) +
-        '</span><span class="kind">' +
-        (typeof isControllerFormula === 'function' && isControllerFormula(f.name)
-          ? 'control' : 'formula') + '</span></div>';
-    }
-    // プレハブ（🧩）。右クリックで選択オブジェクトに付ける / 削除。中身の
-    // 編集はオブジェクトの右クリック「プレハブを編集」から。
-    for (const p of prefabs) {
-      html += '<div class="asItem" data-prefab="' + p.name +
-        '" title="' + p.parts + ' 部品 ／ 右クリック: メニュー（選択オブジェクトに付ける）">' +
-        '<span class="ico">🧩</span><span class="name">' + ndEsc(p.name) +
-        '</span><span class="kind">prefab</span></div>';
-    }
-    html += renderTerrainTiles();  // ⛰ assets/terrains/*.terrain（terrain-files.js）
+      const global = !!f.file;
+      return tile('data-formula="' + f.name + '" onclick="openFormulaAsset(\'' + f.name + '\')"',
+        'クリック: ノードエディタで開く（' + (f.nodes || []).length + ' ノード）' +
+        (global ? '\nグローバル（' + f.file + '。編集はシーンの保存でファイルに書きます）' : '') +
+        ' ／ 右クリック: メニュー',
+        '🧮' + (global ? BADGE : ''), ndEsc(f.name),
+        typeof isControllerFormula === 'function' && isControllerFormula(f.name)
+          ? 'control' : 'formula', cur ? 'sel' : '');
+    };
+    const prefabTile = (p) => {
+      const global = !!p.file;
+      return tile('data-prefab="' + p.name + '"',
+        p.parts + ' 部品' + (global ? '\nグローバル（' + p.file + '）' : '') +
+        ' ／ 右クリック: メニュー（選択オブジェクトに付ける）',
+        '🧩' + (global ? BADGE : ''), ndEsc(p.name), 'prefab');
+    };
+    for (const e of events) if (!e.file) local += eventTile(e);
+    for (const f of formulas) if (!f.file) local += formulaTile(f);
+    for (const p of prefabs) if (!p.file) local += prefabTile(p);
+
+    // ---- 🌐 グローバル（全シーン共通）----------------------------------------
+    let global = '';
+    // このシーンで使っているもの（参照）は濃く、使っていないものは薄く。
+    const libTile = (attr, name, ico, kind, what) =>
+      tile(attr + '="' + ndEsc(name) + '" onclick="importLibraryAsset(\'' + what +
+           '\', this.getAttribute(\'' + attr + '\'))"',
+           'グローバル（assets/' + what + 's/' + name + '.xml）。このシーンではまだ使っていません\n' +
+           'クリック: このシーンで使う ／ 右クリック: メニュー',
+           ico + BADGE, ndEsc(name), kind, 'lib');
+    const usedEvents = new Set(events.map((e) => e.name));
+    for (const e of events) if (e.file) global += eventTile(e);
+    for (const n of eventLibrary()) if (!usedEvents.has(n)) global += libTile('data-evlib', n, '⚡&#xFE0E;', 'event', 'event');
+    const usedFormulas = new Set(formulas.map((f) => f.name));
+    for (const f of formulas) if (f.file) global += formulaTile(f);
+    for (const n of libFormulas) if (!usedFormulas.has(n)) global += libTile('data-flib', n, '🧮', 'formula', 'formula');
+    const usedPrefabs = new Set(prefabs.map((p) => p.name));
+    for (const p of prefabs) if (p.file) global += prefabTile(p);
+    for (const n of libPrefabs) if (!usedPrefabs.has(n)) global += libTile('data-plib', n, '🧩', 'prefab', 'prefab');
+    // assets/ のモデル（.glb / .gltf）でこのシーンがまだ宣言していないもの。
+    // クリックでこのシーンに宣言して置く（以後はローカルのメッシュに並ぶ）。
+    const declared = new Set(meshes.map((m) => m.file));
+    libMeshes.forEach((f, i) => {
+      if (declared.has(f)) return;
+      const base = f.split('/').pop().replace(/\.(glb|gltf)$/i, '');
+      global += tile('data-mlib="' + ndEsc(f) + '" onclick="placeLibraryMesh(this.dataset.mlib)"',
+                     'assets/' + f + '\nクリック: このシーンに宣言してカメラ正面に配置',
+                     '🧊' + BADGE, ndEsc(base), 'model');
+    });
+    global += renderTerrainTiles();  // ⛰ assets/terrains/*.terrain（terrain-files.js）
     for (const f of files) {
-      const cur = f === sceneData.sceneFile;
-      html += '<div class="asItem' + (cur ? ' sel' : '') +
-        '" title="ダブルクリックで読込" onclick="assetPick(\'' + f + '\')"' +
-        ' ondblclick="assetLoad(\'' + f + '\')">' +
-        '<span class="ico">🗂&#xFE0E;</span><span class="name">' + f +
-        '</span><span class="kind">scene</span></div>';
+      global += tile('ondblclick="assetLoad(\'' + f + '\')"', 'ダブルクリックで読込',
+                     '🗂&#xFE0E;', f, 'scene', f === sceneData.sceneFile ? 'sel' : '');
     }
+
+    const sec = (cls, label, hint) =>
+      '<div class="asSec ' + cls + '"><b>' + label + '</b><span>' + hint + '</span></div>';
+    let html =
+      sec('create', '🧱 作成', 'クリックで置く・追加する') + create +
+      sec('local', '📍 ローカル', 'このシーンだけ（中身はシーンの XML に入る）。右クリック →「🌐 グローバルにする」で全シーン共通に') +
+      (local || '<div class="asEmpty">このシーンだけのアセットはありません</div>') +
+      sec('global', '🌐 グローバル', '全シーン共通（中身は assets/ のファイル）。薄いものはこのシーンで未使用 = クリックで使う') +
+      (global || '<div class="asEmpty">グローバルのアセットはありません</div>');
     document.getElementById('assetList').innerHTML = html;
-  }
-  function assetPick(name) {
-    // シングルクリックは選択だけ: パネル上部のシーン名に入れておく
-    // （そのまま 💾 保存すれば上書き、ダブルクリックで読込）。
-    const box = document.getElementById('edSceneName');
-    if (box) box.value = name;
   }
   function assetLoad(name) {
     if (!confirm('シーン「' + name +
@@ -3096,17 +3130,32 @@
     const ftile = e.target.closest ? e.target.closest('[data-formula]') : null;
     const ptile = e.target.closest ? e.target.closest('[data-prefab]') : null;
     const ttile = e.target.closest ? e.target.closest('[data-terrain]') : null;
-    const ltile = e.target.closest ? e.target.closest('[data-evlib]') : null;
+    const ltile = e.target.closest ? e.target.closest('[data-evlib], [data-flib], [data-plib]') : null;
+    const mtile = e.target.closest ? e.target.closest('[data-mlib]') : null;
     const sel = mySelectedDesc();
     if (ltile) {
-      const lname = ltile.dataset.evlib;
+      const kind = ltile.dataset.evlib !== undefined ? 'event'
+                 : ltile.dataset.flib !== undefined ? 'formula' : 'prefab';
+      const lname = ltile.dataset.evlib || ltile.dataset.flib || ltile.dataset.plib;
       showContextMenu(e, [
-        { head: '🔗 ' + lname + '（共通イベント）' },
-        { label: 'このシーンに読み込む', onClick: () => importEventAsset(lname) },
+        { head: '🌐 ' + lname + '（グローバルの' + LIB_LABEL[kind] + '）' },
+        { label: 'このシーンで使う', hint: '参照として読み込む',
+          onClick: () => importLibraryAsset(kind, lname) },
         { sep: true },
-        { label: '🗑 ライブラリから削除', danger: true,
+        { label: '🗑 グローバルから削除', danger: true,
           hint: 'ごみ箱へ（使っている他のシーンでは読めなくなります）',
-          onClick: () => deleteLibraryEvent(lname) },
+          onClick: () => deleteLibraryAsset(kind, lname) },
+      ]);
+      return;
+    }
+    if (mtile) {
+      const file = mtile.dataset.mlib;
+      showContextMenu(e, [
+        { head: '🌐 ' + file },
+        { label: 'カメラ正面に配置', hint: 'このシーンに宣言して置く',
+          onClick: () => placeLibraryMesh(file) },
+        { label: 'このシーンに宣言だけする', hint: 'ローカルのメッシュに並ぶ',
+          onClick: () => send('edit.mesh.add', { file: file }) },
       ]);
       return;
     }
@@ -3116,8 +3165,12 @@
     }
     if (ptile) {
       const pname = ptile.dataset.prefab;
+      const pa = ((sceneData.prefabs && sceneData.prefabs.assets) || []).find((x) => x.name === pname);
+      const pfile = (pa && pa.file) || '';
       showContextMenu(e, [
-        { head: '🧩 ' + pname },
+        { head: (pfile ? '🌐 ' : '🧩 ') + pname + (pfile ? '（グローバル）' : '') },
+        ...libraryMenuItems('prefab', pname, pfile),
+        { sep: true },
         { label: '＋ 選択オブジェクトに付ける', hint: sel ? ('#' + sel.index) : '未選択',
           disabled: !sel,
           onClick: () => send('edit.prefab.attach', { index: sel.index, name: pname }) },
@@ -3126,16 +3179,20 @@
                            setTimeout(() => openPrefabEdit(sel.index), 150); } },
         { sep: true },
         { label: '🧩 新しい（空の）プレハブ…', onClick: newPrefabAsset },
-        { label: '🗑 このプレハブを削除', danger: true,
-          onClick: () => { if (confirm('プレハブ「' + pname + '」を削除します。付けてある物は元の見た目に戻ります。')) {
+        { label: pfile ? '🗑 このシーンから外す' : '🗑 このプレハブを削除', danger: true,
+          hint: pfile ? 'グローバルのファイルは残ります' : '',
+          onClick: () => { if (confirm('プレハブ「' + pname + '」を' + (pfile ? 'このシーンから外します' : '削除します') +
+                                       '。付けてある物は元の見た目に戻ります。')) {
                              send('edit.prefab.remove', { name: pname }); } } },
       ]);
       return;
     }
     if (ftile) {
       const fname = ftile.dataset.formula;
+      const fa = formulaAssets().find((x) => x.name === fname);
+      const ffile = (fa && fa.file) || '';
       showContextMenu(e, [
-        { head: '🧮 ' + fname },
+        { head: (ffile ? '🌐 ' : '🧮 ') + fname + (ffile ? '（グローバル）' : '') },
         { label: 'ノードエディタで開く', onClick: () => openFormulaAsset(fname) },
         { label: '📝 数式で編集', hint: 'テキストで書き換える',
           onClick: () => openFormulaText(fname) },
@@ -3143,17 +3200,21 @@
         // 制御器（control.js）: シミュレート中に物理スレッドで回す。
         ...(typeof controlMenuItems === 'function' ? controlMenuItems(fname) : []),
         { sep: true },
+        ...libraryMenuItems('formula', fname, ffile),
+        { sep: true },
         { label: '🧮 新しい計算式…', onClick: newFormulaAsset },
-        { label: '🗑 この計算式を削除', danger: true,
+        { label: ffile ? '🗑 このシーンから外す' : '🗑 この計算式を削除', danger: true,
+          hint: ffile ? 'グローバルのファイルは残ります' : '',
           onClick: () => removeFormulaAsset(fname) },
       ]);
       return;
     }
     if (!tile) {
       showContextMenu(e, [
-        { label: '✨ 新しい共通イベント…', hint: 'ライブラリ（全シーンで使える）',
+        { label: '✨ 新しいイベント（ローカル）…', hint: 'このシーン専用',
+          onClick: () => newEventAsset(false) },
+        { label: '✨ 新しいイベント（グローバル）…', hint: '全シーン共通',
           onClick: () => newEventAsset(true) },
-        { label: '✨ 新しいイベント（このシーン専用）…', onClick: () => newEventAsset(false) },
         { label: '🧮 新しい計算式…', onClick: newFormulaAsset },
         { label: '🧩 新しい（空の）プレハブ…', onClick: newPrefabAsset },
         { label: '⛰ 新しいテレイン…', onClick: newTerrain },
@@ -3164,12 +3225,12 @@
     const ea = eventAssets().find((x) => x.name === name);
     const shared = !!(ea && ea.file);
     showContextMenu(e, [
-      { head: (shared ? '🔗 ' : '⚡ ') + name + (shared ? '（共通）' : '') },
+      { head: (shared ? '🌐 ' : '⚡ ') + name + (shared ? '（グローバル）' : '') },
       { label: 'ノードエディタで開く', onClick: () => openEventAsset(name) },
       shared
-        ? { label: 'このシーン専用にする', hint: 'ライブラリのファイルは残ります',
+        ? { label: '📍 ローカルにする（このシーン専用）', hint: 'グローバルのファイルは残ります',
             onClick: () => send('edit.event.unshare', { name: name }) }
-        : { label: '🔗 共通化（ライブラリへ）', hint: '他のシーンでも使えるように',
+        : { label: '🌐 グローバルにする（全シーン共通）', hint: 'assets/events/' + name + '.xml',
             onClick: () => shareEventAsset(name) },
       { sep: true },
       { label: '＋ シーン全体に付ける', hint: 'World',
@@ -3178,14 +3239,15 @@
         hint: sel ? ('#' + sel.index) : '未選択', disabled: !sel,
         onClick: () => attachEvent(name, 'sel') },
       { sep: true },
-      { label: '✨ 新しい共通イベント…', onClick: () => newEventAsset(true) },
+      { label: '✨ 新しいグローバルのイベント…', onClick: () => newEventAsset(true) },
       { label: '🗑 このシーンから削除', danger: true,
-        hint: shared ? 'ライブラリのファイルは残ります' : '',
+        hint: shared ? 'グローバルのファイルは残ります' : '',
         onClick: () => removeEventAsset(name) },
     ]);
   });
 
-  // 階層一覧のオブジェクト行の右クリック: プレハブを編集 / 外す / 選択。
+  // 階層一覧の行の右クリック: オブジェクト（プレハブを編集 / 外す / 選択 /
+  // 削除）・ライト・地面 / テレイン。
   document.getElementById('objList').addEventListener('contextmenu', (e) => {
     if (!owner || !sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
     const item = e.target.closest ? e.target.closest('[data-scene-item]') : null;
@@ -3193,10 +3255,55 @@
       showContextMenu(e, sceneItemMenuItems(item.dataset.sceneItem));
       return;
     }
+    const lrow = e.target.closest ? e.target.closest('[data-light]') : null;
+    if (lrow) {
+      showContextMenu(e, lightMenuItems(parseInt(lrow.dataset.light, 10)));
+      return;
+    }
     const row = e.target.closest ? e.target.closest('[data-index]') : null;
     if (!row) return;
     showContextMenu(e, objectMenuItems(parseInt(row.dataset.index, 10)));
   });
+  // カメラ一覧の行の右クリック: 選択 / ページへ移動 / 映像 / 削除。
+  // エディタモード×Editor Camera のページだけ（削除はシーンの書き換えなので
+  // サーバーも他のページからのぶんを弾く）。エディタカメラ自身は消せない。
+  document.getElementById('camList').addEventListener('contextmenu', (e) => {
+    if (!owner || !sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
+    const row = e.target.closest ? e.target.closest('[data-cam]') : null;
+    if (!row) return;
+    const index = parseInt(row.dataset.cam, 10);
+    const isEditor = index === sceneData.camera;  // このページ = エディタカメラ
+    const eSel = myEditorSel();
+    const selected = eSel.kind === 'camera' && eSel.index === index;
+    showContextMenu(e, [
+      { head: '🎥 ' + cameraName(index) },
+      isEditor ? null : { label: selected ? '選択を解除' : '選択',
+                          onClick: () => selectCamera(index) },
+      isEditor ? null : { label: 'このカメラのページへ',
+                          onClick: () => { location.href = camPath(index); } },
+      isEditor ? null : { label: '映像を別ウィンドウで表示',
+                          onClick: () => openCamPopup(index) },
+      { sep: true },
+      { label: '🗑 削除', danger: true, disabled: isEditor,
+        hint: isEditor ? 'エディタカメラは削除できません' : '',
+        onClick: () => removeCameraAt(index) },
+    ]);
+  });
+  // ライトの行の右クリック: 選択 / 削除（オブジェクトの行と同じく確認は
+  // 挟まない = Inspector の 🗑 と Delete キーと同じ）。
+  function lightMenuItems(index) {
+    const l = (sceneData.lights || []).find((x) => x.index === index);
+    const eSel = myEditorSel();
+    const selected = eSel.kind === 'light' && eSel.index === index;
+    return [
+      { head: '💡 ' + (l && l.name ? l.name : 'Light ' + index) },
+      { label: selected ? '選択を解除' : '選択',
+        onClick: () => selectLight(index) },
+      { sep: true },
+      { label: '🗑 削除', hint: 'Delete', danger: true,
+        onClick: () => removeLightAt(index) },
+    ];
+  }
   // 地面 / テレインの行の右クリック: 選択 / 削除。
   function sceneItemMenuItems(kind) {
     const selected = myEditorSel().kind === kind;
@@ -3574,6 +3681,67 @@
     ndAsset = name;   // 読み込まれたら次のポーリングでこれが選ばれる
     ndGraphKey = '';
     send('edit.event.import', { name: name });
+  }
+  // ---- グローバル（ライブラリ）の計算式・プレハブ・メッシュ ------------------
+  // サーバーは edit.lib.share / unshare / import / delete（kind = event / formula /
+  // prefab）と edit.mesh.add。イベントは従来の edit.event.* でも同じ。
+  const LIB_LABEL = { event: 'イベント', formula: '計算式', prefab: 'プレハブ' };
+  function libraryList(kind) {
+    const lib = (sceneData && sceneData.library) || {};
+    return kind === 'event' ? eventLibrary() : (lib[kind + 's'] || []);
+  }
+  function importLibraryAsset(kind, name) {
+    if (!name) return;
+    if (kind === 'event') { importEventAsset(name); return; }
+    if (kind === 'formula') { ndKind = 'formula'; ndFormula = name; ndGraphKey = ''; }
+    send('edit.lib.import', { kind: kind, name: name });
+  }
+  function shareLibraryAsset(kind, name) {
+    if (kind === 'event') { shareEventAsset(name); return; }
+    const msg = { kind: kind, name: name };
+    if (libraryList(kind).includes(name)) {
+      if (!confirm('グローバルに同じ名前の' + LIB_LABEL[kind] + '「' + name + '」があります。\n' +
+                   'このシーンの中身で上書きしますか？（それを使っている他のシーンも変わります）')) {
+        return;
+      }
+      msg.overwrite = true;
+    }
+    send('edit.lib.share', msg);
+  }
+  function unshareLibraryAsset(kind, name) {
+    send('edit.lib.unshare', { kind: kind, name: name });
+  }
+  function deleteLibraryAsset(kind, name) {
+    if (kind === 'event') { deleteLibraryEvent(name); return; }
+    if (!confirm('グローバルの' + LIB_LABEL[kind] + '「' + name + '」をごみ箱へ移しますか？\n' +
+                 'これを使っているシーンは、開くとこの' + LIB_LABEL[kind] + 'が空になります' +
+                 '（ファイルを戻せば元に戻ります）')) {
+      return;
+    }
+    send('edit.lib.delete', { kind: kind, name: name });
+  }
+  // グローバルのメッシュ（assets/ の .glb）を置く: このシーンに宣言してから
+  // （同じファイルの宣言があればそれを使う）、その名前で配置する。名前の決め方は
+  // サーバーの Scene::addMeshDeclaration と同じ（ファイル名、重なれば _2, _3 …）。
+  function placeLibraryMesh(file) {
+    const meshes = (sceneData && sceneData.meshes) || [];
+    const have = meshes.find((m) => m.file === file);
+    if (have) { addObject('model', have.name); return; }
+    let base = file.split('/').pop().replace(/\.(glb|gltf)$/i, '').replace(/[^A-Za-z0-9_-]/g, '');
+    if (!base) base = 'mesh';
+    let name = base;
+    for (let n = 2; meshes.some((m) => m.name === name); ++n) name = base + '_' + n;
+    // 宣言が先に届くよう、送り終えてから置く（fetch は並行に飛ぶので、続けて
+    // 送るとサーバーに逆順で着くことがある = 宣言の無い名前で置かれて球になる）。
+    send('edit.mesh.add', { file: file, name: name }).then(() => addObject('model', name));
+  }
+  // 計算式・プレハブのタイルの右クリックに足す「グローバル / ローカル」の項目。
+  function libraryMenuItems(kind, name, file) {
+    return file
+      ? [{ label: '📍 ローカルにする（このシーン専用）', hint: 'グローバルのファイルは残ります',
+           onClick: () => unshareLibraryAsset(kind, name) }]
+      : [{ label: '🌐 グローバルにする（全シーン共通）', hint: 'assets/' + kind + 's/' + name + '.xml',
+           onClick: () => shareLibraryAsset(kind, name) }];
   }
   function deleteLibraryEvent(name) {
     if (!confirm('共通イベント「' + name + '」をごみ箱へ移しますか？\n' +

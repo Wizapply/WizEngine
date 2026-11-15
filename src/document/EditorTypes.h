@@ -321,6 +321,10 @@ struct PartDesc {
 struct PrefabDesc {
     std::string name;
     std::vector<PartDesc> parts;
+    // グローバル（ライブラリ）のプレハブなら assets/ 相対のファイル名
+    // （"prefabs/<名前>.xml"）。シーンの XML は <prefab name file/> の参照だけ。
+    // 空 = このシーン専用。
+    std::string file;
 };
 
 // "wheel:<軸>:<L|R>" を読む。違う書式なら false。

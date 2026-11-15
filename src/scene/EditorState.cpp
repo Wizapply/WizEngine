@@ -1,6 +1,7 @@
 #include "scene/EditorState.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -411,6 +412,9 @@ bool EditorState::replaceFormulaAsset(wizengine::formula::FormulaGraphDesc graph
     }
     st.desc = std::move(graph);
     FormulaAssetState* have = findFormula(formulas_, st.desc.name);
+    // 中身を差し替えてもグローバル（ライブラリ）の印は残す（数式で書き直した
+    // グローバルの計算式が、黙ってローカルへ落ちないように）。
+    if (have && st.desc.file.empty()) st.desc.file = have->desc.file;
     if (have) *have = std::move(st);
     else formulas_.push_back(std::move(st));
     formulaVersion_.fetch_add(1);
@@ -967,6 +971,98 @@ void EditorState::refreshEventLibrary() {
     std::sort(found.begin(), found.end());
     std::lock_guard<std::mutex> lk(mutex_);
     eventLibrary_.swap(found);
+}
+
+namespace {
+// assets/<dir>/*.xml の語幹（名前に使えない文字のファイルは出さない）。
+std::vector<std::string> listXmlStems(const std::string& dir) {
+    std::vector<std::string> found;
+    std::error_code ec;
+    const std::filesystem::path p(wizengine::assetPath(dir));
+    if (std::filesystem::exists(p, ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(p, ec)) {
+            if (ec) break;
+            if (!entry.is_regular_file(ec)) continue;
+            if (entry.path().extension().string() != ".xml") continue;
+            const std::string stem = entry.path().stem().string();
+            if (wizengine::editor::sanitizeEventName(stem) != stem) continue;
+            found.push_back(stem);
+        }
+    }
+    std::sort(found.begin(), found.end());
+    return found;
+}
+// assets/ 以下の .glb / .gltf（assets/ 相対、/ 区切り）。実行時のファイル置き場
+// （web など）は見ない。多すぎる環境で一覧が膨れないよう 2000 件で打ち切る。
+std::vector<std::string> listMeshFiles() {
+    std::vector<std::string> found;
+    std::error_code ec;
+    const std::filesystem::path root(wizengine::kAssetRoot);
+    if (!std::filesystem::exists(root, ec)) return found;
+    static const char* kSkip[] = {"web", "scenes", "events", "formulas", "prefabs",
+                                  "terrains", "materials"};
+    std::filesystem::recursive_directory_iterator it(
+        root, std::filesystem::directory_options::skip_permission_denied, ec);
+    for (; !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        const auto& entry = *it;
+        if (it.depth() == 0 && entry.is_directory(ec)) {
+            const std::string top = entry.path().filename().string();
+            bool skip = false;
+            for (const char* s : kSkip) skip = skip || top == s;
+            if (skip) {
+                it.disable_recursion_pending();
+                continue;
+            }
+        }
+        if (!entry.is_regular_file(ec)) continue;
+        std::string ext = entry.path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return char(std::tolower(c)); });
+        if (ext != ".glb" && ext != ".gltf") continue;
+        std::string rel = std::filesystem::relative(entry.path(), root, ec).generic_string();
+        if (ec || rel.empty() || !wizengine::editor::assetFileAllowed(rel)) continue;
+        found.push_back(rel);
+        if (found.size() >= 2000) break;
+    }
+    std::sort(found.begin(), found.end());
+    return found;
+}
+}  // namespace
+
+std::vector<std::string> EditorState::formulaLibrary() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return formulaLibrary_;
+}
+std::vector<std::string> EditorState::prefabLibrary() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return prefabLibrary_;
+}
+std::vector<std::string> EditorState::meshLibrary() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return meshLibrary_;
+}
+
+void EditorState::refreshLibraries() {
+    refreshEventLibrary();
+    std::vector<std::string> f = listXmlStems("formulas");
+    std::vector<std::string> p = listXmlStems("prefabs");
+    std::vector<std::string> m = listMeshFiles();
+    std::lock_guard<std::mutex> lk(mutex_);
+    formulaLibrary_.swap(f);
+    prefabLibrary_.swap(p);
+    meshLibrary_.swap(m);
+}
+
+std::string EditorState::formulaLibraryFile(const std::string& name) {
+    const std::string safe = wizengine::editor::sanitizeEventName(name);
+    if (safe.empty()) return {};
+    return "formulas/" + safe + ".xml";
+}
+
+std::string EditorState::prefabLibraryFile(const std::string& name) {
+    const std::string safe = wizengine::editor::sanitizeEventName(name);
+    if (safe.empty()) return {};
+    return "prefabs/" + safe + ".xml";
 }
 
 std::string EditorState::eventsDir() {
