@@ -45,6 +45,11 @@ std::size_t PhysicsWorld::addConvexHull(const std::vector<chrono::ChVector3d>& p
     return p_->factory.addConvexHull(points, mass, pos, rot, extras, hullCenter, options);
 }
 
+std::size_t PhysicsWorld::addSoftBody(const SoftBodySpec& spec, const chrono::ChVector3d& pos,
+                                      const chrono::ChQuaternion<>& rot) {
+    return p_->soft.add(spec, pos, rot);
+}
+
 void PhysicsWorld::setAlias(std::size_t id, std::size_t owner) {
     p_->bodies.setAlias(id, owner);
 }
@@ -61,21 +66,12 @@ void PhysicsWorld::disableBody(std::size_t id) {
         clearTerrain();
         return;
     }
-    if (SoftBody* soft = softOfRoot(id)) {
-        // 粒子を全部退場させ、ばねも解かない。
-        soft->active = false;
-        for (const std::size_t p : p_->bodies.members(soft->root)) {
-            if (p == id) continue;  // 代表は下の通常経路で
-            p_->bodies.retire(p);
-        }
-    }
-    p_->bodies.retire(id);
+    // ソフトボディは粒子を全部（剛体は自分だけ）。全員を退場させてから外す。
+    // ばねを解かなくするのは SoftBodies が退場の通知で受け持つ。
+    const auto members = p_->bodies.members(id);
+    for (const std::size_t p : members) p_->bodies.retire(p);
     // Core では本当に系から外す（B の 18）。粒子も同じ。
-    if (SoftBody* soft = softOfRoot(id)) {
-        for (const std::size_t p : p_->bodies.members(soft->root)) detachBody(p);
-    } else {
-        detachBody(id);
-    }
+    for (const std::size_t p : members) detachBody(p);
 }
 
 // Core（Bullet）は RemoveBody を実装しているので、退場したボディは系から

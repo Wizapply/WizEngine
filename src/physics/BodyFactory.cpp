@@ -214,6 +214,15 @@ std::size_t BodyFactory::finish(const std::shared_ptr<ChBody>& body, const BodyA
     return bodies_.add(body, info);
 }
 
+wterrain::BodyProxy BodyFactory::sphereProxy(double radius) {
+    wterrain::BodyProxy proxy;
+    wterrain::ShapeProxy sp;
+    sp.kind = wterrain::ShapeProxy::Kind::Sphere;
+    sp.radius = radius;
+    proxy.shapes.push_back(sp);
+    return proxy;
+}
+
 std::size_t BodyFactory::addSphere(double radius, double density,
                                    const ChVector3d& pos,
                                    const ChQuaternion<>& rot, bool fixed,
@@ -228,11 +237,7 @@ std::size_t BodyFactory::addSphere(double radius, double density,
     b->SetFixed(fixed);
     b->EnableCollision(true);
     // テレインの接触用の形の記録（本体の球 + 追加の当たり形状）。
-    wterrain::BodyProxy proxy;
-    wterrain::ShapeProxy sp;
-    sp.kind = wterrain::ShapeProxy::Kind::Sphere;
-    sp.radius = radius;
-    proxy.shapes.push_back(sp);
+    wterrain::BodyProxy proxy = sphereProxy(radius);
     appendExtraProxies(extras, proxy);
     return finish(b, {options, mat, /*allowSleeping*/ true, &proxy});
 }

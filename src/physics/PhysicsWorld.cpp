@@ -50,7 +50,7 @@ void PhysicsWorld::wakeAll() {
 void PhysicsWorld::step(double dt) {
     // ソフトボディのばね: 積分の前に粒子の速度へ織り込む（接触ソルバは
     // この速度を見て解く）。
-    for (auto& soft : softBodies_) solveSoftSprings(soft, dt);
+    p_->soft.solveSprings(dt);
     // Multicore 用の手計算のモータ・ばね（Core では空）。
     applyManualJoints(dt);
     p_->gravity.cancel(dt);
@@ -71,6 +71,18 @@ void PhysicsWorld::setSleepingEnabled(bool enabled, float seconds,
 }
 
 std::size_t PhysicsWorld::sleepingCount() const { return p_->sleeping.count(); }
+
+// ---- ソフトボディ（本体は SoftBodies）-----------------------------------------
+
+bool PhysicsWorld::isSoftBody(std::size_t id) const { return p_->soft.isRoot(id); }
+
+std::size_t PhysicsWorld::softParticleCount(std::size_t id) const {
+    return p_->soft.particleCount(id);
+}
+
+void PhysicsWorld::softParticlePositions(std::size_t id, std::vector<float>& out) const {
+    p_->soft.particlePositions(id, out);
+}
 
 // ---- 接触の材質 --------------------------------------------------------------
 
