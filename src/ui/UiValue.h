@@ -122,7 +122,8 @@ bool parseValue(const ValueSpec& spec, const std::string& text, PropValue& out);
 std::string formatValue(const ValueSpec& spec, const PropValue& value);
 // 値 ⇄ JSON。valueFromJson は obj[key] を読み、無い・型が合わなければ false で
 // out は変えない（/input は誰でも叩けるので型を信じない）。色は [r,g,b,a] の
-// 配列で返し、[r,g,b] と色の文字列（parseColorText）も受ける。
+// 配列で返し、[r,g,b] と色の文字列（parseColorText）も受ける。IndexList は正しい
+// 並びを番号の配列で、正しくない並びを書かれた文字列で返し、どちらも受ける。
 nlohmann::json valueToJson(const ValueSpec& spec, const PropValue& value);
 bool valueFromJson(const ValueSpec& spec, const nlohmann::json& obj,
                    const char* key, PropValue& out);

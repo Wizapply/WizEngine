@@ -564,6 +564,22 @@
     border: 1px solid #3a3d45; border-radius: 2px; vertical-align: -1px;
   }
   .uiBad { color: #ffb38a; }
+  /* 編集できる欄（ui-inspector.js）: 欄と ↺ を右に寄せ、数値の組は成分の数（--n）で並べる。
+     書いていない性質の行は欄ごと薄くする。 */
+  .uiRow .uiEdit {
+    display: flex; align-items: center; gap: 4px; justify-content: flex-end;
+    flex: 1 1 auto; min-width: 0; max-width: 70%;
+  }
+  .uiRow .uiEdit > .num, .uiRow .uiEdit > .txt { max-width: none; }
+  .uiRow .uiEdit textarea.txt { resize: vertical; font-family: inherit; }
+  .uiVec { display: grid; grid-template-columns: repeat(var(--n), 1fr); gap: 3px; width: 100%; }
+  .uiVec .axis { background: #3a3d45; }
+  .uiColor { display: flex; gap: 4px; align-items: center; }
+  .uiColor .num { width: 54px; }
+  .uiRow.uiDefault .uiEdit input, .uiRow.uiDefault .uiEdit select,
+  .uiRow.uiDefault .uiEdit textarea { opacity: .55; }
+  .uiRow .uiReset { padding: 2px 5px; }
+  .txt.uiBad { color: #ffb38a; border-color: #6b4a35; }
   /* テレインの欄。Missing のときだけ disabled（中の入力とボタンがまとめて無効）。
      薄くするのは部品ごとの :disabled の見た目（入力 .45・button:disabled）に
      任せる（fieldset にも opacity を掛けると重なって一部だけ極端に薄くなる）。

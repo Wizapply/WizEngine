@@ -52,10 +52,12 @@ private:
     void update(wizengine::Renderer& renderer, const wizengine::UiState& state);
     void ensureAtlas(wizengine::Renderer& renderer);
     // 版が変わったとき: 宣言のフォントを読み（ファイルごとに 1 回）、名前の対応を引き直す。
-    void syncFonts();
-    // 版が変わったとき: どの生きている Canvas も使わなくなった画像を返し、読めなかった
-    // 記録を捨てる（次の組み立てでもう一度試す）。
-    void releaseUnusedImages(wizengine::Renderer& renderer);
+    // 読めなかったファイルを読み直すのは reloaded（読込の世代が進んだ）か、宣言から
+    // 外れたときだけ。
+    void syncFonts(bool reloaded);
+    // 版が変わったとき: どの生きている Canvas も使わなくなった画像を返す。読めなかった
+    // 記録は、使わなくなったときか reloaded のときに捨てる（次の組み立てでもう一度試す）。
+    void releaseUnusedImages(wizengine::Renderer& renderer, bool reloaded);
     int imageTexture(wizengine::Renderer& renderer, const std::string& file);
     // 生きている Canvas の Renderer 側の入れ物・順序・高さ・出すビューを揃える。
     void syncCanvases(wizengine::Renderer& renderer, bool designChanged);
@@ -72,6 +74,7 @@ private:
     void uploadAtlas(wizengine::Renderer& renderer);
 
     std::uint64_t version_ = 0;
+    std::uint64_t loadGeneration_ = 0;  // 最後に見た UiState の読込の世代
     wizengine::UiState::Snapshot snap_;
     std::unique_ptr<wizengine::ui::FontAtlas> atlas_;
     int atlasTexture_ = -1;

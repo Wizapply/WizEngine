@@ -5,6 +5,7 @@
 
 #include "control/ControlTemplates.h"
 #include "formula/FormulaText.h"
+#include "scene/UiOps.h"
 
 #include <filesystem>
 
@@ -582,6 +583,22 @@ void Scene::applyPendingEdits() {
 
 void Scene::applyEditorOp(const EditorState::Op& op) {
     const nlohmann::json& a = op.args;
+
+    // UI の設計値（ui.*。読み方は UiOps）。受け付ける規則は INPUT と同じ editsUiFrom:
+    // 積んだ後にシミュレートへ切り替わった・プレハブ編集に入った操作は捨てる（モードの
+    // 切替は drain より先 = applyPendingEdits）。
+    if (wizengine::uiops::isUiOp(op.kind)) {
+        if (!editsUiFrom(op.camera)) return;
+        const wizengine::uiops::Result r = wizengine::uiops::apply(ui_, op.kind, a);
+        if (r.select) {
+            setEditorSel(op.camera, EditorState::SelKind::Canvas, r.canvas, r.element);
+        } else if (editor_.selKind() == EditorState::SelKind::Canvas &&
+                   !ui_.snapshot().selectionExists(editor_.selIndex(), editor_.selSub())) {
+            editor_.clearSel();  // 消した物を指していた（番号が後で別の物に使われる前に）
+        }
+        if (!r.status.empty()) editor_.setStatus(r.status);
+        return;
+    }
 
     if (op.kind == "add") {
         ed::BodyDesc d = ed::bodyFromJson(a, ed::BodyDesc{});

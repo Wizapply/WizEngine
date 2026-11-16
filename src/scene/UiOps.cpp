@@ -1,0 +1,388 @@
+#include "scene/UiOps.h"
+
+#include <algorithm>
+#include <iterator>
+#include <set>
+#include <utility>
+
+#include "core/Clamp.h"
+#include "core/Json.h"
+#include "core/SafeName.h"
+#include "ui/UiKinds.h"
+#include "ui/UiProps.h"
+#include "ui/UiValue.h"
+
+namespace wizengine {
+namespace uiops {
+namespace {
+
+// 操作の名前（Op の種類）。
+constexpr const char* kAdd = "ui.add";
+constexpr const char* kRemove = "ui.remove";
+constexpr const char* kSet = "ui.set";
+constexpr const char* kElementAdd = "ui.element.add";
+constexpr const char* kElementRemove = "ui.element.remove";
+constexpr const char* kElementSet = "ui.element.set";
+constexpr const char* const kOps[] = {kAdd,        kRemove,        kSet,
+                                      kElementAdd, kElementRemove, kElementSet};
+
+// 新しい Canvas の名前の元（空いていなければ canvas_2 …）。
+constexpr const char* kNewCanvasName = "canvas";
+
+// 書かなかった名前の注意（ステータスの末尾。無ければ空）。
+std::string rejectedCaveat(const std::vector<std::string>& names) {
+    if (names.empty()) return {};
+    std::string s = "（書けなかった値: ";
+    for (std::size_t k = 0; k < names.size(); ++k) s += (k ? ", " : "") + names[k];
+    return s + "）";
+}
+
+// 正しくない cameras の注意（Q20: どのカメラにも出さない）。正しければ空。
+std::string camerasCaveat(const ui::CanvasDesc& desc) {
+    if (desc.invalidCameras.empty()) return {};
+    const ui::ValueSpec& spec = ui::canvasAttrFromName(ui::kCanvasCamerasAttr)->spec;
+    return "（表示するカメラの番号 " + ui::firstInvalidIndex(spec, desc.invalidCameras) +
+           " はありません（" + std::to_string(roundToInt(spec.lo, 0)) + "〜" +
+           std::to_string(roundToInt(spec.hi, 0)) +
+           "）- 直すまでどのカメラにも出しません）";
+}
+
+// アニメのキーを付け替えた・外した注意（0 件なら空）。
+std::string keysCaveat(std::size_t keys, const char* what) {
+    if (keys == 0) return {};
+    return "（アニメのキー " + std::to_string(keys) + " 個も" + what + "）";
+}
+
+// 正規化で全部落ちる名前を受けたときの注意（名前は変えない / 既定の名前で作る）。
+constexpr const char* kUnusableNameCaveat = "（名前に使えるのは英数字と _ - だけです。その名前は使っていません）";
+
+// args の name を名前の決まり（ui::nameSpec の clampValue）で正規化して読む。
+enum class NameArg { Absent, Ok, Unusable };
+NameArg nameArg(const nlohmann::json& args, std::string& out) {
+    if (!args.is_object()) return NameArg::Absent;
+    const auto it = args.find("name");
+    if (it == args.end() || !it->is_string()) return NameArg::Absent;
+    const std::string raw = it->get<std::string>();
+    out = ui::clampValue(ui::nameSpec(), ui::textValue(raw)).s;
+    // 書いた名前が正規化で全部落ちた（日本語だけなど）= 消したいのではない。
+    return (!raw.empty() && out.empty()) ? NameArg::Unusable : NameArg::Ok;
+}
+
+// args の name を current へ当てる。taken(名前) = ほかの物が使っているか。当てなかったら
+// その理由の注意（ステータスの末尾）を返す。other は「別の○○が使っています」の○○。
+template <class Taken>
+std::string applyName(const nlohmann::json& args, std::string& current, Taken taken,
+                      const char* other) {
+    std::string name;
+    switch (nameArg(args, name)) {
+        case NameArg::Absent:
+            return {};
+        case NameArg::Unusable:
+            return kUnusableNameCaveat;
+        case NameArg::Ok:
+            break;
+    }
+    if (name == current) return {};
+    if (taken(name)) return "（名前 " + name + " は別の" + other + "が使っています）";
+    current = name;
+    return {};
+}
+
+// 生きている Canvas に同じ名前があるか（self の枠は数えない。規則は ui::nameTaken）。
+bool canvasNameTaken(const UiState::Snapshot& snap, const std::string& name,
+                     const UiState::CanvasItem* self) {
+    return ui::nameTaken(snap.canvases, name, [self](const UiState::CanvasItem& c) {
+        return (c.alive && &c != self) ? &c.desc.name : nullptr;
+    });
+}
+// 同じ並びに同じ名前の要素があるか（except の id は数えない）。
+bool elementNameTaken(const std::vector<ui::ElementDesc>& elements, const std::string& name,
+                      int except) {
+    return ui::nameTaken(elements, name, [except](const ui::ElementDesc& e) {
+        return e.id != except ? &e.name : nullptr;
+    });
+}
+
+// 要素 id の位置（無ければ elements.size()）。
+std::size_t indexOfElement(const std::vector<ui::ElementDesc>& elements, int id) {
+    for (std::size_t i = 0; i < elements.size(); ++i) {
+        if (elements[i].id == id) return i;
+    }
+    return elements.size();
+}
+
+// アニメのキーのうち、要素の名前が names にあるものを to へ付け替える（to が空なら外す）。
+// 戻り値 = 付け替えた・外した数。
+std::size_t retargetKeys(ui::CanvasDesc& desc, const std::set<std::string>& names,
+                         const std::string& to) {
+    std::size_t count = 0;
+    for (auto& anim : desc.anims) {
+        const auto pointed = [&names](const ui::KeyDesc& k) { return names.count(k.element) > 0; };
+        count += std::size_t(std::count_if(anim.keys.begin(), anim.keys.end(), pointed));
+        if (to.empty()) {
+            anim.keys.erase(std::remove_if(anim.keys.begin(), anim.keys.end(), pointed),
+                            anim.keys.end());
+            continue;
+        }
+        for (auto& k : anim.keys) {
+            if (pointed(k)) k.element = to;
+        }
+    }
+    return count;
+}
+
+// 要素 e がアニメのキーの指す先か（名前で引いて最初に当たる要素 = キーの規則）。
+bool keysPointAt(const ui::CanvasDesc& desc, const ui::ElementDesc& e) {
+    return ui::findElementByName(desc.elements, e.name) == &e;
+}
+
+// args の中の小さなオブジェクト（attrs / props / reset）。無ければ null。
+nlohmann::json member(const nlohmann::json& args, const char* key) {
+    return args.is_object() && args.contains(key) ? args[key] : nlohmann::json();
+}
+
+// ---- Canvas の操作 -------------------------------------------------------------
+Result addCanvas(UiState& state, const nlohmann::json& args) {
+    const UiState::Snapshot snap = state.snapshot();
+    auto taken = [&snap](const std::string& n) { return canvasNameTaken(snap, n, nullptr); };
+    ui::CanvasDesc desc;
+    std::string name;
+    const NameArg given = nameArg(args, name);
+    const bool named = given == NameArg::Ok && !name.empty();
+    desc.name = firstFreeName(named ? name : kNewCanvasName, kSafeNameMaxLength, taken);
+    // 正規化で全部落ちた名前は既定の名前で作り、理由を出す（setCanvas と同じ文）。
+    const std::string caveat = given == NameArg::Unusable ? kUnusableNameCaveat : "";
+    const std::vector<std::string> rejected = setCanvasAttrs(member(args, "attrs"), desc);
+    Result r;
+    r.select = true;
+    r.canvas = state.addCanvas(desc);
+    r.status = "UI: " + ui::canvasLabel(desc, r.canvas) + " を追加しました" + caveat +
+               rejectedCaveat(rejected) + camerasCaveat(desc);
+    return r;
+}
+
+Result removeCanvas(UiState& state, const nlohmann::json& args) {
+    const int index = jsonInt(args, "canvas", -1);
+    const UiState::Snapshot snap = state.snapshot();
+    const ui::CanvasDesc* desc = snap.liveCanvas(index);
+    Result r;
+    if (!desc || !state.removeCanvas(index)) return r;  // 行き違い（もう無い）
+    r.status = "UI: " + ui::canvasLabel(*desc, index) + " を削除しました";
+    return r;
+}
+
+Result setCanvas(UiState& state, const nlohmann::json& args) {
+    const int index = jsonInt(args, "canvas", -1);
+    const UiState::Snapshot snap = state.snapshot();
+    const ui::CanvasDesc* found = snap.liveCanvas(index);
+    Result r;
+    if (!found) return r;
+    ui::CanvasDesc desc = *found;
+    const UiState::CanvasItem* self = &snap.canvases[std::size_t(index)];
+    const std::string caveat = applyName(
+        args, desc.name,
+        [&snap, self](const std::string& n) { return canvasNameTaken(snap, n, self); }, " Canvas ");
+    const std::vector<std::string> rejected = setCanvasAttrs(member(args, "attrs"), desc);
+    state.replaceCanvas(index, desc);
+    r.status = "UI: " + ui::canvasLabel(desc, index) + " を更新しました" + caveat +
+               rejectedCaveat(rejected) + camerasCaveat(desc);
+    return r;
+}
+
+// ---- 要素の操作 -----------------------------------------------------------------
+// 要素を編集してよい Canvas の写し（無い・共用 UI なら nullptr で、r.status に理由）。
+const ui::CanvasDesc* editableCanvas(const UiState::Snapshot& snap, int index, Result& r) {
+    const ui::CanvasDesc* desc = snap.liveCanvas(index);
+    if (!desc) return nullptr;  // 行き違い（もう無い）
+    if (!desc->ui.empty()) {
+        r.status = "UI: 共用 UI（" + desc->ui + "）の要素はここでは編集できません";
+        return nullptr;
+    }
+    return desc;
+}
+
+Result addElementOp(UiState& state, const nlohmann::json& args) {
+    const int index = jsonInt(args, "canvas", -1);
+    const UiState::Snapshot snap = state.snapshot();
+    Result r;
+    const ui::CanvasDesc* found = editableCanvas(snap, index, r);
+    if (!found) return r;
+    const std::string kindName = jsonString(args, "kind", "");
+    const ui::ElementKindInfo* kind = ui::kindInfo(kindName);
+    if (!kind) {
+        r.status = "UI: 知らない種類の要素です: " + kindName;
+        return r;
+    }
+    ui::CanvasDesc desc = *found;
+    ui::ElementDesc e;
+    e.kind = kind->name;
+    e.parent = jsonInt(args, "parent", -1);
+    const std::string caveat = applyName(
+        args, e.name,
+        [&desc](const std::string& n) { return elementNameTaken(desc.elements, n, -1); }, "要素");
+    const std::vector<std::string> rejected =
+        setElementProps(member(args, "props"), nlohmann::json(), e);
+    const int id = snap.nextElementIdOf(index);
+    addElement(desc.elements, e, id);
+    const std::string label = ui::elementLabel(desc.elements.back());
+    state.replaceCanvas(index, desc);
+    r.select = true;
+    r.canvas = index;
+    r.element = id;
+    r.status = "UI: " + label + " を " + ui::canvasLabel(desc, index) + " に追加しました" +
+               caveat + rejectedCaveat(rejected);
+    return r;
+}
+
+Result removeElementOp(UiState& state, const nlohmann::json& args) {
+    const int index = jsonInt(args, "canvas", -1);
+    const int id = jsonInt(args, "element", -1);
+    const UiState::Snapshot snap = state.snapshot();
+    Result r;
+    const ui::CanvasDesc* found = editableCanvas(snap, index, r);
+    if (!found) return r;
+    ui::CanvasDesc desc = *found;
+    const std::size_t at = indexOfElement(desc.elements, id);
+    if (at == desc.elements.size()) return r;  // 行き違い（もう無い）
+    const std::string label = ui::elementLabel(desc.elements[at]);
+    const RemoveCount removed = removeElement(desc, id);
+    state.replaceCanvas(index, desc);
+    r.status = "UI: " + label + " を削除しました" +
+               (removed.elements > 1
+                    ? "（中の要素 " + std::to_string(removed.elements - 1) + " 個も）"
+                    : std::string()) +
+               keysCaveat(removed.keys, "外しました");
+    return r;
+}
+
+Result setElementOp(UiState& state, const nlohmann::json& args) {
+    const int index = jsonInt(args, "canvas", -1);
+    const int id = jsonInt(args, "element", -1);
+    const UiState::Snapshot snap = state.snapshot();
+    Result r;
+    const ui::CanvasDesc* found = editableCanvas(snap, index, r);
+    if (!found) return r;
+    ui::CanvasDesc desc = *found;
+    const std::size_t at = indexOfElement(desc.elements, id);
+    if (at == desc.elements.size()) return r;  // 行き違い（もう無い）
+    std::string name = desc.elements[at].name;
+    const std::string caveat = applyName(
+        args, name,
+        [&desc, id](const std::string& n) { return elementNameTaken(desc.elements, n, id); },
+        "要素");
+    const std::size_t keys = renameElement(desc, id, name);
+    ui::ElementDesc& e = desc.elements[at];
+    const std::vector<std::string> rejected =
+        setElementProps(member(args, "props"), member(args, "reset"), e);
+    const std::string label = ui::elementLabel(e);
+    state.replaceCanvas(index, desc);
+    r.status = "UI: " + label + " を更新しました" + caveat + rejectedCaveat(rejected) +
+               keysCaveat(keys, name.empty() ? "外しました" : "付け替えました");
+    return r;
+}
+
+}  // namespace
+
+bool isUiOp(const std::string& kind) {
+    return std::any_of(std::begin(kOps), std::end(kOps),
+                       [&kind](const char* op) { return kind == op; });
+}
+
+Result apply(UiState& state, const std::string& kind, const nlohmann::json& args) {
+    if (kind == kAdd) return addCanvas(state, args);
+    if (kind == kRemove) return removeCanvas(state, args);
+    if (kind == kSet) return setCanvas(state, args);
+    if (kind == kElementAdd) return addElementOp(state, args);
+    if (kind == kElementRemove) return removeElementOp(state, args);
+    if (kind == kElementSet) return setElementOp(state, args);
+    return {};
+}
+
+std::vector<std::string> setCanvasAttrs(const nlohmann::json& attrs, ui::CanvasDesc& desc) {
+    std::vector<std::string> rejected;
+    if (!attrs.is_object()) return rejected;
+    for (auto it = attrs.begin(); it != attrs.end(); ++it) {
+        const ui::CanvasAttrInfo* a = ui::canvasAttrFromName(it.key());
+        ui::PropValue v;
+        const bool known = a && ui::canvasAttrEditable(*a);
+        if (!known || !ui::valueFromJson(a->spec, attrs, a->name, v)) {
+            rejected.push_back(it.key());
+            continue;
+        }
+        a->set(desc, ui::clampValue(a->spec, std::move(v)));
+    }
+    return rejected;
+}
+
+std::vector<std::string> setElementProps(const nlohmann::json& props,
+                                         const nlohmann::json& reset, ui::ElementDesc& e) {
+    std::vector<std::string> rejected;
+    const ui::ElementKindInfo* kind = ui::kindInfo(e.kind);
+    const ui::PropMask mask = kind ? ui::propsOfKind(kind->id) : 0;
+    auto ownProp = [mask](const std::string& name) -> const ui::PropInfo* {
+        const ui::PropInfo* p = ui::propFromName(name);
+        return (p && (mask & ui::propBit(p->id))) ? p : nullptr;
+    };
+    if (props.is_object()) {
+        // 型の確かめと読み方は性質の表（fromJson）。知らない名前・その種類に無い性質も
+        // 書かない（文書の読み込みが警告して無視するのと同じ）。
+        ui::PropSet incoming;
+        rejected = ui::fromJson(props, incoming);
+        for (auto it = props.begin(); it != props.end(); ++it) {
+            if (ownProp(it.key())) continue;
+            const bool listed =
+                std::find(rejected.begin(), rejected.end(), it.key()) != rejected.end();
+            if (!listed) rejected.push_back(it.key());
+            if (const ui::PropInfo* known = ui::propFromName(it.key())) incoming.clear(known->id);
+        }
+        e.props.overlay(ui::clampProps(std::move(incoming)));
+    }
+    for (const std::string& name : stringList(reset)) {
+        if (const ui::PropInfo* p = ownProp(name)) e.props.clear(p->id);
+        else rejected.push_back(name);
+    }
+    return rejected;
+}
+
+void addElement(std::vector<ui::ElementDesc>& elements, ui::ElementDesc e, int id) {
+    e.id = id;
+    if (indexOfElement(elements, e.parent) == elements.size()) e.parent = -1;
+    elements.push_back(std::move(e));
+}
+
+RemoveCount removeElement(ui::CanvasDesc& desc, int id) {
+    RemoveCount count;
+    std::vector<ui::ElementDesc>& elements = desc.elements;
+    if (indexOfElement(elements, id) == elements.size()) return count;
+    // 子孫を集める（親は自分より前 = 文書順に 1 回なめれば足りる）。消える要素がキーの
+    // 指す先なら、その名前も集める（名前が重なった後ろの要素を消してもキーは残る）。
+    std::set<int> gone{id};
+    std::set<std::string> keyNames;
+    for (const auto& e : elements) {
+        const bool removed = e.id == id || (e.parent >= 0 && gone.count(e.parent) > 0);
+        if (!removed) continue;
+        gone.insert(e.id);
+        if (keysPointAt(desc, e)) keyNames.insert(e.name);
+    }
+    count.keys = retargetKeys(desc, keyNames, std::string());
+    const std::size_t before = elements.size();
+    elements.erase(std::remove_if(elements.begin(), elements.end(),
+                                  [&gone](const ui::ElementDesc& e) { return gone.count(e.id) > 0; }),
+                   elements.end());
+    count.elements = before - elements.size();
+    return count;
+}
+
+std::size_t renameElement(ui::CanvasDesc& desc, int id, const std::string& name) {
+    const std::size_t at = indexOfElement(desc.elements, id);
+    if (at == desc.elements.size()) return 0;
+    ui::ElementDesc& e = desc.elements[at];
+    if (e.name == name) return 0;
+    const bool follow = keysPointAt(desc, e);
+    const std::string old = e.name;
+    e.name = name;
+    return follow ? retargetKeys(desc, {old}, name) : 0;
+}
+
+}  // namespace uiops
+}  // namespace wizengine

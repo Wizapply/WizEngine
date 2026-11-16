@@ -11,6 +11,8 @@
 // 性質ごと・属性ごとのキーはここに書き並べない: 値は性質の表（ui::toJson）と Canvas の
 // 属性の表（kCanvasAttrs）を走って作り、Inspector の欄の形は schema（同じ表から作る）で
 // ブラウザへ渡す = 性質・属性・種類を足しても、ここと Inspector の変更は 0。
+// 名前の無い物の表示名（label）もここで入れる（呼び方の唯一の定義は ui/UiTypes.h の
+// canvasLabel / elementLabel。ブラウザは受けた label を出すだけ）。
 // 色は性質の表のとおり [r,g,b,a] のリニア値（ほかのブラウザ API の "#rrggbb" とは違う。
 // 変換はブラウザの ui-inspector.js）。
 //

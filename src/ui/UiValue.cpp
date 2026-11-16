@@ -378,9 +378,16 @@ bool valueFromJson(const ValueSpec& spec, const nlohmann::json& obj, const char*
             v.s = jsonString(obj, key, "");
             break;
         case PropType::IndexList: {
-            // 数の配列だけを受ける（型違いは false）。中身の規則は XML と同じ
-            // （文字列の並びにして同じ関数で読む = 範囲外・小数があれば正しくない並び）。
-            // 整数の値の数（1.0 など。ブラウザの数は double）は整数として受ける。
+            // 数の配列か、XML と同じ空白区切りの文字列を受ける（それ以外の型は false）。
+            // 中身の規則は XML と同じ（文字列の並びにして同じ関数で読む = 範囲外・小数・
+            // 読めない番号があれば正しくない並び）。文字列を受けるのは、正しくない並びを
+            // valueToJson が書かれた文字列のまま返すため（ブラウザが受けた "1 20" をそのまま
+            // 送り返しても拒まない）。整数の値の数（1.0 など。ブラウザの数は double）は
+            // 整数として受ける。
+            if (j.is_string()) {
+                v = indexListFromText(spec, jsonString(obj, key, ""));
+                break;
+            }
             if (!j.is_array()) return false;
             std::string text;
             for (const auto& e : j) {

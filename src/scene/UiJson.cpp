@@ -47,7 +47,12 @@ nlohmann::json buildSchema() {
         kinds.push_back({{"name", info.name}, {"props", names}});
     }
     nlohmann::json canvas = nlohmann::json::array();
-    for (const auto& a : ui::kCanvasAttrs) canvas.push_back(specJson(a.name, a.spec, a.label));
+    for (const auto& a : ui::kCanvasAttrs) {
+        nlohmann::json j = specJson(a.name, a.spec, a.label);
+        // 欄にしてよいか（ui の付け替えは共用にする / やめる操作の仕事）。
+        j["editable"] = ui::canvasAttrEditable(a);
+        canvas.push_back(j);
+    }
     return {{"props", props}, {"kinds", kinds}, {"canvas", canvas}};
 }
 
@@ -58,8 +63,10 @@ nlohmann::json selectedJson(const UiState::Snapshot& snap, int canvas, int eleme
     j["canvas"] = canvas;
     j["element"] = element;
     j["shared"] = !desc.ui.empty();
+    j["canvasLabel"] = ui::canvasLabel(desc, canvas);
     if (element < 0) {
         j["name"] = desc.name;
+        j["label"] = ui::canvasLabel(desc, canvas);
         j["attrs"] = canvasAttrsJson(desc);
         return j;
     }
@@ -67,6 +74,7 @@ nlohmann::json selectedJson(const UiState::Snapshot& snap, int canvas, int eleme
         if (e.id != element) continue;
         j["kind"] = e.kind;
         j["name"] = e.name;
+        j["label"] = ui::elementLabel(e);
         j["parent"] = e.parent;
         // 書いてある性質だけ（残りは schema の既定値。Inspector が「既定」と出す）。
         j["props"] = ui::toJson(e.props);
@@ -95,12 +103,16 @@ nlohmann::json toJson(const UiState::Snapshot& snap, int selCanvas, int selEleme
         if (!desc) continue;  // 消えた枠は出さない（番号は空く）
         nlohmann::json elements = nlohmann::json::array();
         for (const auto& e : snap.elementsOf(*desc)) {
-            elements.push_back(
-                {{"id", e.id}, {"kind", e.kind}, {"parent", e.parent}, {"name", e.name}});
+            elements.push_back({{"id", e.id},
+                                {"kind", e.kind},
+                                {"parent", e.parent},
+                                {"name", e.name},
+                                {"label", ui::elementLabel(e)}});
         }
         nlohmann::json c;
         c["index"] = int(i);
         c["name"] = desc->name;
+        c["label"] = ui::canvasLabel(*desc, int(i));
         c["mode"] = ui::kCanvasModeNames[static_cast<std::size_t>(desc->mode)];
         c["ui"] = desc->ui;
         c["camerasValid"] = desc->invalidCameras.empty();
@@ -108,6 +120,7 @@ nlohmann::json toJson(const UiState::Snapshot& snap, int selCanvas, int selEleme
         canvases.push_back(c);
     }
     nlohmann::json j;
+    j["version"] = snap.version;  // 設計値の版（ブラウザが送った値の戻りを待つ目印）
     j["canvases"] = canvases;
     j["selected"] = snap.selectionExists(selCanvas, selElement)
                         ? selectedJson(snap, selCanvas, selElement)

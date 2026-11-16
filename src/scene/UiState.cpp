@@ -1,18 +1,44 @@
 #include "scene/UiState.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace wizengine {
+namespace {
+
+// 生きている枠（次の要素の id は中身の最大の次から）。
+UiState::CanvasItem liveItem(ui::CanvasDesc desc) {
+    UiState::CanvasItem item;
+    item.nextElementId = ui::nextElementId(desc.elements);
+    item.desc = std::move(desc);
+    return item;
+}
+
+// 生きていない枠にする: 番号は詰めない（alive = false）が、中身（要素の木）は捨てる =
+// 読込や削除を繰り返しても生きていない枠が中身を溜めない（読み手は alive を見るだけで
+// 足りる）。
+void retire(UiState::CanvasItem& item) {
+    item.alive = false;
+    item.desc = ui::CanvasDesc{};
+}
+
+}  // namespace
 
 std::uint64_t UiState::version() const {
     std::lock_guard<std::mutex> lk(mutex_);
     return version_;
 }
 
+std::uint64_t UiState::loadGeneration() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return loadGeneration_;
+}
+
 bool UiState::copyIfChanged(std::uint64_t& known, Snapshot& out) const {
     std::lock_guard<std::mutex> lk(mutex_);
     if (known == version_) return false;
     out.version = version_;
+    out.loadGeneration = loadGeneration_;
     out.canvases = canvases_;
     out.uiAssets = uiAssets_;
     out.fonts = fonts_;
@@ -31,6 +57,10 @@ const ui::CanvasDesc* UiState::Snapshot::liveCanvas(int index) const {
     if (index < 0 || std::size_t(index) >= canvases.size()) return nullptr;
     const CanvasItem& item = canvases[std::size_t(index)];
     return item.alive ? &item.desc : nullptr;
+}
+
+int UiState::Snapshot::nextElementIdOf(int index) const {
+    return liveCanvas(index) ? canvases[std::size_t(index)].nextElementId : 1;
 }
 
 const std::vector<ui::ElementDesc>& UiState::Snapshot::elementsOf(
@@ -80,7 +110,7 @@ std::size_t UiState::fromDocument(const std::vector<ui::CanvasDesc>& canvases,
         fonts_.clear();
     }
     const std::size_t base = canvases_.size();
-    for (const auto& c : canvases) canvases_.push_back({c, true});
+    for (const auto& c : canvases) canvases_.push_back(liveItem(c));
     auto hasAsset = [this](const std::string& name) {
         for (const auto& a : uiAssets_) {
             if (a.desc.name == name) return true;
@@ -99,17 +129,13 @@ std::size_t UiState::fromDocument(const std::vector<ui::CanvasDesc>& canvases,
     for (const auto& f : fonts) {
         if (!hasFont(f.name)) fonts_.push_back(f);
     }
+    ++loadGeneration_;
     bumpLocked();
     return base;
 }
 
 void UiState::retireAllCanvasesLocked() {
-    // 番号は詰めない（alive = false）が、中身（要素の木）は捨てる = 読込を繰り返しても
-    // 生きていない枠が中身を溜めない（読み手は alive を見るだけで足りる）。
-    for (auto& c : canvases_) {
-        c.alive = false;
-        c.desc = ui::CanvasDesc{};
-    }
+    for (auto& c : canvases_) retire(c);
 }
 
 void UiState::clear() {
@@ -117,7 +143,36 @@ void UiState::clear() {
     retireAllCanvasesLocked();
     uiAssets_.clear();
     fonts_.clear();
+    ++loadGeneration_;
     bumpLocked();
+}
+
+int UiState::addCanvas(ui::CanvasDesc desc) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    canvases_.push_back(liveItem(std::move(desc)));
+    bumpLocked();
+    return int(canvases_.size() - 1);
+}
+
+bool UiState::removeCanvas(int index) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (index < 0 || std::size_t(index) >= canvases_.size()) return false;
+    CanvasItem& item = canvases_[std::size_t(index)];
+    if (!item.alive) return false;
+    retire(item);
+    bumpLocked();
+    return true;
+}
+
+bool UiState::replaceCanvas(int index, ui::CanvasDesc desc) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (index < 0 || std::size_t(index) >= canvases_.size()) return false;
+    CanvasItem& item = canvases_[std::size_t(index)];
+    if (!item.alive) return false;
+    item.nextElementId = std::max(item.nextElementId, ui::nextElementId(desc.elements));
+    item.desc = std::move(desc);
+    bumpLocked();
+    return true;
 }
 
 }  // namespace wizengine

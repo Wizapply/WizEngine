@@ -404,6 +404,11 @@ public:
     // エディタモード × エディタカメラ。サイドバーのクリック（select.*）もビューの
     // pick（UI の当たり判定など）もこれで判定する。どのスレッドからでも（atomic だけ）。
     bool editsFrom(std::size_t cam) const;
+    // カメラ cam のページから UI（Canvas と要素）の選択・編集を受け付けるか（唯一の定義）:
+    // editsFrom に加えて、プレハブ編集中でないこと（その間に選べるのは部品だけ）。
+    // INPUT（select.ui・edit.ui.*・後の pick / drag）と PHYSICS（ui.* の Op を当てる
+    // とき）の両方がこれで判定する。atomic だけを読む。
+    bool editsUiFrom(std::size_t cam) const;
     // エディタ選択（ライト・カメラ・地面・テレイン・UI など）を立てる口: カメラ cam の
     // オブジェクト選択（BoxController）を外してから setSel する（両方が同時に立つと
     // ギズモと Inspector の対象が曖昧になるため = 排他）。sub は UI の要素の id

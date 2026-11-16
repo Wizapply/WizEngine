@@ -1390,6 +1390,7 @@
     if (s.kind === 'camera') { removeCamera(); return; }
     if (s.kind === 'ground') { removeGround(); return; }
     if (s.kind === 'terrain') { removeTerrainFromScene(); return; }
+    if (s.kind === 'canvas') { removeUiSelection(); return; }  // ui.js
     const index = myCameraSelection();
     if (index >= 0) send('edit.remove', { index: index });
   }
@@ -3046,7 +3047,10 @@
       tile('onclick="addGround()"', '地面（y = 0 の床）。削除していれば戻し、あれば選択',
            '▭', 'Ground', 'ground') +
       tile('onclick="newTerrain()"', '新しいテレイン（平ら・既定の大きさ）を作ってシーンに置く。名前を聞きます',
-           '⛰&#xFE0E;', 'Terrain', 'new terrain');
+           '⛰&#xFE0E;', 'Terrain', 'new terrain') +
+      // UI の Canvas（映像の上に重ねる。中の要素は一覧の右クリックか Inspector で足す）。
+      tile('onclick="uiAddCanvas()"', 'UI の Canvas を追加（映像の上に重ねる）。要素は Inspector か右クリックで足します',
+           '🖼&#xFE0E;', 'Canvas', 'ui');
 
     // ---- 📍 ローカル（このシーンだけ）----------------------------------------
     let local = '';

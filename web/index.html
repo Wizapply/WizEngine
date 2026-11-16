@@ -610,8 +610,8 @@
 
       <!-- 選択中の UI（Canvas かその中の要素。エディタモード×Editor Camera 専用。
            XML の <canvas> とその子）。Objects 一覧の UI の行で選ぶ。欄は
-           ui-inspector.js がサーバーの schema（性質の表）から組む。いまは
-           読み取り専用（編集は後で足す）。 -->
+           ui-inspector.js がサーバーの schema（性質の表）から組み、変えた値は
+           edit.ui.* で送る（共用 UI の要素は表示だけ）。 -->
       <section class="sbSec" id="secUi" hidden>
         <div class="sbSecHead">選択オブジェクト: UI</div>
         <div id="uiSelLabel" class="edStatus"></div>

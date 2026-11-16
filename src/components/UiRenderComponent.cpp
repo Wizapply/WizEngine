@@ -64,11 +64,16 @@ void UiRenderComponent::ensureAtlas(wizengine::Renderer& renderer) {
     atlasTexture_ = renderer.addUiTextureR8(atlas_->size(), atlas_->size());
 }
 
-void UiRenderComponent::syncFonts() {
-    // 読めなかったファイルは、版が変わったとき（読込・XML の適用）にもう一度試す。
+void UiRenderComponent::syncFonts(bool reloaded) {
+    // 読めなかったファイルをもう一度試すのは、読込・XML の適用（reloaded）のときと、
+    // 宣言から外れたとき（後でまた宣言されたら読み直す）だけ。編集のたびに試すと、
+    // 無いファイルを版ごとに読みに行き、警告も毎回出る。
+    std::set<std::string> declared;
+    for (const auto& f : snap_.fonts) declared.insert(checkedPath(f.file));
     for (auto it = fontFiles_.begin(); it != fontFiles_.end();) {
+        const bool retry = reloaded || declared.count(it->first) == 0;
         const bool failed = it->second < 0 && it->first != kDefaultFontFile;
-        it = failed ? fontFiles_.erase(it) : std::next(it);
+        it = (failed && retry) ? fontFiles_.erase(it) : std::next(it);
     }
     // フォントはファイルごとに 1 回だけ読む（同じファイルを別の名前で宣言しても、
     // 既定のフォントと同じファイルでも、置き場を分けない）。名前はその別名。
@@ -94,7 +99,7 @@ void UiRenderComponent::syncFonts() {
     atlas_->setFontNames(std::move(names));
 }
 
-void UiRenderComponent::releaseUnusedImages(wizengine::Renderer& renderer) {
+void UiRenderComponent::releaseUnusedImages(wizengine::Renderer& renderer, bool reloaded) {
     std::set<std::string> used;
     for (const auto& item : snap_.canvases) {
         if (!item.alive || !drawnHere(item.desc)) continue;
@@ -104,7 +109,11 @@ void UiRenderComponent::releaseUnusedImages(wizengine::Renderer& renderer) {
         }
     }
     for (auto it = images_.begin(); it != images_.end();) {
-        const bool keep = it->second >= 0 && used.count(it->first) > 0;
+        // 読めなかった記録は、まだ使っている間は読込・XML の適用（reloaded）まで残す
+        // （編集のたびに無いファイルを読みに行かない。パスを変えれば新しいパスを読む）。
+        const bool inUse = used.count(it->first) > 0;
+        const bool keepFailed = it->second < 0 && !reloaded;
+        const bool keep = inUse && (it->second >= 0 || keepFailed);
         if (keep) {
             ++it;
             continue;
@@ -124,7 +133,7 @@ int UiRenderComponent::imageTexture(wizengine::Renderer& renderer, const std::st
     if (it != images_.end()) return it->second;
     // 読めなければ Renderer が警告する（報告はそこの 1 か所）。
     const int id = renderer.loadUiImage(checked);
-    images_[checked] = id;  // 読めなかった物も版が変わるまで覚える（警告は 1 回）
+    images_[checked] = id;  // 読めなかった物も覚える（読み直しは releaseUnusedImages が決める）
     return id;
 }
 
@@ -271,8 +280,12 @@ void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::U
     if (canvases_.empty() && !anyAlive_) return;
     ensureAtlas(renderer);
     if (changed) {
-        syncFonts();
-        releaseUnusedImages(renderer);
+        // 中身を丸ごと入れ替えた（読込・XML の適用・全消し）か。読めなかったファイルを
+        // 読み直す区切り。
+        const bool reloaded = snap_.loadGeneration != loadGeneration_;
+        loadGeneration_ = snap_.loadGeneration;
+        syncFonts(reloaded);
+        releaseUnusedImages(renderer, reloaded);
     }
     syncCanvases(renderer, changed);
     buildMeshes(renderer, false);

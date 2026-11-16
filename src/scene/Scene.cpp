@@ -240,7 +240,8 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     // 配列が伸びる、が起きない。
     ensureGrabState();
     // UI の入力が最初（UI の上を押したら、後ろのハンドルや物を掴まない）。いまは
-    // select.ui だけを取る。
+    // select.ui と edit.ui.* を取る。edit.ui.* は EditorComponent（main が後で登録する、
+    // edit.* を全部受け止める係）より先に取る必要があるので、ここで最初に登録する。
     addComponent(std::make_unique<UiInputComponent>());
     // 次がギズモ。pick / drag をカメラやグラブより先に見て、ハンドルに
     // 当たっていればそこで止める（選択し直しや自由移動をさせないため）。
@@ -376,6 +377,10 @@ std::size_t Scene::editorCamera() const {
 
 bool Scene::editsFrom(std::size_t cam) const {
     return cam == editorCamera() && editor_.isEditor();
+}
+
+bool Scene::editsUiFrom(std::size_t cam) const {
+    return editsFrom(cam) && editor_.prefabEditObject() < 0;
 }
 
 void Scene::setEditorSel(std::size_t cam, EditorState::SelKind kind, int index, int sub) {
