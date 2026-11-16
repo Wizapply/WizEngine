@@ -75,8 +75,9 @@ struct BrushStamp;
 class Scene {
 public:
     // sys は実行環境の設定（config.json の "scene" / "physics"。
-    // scene/SceneSystemConfig.h）。カメラのスロット数（1〜16 に丸める）・
-    // エディタカメラ・起動時のシーンとモード・休止・バックエンドの選び方。
+    // scene/SceneSystemConfig.h）。カメラのスロット数（1〜kMaxCameraSlots
+    // = core/SceneLimits.h に丸める）・エディタカメラ・起動時のシーンと
+    // モード・休止・バックエンドの選び方。
     Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
           SceneSystemConfig sys = {});
     // .cpp で定義する（テレインの窓口と Undo を前方宣言の型の unique_ptr で

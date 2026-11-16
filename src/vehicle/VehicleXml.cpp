@@ -7,24 +7,8 @@ namespace vehicle {
 
 namespace {
 
-void warnTo(std::vector<std::string>* w, std::string msg) {
-    if (w) w->push_back(std::move(msg));
-}
-
-void warnUnknown(const xml::Element& parent,
-                 std::initializer_list<const char*> known, const char* where,
-                 std::vector<std::string>* warnings) {
-    for (const auto& c : parent.children()) {
-        bool ok = false;
-        for (const char* k : known) {
-            if (c.name() == k) { ok = true; break; }
-        }
-        if (!ok) {
-            warnTo(warnings, std::string("<vehicle>: unsupported <") + c.name() +
-                                 "> in " + where + " - ignored");
-        }
-    }
-}
+// 車両の警告の文の先頭（どの文書の警告かを示す）。
+constexpr const char* kVehicleWarnPrefix = "<vehicle>: ";
 
 // ---- タイヤ / サス（書き出しと読み込みは隣り合わせ）-------------------------
 xml::Element tireElement(const TireDesc& t) {
@@ -110,13 +94,13 @@ void setDiff(xml::Element& e, const char* kindKey, const DifferentialDesc& d,
 }
 DifferentialDesc diffFromXml(const xml::Element& e, const char* kindKey,
                              const DifferentialDesc& base, bool withBias,
-                             std::vector<std::string>* warnings) {
+                             xml::Warn& warn) {
     DifferentialDesc d = base;
     if (e.has(kindKey)) {
         const std::string s = e.attr(kindKey);
         if (diffKindFromName(s, DiffKind::Open) != diffKindFromName(s, DiffKind::Locked)) {
-            warnTo(warnings, std::string("<vehicle>: differential type \"") + s +
-                                 "\" is unknown - reading as open");
+            warn(std::string(kVehicleWarnPrefix) + "differential type \"" + s +
+                 "\" is unknown - reading as open");
         }
         d.kind = diffKindFromName(s, d.kind);
     }
@@ -196,23 +180,29 @@ xml::Element vehicleElement(const VehicleDesc& d) {
 
 VehicleDesc vehicleFromXml(const xml::Element& e,
                            std::vector<std::string>* warnings) {
+    xml::Warn warn(warnings);
+    return vehicleFromXml(e, warn);
+}
+
+VehicleDesc vehicleFromXml(const xml::Element& e, xml::Warn& warn) {
     VehicleDesc d = defaultVehicleDesc();
-    warnUnknown(e, {"engine", "clutch", "gearbox", "center", "tire", "suspension", "axle",
-                    "formula"},
-                "<vehicle>", warnings);
+    xml::warnUnknownChildren(e, {"engine", "clutch", "gearbox", "center", "tire",
+                                 "suspension", "axle", "formula"},
+                             "<vehicle>", warn, kVehicleWarnPrefix);
 
     // タイヤ / 空気圧をノード式で差し替える仕組みは廃止した（タイヤは組み込みの
     // Magic Formula、空気圧は等温変化）。古い文書の参照は警告して読み飛ばす。
     if (e.first("formula") != nullptr) {
-        warnTo(warnings, "<vehicle>: <formula> (node formulas for tires) is no longer "
-                         "supported - ignored (move it to <asset> to keep it as a formula)");
+        warn(std::string(kVehicleWarnPrefix) +
+             "<formula> (node formulas for tires) is no longer "
+             "supported - ignored (move it to <asset> to keep it as a formula)");
     }
     auto warnRemovedTireAttrs = [&](const xml::Element& t) {
         for (const char* key : {"formula", "pressureFormula"}) {
             if (t.has(key)) {
-                warnTo(warnings, std::string("<tire ") + key + "=\"" + t.attr(key) +
-                                     "\">: tire formulas were removed - the built-in "
-                                     "model is used");
+                warn(std::string("<tire ") + key + "=\"" + t.attr(key) +
+                     "\">: tire formulas were removed - the built-in "
+                     "model is used");
             }
         }
     };
@@ -248,8 +238,8 @@ VehicleDesc vehicleFromXml(const xml::Element& e,
                 if (curve[i].x < curve[i - 1].x) sorted = false;
             }
             if (curve.size() < 2 || !sorted) {
-                warnTo(warnings, "<vehicle><engine curve>: needs \"rpm value\" pairs "
-                                 "with rpm ascending - using the default curve");
+                warn("<vehicle><engine curve>: needs \"rpm value\" pairs "
+                     "with rpm ascending - using the default curve");
             } else {
                 d.engine.torqueCurve = std::move(curve);
             }
@@ -265,7 +255,7 @@ VehicleDesc vehicleFromXml(const xml::Element& e,
             double r[12];
             const std::size_t n = gb->numbers("ratios", r, 12);
             if (n == 0) {
-                warnTo(warnings, "<vehicle><gearbox ratios>: no ratios - keeping the default");
+                warn("<vehicle><gearbox ratios>: no ratios - keeping the default");
             } else {
                 d.gearbox.gears.assign(r, r + n);
             }
@@ -279,7 +269,7 @@ VehicleDesc vehicleFromXml(const xml::Element& e,
         d.gearbox.automatic = gb->boolean("automatic", d.gearbox.automatic);
     }
     if (const xml::Element* c = e.first("center")) {
-        d.center = diffFromXml(*c, "type", d.center, /*withBias*/ true, warnings);
+        d.center = diffFromXml(*c, "type", d.center, /*withBias*/ true, warn);
     }
     if (const xml::Element* t = e.first("tire")) {
         d.tireDefaults = tireFromXml(*t, d.tireDefaults);
@@ -292,7 +282,8 @@ VehicleDesc vehicleFromXml(const xml::Element& e,
     if (!axles.empty()) {
         d.axles.clear();
         for (const xml::Element* ax : axles) {
-            warnUnknown(*ax, {"tire", "suspension"}, "<axle>", warnings);
+            xml::warnUnknownChildren(*ax, {"tire", "suspension"}, "<axle>", warn,
+                                     kVehicleWarnPrefix);
             AxleDesc a;
             a.tire = d.tireDefaults;
             a.suspension = d.suspensionDefaults;
@@ -304,7 +295,7 @@ VehicleDesc vehicleFromXml(const xml::Element& e,
             a.driven = ax->boolean("driven", false);
             a.brakeBias = ax->number("brake", a.brakeBias);
             a.handbrake = ax->number("handbrake", a.handbrake);
-            a.diff = diffFromXml(*ax, "diff", a.diff, /*withBias*/ false, warnings);
+            a.diff = diffFromXml(*ax, "diff", a.diff, /*withBias*/ false, warn);
             if (const xml::Element* t = ax->first("tire")) a.tire = tireFromXml(*t, a.tire);
             if (const xml::Element* s = ax->first("suspension")) {
                 a.suspension = suspensionFromXml(*s, a.suspension);
@@ -314,8 +305,8 @@ VehicleDesc vehicleFromXml(const xml::Element& e,
         bool anyDriven = false;
         for (const AxleDesc& a : d.axles) anyDriven = anyDriven || a.driven;
         if (!anyDriven) {
-            warnTo(warnings, "<vehicle>: no axle has driven=\"true\" - the vehicle "
-                             "cannot move under power");
+            warn(std::string(kVehicleWarnPrefix) +
+                 "no axle has driven=\"true\" - the vehicle cannot move under power");
         }
     }
     return clampVehicle(d);

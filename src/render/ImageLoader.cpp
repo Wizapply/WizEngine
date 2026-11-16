@@ -28,6 +28,15 @@ namespace {
 // 読めたら null に戻し、以後の理由は stb が持つ（imageFailureReason）。
 thread_local const char* tReadFailure = nullptr;
 
+// stb のメモリ版（stbi_*_from_memory）は長さを int で受ける。int に収まらない長さは
+// 渡さず、理由を tReadFailure に残して false（読んだファイルも、HDR の見出しを
+// 直したデータも、同じ確かめと同じ文）。
+bool fitsStbLength(std::size_t size) {
+    if (size <= std::size_t(INT_MAX)) return true;
+    tReadFailure = "file is too large to decode (over 2 GB)";
+    return false;
+}
+
 // 画像のファイル（path は UTF-8。先頭から maxBytes バイトまで、既定 = 丸ごと）を
 // stb のメモリ版（stbi_*_from_memory）へ渡すために読む。UTF-8 のパスとして開くので、
 // Windows でも日本語などを含むパスが開ける（stb の fopen は開けない）。
@@ -46,9 +55,8 @@ bool readImageBytes(const std::string& path, std::vector<unsigned char>& bytes,
         tReadFailure = "cannot open or read the file (or it is empty)";
         return false;
     }
-    if (bytes.size() > std::size_t(INT_MAX)) {
+    if (!fitsStbLength(bytes.size())) {
         bytes = {};
-        tReadFailure = "file is too large to decode (over 2 GB)";
         return false;
     }
     tReadFailure = nullptr;
@@ -162,6 +170,10 @@ bool loadImageHDR(const std::string& path, std::vector<float>& out, int& width,
              std::memcmp(bytes.data() + begin, "#?RGBE", 6) == 0);
 
         if (isRadiance) {
+            // 直したデータは元より最大 1 バイト長い（行の終わりは LF 1 つに揃え、
+            // 終わりの無い最後の見出しの行にだけ LF を足す）。写しを作る前に、
+            // その長さが stb に渡せるかを確かめる。
+            if (!fitsStbLength(bytes.size() + 1)) return false;
             // Walk the text header line by line until the resolution line
             // (the one after the blank line), rewriting line ends to LF. `i`
             // then points at the first byte of the binary pixel data, which is

@@ -15,6 +15,12 @@ inline double clampOrFallback(double v, double lo, double hi, double fallback) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// float の欄の clampOrFallback（規則は同じ。double 版の多重定義にしないのは、float と
+// double の混ざった呼び出しが曖昧になり、`auto cl = clampOrFallback;` も書けなくなるため）。
+inline float clampFloatOrFallback(float v, float lo, float hi, float fallback) {
+    return float(clampOrFallback(v, lo, hi, fallback));
+}
+
 // 整数へ丸める（0.5 は 0 から遠い方）。int に入らない値と NaN は fallback（double から
 // int への変換は範囲外で未定義）。XML の整数属性と UI の整数の値が共用する唯一の定義。
 inline int roundToInt(double v, int fallback) {

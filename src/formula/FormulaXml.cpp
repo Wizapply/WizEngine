@@ -49,9 +49,11 @@ xml::Element formulaElement(const FormulaGraphDesc& g) {
 
 FormulaGraphDesc formulaFromXml(const xml::Element& e,
                                 std::vector<std::string>* warnings) {
-    auto warn = [&](const std::string& m) {
-        if (warnings) warnings->push_back(m);
-    };
+    xml::Warn warn(warnings);
+    return formulaFromXml(e, warn);
+}
+
+FormulaGraphDesc formulaFromXml(const xml::Element& e, xml::Warn& warn) {
     FormulaGraphDesc g;
     g.name = e.attr("name");
     const std::string label = "<formula name=\"" + g.name + "\">";

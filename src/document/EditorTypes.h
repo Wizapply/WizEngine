@@ -290,16 +290,16 @@ struct MaterialDesc {
 // ちらつくため。
 constexpr double kRoughnessMin = 0.02;
 
+// 有限でない値（NaN と ±∞）は既定値（MaterialDesc の初期値）。
 inline MaterialDesc clampMaterial(MaterialDesc m) {
-    auto cl = [](double v, double lo, double hi) {
-        return v < lo ? lo : (v > hi ? hi : v);
-    };
-    m.roughness = cl(m.roughness, kRoughnessMin, 1.0);
-    m.metallic = cl(m.metallic, 0.0, 1.0);
-    m.reflectance = cl(m.reflectance, 0.0, 1.0);
-    m.clearCoat = cl(m.clearCoat, 0.0, 1.0);
-    m.clearCoatRoughness = cl(m.clearCoatRoughness, 0.0, 1.0);
-    m.emissive = cl(m.emissive, 0.0, 100.0);
+    const MaterialDesc d;
+    const auto cl = clampOrFallback;
+    m.roughness = cl(m.roughness, kRoughnessMin, 1.0, d.roughness);
+    m.metallic = cl(m.metallic, 0.0, 1.0, d.metallic);
+    m.reflectance = cl(m.reflectance, 0.0, 1.0, d.reflectance);
+    m.clearCoat = cl(m.clearCoat, 0.0, 1.0, d.clearCoat);
+    m.clearCoatRoughness = cl(m.clearCoatRoughness, 0.0, 1.0, d.clearCoatRoughness);
+    m.emissive = cl(m.emissive, 0.0, 100.0, d.emissive);
     return m;
 }
 
@@ -374,17 +374,16 @@ struct SoftDesc {
 };
 
 // ソフトボディの常識的な範囲。粒子数は n^3 で効くので上限を低めに置く
-// （8 で 512 粒子）。
+// （8 で 512 粒子）。有限でない値（NaN と ±∞）は既定値（SoftDesc の初期値）。
 inline SoftDesc clampSoft(SoftDesc s) {
-    auto cl = [](double v, double lo, double hi) {
-        return v < lo ? lo : (v > hi ? hi : v);
-    };
+    const SoftDesc d;
+    const auto cl = clampOrFallback;
     if (s.resolution < 2) s.resolution = 2;
     if (s.resolution > 8) s.resolution = 8;
-    s.stiffness = cl(s.stiffness, 1.0, 1.0e7);
-    s.damping = cl(s.damping, 0.0, 5.0);
-    s.shear = cl(s.shear, 0.0, 4.0);
-    s.bend = cl(s.bend, 0.0, 4.0);
+    s.stiffness = cl(s.stiffness, 1.0, 1.0e7, d.stiffness);
+    s.damping = cl(s.damping, 0.0, 5.0, d.damping);
+    s.shear = cl(s.shear, 0.0, 4.0, d.shear);
+    s.bend = cl(s.bend, 0.0, 4.0, d.bend);
     if (s.iterations < 1) s.iterations = 1;
     if (s.iterations > 10) s.iterations = 10;
     return s;
@@ -412,18 +411,20 @@ struct SurfaceDesc {
     float young = -1.0f;
     float poisson = -1.0f;
 };
+// 有限でない値（NaN と ±∞）は既定値（SurfaceDesc の初期値 = シーン設定 / 粘着 0）。
 inline SurfaceDesc clampSurface(SurfaceDesc s) {
-    auto cl = [](float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); };
-    if (s.friction >= 0.0f) s.friction = cl(s.friction, 0.0f, 2.0f);
+    const SurfaceDesc d;
+    const auto cl = clampFloatOrFallback;
+    if (s.friction >= 0.0f) s.friction = cl(s.friction, 0.0f, 2.0f, d.friction);
     else s.friction = -1.0f;
-    if (s.restitution >= 0.0f) s.restitution = cl(s.restitution, 0.0f, 1.0f);
+    if (s.restitution >= 0.0f) s.restitution = cl(s.restitution, 0.0f, 1.0f, d.restitution);
     else s.restitution = -1.0f;
-    if (s.rolling >= 0.0f) s.rolling = cl(s.rolling, 0.0f, 1.0f);
+    if (s.rolling >= 0.0f) s.rolling = cl(s.rolling, 0.0f, 1.0f, d.rolling);
     else s.rolling = -1.0f;
-    s.cohesion = cl(s.cohesion, 0.0f, 100000.0f);
-    if (s.young >= 0.0f) s.young = cl(s.young, 1000.0f, 1.0e12f);
+    s.cohesion = cl(s.cohesion, 0.0f, 100000.0f, d.cohesion);
+    if (s.young >= 0.0f) s.young = cl(s.young, 1000.0f, 1.0e12f, d.young);
     else s.young = -1.0f;
-    if (s.poisson >= 0.0f) s.poisson = cl(s.poisson, 0.0f, 0.49f);
+    if (s.poisson >= 0.0f) s.poisson = cl(s.poisson, 0.0f, 0.49f, d.poisson);
     else s.poisson = -1.0f;
     return s;
 }
@@ -567,23 +568,27 @@ struct JointDesc {
     double rotDamping = 0.0;
 };
 
-// ジョイントの値を常識的な範囲へ。リミットは lo <= hi に並べ替える。
+// ジョイントの値を常識的な範囲へ。リミットは lo <= hi に並べ替える。有限でない値
+// （NaN と ±∞）は既定値（JointDesc の初期値）。
 inline JointDesc clampJoint(JointDesc j) {
-    auto cl = [](double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); };
+    const JointDesc d;
+    const auto cl = clampOrFallback;
+    // 並べ替えは丸めの後（有限でない値を既定値にしてから比べる。有限の値では
+    // 丸めが単調なので、先に並べ替えるのと結果は同じ）。
+    j.limitLo = cl(j.limitLo, -100000.0, 100000.0, d.limitLo);
+    j.limitHi = cl(j.limitHi, -100000.0, 100000.0, d.limitHi);
     if (j.limitLo > j.limitHi) std::swap(j.limitLo, j.limitHi);
-    j.limitLo = cl(j.limitLo, -100000.0, 100000.0);
-    j.limitHi = cl(j.limitHi, -100000.0, 100000.0);
-    j.motorTarget = cl(j.motorTarget, -1000000.0, 1000000.0);
-    j.stiffness = cl(j.stiffness, 0.0, 1.0e9);
-    j.damping = cl(j.damping, 0.0, 1.0e9);
-    j.breakForce = cl(j.breakForce, 0.0, 1.0e9);
-    j.rotStiffness = cl(j.rotStiffness, 0.0, 1.0e9);
-    j.rotDamping = cl(j.rotDamping, 0.0, 1.0e9);
-    if (!std::isfinite(j.ratio) || j.ratio == 0.0) j.ratio = 1.0;
-    j.ratio = cl(j.ratio, -1000.0, 1000.0);
-    j.pitch = cl(j.pitch, -10.0, 10.0);
-    if (j.pitch == 0.0) j.pitch = 0.01;
-    j.distance = cl(j.distance, 0.0, 1000.0);
+    j.motorTarget = cl(j.motorTarget, -1000000.0, 1000000.0, d.motorTarget);
+    j.stiffness = cl(j.stiffness, 0.0, 1.0e9, d.stiffness);
+    j.damping = cl(j.damping, 0.0, 1.0e9, d.damping);
+    j.breakForce = cl(j.breakForce, 0.0, 1.0e9, d.breakForce);
+    j.rotStiffness = cl(j.rotStiffness, 0.0, 1.0e9, d.rotStiffness);
+    j.rotDamping = cl(j.rotDamping, 0.0, 1.0e9, d.rotDamping);
+    if (j.ratio == 0.0) j.ratio = d.ratio;
+    j.ratio = cl(j.ratio, -1000.0, 1000.0, d.ratio);
+    j.pitch = cl(j.pitch, -10.0, 10.0, d.pitch);
+    if (j.pitch == 0.0) j.pitch = d.pitch;
+    j.distance = cl(j.distance, 0.0, 1000.0, d.distance);
     // モータは回転 / 直動にしか付かない。
     if (j.kind != JointKind::Revolute && j.kind != JointKind::Prismatic) {
         j.motor = MotorMode::None;
@@ -771,20 +776,17 @@ struct RenderDesc {
     double tint = 0.0;             // -1（緑）〜 +1（マゼンタ）
 };
 
+// 有限でない値（NaN と ±∞）は既定値（RenderDesc の初期値）。
 inline RenderDesc clampRender(RenderDesc r) {
-    auto cl = [](double v, double lo, double hi) {
-        return v < lo ? lo : (v > hi ? hi : v);
-    };
-    auto cli = [](int v, int lo, int hi) {
-        return v < lo ? lo : (v > hi ? hi : v);
-    };
+    const RenderDesc d;
+    const auto cl = clampOrFallback;
     // 影のテクスチャは 2 のべき乗に丸める（Filament は任意の値も受けるが、
     // 端数のサイズは意味が無いうえに気付きにくい）。
-    r.shadowMap = cli(r.shadowMap, 256, 4096);
+    r.shadowMap = std::clamp(r.shadowMap, 256, 4096);
     int pow2 = 256;
     while (pow2 * 2 <= r.shadowMap) pow2 *= 2;
     r.shadowMap = pow2;
-    r.cascades = cli(r.cascades, 1, 4);
+    r.cascades = std::clamp(r.cascades, 1, 4);
     if (r.shadow != "pcf" && r.shadow != "dpcf" && r.shadow != "pcss" &&
         r.shadow != "vsm") {
         r.shadow = "pcf";
@@ -794,23 +796,23 @@ inline RenderDesc clampRender(RenderDesc r) {
     else if (r.msaa < 4) r.msaa = 2;
     else if (r.msaa < 8) r.msaa = 4;
     else r.msaa = 8;
-    r.ssaoIntensity = cl(r.ssaoIntensity, 0.0, 4.0);
-    r.bloom = cl(r.bloom, 0.0, 1.0);
-    r.dof = cl(r.dof, 0.0, 1000.0);
-    r.dofBlur = cl(r.dofBlur, 0.0, 8.0);
-    r.vignette = cl(r.vignette, 0.0, 1.0);
-    r.aperture = cl(r.aperture, 0.5, 64.0);
-    r.shutter = cl(r.shutter, 1.0, 16000.0);
-    r.sensitivity = cl(r.sensitivity, 10.0, 204800.0);
+    r.ssaoIntensity = cl(r.ssaoIntensity, 0.0, 4.0, d.ssaoIntensity);
+    r.bloom = cl(r.bloom, 0.0, 1.0, d.bloom);
+    r.dof = cl(r.dof, 0.0, 1000.0, d.dof);
+    r.dofBlur = cl(r.dofBlur, 0.0, 8.0, d.dofBlur);
+    r.vignette = cl(r.vignette, 0.0, 1.0, d.vignette);
+    r.aperture = cl(r.aperture, 0.5, 64.0, d.aperture);
+    r.shutter = cl(r.shutter, 1.0, 16000.0, d.shutter);
+    r.sensitivity = cl(r.sensitivity, 10.0, 204800.0, d.sensitivity);
     if (r.tonemap != "aceslegacy" && r.tonemap != "aces" &&
         r.tonemap != "filmic" && r.tonemap != "agx" &&
         r.tonemap != "pbrneutral" && r.tonemap != "linear") {
         r.tonemap = "aceslegacy";
     }
-    r.contrast = cl(r.contrast, 0.0, 2.0);
-    r.saturation = cl(r.saturation, 0.0, 2.0);
-    r.temperature = cl(r.temperature, -1.0, 1.0);
-    r.tint = cl(r.tint, -1.0, 1.0);
+    r.contrast = cl(r.contrast, 0.0, 2.0, d.contrast);
+    r.saturation = cl(r.saturation, 0.0, 2.0, d.saturation);
+    r.temperature = cl(r.temperature, -1.0, 1.0, d.temperature);
+    r.tint = cl(r.tint, -1.0, 1.0, d.tint);
     return r;
 }
 
@@ -1188,14 +1190,16 @@ struct CableDesc {
     Color3 color{0.85f, 0.75f, 0.45f};
 };
 constexpr int kCableFreeEnd = -2;
+// 有限でない値（NaN と ±∞）は既定値（CableDesc の初期値）。
 inline CableDesc clampCable(CableDesc c) {
-    auto cl = [](double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); };
+    const CableDesc d;
+    const auto cl = clampOrFallback;
     if (c.segments < 2) c.segments = 2;
     if (c.segments > 64) c.segments = 64;
-    c.diameter = cl(c.diameter, 0.001, 1.0);
-    c.density = cl(c.density, 1.0, 20000.0);
-    c.young = cl(c.young, 1.0e4, 1.0e12);
-    c.damping = cl(c.damping, 0.0, 1.0);
+    c.diameter = cl(c.diameter, 0.001, 1.0, d.diameter);
+    c.density = cl(c.density, 1.0, 20000.0, d.density);
+    c.young = cl(c.young, 1.0e4, 1.0e12, d.young);
+    c.damping = cl(c.damping, 0.0, 1.0, d.damping);
     if (c.bodyA < kCableFreeEnd) c.bodyA = -1;
     if (c.bodyB < kCableFreeEnd) c.bodyB = -1;
     return c;
@@ -1232,19 +1236,21 @@ struct EmitterDesc {
     double lightRange = 0.3;            // 点光源の届く距離 (m)
     int max = 256;                      // 同時に生きている粒子の上限
 };
+// 有限でない値（NaN と ±∞）は既定値（EmitterDesc の初期値）。
 inline EmitterDesc clampEmitter(EmitterDesc e) {
-    auto cl = [](double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); };
-    e.radius = cl(e.radius, 0.0, 10.0);
-    e.height = cl(e.height, 0.0, 10.0);
-    e.rate = cl(e.rate, 0.0, 1.0e6);
-    e.life = cl(e.life, 0.001, 30.0);
-    e.size = cl(e.size, 0.0001, 10.0);
-    e.grow = cl(e.grow, 0.0, 100.0);
-    e.speed = cl(e.speed, 0.0, 1000.0);
-    e.inherit = cl(e.inherit, 0.0, 1.0);
-    e.intensity = cl(e.intensity, 0.0, 1000.0);
-    e.light = cl(e.light, 0.0, 1.0e7);
-    e.lightRange = cl(e.lightRange, 0.01, 100.0);
+    const EmitterDesc d;
+    const auto cl = clampOrFallback;
+    e.radius = cl(e.radius, 0.0, 10.0, d.radius);
+    e.height = cl(e.height, 0.0, 10.0, d.height);
+    e.rate = cl(e.rate, 0.0, 1.0e6, d.rate);
+    e.life = cl(e.life, 0.001, 30.0, d.life);
+    e.size = cl(e.size, 0.0001, 10.0, d.size);
+    e.grow = cl(e.grow, 0.0, 100.0, d.grow);
+    e.speed = cl(e.speed, 0.0, 1000.0, d.speed);
+    e.inherit = cl(e.inherit, 0.0, 1.0, d.inherit);
+    e.intensity = cl(e.intensity, 0.0, 1000.0, d.intensity);
+    e.light = cl(e.light, 0.0, 1.0e7, d.light);
+    e.lightRange = cl(e.lightRange, 0.01, 100.0, d.lightRange);
     if (e.max < 1) e.max = 1;
     if (e.max > 4096) e.max = 4096;
     if (e.body < -1) e.body = -1;
@@ -1732,16 +1738,16 @@ inline PartDesc partFromJson(const nlohmann::json& j, const PartDesc& base) {
     if (j.contains("collide") && j["collide"].is_boolean()) p.collide = j["collide"];
     return p;
 }
+// 有限でない値（NaN と ±∞）は既定値（PartDesc の初期値）。
 inline PartDesc clampPart(PartDesc p) {
-    auto cl = [](double v, double lo, double hi) {
-        return v < lo ? lo : (v > hi ? hi : v);
-    };
-    p.position.x = cl(p.position.x, -100.0, 100.0);
-    p.position.y = cl(p.position.y, -100.0, 100.0);
-    p.position.z = cl(p.position.z, -100.0, 100.0);
-    p.size.x = cl(p.size.x, 0.005, 50.0);
-    p.size.y = cl(p.size.y, 0.005, 50.0);
-    p.size.z = cl(p.size.z, 0.005, 50.0);
+    const PartDesc d;
+    const auto cl = clampOrFallback;
+    p.position.x = cl(p.position.x, -100.0, 100.0, d.position.x);
+    p.position.y = cl(p.position.y, -100.0, 100.0, d.position.y);
+    p.position.z = cl(p.position.z, -100.0, 100.0, d.position.z);
+    p.size.x = cl(p.size.x, 0.005, 50.0, d.size.x);
+    p.size.y = cl(p.size.y, 0.005, 50.0, d.size.y);
+    p.size.z = cl(p.size.z, 0.005, 50.0, d.size.z);
     if (p.name.size() > 64) p.name.resize(64);
     if (p.socket.size() > 32) p.socket.resize(32);
     p.material = clampMaterial(p.material);
@@ -1831,11 +1837,10 @@ inline wizengine::formula::FormulaNodeDesc formulaNodeFromJson(
 }
 inline wizengine::formula::FormulaNodeDesc clampFormulaNode(
     wizengine::formula::FormulaNodeDesc n) {
-    auto cl = [](double v, double lo, double hi) {
-        return v < lo ? lo : (v > hi ? hi : v);
-    };
-    n.x = cl(n.x, 0.0, 20000.0);
-    n.y = cl(n.y, 0.0, 20000.0);
+    // 位置の有限でない値（NaN と ±∞）は既定値（FormulaNodeDesc の初期値）。
+    const wizengine::formula::FormulaNodeDesc d;
+    n.x = clampOrFallback(n.x, 0.0, 20000.0, d.x);
+    n.y = clampOrFallback(n.y, 0.0, 20000.0, d.y);
     if (n.params.size() > 128) n.params.resize(128);
     // 有限でない値（NaN と ±∞）は 0（引数の既定値）。
     for (double& v : n.params) v = clampOrFallback(v, -1e12, 1e12, 0.0);
@@ -1962,7 +1967,13 @@ inline ParamDesc clampParam(ParamDesc p) {
             p.step = 1.0;
         }
     }
-    auto finite = [](double v, double d) { return (v == v && v < 1e300 && v > -1e300) ? v : d; };
+    // 使える値か。NaN と ±1e300 の外（±∞ を含む）は d。巨大な値を端に寄せずに
+    // 既定値へ戻すのは、max - min（step の上限）が ∞ にあふれないため。
+    auto finite = [](double v, double d) {
+        const bool isNumber = !std::isnan(v);
+        const bool withinBounds = v < 1e300 && v > -1e300;
+        return (isNumber && withinBounds) ? v : d;
+    };
     p.min = finite(p.min, 0.0);
     p.max = finite(p.max, 1.0);
     if (p.max < p.min) std::swap(p.min, p.max);
@@ -1973,7 +1984,8 @@ inline ParamDesc clampParam(ParamDesc p) {
     p.value = finite(p.value, p.min);
     if (p.value < p.min) p.value = p.min;
     if (p.value > p.max) p.value = p.max;
-    if (!p.options.empty()) p.value = double(long(p.value + 0.5));  // 項目の番号
+    // 項目の番号（options があれば min = 0 なので value は 0 以上）。
+    if (!p.options.empty()) p.value = double(roundToInt(p.value, 0));
     return p;
 }
 inline nlohmann::json toJson(const ParamDesc& p) {
@@ -2353,49 +2365,52 @@ inline GizmoSettings gizmoFromJson(const nlohmann::json& j,
 
 // UI から来た値の常識的な範囲。手書きリクエスト対策のクランプであって、
 // チューニングの推奨値ではない。
+// 実数の有限でない値（NaN と ±∞）は既定値（SimSettings の初期値）。
 inline SimSettings clampSim(SimSettings s) {
-    auto cl = [](auto v, auto lo, auto hi) { return v < lo ? lo : (v > hi ? hi : v); };
-    s.gravity = cl(s.gravity, -100.0, 100.0);
-    s.gravityX = cl(s.gravityX, -100.0, 100.0);
-    s.gravityZ = cl(s.gravityZ, -100.0, 100.0);
-    s.hz = cl(s.hz, 10, 240);
+    const SimSettings d;
+    const auto cl = clampOrFallback;
+    const auto clf = clampFloatOrFallback;
+    s.gravity = cl(s.gravity, -100.0, 100.0, d.gravity);
+    s.gravityX = cl(s.gravityX, -100.0, 100.0, d.gravityX);
+    s.gravityZ = cl(s.gravityZ, -100.0, 100.0, d.gravityZ);
+    s.hz = std::clamp(s.hz, 10, 240);
     // 上限 32: エンジンのように 1 周期が数 ms の機構は 240 Hz × 16〜32 で回す
     // （v6_engine.xml）。重さは substeps × iterations にほぼ比例する。
-    s.substeps = cl(s.substeps, 1, 32);
-    s.iterations = cl(s.iterations, 1, 2000);
-    s.envelope = cl(s.envelope, 1e-4, 0.2);
-    s.recovery = cl(s.recovery, 0.0, 10.0);
-    s.friction = cl(s.friction, 0.0f, 2.0f);
-    s.restitution = cl(s.restitution, 0.0f, 1.0f);
-    s.linearDamping = cl(s.linearDamping, 0.0, 10.0);
-    s.angularDamping = cl(s.angularDamping, 0.0, 10.0);
+    s.substeps = std::clamp(s.substeps, 1, 32);
+    s.iterations = std::clamp(s.iterations, 1, 2000);
+    s.envelope = cl(s.envelope, 1e-4, 0.2, d.envelope);
+    s.recovery = cl(s.recovery, 0.0, 10.0, d.recovery);
+    s.friction = clf(s.friction, 0.0f, 2.0f, d.friction);
+    s.restitution = clf(s.restitution, 0.0f, 1.0f, d.restitution);
+    s.linearDamping = cl(s.linearDamping, 0.0, 10.0, d.linearDamping);
+    s.angularDamping = cl(s.angularDamping, 0.0, 10.0, d.angularDamping);
     // 名前の打ち間違いは既定へ（読み込み側が警告を出す。ここは最後の関所）。
     if (!integratorNameValid(s.integrator)) s.integrator = "euler";
     if (!solverNameValid(s.solver)) s.solver = "bb";
     if (!combineNameValid(s.combine)) s.combine = "min";
     if (!contactNameValid(s.contact)) s.contact = "nsc";
-    s.young = cl(s.young, 1000.0, 1.0e12);
-    s.poisson = cl(s.poisson, 0.0, 0.49);
-    s.modal = cl(s.modal, 0, 64);
+    s.young = cl(s.young, 1000.0, 1.0e12, d.young);
+    s.poisson = cl(s.poisson, 0.0, 0.49, d.poisson);
+    s.modal = std::clamp(s.modal, 0, 64);
     return s;
 }
 
 // 置ける大きさ・質量の範囲。0 やマイナスは Chrono を壊すのでここで止める。
+// 有限でない値（NaN と ±∞）は既定値（BodyDesc の初期値）。
 inline BodyDesc clampBody(BodyDesc b) {
-    auto cl = [](double v, double lo, double hi) {
-        return v < lo ? lo : (v > hi ? hi : v);
-    };
-    b.size.x = cl(b.size.x, 0.01, 50.0);
-    b.size.y = cl(b.size.y, 0.01, 50.0);
-    b.size.z = cl(b.size.z, 0.01, 50.0);
-    b.mass = cl(b.mass, 0.001, 100000.0);
-    b.position.x = cl(b.position.x, -500.0, 500.0);
-    b.position.y = cl(b.position.y, -500.0, 500.0);
-    b.position.z = cl(b.position.z, -500.0, 500.0);
+    const BodyDesc d;
+    const auto cl = clampOrFallback;
+    b.size.x = cl(b.size.x, 0.01, 50.0, d.size.x);
+    b.size.y = cl(b.size.y, 0.01, 50.0, d.size.y);
+    b.size.z = cl(b.size.z, 0.01, 50.0, d.size.z);
+    b.mass = cl(b.mass, 0.001, 100000.0, d.mass);
+    b.position.x = cl(b.position.x, -500.0, 500.0, d.position.x);
+    b.position.y = cl(b.position.y, -500.0, 500.0, d.position.y);
+    b.position.z = cl(b.position.z, -500.0, 500.0, d.position.z);
     b.soft = clampSoft(b.soft);
     b.material = clampMaterial(b.material);
     b.surface = clampSurface(b.surface);
-    b.layer = int(cl(double(b.layer), 0.0, double(kCollisionLayers - 1)));
+    b.layer = int(cl(double(b.layer), 0.0, double(kCollisionLayers - 1), double(d.layer)));
     {
         // レイヤ一覧: 範囲内の値だけ、重複なし、昇順。
         std::vector<int> nc;
@@ -2406,14 +2421,18 @@ inline BodyDesc clampBody(BodyDesc b) {
         std::sort(nc.begin(), nc.end());
         b.nocollide = nc;
     }
-    b.velocity.x = cl(b.velocity.x, -1000.0, 1000.0);
-    b.velocity.y = cl(b.velocity.y, -1000.0, 1000.0);
-    b.velocity.z = cl(b.velocity.z, -1000.0, 1000.0);
-    b.angularVelocity.x = cl(b.angularVelocity.x, -36000.0, 36000.0);
-    b.angularVelocity.y = cl(b.angularVelocity.y, -36000.0, 36000.0);
-    b.angularVelocity.z = cl(b.angularVelocity.z, -36000.0, 36000.0);
-    for (double* v : {&b.force.x, &b.force.y, &b.force.z}) *v = cl(*v, -1.0e7, 1.0e7);
-    for (double* v : {&b.torque.x, &b.torque.y, &b.torque.z}) *v = cl(*v, -1.0e7, 1.0e7);
+    b.velocity.x = cl(b.velocity.x, -1000.0, 1000.0, d.velocity.x);
+    b.velocity.y = cl(b.velocity.y, -1000.0, 1000.0, d.velocity.y);
+    b.velocity.z = cl(b.velocity.z, -1000.0, 1000.0, d.velocity.z);
+    b.angularVelocity.x = cl(b.angularVelocity.x, -36000.0, 36000.0, d.angularVelocity.x);
+    b.angularVelocity.y = cl(b.angularVelocity.y, -36000.0, 36000.0, d.angularVelocity.y);
+    b.angularVelocity.z = cl(b.angularVelocity.z, -36000.0, 36000.0, d.angularVelocity.z);
+    b.force.x = cl(b.force.x, -1.0e7, 1.0e7, d.force.x);
+    b.force.y = cl(b.force.y, -1.0e7, 1.0e7, d.force.y);
+    b.force.z = cl(b.force.z, -1.0e7, 1.0e7, d.force.z);
+    b.torque.x = cl(b.torque.x, -1.0e7, 1.0e7, d.torque.x);
+    b.torque.y = cl(b.torque.y, -1.0e7, 1.0e7, d.torque.y);
+    b.torque.z = cl(b.torque.z, -1.0e7, 1.0e7, d.torque.z);
     // Trimesh は当たり判定だけの値。見た目に書かれたらメッシュ（名前が
     // あれば）か箱へ。当たり判定の trimesh はメッシュ形状にしか付かない。
     if (b.shape == ShapeKind::Trimesh) {
@@ -2441,17 +2460,19 @@ inline BodyDesc clampBody(BodyDesc b) {
 }
 
 // ライトの常識的な範囲。0 やマイナスの強さ・範囲は Filament 側で意味を持たない。
+// 有限でない値（NaN と ±∞）は既定値（LightDesc の初期値）。外側の円錐角の既定値は
+// 内側の角度より狭くしない（範囲と同じく内側で止める）。
 inline LightDesc clampLight(LightDesc l) {
-    auto cl = [](double v, double lo, double hi) {
-        return v < lo ? lo : (v > hi ? hi : v);
-    };
-    l.position.x = cl(l.position.x, -500.0, 500.0);
-    l.position.y = cl(l.position.y, -500.0, 500.0);
-    l.position.z = cl(l.position.z, -500.0, 500.0);
-    l.intensity = cl(l.intensity, 0.0, 10000000.0);
-    l.falloff = cl(l.falloff, 0.1, 500.0);
-    l.spotInnerDeg = cl(l.spotInnerDeg, 1.0, 88.0);
-    l.spotOuterDeg = cl(l.spotOuterDeg, l.spotInnerDeg, 89.0);
+    const LightDesc d;
+    const auto cl = clampOrFallback;
+    l.position.x = cl(l.position.x, -500.0, 500.0, d.position.x);
+    l.position.y = cl(l.position.y, -500.0, 500.0, d.position.y);
+    l.position.z = cl(l.position.z, -500.0, 500.0, d.position.z);
+    l.intensity = cl(l.intensity, 0.0, 10000000.0, d.intensity);
+    l.falloff = cl(l.falloff, 0.1, 500.0, d.falloff);
+    l.spotInnerDeg = cl(l.spotInnerDeg, 1.0, 88.0, d.spotInnerDeg);
+    const double outerFallback = cl(d.spotOuterDeg, l.spotInnerDeg, 89.0, d.spotOuterDeg);
+    l.spotOuterDeg = cl(l.spotOuterDeg, l.spotInnerDeg, 89.0, outerFallback);
     return l;
 }
 
@@ -2463,27 +2484,26 @@ inline Vec3d clampAngles(Vec3d r) {
 
 // 地面・環境光の常識的な範囲。0 や負の広さは描画も物理も壊す。
 inline GroundDesc clampGround(GroundDesc g) {
-    auto cl = [](double v, double lo, double hi) {
-        return v < lo ? lo : (v > hi ? hi : v);
-    };
-    // 位置は各軸 ±kPlacementMaxMeters（テレインと同じ）。有限でない値は既定値（原点）。
+    // 有限でない値（NaN と ±∞）は既定値（GroundDesc の初期値。位置は原点）。
     const GroundDesc d;
+    const auto cl = clampOrFallback;
+    // 位置は各軸 ±kPlacementMaxMeters（テレインと同じ）。
     auto clp = [](double v, double fallback) {
         return clampOrFallback(v, -kPlacementMaxMeters, kPlacementMaxMeters, fallback);
     };
     g.position = {clp(g.position.x, d.position.x), clp(g.position.y, d.position.y),
                   clp(g.position.z, d.position.z)};
     g.rotation = clampAngles(g.rotation);
-    g.half = cl(g.half, 1.0, 1000.0);
-    g.visualHalf = cl(g.visualHalf, 1.0, 1000.0);
-    g.tile = cl(g.tile, kSurfaceTileMin, kSurfaceTileMax);
-    g.roughness = cl(g.roughness, kRoughnessMin, 1.0);
-    g.metallic = cl(g.metallic, 0.0, 1.0);
+    g.half = cl(g.half, 1.0, 1000.0, d.half);
+    g.visualHalf = cl(g.visualHalf, 1.0, 1000.0, d.visualHalf);
+    g.tile = cl(g.tile, kSurfaceTileMin, kSurfaceTileMax, d.tile);
+    g.roughness = cl(g.roughness, kRoughnessMin, 1.0, d.roughness);
+    g.metallic = cl(g.metallic, 0.0, 1.0, d.metallic);
     return g;
 }
+// 有限でない値（NaN と ±∞）は既定値（EnvironmentDesc の初期値）。
 inline EnvironmentDesc clampEnvironment(EnvironmentDesc e) {
-    if (e.intensity < 0.0) e.intensity = 0.0;
-    if (e.intensity > 10000000.0) e.intensity = 10000000.0;
+    e.intensity = clampOrFallback(e.intensity, 0.0, 10000000.0, EnvironmentDesc().intensity);
     return e;
 }
 
@@ -2543,7 +2563,7 @@ inline TerrainDesc clampTerrain(TerrainDesc t) {
     const TerrainDesc d;
     const auto cl = clampOrFallback;
     auto clf = [](float v, float fallback) {
-        return float(clampOrFallback(v, 0.0, 1.0, fallback));
+        return clampFloatOrFallback(v, 0.0f, 1.0f, fallback);
     };
     if (!t.data.empty() && !isSafeName(t.data)) t.data.clear();
     t.guid = normalizedGuidHex(t.guid);
@@ -2569,12 +2589,13 @@ inline TerrainDesc clampTerrain(TerrainDesc t) {
 
 // ノードの常識的な範囲。タイマーの下限が一番大事: 0 に近いと毎ステップ
 // 発火して、繋いだアクション（力・色）が暴走する。
+// 有限でない値（NaN と ±∞）は既定値（NodeDesc の初期値。種類で意味が変わる欄は
+// その種類の「指定なし」の値）。
 inline NodeDesc clampNode(NodeDesc n) {
-    auto cl = [](double v, double lo, double hi) {
-        return v < lo ? lo : (v > hi ? hi : v);
-    };
-    n.x = cl(n.x, 0.0, 4000.0);
-    n.y = cl(n.y, 0.0, 4000.0);
+    const NodeDesc d;
+    const auto cl = clampOrFallback;
+    n.x = cl(n.x, 0.0, 4000.0, d.x);
+    n.y = cl(n.y, 0.0, 4000.0, d.y);
     if (n.target < -1) n.target = -1;
     if (n.other < -2) n.other = -2;
     // -2（何でも）は OnCollision の相手フィルタだけの語彙。CameraLookAt /
@@ -2585,13 +2606,20 @@ inline NodeDesc clampNode(NodeDesc n) {
     }
     // 回り込みの遅れは 0（遅れなし）を許す。タイマーの下限は発火の暴走止め
     // なので、ここには当てはまらない。
-    n.seconds = n.kind == NodeKind::CameraBehind ? cl(n.seconds, 0.0, 5.0)
-                                                 : cl(n.seconds, 0.05, 3600.0);
+    n.seconds = n.kind == NodeKind::CameraBehind ? cl(n.seconds, 0.0, 5.0, d.seconds)
+                                                 : cl(n.seconds, 0.05, 3600.0, d.seconds);
     if (n.kind == NodeKind::CameraOrbit) {
-        n.vec.x = cl(n.vec.x, 0.0, 60.0);  // 距離（0 = マウス操作のまま）
-        n.vec.y = cl(n.vec.y, 0.0, 75.0);  // 仰角（0 = マウス操作のまま）
+        // 有限でない値は 0（指定なし）。vec の既定 (0, 5, 0) は ApplyImpulse のため。
+        n.vec.x = cl(n.vec.x, 0.0, 60.0, 0.0);  // 距離（0 = マウス操作のまま）
+        n.vec.y = cl(n.vec.y, 0.0, 75.0, 0.0);  // 仰角（0 = マウス操作のまま）
         n.vec.z = 0.0;
     }
+    // 向きの範囲は下の OnCollision の判定より先に丸める（有限でない値を既定値に
+    // してから「既定値のままか」を見る。有限の値は ±100 の丸めで 0 や 5 に
+    // 変わらないので、判定の結果は前と同じ）。
+    n.vec.x = cl(n.vec.x, -100.0, 100.0, d.vec.x);
+    n.vec.y = cl(n.vec.y, -100.0, 100.0, d.vec.y);
+    n.vec.z = cl(n.vec.z, -100.0, 100.0, d.vec.z);
     // OnCollision の vec は「求める接触の向き」（零 = 問わない）。NodeDesc の
     // 既定 (0, 5, 0) は ApplyImpulse のためのものなので、そのまま残すと作った
     // ばかりの衝突トリガーが「上から乗ったとき」だけになる。既定値のままなら
@@ -2600,23 +2628,23 @@ inline NodeDesc clampNode(NodeDesc n) {
         n.vec.z == 0.0) {
         n.vec = Vec3d{0.0, 0.0, 0.0};
     }
-    n.vec.x = cl(n.vec.x, -100.0, 100.0);
-    n.vec.y = cl(n.vec.y, -100.0, 100.0);
-    n.vec.z = cl(n.vec.z, -100.0, 100.0);
     // value の意味は種類ごと: SetFixed は 0/1、GrabPull は強さの倍率
     // （0 以下 = 既定の 1 倍）、SetLightIntensity はルーメン。
     if (n.kind == NodeKind::SetFixed || n.kind == NodeKind::SetVelocity) {
-        n.value = n.value != 0.0 ? 1.0 : 0.0;
+        // 有限でない値（NaN と ±∞）は既定値の 0（オフ）。
+        const bool isOn = std::isfinite(n.value) && n.value != 0.0;
+        n.value = isOn ? 1.0 : 0.0;
     } else if (n.kind == NodeKind::SetMotor) {
-        n.value = cl(n.value, -1000000.0, 1000000.0);  // モータの目標値は負もある
+        n.value = cl(n.value, -1000000.0, 1000000.0, d.value);  // モータの目標値は負もある
     } else if (n.kind == NodeKind::GrabPull) {
-        n.value = n.value <= 0.0 ? 1.0 : cl(n.value, 0.1, 10.0);
+        // 有限でない値は「0 以下」と同じ既定の 1 倍。
+        n.value = n.value <= 0.0 ? 1.0 : cl(n.value, 0.1, 10.0, 1.0);
     } else if (n.kind == NodeKind::CameraLookAt) {
-        n.value = cl(n.value, -10.0, 10.0);  // 注視点の高さのずれ (m)
+        n.value = cl(n.value, -10.0, 10.0, d.value);  // 注視点の高さのずれ (m)
     } else if (n.kind == NodeKind::CameraBehind) {
-        n.value = cl(n.value, -180.0, 180.0);  // 後ろからずらす角度（度）
+        n.value = cl(n.value, -180.0, 180.0, d.value);  // 後ろからずらす角度（度）
     } else {
-        n.value = cl(n.value, 0.0, 10000000.0);
+        n.value = cl(n.value, 0.0, 10000000.0, d.value);
     }
     return n;
 }

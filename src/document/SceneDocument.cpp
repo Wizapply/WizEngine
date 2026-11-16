@@ -539,12 +539,10 @@ BodyDesc bodyFromXml(const xml::Element& e,
                 warn("<body name=\"" + label +
                      "\">: extra <vehicle> elements are ignored");
             } else {
-                std::vector<std::string> vw;
-                b.vehicle = vehicle::vehicleFromXml(c, &vw);
+                // 警告の上限は文書全体で 1 つ（子の Warn は親の一覧へ流す）。
+                Warn vw(warn, "<body name=\"" + label + "\"> ");
+                b.vehicle = vehicle::vehicleFromXml(c, vw);
                 b.hasVehicle = true;
-                for (const auto& m : vw) {
-                    warn("<body name=\"" + label + "\"> " + m);
-                }
             }
         } else if (c.name() == "soft") {
             // ソフトボディ。属性は全部既定値付き（<soft/> だけでも有効になる）。
@@ -1530,9 +1528,8 @@ SceneDocument fromXml(const xml::Element& root,
         ui::readUiAssets(*asset, doc.fonts, doc.uiAssets, warn);
         // 計算式アセット。名前はイベントと同じ規則（英数字と _ -）。
         for (const xml::Element* fe : asset->all("formula")) {
-            std::vector<std::string> fw;
-            formula::FormulaGraphDesc g = formula::formulaFromXml(*fe, &fw);
-            for (const auto& m : fw) warn("<asset>: " + m);
+            Warn fw(warn, "<asset>: ");  // 上限は文書全体で 1 つ
+            formula::FormulaGraphDesc g = formula::formulaFromXml(*fe, fw);
             const std::string name = sanitizeEventName(g.name);
             if (name.empty()) {
                 warn("<asset>: <formula> needs name=\"...\" (letters, digits, "
@@ -1956,9 +1953,7 @@ bool parseFormulaLibraryXml(const std::string& text, formula::FormulaGraphDesc& 
     }
     xml::Element body = root;
     body.erase("file");  // ファイルの中で自分を参照していても中身として読む
-    std::vector<std::string> fw;
-    out = formula::formulaFromXml(body, &fw);
-    for (const auto& m : fw) warn(m);
+    out = formula::formulaFromXml(body, warn);
     out.name = sanitizeEventName(out.name);
     out.file.clear();
     return true;
