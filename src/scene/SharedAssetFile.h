@@ -10,11 +10,13 @@
 #include "core/SafeName.h"
 
 // 共用ファイル（シーンをまたいで使うアセット = assets/<サブフォルダ>/<名前>.<拡張子>）
-// の原始関数。イベントライブラリ（assets/events/*.xml）と共用 UI
-// （assets/ui/*.xml）が使う。置き場の規則（assets/ 相対のパスだけ・名前は
+// の原始関数。イベントライブラリ（assets/events/*.xml）・共用 UI
+// （assets/ui/*.xml）・グローバルの計算式 / プレハブ（assets/formulas/*.xml /
+// assets/prefabs/*.xml。一覧と道は EditorState がここの listLibrary /
+// libraryFile で、読み書きとごみ箱は SceneLibrary.cpp）が使う。置き場の規則（assets/ 相対のパスだけ・名前は
 // sanitizeSafeName で変わらないものだけ・ごみ箱へ移す）はここ 1 か所。
 // 共通化・読み込み・削除といった流れ（何をいつ書くか、ステータスの文）は
-// 使う側（SceneEvents.cpp / 後の UiFiles・UiOps）に残す。
+// 使う側（SceneEvents.cpp / SceneLibrary.cpp / 後の UiFiles・UiOps）に残す。
 namespace wizengine {
 namespace sharedasset {
 

@@ -20,8 +20,6 @@
 #include "scene/SceneInternal.h"
 #include "scene/SharedAssetFile.h"
 
-#include "core/Trash.h"
-
 #include <filesystem>
 
 using namespace scene_detail;
@@ -41,12 +39,8 @@ bool libraryFileExists(const std::string& file) {
 // ---- 読み書き ------------------------------------------------------------------
 bool Scene::readLibraryFormula(fml::FormulaGraphDesc& g, std::string& reason) {
     const std::string name = g.name, file = g.file;
-    if (file.empty() || !ed::assetFileAllowed(file)) {
-        reason = "'" + file + "' is not an assets-relative path";
-        return false;
-    }
     std::string text;
-    if (!wizengine::sharedasset::readTextFile(wizengine::assetPath(file), text, reason)) return false;
+    if (!wizengine::sharedasset::readAssetText(file, text, reason)) return false;
     fml::FormulaGraphDesc got;
     std::string error;
     std::vector<std::string> warnings;
@@ -64,12 +58,8 @@ bool Scene::readLibraryFormula(fml::FormulaGraphDesc& g, std::string& reason) {
 
 bool Scene::readLibraryPrefab(ed::PrefabDesc& d, std::string& reason) {
     const std::string name = d.name, file = d.file;
-    if (file.empty() || !ed::assetFileAllowed(file)) {
-        reason = "'" + file + "' is not an assets-relative path";
-        return false;
-    }
     std::string text;
-    if (!wizengine::sharedasset::readTextFile(wizengine::assetPath(file), text, reason)) return false;
+    if (!wizengine::sharedasset::readAssetText(file, text, reason)) return false;
     ed::PrefabDesc got;
     std::vector<ed::MeshAssetDesc> decls;
     std::string error;
@@ -142,7 +132,7 @@ bool Scene::saveLibraryAssets(const ed::SceneDocument& doc, std::string& written
         if (it == libBaseline_.end()) continue;  // 読めなかった = 空で上書きしない
         const std::string text = ed::formulaToLibraryXmlText(g);
         if (text == it->second) continue;       // 変更なし
-        if (!wizengine::sharedasset::writeTextFile(wizengine::assetPath(g.file), text, reason)) return false;
+        if (!wizengine::sharedasset::writeAssetText(g.file, text, reason)) return false;
         it->second = text;
         written += (written.empty() ? "" : " ") + g.name;
         any = true;
@@ -154,7 +144,7 @@ bool Scene::saveLibraryAssets(const ed::SceneDocument& doc, std::string& written
         if (it == libBaseline_.end()) continue;
         const std::string text = ed::prefabToLibraryXmlText(d, doc.meshes);
         if (text == it->second) continue;
-        if (!wizengine::sharedasset::writeTextFile(wizengine::assetPath(d.file), text, reason)) return false;
+        if (!wizengine::sharedasset::writeAssetText(d.file, text, reason)) return false;
         it->second = text;
         written += (written.empty() ? "" : " ") + d.name;
         any = true;
@@ -225,7 +215,7 @@ bool Scene::applyLibraryOp(const EditorState::Op& op) {
             d->file = file;
             text = ed::prefabToLibraryXmlText(*d, meshDescs());
         }
-        if (!wizengine::sharedasset::writeTextFile(wizengine::assetPath(file), text, reason)) {
+        if (!wizengine::sharedasset::writeAssetText(file, text, reason)) {
             LOGW("scene", "%s share '%s': %s", kind.c_str(), name.c_str(), reason.c_str());
             editor_.setStatus(label + "をグローバルにできません（コンソール参照）");
             return true;
@@ -306,7 +296,7 @@ bool Scene::applyLibraryOp(const EditorState::Op& op) {
             return true;
         }
         std::string reason;
-        if (!wizengine::moveToTrash(std::filesystem::path(wizengine::assetPath(file)), reason)) {
+        if (!wizengine::sharedasset::trashLibraryFile(file, reason)) {
             LOGW("scene", "%s library delete '%s': %s", kind.c_str(), name.c_str(),
                  reason.c_str());
             editor_.setStatus(label + " " + name + " をごみ箱へ移せません（コンソール参照）");

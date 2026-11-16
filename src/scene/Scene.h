@@ -1163,7 +1163,8 @@ private:
     // 張れたとき・releaseTerrainContact（外す・例外）で戻す。
     bool terrainBackendWarned_ = false;
     // 直前の読込の注意（loadStatusSuffix が返して消す）。物理スレッド専用。
-    // テレインだけでなく、共通イベント・共用 UI の読めないファイルの注意も入る箱。
+    // テレインだけでなく、グローバルの計算式 / プレハブ・共通イベント・共用 UI の
+    // 読めないファイルの注意も入る箱。
     // 空にするのは loadDocument の先頭だけで、書く側は足す（+=）だけ。
     std::string loadCaveat_;
     // 今のテレインと .terrain の関係（Keep 以外。terrainDirty() / terrainMissing()
