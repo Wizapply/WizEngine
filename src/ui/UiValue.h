@@ -110,6 +110,8 @@ inline bool indexListValid(const PropValue& value) { return value.s.empty(); }
 
 // 型の成分の数（数値系）。文字列系と Bool / Enum / IndexList は 1。
 std::size_t componentCount(PropType type);
+// 型の名前（ブラウザの Inspector が欄の形を選ぶための JSON の値。schema が送る）。
+const char* propTypeName(PropType type);
 
 // ---- 表記と丸め --------------------------------------------------------------
 // XML の属性文字列 → 値。型に合わなければ false で out は変えない。色は

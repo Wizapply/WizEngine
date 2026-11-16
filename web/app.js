@@ -1411,6 +1411,7 @@
     document.getElementById('secObj').hidden = true;
     document.getElementById('secGround').hidden = true;
     document.getElementById('secTerrain').hidden = true;
+    document.getElementById('secUi').hidden = true;
     document.getElementById('secJoint').hidden = true;
     document.getElementById('secCable').hidden = true;
     document.getElementById('vhPrefabName').textContent =
@@ -1549,16 +1550,9 @@
       // 選んでいる間は丸をこのページのカメラの色にする（オブジェクトの行が
       // 選択中に掴んだカメラの色になるのと同じ見え方）。
       const myColor = colorOf(sceneData.camera);
-      const row = (kind, icon, label, sub, title) =>
-        '<div class="item' + (eSel.kind === kind ? ' edsel' : '') +
-        '" data-scene-item="' + kind + '"' +
-        (canPick
-          ? ' data-pick="' + kind + '" title="' + title + '"'
-          : ' style="cursor:default"') +
-        '><span class="dot"' +
-        (eSel.kind === kind ? ' style="background:' + myColor + '"' : '') +
-        '></span><span>' + icon + ' ' + label + '</span>' +
-        '<span class="sub">' + sub + '</span></div>';
+      const row = (kind, icon, label, sub, title) => sceneItemRow({
+        kind: kind, icon: icon, label: label, sub: sub, title: title,
+        selected: eSel.kind === kind, canPick: canPick, color: myColor });
       const g = sceneData.ground;
       if (g && g.enabled !== false) {
         html += row('ground', '▭', 'Ground', '±' + round2(g.size) + ' m',
@@ -1572,6 +1566,9 @@
                     cur.missing ? 'ファイルなし' : round2(sceneData.terrain.size) + ' m',
                     'クリックで選択（大きさ・起伏・表面を編集）');
       }
+      // UI の Canvas と要素（XML の <canvas>。行は ui.js）。プレハブ編集中は選べない
+      // （選べるのは部品だけ。サーバーの select.ui も捨てる）。
+      html += uiHierarchyRows(canPick && !prefabEdit(), myColor);
     }
     for (const o of shown) {
       const isMine = o.index === mine;
@@ -1607,6 +1604,25 @@
   }
   let objListHtml = null;  // 前回 #objList に入れた HTML（null = 次で必ず書く）
 
+  // 階層一覧の「シーンの物」の行（地面・テレイン・UI の Canvas と要素）。r.kind は
+  // data-pick と data-scene-item（クリックと右クリックの振り分け）。selected の行は
+  // edsel で光らせ、丸をこのページのカメラの色（r.color）にする。canPick でない
+  // ページではクリックできない見た目にする。r.attrs は行に足す属性の文字列、
+  // r.depth は字下げの段（UI の要素の親子。0 / 省略 = 字下げなし）。
+  function sceneItemRow(r) {
+    const styles = [];
+    if (!r.canPick) styles.push('cursor:default');
+    if (r.depth) styles.push('--depth:' + r.depth);
+    return '<div class="item' + (r.selected ? ' edsel' : '') + (r.depth ? ' depth' : '') +
+      '" data-scene-item="' + r.kind + '"' + (r.attrs || '') +
+      (r.canPick ? ' data-pick="' + r.kind + '" title="' + r.title + '"' : '') +
+      (styles.length ? ' style="' + styles.join(';') + '"' : '') +
+      '><span class="dot"' +
+      (r.selected ? ' style="background:' + r.color + '"' : '') +
+      '></span><span>' + r.icon + ' ' + r.label + '</span>' +
+      '<span class="sub">' + r.sub + '</span></div>';
+  }
+
   // 階層一覧の行の選択（ライト / 地面 / テレイン / オブジェクト）。行ごとの
   // onclick ではなく一覧で 1 つ受ける: マウスとペンは**押した瞬間**に選ぶ
   // （押してから離すまでの間に行が作り直されても取りこぼさない）。タッチは
@@ -1626,6 +1642,8 @@
       const s = myEditorSel();
       on = !(s.kind === 'light' && s.index === index);
       selectLight(index);
+    } else if (kind === 'canvas') {
+      on = pickUiRow(row);  // ui.js
     } else {
       on = myEditorSel().kind !== kind;
       selectSceneItem(kind, true);
@@ -1642,7 +1660,7 @@
     if (on) {
       row.classList.add(kind === 'object' ? 'sel' : 'edsel');
       const dot = row.querySelector('.dot');
-      if (dot && (kind === 'ground' || kind === 'terrain')) {
+      if (dot && (kind === 'ground' || kind === 'terrain' || kind === 'canvas')) {
         const me = sceneData && sceneData.cameras && sceneData.cameras[sceneData.camera];
         dot.style.background = me ? me.color : '';
       }
@@ -2717,12 +2735,14 @@
     const eKind = editing ? myEditorSel().kind : 'none';
     const groundSel = eKind === 'ground';
     const terrainSel = eKind === 'terrain';
+    const uiSel = eKind === 'canvas';
     document.getElementById('secObj').hidden =
-      !!lightSel || !!camSel || groundSel || terrainSel;
+      !!lightSel || !!camSel || groundSel || terrainSel || uiSel;
     document.getElementById('secLight').hidden = !lightSel;
     document.getElementById('secCam').hidden = !camSel;
     document.getElementById('secGround').hidden = !groundSel;
     document.getElementById('secTerrain').hidden = !terrainSel;
+    renderUiInspector(uiSel);  // secUi 節（ui-inspector.js）
 
     if (lightSel) {
       const K = { sun: '☀ Sun（平行光）', point: '💡 Point', spot: '🔦 Spot' };
@@ -3255,7 +3275,9 @@
     if (!owner || !sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
     const item = e.target.closest ? e.target.closest('[data-scene-item]') : null;
     if (item) {
-      showContextMenu(e, sceneItemMenuItems(item.dataset.sceneItem));
+      showContextMenu(e, item.dataset.sceneItem === 'canvas'
+        ? uiRowMenuItems(item)  // ui.js
+        : sceneItemMenuItems(item.dataset.sceneItem));
       return;
     }
     const lrow = e.target.closest ? e.target.closest('[data-light]') : null;

@@ -415,6 +415,7 @@ set(WIZ_SCENE_SOURCES
     src/scene/SharedAssetFile.cpp
     src/scene/SoftLattice.cpp
     src/scene/UiFiles.cpp
+    src/scene/UiJson.cpp
     src/scene/UiState.cpp)
 set(WIZ_COMPONENT_SOURCES
     src/components/AutoGenComponent.cpp
@@ -425,6 +426,7 @@ set(WIZ_COMPONENT_SOURCES
     src/components/ScatterComponent.cpp
     src/components/ControlComponent.cpp
     src/components/TerrainComponent.cpp
+    src/components/UiInputComponent.cpp
     src/components/UiRenderComponent.cpp
     src/components/VehicleComponent.cpp)
 set(WIZ_FORMULA_SOURCES

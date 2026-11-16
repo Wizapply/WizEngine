@@ -400,6 +400,15 @@ public:
     // エディタ操作（モード切替・配置・ギズモ・ジョイント・保存/読込）を
     // 受け付けるカメラ。SceneSystemConfig::editorCamera（既定 0）。
     std::size_t editorCamera() const;
+    // カメラ cam のページからエディタの選択・編集を受け付けるか（唯一の定義）:
+    // エディタモード × エディタカメラ。サイドバーのクリック（select.*）もビューの
+    // pick（UI の当たり判定など）もこれで判定する。どのスレッドからでも（atomic だけ）。
+    bool editsFrom(std::size_t cam) const;
+    // エディタ選択（ライト・カメラ・地面・テレイン・UI など）を立てる口: カメラ cam の
+    // オブジェクト選択（BoxController）を外してから setSel する（両方が同時に立つと
+    // ギズモと Inspector の対象が曖昧になるため = 排他）。sub は UI の要素の id
+    // （他の種類は -1）。対象が今もあるかは呼び手が確かめる。atomic だけを書く。
+    void setEditorSel(std::size_t cam, EditorState::SelKind kind, int index, int sub = -1);
 
     // PHYSICS thread: エディタモードの1パス（積分しない）。
     void stepEditor(double dt);

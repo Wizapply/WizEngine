@@ -511,10 +511,8 @@ void Scene::rotateGround(double xDeg, double yDeg, double zDeg) {
 
 void Scene::selectSceneItem(EditorState::SelKind kind) {
     // エディタ選択はエディタモードの状態（シミュレートに入るときに畳む）。
-    if (editor_.mode() != ed::AppMode::Editor) return;
-    const std::size_t cam = editorCamera();
-    if (cam < controllers_.size()) controllers_[cam]->setSelected(BoxController::kNone);
-    editor_.setSel(kind, 0);
+    if (!editor_.isEditor()) return;
+    setEditorSel(editorCamera(), kind, 0);
 }
 
 void Scene::setGroundAndEnvironment(const ed::GroundDesc& ground,

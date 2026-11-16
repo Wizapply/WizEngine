@@ -455,6 +455,8 @@
   }
   .item .sub { margin-left: auto; color: #7b7f88; font-size: 11px; }
   .item .sub.busy { color: #d08a4a; }  /* taken by someone else */
+  /* 親子の段で字下げした行（UI の要素。段は --depth）。 */
+  .item.depth { padding-left: calc(6px + var(--depth) * 14px); }
   /* The section has a fixed height (--inspector-height) and clips overflow,
      so the body and the inspector itself must stretch to fill it - only then
      does the inspector's own scrollbar take over instead of the section
@@ -554,6 +556,14 @@
     border-radius: 4px; background: #212329;
   }
   .edHint { font-size: 11px; color: #7b7f88; line-height: 1.5; }
+  /* UI の Inspector（ui-inspector.js）: 値の欄・既定値（薄く）・色の見本・不正な値。 */
+  .uiRow .uiVal { text-align: right; word-break: break-all; color: #dfe2e7; }
+  .uiRow .uiVal.uiDefault { color: #7b7f88; }
+  .uiSwatch {
+    display: inline-block; width: 10px; height: 10px; margin-right: 4px;
+    border: 1px solid #3a3d45; border-radius: 2px; vertical-align: -1px;
+  }
+  .uiBad { color: #ffb38a; }
   /* テレインの欄。Missing のときだけ disabled（中の入力とボタンがまとめて無効）。
      薄くするのは部品ごとの :disabled の見た目（入力 .45・button:disabled）に
      任せる（fieldset にも opacity を掛けると重なって一部だけ極端に薄くなる）。

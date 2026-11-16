@@ -87,16 +87,21 @@ public:
     // Ground / Terrain はシーンに 1 つずつのオブジェクト（index は使わない、
     // 常に 0）。階層一覧のクリックで選び、Inspector にその節が出る。ギズモで
     // 移動 / 回転できる（GizmoComponent の対象の種類 4 / 5。拡縮は移動に丸める）。
+    // Canvas は UI（index = Canvas の番号、sub = 要素の id。-1 = Canvas そのもの）。
+    // 立てるのは UiInputComponent（select.ui）。sub を使うのは Canvas だけで、他の
+    // 種類は -1。
     enum class SelKind : int {
-        None = 0, Light = 1, Camera = 2, Part = 3, Ground = 4, Terrain = 5
+        None = 0, Light = 1, Camera = 2, Part = 3, Ground = 4, Terrain = 5, Canvas = 6
     };
-    void setSel(SelKind kind, int index) {
+    void setSel(SelKind kind, int index, int sub = -1) {
         selIndex_.store(index);
+        selSub_.store(sub);
         selKind_.store(int(kind));
     }
     void clearSel() { setSel(SelKind::None, -1); }
     SelKind selKind() const { return SelKind(selKind_.load()); }
     int selIndex() const { return selIndex_.load(); }
+    int selSub() const { return selSub_.load(); }
 
     // ---- ジョイント -----------------------------------------------------
     std::vector<wizengine::editor::JointDesc> joints() const;
@@ -364,6 +369,7 @@ private:
 
     std::atomic<int> selKind_{0};    // SelKind
     std::atomic<int> selIndex_{-1};
+    std::atomic<int> selSub_{-1};    // Canvas の要素の id（-1 = Canvas そのもの）
 
     mutable std::mutex mutex_;
     std::vector<Op> pending_;

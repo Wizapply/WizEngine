@@ -57,9 +57,6 @@ private:
     // 記録を捨てる（次の組み立てでもう一度試す）。
     void releaseUnusedImages(wizengine::Renderer& renderer);
     int imageTexture(wizengine::Renderer& renderer, const std::string& file);
-    // その Canvas の要素（<canvas ui> なら共用 UI の中身）。
-    const std::vector<wizengine::ui::ElementDesc>& elementsOf(
-        const wizengine::ui::CanvasDesc& desc) const;
     // 生きている Canvas の Renderer 側の入れ物・順序・高さ・出すビューを揃える。
     void syncCanvases(wizengine::Renderer& renderer, bool designChanged);
     // 組み直しが要る（canvas, view）を組んで送る。all = 全部（字の置き場の組み直し）。

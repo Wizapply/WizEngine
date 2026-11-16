@@ -608,6 +608,17 @@
           カメラ操作と編集は、後から動かしたほうが勝ちます。</div>
       </section>
 
+      <!-- 選択中の UI（Canvas かその中の要素。エディタモード×Editor Camera 専用。
+           XML の <canvas> とその子）。Objects 一覧の UI の行で選ぶ。欄は
+           ui-inspector.js がサーバーの schema（性質の表）から組む。いまは
+           読み取り専用（編集は後で足す）。 -->
+      <section class="sbSec" id="secUi" hidden>
+        <div class="sbSecHead">選択オブジェクト: UI</div>
+        <div id="uiSelLabel" class="edStatus"></div>
+        <div id="uiProps"></div>
+        <div id="uiHint" class="edHint"></div>
+      </section>
+
       <!-- 選択中の地面（エディタモード×Editor Camera 専用。XML の <ground>）。
            シーンに 1 つのオブジェクトで、Objects 一覧の「Ground」行で選ぶ。
            削除すると <ground enabled="false">（見える地面も物理の床も無し）。
@@ -1775,6 +1786,8 @@
   </main>
 </div>
 <script src="app.js"></script>
+<script src="ui.js"></script>
+<script src="ui-inspector.js"></script>
 <script src="terrain.js"></script>
 <script src="terrain-rows.js"></script>
 <script src="terrain-layers.js"></script>

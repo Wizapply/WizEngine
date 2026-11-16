@@ -4,6 +4,7 @@
 // 文書との変換は SceneSerialize.cpp。共通の下準備は SceneInternal.h。
 #include "scene/SceneInternal.h"
 #include "scene/PrefabDefaults.h"
+#include "components/UiInputComponent.h"
 #include "components/UiRenderComponent.h"
 
 #include <chrono>
@@ -238,7 +239,10 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     // 固定プールなので後から増えない = 描画スレッドが読んでいる最中に
     // 配列が伸びる、が起きない。
     ensureGrabState();
-    // ギズモが最初。pick / drag をカメラやグラブより先に見て、ハンドルに
+    // UI の入力が最初（UI の上を押したら、後ろのハンドルや物を掴まない）。いまは
+    // select.ui だけを取る。
+    addComponent(std::make_unique<UiInputComponent>());
+    // 次がギズモ。pick / drag をカメラやグラブより先に見て、ハンドルに
     // 当たっていればそこで止める（選択し直しや自由移動をさせないため）。
     addComponent(std::make_unique<GizmoComponent>());
     addComponent(std::make_unique<CameraControlComponent>());
@@ -249,7 +253,6 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     // 順番も問わない。3D の板（後の PR）で車体・プレハブの姿勢が要るなら、その
     // 姿勢を onRender（ロックの中）で写し、組み立てはロックの外で行う（写す姿勢を
     // 他の部品の onRender が決めるなら、その部品より後に登録する）。
-    // UI の入力（後の PR）はギズモより前に登録する。
     addComponent(std::make_unique<UiRenderComponent>());
 }
 
@@ -369,6 +372,15 @@ std::size_t Scene::pickBoxAt(double ndcX, double ndcY,
 
 std::size_t Scene::editorCamera() const {
     return sys_.editorCamera < cameras_.size() ? sys_.editorCamera : 0;
+}
+
+bool Scene::editsFrom(std::size_t cam) const {
+    return cam == editorCamera() && editor_.isEditor();
+}
+
+void Scene::setEditorSel(std::size_t cam, EditorState::SelKind kind, int index, int sub) {
+    if (cam < controllers_.size()) controllers_[cam]->setSelected(BoxController::kNone);
+    editor_.setSel(kind, index, sub);
 }
 
 // 実行時に変わりうる値は EditorState の設定が正。SceneConfig.h の定数は

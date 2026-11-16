@@ -7,6 +7,7 @@
 #include "formula/FormulaText.h"
 #include "terrain/TerrainBrush.h"
 #include "scene/UiFiles.h"
+#include "scene/UiJson.h"
 
 using namespace chrono;
 using namespace scene_detail;
@@ -60,6 +61,14 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     nlohmann::json j;
     j["camera"] = int(cameraIndex);
 
+    // UI の設計値の写しはロックの前に取る（UiState の mutex_ は末端で、オブジェクトの
+    // 一覧とは別の持ち主）。選択の確かめと "ui" の両方がこの 1 つの写しを読む。
+    const wizengine::UiState::Snapshot uiSnap = ui_.snapshot();
+    // エディタ選択（種類・番号・UI の要素）は続けて読む（別々の atomic なので、間を
+    // 空けるほど食い違いやすい。読む側は対象が今もあるかを必ず確かめる）。
+    const auto selKind = editor_.selKind();
+    const int selIndex = editor_.selIndex();
+    const int selSub = editor_.selSub();
     // ここからライト・カメラ有効フラグ・オブジェクト一覧を読むのでロックする
     // （物理スレッドが追加・削除している最中かもしれない）。ロック順は
     // objects → editor → poses の一方向（CLAUDE.md の規約）。
@@ -78,8 +87,6 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     }
 
     // Lights。エディタで選ぶ・編集するので、設計値を番号付きで送る。
-    const auto selKind = editor_.selKind();
-    const int selIndex = editor_.selIndex();
     j["lights"] = nlohmann::json::array();
     for (std::size_t i = 0; i < lights_.size(); ++i) {
         if (!lights_[i].alive) continue;  // 削除済みは出さない（番号は空く）
@@ -88,24 +95,31 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         j["lights"].push_back(e);
     }
 
-    // ---- エディタ選択（ライト / カメラ）----------------------------------
+    // ---- エディタ選択（ライト / カメラ / UI）------------------------------
     // オブジェクトの選択（下の "selected"）とは別枠。UI はこちらが立っていれば
     // ライト / カメラのインスペクタを出す。
     {
         nlohmann::json s;
-        // 地面 / テレインは消えた瞬間（別スレッドの読込など）に食い違いうる
+        // 地面 / テレイン / UI は消えた瞬間（別スレッドの読込など）に食い違いうる
         // ので、無いものを選んでいたら none として返す。
         const bool groundSel =
             selKind == EditorState::SelKind::Ground && ground_.enabled;
         const bool terrainSel =
             selKind == EditorState::SelKind::Terrain && hasTerrain_;
+        // UI の一覧（Scene タブの階層）と選択中の設計値（Inspector）と欄の形。選択が
+        // 今もあるかの確かめは toJson の 1 回だけ（無ければ selected が null）。
+        j["ui"] = wizengine::uijson::toJson(
+            uiSnap, selKind == EditorState::SelKind::Canvas ? selIndex : -1, selSub);
+        const bool canvasSel = !j["ui"]["selected"].is_null();
         s["kind"] = selKind == EditorState::SelKind::Light    ? "light"
                     : selKind == EditorState::SelKind::Camera ? "camera"
                     : selKind == EditorState::SelKind::Part   ? "part"
                     : groundSel                               ? "ground"
                     : terrainSel                              ? "terrain"
+                    : canvasSel                               ? "canvas"
                                                               : "none";
         s["index"] = selIndex;
+        s["sub"] = selSub;
         j["editorSel"] = s;
         if (selKind == EditorState::SelKind::Light && selIndex >= 0 &&
             std::size_t(selIndex) < lights_.size() &&

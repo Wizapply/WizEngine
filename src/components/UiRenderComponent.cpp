@@ -98,7 +98,7 @@ void UiRenderComponent::releaseUnusedImages(wizengine::Renderer& renderer) {
     std::set<std::string> used;
     for (const auto& item : snap_.canvases) {
         if (!item.alive || !drawnHere(item.desc)) continue;
-        for (const auto& e : elementsOf(item.desc)) {
+        for (const auto& e : snap_.elementsOf(item.desc)) {
             const std::string& file = e.props.text(ui::Prop::File);
             if (!file.empty()) used.insert(file);
         }
@@ -126,16 +126,6 @@ int UiRenderComponent::imageTexture(wizengine::Renderer& renderer, const std::st
     const int id = renderer.loadUiImage(checked);
     images_[checked] = id;  // 読めなかった物も版が変わるまで覚える（警告は 1 回）
     return id;
-}
-
-const std::vector<ui::ElementDesc>& UiRenderComponent::elementsOf(
-    const ui::CanvasDesc& desc) const {
-    if (desc.ui.empty()) return desc.elements;
-    for (const auto& a : snap_.uiAssets) {
-        if (a.desc.name == desc.ui) return a.desc.elements;
-    }
-    static const std::vector<ui::ElementDesc> kNone;
-    return kNone;
 }
 
 void UiRenderComponent::syncCanvases(wizengine::Renderer& renderer, bool designChanged) {
@@ -204,7 +194,7 @@ void UiRenderComponent::syncCanvases(wizengine::Renderer& renderer, bool designC
 
 ui::UiMeshData UiRenderComponent::buildOne(wizengine::Renderer& renderer,
                                            const ui::CanvasDesc& desc, double canvasWidth) {
-    const std::vector<ui::ElementDesc>& elements = elementsOf(desc);
+    const std::vector<ui::ElementDesc>& elements = snap_.elementsOf(desc);
     // 重ね順（設計値 → アニメ → ノード → ポインタ）。今は設計値だけ（後の段は後の PR）。
     const ui::PropSet none;
     std::vector<ui::PropSet> resolved;

@@ -41,6 +41,15 @@ public:
         std::vector<CanvasItem> canvases;
         std::vector<UiAssetState> uiAssets;
         std::vector<ui::FontAssetDesc> fonts;
+
+        // 番号 index の Canvas が生きていればその設計値（範囲外・消えた物は nullptr）。
+        const ui::CanvasDesc* liveCanvas(int index) const;
+        // Canvas が使う要素の並び（唯一の定義）: ui を書いていれば共用 UI の中身、
+        // 無ければ自分の elements。宣言の無い共用 UI は空。
+        const std::vector<ui::ElementDesc>& elementsOf(const ui::CanvasDesc& desc) const;
+        // エディタの選択（Canvas の番号、要素の id。-1 = Canvas そのもの）が今もある物を
+        // 指すか（選ぶときと、/scene が選択を返すときの確かめの唯一の定義）。
+        bool selectionExists(int canvas, int element) const;
     };
 
     enum class LoadMode { Replace, Append };

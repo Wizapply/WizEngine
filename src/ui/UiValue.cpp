@@ -189,6 +189,25 @@ std::size_t componentCount(PropType type) {
     }
 }
 
+const char* propTypeName(PropType type) {
+    switch (type) {
+        case PropType::Number: return "number";
+        case PropType::Int: return "int";
+        case PropType::Vec2: return "vec2";
+        case PropType::Vec3: return "vec3";
+        case PropType::Euler: return "euler";
+        case PropType::Rect: return "rect";
+        case PropType::Color: return "color";
+        case PropType::Bool: return "bool";
+        case PropType::Enum: return "enum";
+        case PropType::Text: return "text";
+        case PropType::Name: return "name";
+        case PropType::Path: return "path";
+        case PropType::IndexList: return "indexList";
+    }
+    return "number";
+}
+
 // ---- 表記と丸め --------------------------------------------------------------
 bool parseValue(const ValueSpec& spec, const std::string& text, PropValue& out) {
     PropValue v = spec.def;

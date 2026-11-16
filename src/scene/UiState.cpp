@@ -27,6 +27,32 @@ UiState::Snapshot UiState::snapshot() const {
     return out;
 }
 
+const ui::CanvasDesc* UiState::Snapshot::liveCanvas(int index) const {
+    if (index < 0 || std::size_t(index) >= canvases.size()) return nullptr;
+    const CanvasItem& item = canvases[std::size_t(index)];
+    return item.alive ? &item.desc : nullptr;
+}
+
+const std::vector<ui::ElementDesc>& UiState::Snapshot::elementsOf(
+    const ui::CanvasDesc& desc) const {
+    if (desc.ui.empty()) return desc.elements;
+    for (const auto& a : uiAssets) {
+        if (a.desc.name == desc.ui) return a.desc.elements;
+    }
+    static const std::vector<ui::ElementDesc> kNone;
+    return kNone;
+}
+
+bool UiState::Snapshot::selectionExists(int canvas, int element) const {
+    const ui::CanvasDesc* desc = liveCanvas(canvas);
+    if (!desc) return false;
+    if (element < 0) return true;
+    for (const auto& e : elementsOf(*desc)) {
+        if (e.id == element) return true;
+    }
+    return false;
+}
+
 std::vector<int> UiState::toDocument(editor::SceneDocument& doc) const {
     std::lock_guard<std::mutex> lk(mutex_);
     std::vector<int> remap(canvases_.size(), -1);
