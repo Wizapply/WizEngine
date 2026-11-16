@@ -20,6 +20,7 @@
 
 #include "render/Renderer.h"
 #include "render/ImageScale.h"
+#include "core/FileBytes.h"
 #include "core/Log.h"
 
 #include <filament/Box.h>
@@ -59,20 +60,22 @@
 #include <cstdio>
 #include <cstring>
 #include <cctype>
-#include <fstream>
 #include <vector>
 
 #include "core/AssetError.h"
-#include <iterator>
 #include <stdexcept>
 
 namespace render_detail {
 
+// path（UTF-8）のファイルを丸ごと読む。開けない・読めなければ例外。
 inline std::vector<uint8_t> readFile(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) throw std::runtime_error("cannot open material package: " + path);
-    return std::vector<uint8_t>(std::istreambuf_iterator<char>(f),
-                                std::istreambuf_iterator<char>());
+    std::vector<uint8_t> bytes;
+    std::string reason;
+    if (!wizengine::readFileBytes(wizengine::utf8Path(path), wizengine::kNoByteLimit, bytes,
+                                  reason)) {
+        throw std::runtime_error("cannot open material package: " + path);
+    }
+    return bytes;
 }
 
 // 影の設定（ライトごと）。カスケードは平行光だけの概念なので、点光源・

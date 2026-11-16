@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "core/AssetError.h"
+#include "core/FileBytes.h"
 #include "render/ImageLoader.h"
 #include "render/ImageScale.h"
 #include "core/Log.h"
@@ -32,7 +33,7 @@ EnvironmentIBL loadEnvironmentIBL(filament::Engine& engine,
     if (!loadImageHDR(path, pixels, w, h, 2048)) {
         // Separate "not there" from "there but unreadable": the two need
         // completely different fixes, and the previous message covered both.
-        std::ifstream probe(path, std::ios::binary);
+        std::ifstream probe(utf8Path(path), std::ios::binary);  // 読みと同じく UTF-8 のパス
         if (!probe) {
             wizengine::requireFile(hdrName, "environment map");  // names the cwd
         }

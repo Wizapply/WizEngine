@@ -2,9 +2,9 @@
 #include "core/Log.h"
 
 #include "core/AssetError.h"
+#include "core/FileBytes.h"
 
 #include <algorithm>
-#include <fstream>
 
 #include <filament/Box.h>
 #include <filament/Material.h>
@@ -23,20 +23,6 @@
 #endif
 
 namespace wizengine {
-
-namespace {
-
-std::vector<uint8_t> readFileBytes(const std::string& path) {
-    std::ifstream in(path, std::ios::binary | std::ios::ate);
-    if (!in) return {};
-    const std::streamsize size = in.tellg();
-    in.seekg(0, std::ios::beg);
-    std::vector<uint8_t> bytes(static_cast<std::size_t>(size));
-    if (!in.read(reinterpret_cast<char*>(bytes.data()), size)) return {};
-    return bytes;
-}
-
-}  // namespace
 
 #ifdef WIZ_HAVE_GLTFIO
 
@@ -77,8 +63,14 @@ std::size_t GltfLoader::loadModel(const std::string& pathIn) {
         if (models_[i].path == path) return i;  // 同じファイルは 1 回だけ
     }
 
-    const std::vector<uint8_t> bytes = readFileBytes(path);
-    if (bytes.empty()) {
+    // 本体のファイル（.glb / .gltf）は UTF-8 のパスとして開く（日本語などを含む
+    // パスも開ける）。ただし .gltf が参照する外部の bin / テクスチャは、下の
+    // rc.gltfPath で gltfio に narrow の文字列として渡るので、日本語などを含む
+    // パスでは開けないことがある。読めない・空なら止める。
+    std::vector<uint8_t> bytes;
+    std::string reason;
+    const bool read = readFileBytes(utf8Path(path), kNoByteLimit, bytes, reason);
+    if (!read || bytes.empty()) {
         throw wizengine::AssetError(path, "model file is missing or empty");
     }
 

@@ -1,4 +1,5 @@
 #include "core/AssetError.h"
+#include "core/FileBytes.h"
 
 #include <fstream>
 
@@ -39,7 +40,7 @@ std::string assetPath(const std::string& name) {
 
 void requireFile(const std::string& path, const std::string& what) {
     const std::string full = assetPath(path);
-    std::ifstream f(full, std::ios::binary);
+    std::ifstream f(utf8Path(full), std::ios::binary);  // 読みと同じく UTF-8 のパス
     if (f) return;
     // Relative paths are resolved against the working directory, so naming it
     // turns "file not found" into something the user can act on.

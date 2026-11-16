@@ -14,15 +14,13 @@
 #include <stb_image.h>
 
 #include "render/ImageLoader.h"
+#include "core/FileBytes.h"
 #include "core/Log.h"
 
-#include <algorithm>
 #include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 
 namespace {
 
@@ -30,31 +28,20 @@ namespace {
 // 読めたら null に戻し、以後の理由は stb が持つ（imageFailureReason）。
 thread_local const char* tReadFailure = nullptr;
 
-// path（UTF-8）のファイルの先頭から maxBytes バイトまで（既定 = 丸ごと）を読む。
-// 読めなければ空。u8path で開くので、Windows でも日本語などを含むパスが開ける
-// （stb の fopen は開けない）。
-std::vector<unsigned char> readFileBytes(const std::string& path,
-                                         std::size_t maxBytes = SIZE_MAX) {
-    std::ifstream in(std::filesystem::u8path(path), std::ios::binary | std::ios::ate);
-    if (!in) return {};
-    const std::streamsize size = in.tellg();
-    if (size < 0) return {};
-    in.seekg(0);
-    // Braces, not parentheses: `bytes(std::size_t(size))` parses as a function
-    // declaration (the most vexing parse) and compiles to nothing useful.
-    const std::size_t count = std::min(std::size_t(size), maxBytes);
-    std::vector<unsigned char> bytes(count, 0);
-    if (!in.read(reinterpret_cast<char*>(bytes.data()), std::streamsize(count))) return {};
-    return bytes;
-}
-
-// 画像のファイル（先頭から maxBytes バイトまで）を stb のメモリ版
-// （stbi_*_from_memory）へ渡すために読む。loadImageRGBA / readImageSize /
-// loadImageGray16 が共用する。読めない・空・stb の長さ（int）に収まらないなら
-// false で、理由は imageFailureReason が返す。
+// 画像のファイル（path は UTF-8。先頭から maxBytes バイトまで、既定 = 丸ごと）を
+// stb のメモリ版（stbi_*_from_memory）へ渡すために読む。UTF-8 のパスとして開くので、
+// Windows でも日本語などを含むパスが開ける（stb の fopen は開けない）。
+// loadImageRGBA / readImageSize / loadImageGray16 / loadImageHDR が共用する。読めない・
+// 空・stb の長さ（int）に収まらないなら false（bytes は空）で、理由は
+// imageFailureReason が返す。
 bool readImageBytes(const std::string& path, std::vector<unsigned char>& bytes,
-                    std::size_t maxBytes = SIZE_MAX) {
-    bytes = readFileBytes(path, maxBytes);
+                    std::uintmax_t maxBytes = wizengine::kNoByteLimit) {
+    std::string reason;  // 理由は下の固定の文で出す（ログの文を変えない）
+    if (!wizengine::readFileHead(wizengine::utf8Path(path), maxBytes, bytes, reason)) {
+        // 失敗では readFileHead が bytes を触らない。呼ぶ側は同じ配列を使い回す
+        // （readImageSize の読み直し）ので、前の中身を消して「空 = 失敗」に揃える。
+        bytes.clear();
+    }
     if (bytes.empty()) {
         tReadFailure = "cannot open or read the file (or it is empty)";
         return false;
@@ -96,13 +83,13 @@ std::string describeHeaderBytes(const std::string& path) {
     // When a file passes the signature check but no decoder accepts it, the
     // answer is almost always visible here: a stray BOM, CRLF, or a header
     // that is not what it claims.
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return "(unreadable)";
-    unsigned char b[48] = {0};
-    in.read(reinterpret_cast<char*>(b), sizeof(b));
-    const std::streamsize got = in.gcount();
+    std::vector<unsigned char> b;
+    std::string reason;
+    if (!wizengine::readFileHead(wizengine::utf8Path(path), 48, b, reason)) {
+        return "(unreadable)";
+    }
     std::string out;
-    for (std::streamsize i = 0; i < got; ++i) {
+    for (std::size_t i = 0; i < b.size(); ++i) {
         if (b[i] >= 32 && b[i] < 127) {
             out += char(b[i]);
         } else {
@@ -115,16 +102,16 @@ std::string describeHeaderBytes(const std::string& path) {
 }
 
 std::string identifyImageFormat(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return "unreadable";
-    unsigned char b[16] = {0};
-    in.read(reinterpret_cast<char*>(b), sizeof(b));
-    const std::streamsize got = in.gcount();
-    if (got < 4) return "too short to identify";
+    std::vector<unsigned char> b;
+    std::string reason;
+    if (!wizengine::readFileHead(wizengine::utf8Path(path), 16, b, reason)) {
+        return "unreadable";
+    }
+    if (b.size() < 4) return "too short to identify";
 
     auto starts = [&](const char* sig) {
         const std::size_t n = std::strlen(sig);
-        return std::size_t(got) >= n && std::memcmp(b, sig, n) == 0;
+        return b.size() >= n && std::memcmp(b.data(), sig, n) == 0;
     };
     if (starts("#?RADIANCE") || starts("#?RGBE")) return "Radiance HDR";
     if (b[0] == 0x76 && b[1] == 0x2F && b[2] == 0x31 && b[3] == 0x01) {
@@ -151,17 +138,19 @@ const char* imageFailureReason() {
 bool loadImageHDR(const std::string& path, std::vector<float>& out, int& width,
                   int& height, int maxWidth) {
     int channels = 0;
-    tReadFailure = nullptr;  // ここはファイルを stb が開く（理由は stb のもの）
+    // ファイルは 1 回だけ読む（UTF-8 のパス）。読めなければ理由は tReadFailure。
+    std::vector<unsigned char> bytes;
+    if (!readImageBytes(path, bytes)) return false;
     // 3 components: Filament's equirect input wants RGB; alpha is meaningless
     // for an environment.
-    float* data = stbi_loadf(path.c_str(), &width, &height, &channels, 3);
+    float* data = stbi_loadf_from_memory(bytes.data(), int(bytes.size()), &width, &height,
+                                         &channels, 3);
 
     if (!data) {
         // stb matches the signature as "#?RADIANCE\n" exactly. Real files fail
         // that test for boring reasons: a UTF-8 BOM in front, or CRLF / bare-CR
         // line endings from a text-mode transfer. The pixels are fine in every
         // case, so rebuild a clean header in memory and try again.
-        std::vector<unsigned char> bytes = readFileBytes(path);
         std::size_t begin = 0;
         if (bytes.size() > 3 && bytes[0] == 0xEF && bytes[1] == 0xBB &&
             bytes[2] == 0xBF) {
