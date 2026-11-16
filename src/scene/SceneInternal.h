@@ -399,6 +399,14 @@ inline void noteBadPatchKey(bool ok, const char* key, std::string* badKey) {
     if (!ok && badKey && badKey->empty()) *badKey = key;
 }
 
+// ステータスの末尾に付ける警告の件数「（<label> N 件 - コンソール参照）」の唯一の
+// 定義。0 件なら空。label は "警告" / "テレインの警告" など。
+inline std::string warningCountCaveat(const char* label, std::size_t count) {
+    if (count == 0) return {};
+    return std::string("（") + label + " " + std::to_string(count) +
+           " 件 - コンソール参照）";
+}
+
 // ---- 塗り分けの層（.terrain の LAYR）-----------------------------------------
 // 層の値の検査と JSON の唯一の定義（型は terrain::TerrainLayer 1 つ。文書の型には
 // 写さない）。ファイルの読込（readTerrainFile）・ブラウザの変更（editTerrainLayer）・

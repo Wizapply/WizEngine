@@ -588,9 +588,11 @@ std::string Scene::documentXml() {
     return ed::toXmlText(document());
 }
 
-std::string Scene::takeLoadCaveat() {
-    std::string out;
-    out.swap(loadCaveat_);
+std::string Scene::loadStatusSuffix(std::size_t warnCount) {
+    std::string out = warningCountCaveat("警告", warnCount);
+    out += loadCaveat_;
+    loadCaveat_.clear();
+    out += terrainCombineCaveat(true);
     return out;
 }
 

@@ -630,9 +630,11 @@ private:
     // 適用）。keepSameTerrain = 文書のテレインが今のものと同じなら手元の格子を
     // 保つ（XML の適用だけ。シーンの読込はファイルから読み直す）。
     void loadDocument(const wizengine::editor::SceneDocument& doc, bool keepSameTerrain);
-    // 直前の読込で出た注意（テレイン・共通イベント・共用 UI。ステータスの末尾に
-    // 足す日本語）を返して消す。無ければ空。terrainCombineCaveat と同じ使い方。
-    std::string takeLoadCaveat();
+    // 読込のステータスの末尾に足す日本語の唯一の組み立て: 文書の警告の件数
+    // （warnCount、0 なら出さない）+ 直前の読込で出た注意（テレイン・共通イベント・
+    // 共用 UI。返して消す）+ テレインの合成方式の注意（terrainCombineCaveat(true)）。
+    // 1 回の読込で 1 回だけ呼ぶ（2 回呼ぶと合成方式の注意が 2 回出る）。
+    std::string loadStatusSuffix(std::size_t warnCount);
     // ジョイントの端点に使う物理ボディ番号。-1 は地面。
     std::size_t jointBodyId(int objectIndex) const;
 
@@ -1159,7 +1161,7 @@ private:
     // 系が自前の接触を扱えず張れなかった（警告済み）。この間 publish は張り直さない。
     // 張れたとき・releaseTerrainContact（外す・例外）で戻す。
     bool terrainBackendWarned_ = false;
-    // 直前の読込の注意（takeLoadCaveat が返して消す）。物理スレッド専用。
+    // 直前の読込の注意（loadStatusSuffix が返して消す）。物理スレッド専用。
     // テレインだけでなく、共通イベント・共用 UI の読めないファイルの注意も入る箱。
     // 空にするのは loadDocument の先頭だけで、書く側は足す（+=）だけ。
     std::string loadCaveat_;

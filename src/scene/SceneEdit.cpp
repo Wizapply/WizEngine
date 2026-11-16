@@ -1564,12 +1564,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         loadDocument(doc, true);
         // 保存名は触らない: 適用はファイルにしていない編集で、💾 保存して
         // 初めてファイルになる（モーダルの見出しにもそう書いてある）。
-        editor_.setStatus(
-            (warnings.empty()
-                 ? std::string("XML を適用しました")
-                 : "XML を適用しました（警告 " +
-                       std::to_string(warnings.size()) + " 件 - コンソール参照）") +
-            takeLoadCaveat() + terrainCombineCaveat(true));
+        editor_.setStatus("XML を適用しました" + loadStatusSuffix(warnings.size()));
         return;
     }
 
@@ -1587,9 +1582,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         for (const auto& w : warnings) LOGW("editor", "xml append: %s", w.c_str());
         appendDocument(doc);
         editor_.setStatus("AI: " + std::to_string(doc.bodies.size()) + " 個を追加しました" +
-                          (warnings.empty() ? std::string()
-                                            : "（警告 " + std::to_string(warnings.size()) +
-                                                  " 件 - コンソール参照）"));
+                          warningCountCaveat("警告", warnings.size()));
         return;
     }
 
@@ -1738,12 +1731,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         }
         loadDocument(doc, false);  // テレインはファイルから読み直す
         editor_.setSceneFile(name);
-        editor_.setStatus(
-            (warnCount == 0
-                 ? "読み込みました: " + name
-                 : "読み込みました: " + name + "（警告 " +
-                       std::to_string(warnCount) + " 件 - コンソール参照）") +
-            takeLoadCaveat() + terrainCombineCaveat(true));
+        editor_.setStatus("読み込みました: " + name + loadStatusSuffix(warnCount));
         editor_.refreshSceneFiles();
         return;
     }

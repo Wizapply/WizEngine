@@ -155,10 +155,8 @@ void Scene::loadTerrainField(const ed::TerrainDesc& doc) {
             if (res.dataChanged) {
                 loadCaveat_ += "（テレイン " + label + " は背番号で見つけた " +
                                desc.data + " を使いました）";
-            } else if (!res.warnings.empty()) {
-                loadCaveat_ += "（テレインの警告 " +
-                               std::to_string(res.warnings.size()) +
-                               " 件 - コンソール参照）";
+            } else {
+                loadCaveat_ += warningCountCaveat("テレインの警告", res.warnings.size());
             }
             publishTerrainField(desc, std::move(field), TerrainHistory::Clear,
                                 TerrainFileState::Saved, {}, false, &layers,
