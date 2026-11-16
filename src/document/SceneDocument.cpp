@@ -1,5 +1,6 @@
 #include "document/SceneDocument.h"
 
+#include "core/Clamp.h"
 #include "core/MathConstants.h"
 #include "document/XmlValues.h"
 #include "formula/FormulaXml.h"
@@ -304,7 +305,7 @@ SimSettings optionFromXml(const xml::Element& o, SimSettings base, Warn& warn) {
     } else if (o.has("timestep")) {
         // MuJoCo 流の timestep（秒）で書かれていたら Hz に直す。
         const double dt = o.number("timestep", 1.0 / double(base.hz));
-        if (dt > 1e-6) base.hz = int(1.0 / dt + 0.5);
+        if (std::isfinite(dt) && dt > 1e-6) base.hz = roundToInt(1.0 / dt, base.hz);
     }
     base.substeps = o.integer("substeps", base.substeps);
     base.iterations = o.integer("iterations", base.iterations);

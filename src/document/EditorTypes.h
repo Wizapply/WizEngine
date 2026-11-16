@@ -1837,10 +1837,8 @@ inline wizengine::formula::FormulaNodeDesc clampFormulaNode(
     n.x = cl(n.x, 0.0, 20000.0);
     n.y = cl(n.y, 0.0, 20000.0);
     if (n.params.size() > 128) n.params.resize(128);
-    for (double& v : n.params) {
-        if (!(v == v)) v = 0.0;  // NaN
-        v = cl(v, -1e12, 1e12);
-    }
+    // 有限でない値（NaN と ±∞）は 0（引数の既定値）。
+    for (double& v : n.params) v = clampOrFallback(v, -1e12, 1e12, 0.0);
     n.name = sanitizePortName(n.name);
     return n;
 }
@@ -1881,8 +1879,7 @@ struct ControllerDesc {
 };
 inline ControllerDesc clampController(ControllerDesc c) {
     c.formula = sanitizeEventName(c.formula);
-    if (!(c.period == c.period) || c.period < 0.0) c.period = 0.0;
-    if (c.period > 10.0) c.period = 10.0;
+    c.period = clampOrFallback(c.period, 0.0, 10.0, ControllerDesc().period);
     return c;
 }
 inline nlohmann::json toJson(const ControllerDesc& c) {
@@ -2033,8 +2030,7 @@ inline ChartDesc clampChart(ChartDesc c) {
         if (sig.size() >= 12) break;
     }
     c.signals = std::move(sig);
-    if (!(c.span == c.span) || c.span < 0.0) c.span = 0.0;
-    if (c.span > 3600.0) c.span = 3600.0;
+    c.span = clampOrFallback(c.span, 0.0, 3600.0, ChartDesc().span);
     return c;
 }
 inline nlohmann::json toJson(const ChartDesc& c) {
@@ -2144,11 +2140,12 @@ inline nlohmann::json toJson(const TerrainDesc& t) {
     return j;
 }
 
-// 実数を整数の範囲へ丸めて詰める。NaN は fallback（int へのそのままの変換は
-// 範囲外・NaN で未定義動作になるので、範囲を決めてから変換する）。
+// 実数を整数の範囲へ丸めて詰める。有限でない値（NaN と ±∞）は fallback、有限で
+// 範囲の外は端（int へのそのままの変換は範囲外・NaN で未定義動作になるので、
+// 範囲を決めてから変換する）。
 inline long long roundedInteger(double v, long long lo, long long hi,
                                 long long fallback) {
-    if (!(v == v)) return fallback;
+    if (!std::isfinite(v)) return fallback;
     if (v <= double(lo)) return lo;
     if (v >= double(hi)) return hi;
     return static_cast<long long>(std::llround(v));
@@ -2469,11 +2466,13 @@ inline GroundDesc clampGround(GroundDesc g) {
     auto cl = [](double v, double lo, double hi) {
         return v < lo ? lo : (v > hi ? hi : v);
     };
-    // 位置は各軸 ±kPlacementMaxMeters（テレインと同じ）。NaN は原点。
-    auto clp = [&cl](double v) {
-        return (v == v) ? cl(v, -kPlacementMaxMeters, kPlacementMaxMeters) : 0.0;
+    // 位置は各軸 ±kPlacementMaxMeters（テレインと同じ）。有限でない値は既定値（原点）。
+    const GroundDesc d;
+    auto clp = [](double v, double fallback) {
+        return clampOrFallback(v, -kPlacementMaxMeters, kPlacementMaxMeters, fallback);
     };
-    g.position = {clp(g.position.x), clp(g.position.y), clp(g.position.z)};
+    g.position = {clp(g.position.x, d.position.x), clp(g.position.y, d.position.y),
+                  clp(g.position.z, d.position.z)};
     g.rotation = clampAngles(g.rotation);
     g.half = cl(g.half, 1.0, 1000.0);
     g.visualHalf = cl(g.visualHalf, 1.0, 1000.0);
@@ -2488,7 +2487,7 @@ inline EnvironmentDesc clampEnvironment(EnvironmentDesc e) {
     return e;
 }
 
-// テレインの丸めの部品は core/Clamp.h の clampOrFallback（NaN は既定値へ戻す）。
+// テレインの丸めの部品は core/Clamp.h の clampOrFallback（有限でない値（NaN と ±∞）は既定値へ戻す）。
 
 // ノイズ生成の値の範囲: octaves は 0〜16（HeightField の安全弁と同じ）、
 // gain は 0〜1、lacunarity は 1〜4、scale は 0.1〜10000 m。
@@ -2527,7 +2526,7 @@ inline TerrainNoiseParams terrainNoiseFromJson(const nlohmann::json& j,
         base);
 }
 
-// テレインの常識的な範囲。NaN は既定値へ戻す。
+// テレインの常識的な範囲。有限でない値（NaN と ±∞）は既定値へ戻す。
 //   * data（テレイン名）は isSafeName（core/SafeName.h、TerrainLibrary と同じ
 //     規則 = assets/terrains の直下の名前だけ）を通らなければ空 = 名前無し。
 //     guid は normalizedGuidHex（core/Guid.h。不正か全部 0 なら空）。
@@ -2544,8 +2543,7 @@ inline TerrainDesc clampTerrain(TerrainDesc t) {
     const TerrainDesc d;
     const auto cl = clampOrFallback;
     auto clf = [](float v, float fallback) {
-        if (!(v == v)) return fallback;
-        return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+        return float(clampOrFallback(v, 0.0, 1.0, fallback));
     };
     if (!t.data.empty() && !isSafeName(t.data)) t.data.clear();
     t.guid = normalizedGuidHex(t.guid);

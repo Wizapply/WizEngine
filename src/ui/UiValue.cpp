@@ -403,8 +403,8 @@ PropValue clampValue(const ValueSpec& spec, PropValue value) {
                 defaultInt(spec));
             break;
         case PropType::Bool:
-            // NaN は既定値（ヘッダの約束）。それ以外は 0 でなければ真。
-            if (!(value.v[0] == value.v[0])) value.v[0] = spec.def.v[0];
+            // 有限でない値（NaN と ±∞）は既定値（ヘッダの約束）。それ以外は 0 でなければ真。
+            if (!std::isfinite(value.v[0])) value.v[0] = spec.def.v[0];
             value.v[0] = value.v[0] != 0.0 ? 1.0 : 0.0;
             break;
         case PropType::Enum:

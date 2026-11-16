@@ -7,10 +7,11 @@
 
 namespace wizengine {
 
-// 範囲へ丸める。NaN は fallback へ戻す（XML の strtod は "nan" も読むので、比較だけの
-// 丸めでは素通りしてしまう）。テレインの値・UI の性質の値などが共用する。
+// 範囲へ丸める。有限でない値（NaN と ±∞）は fallback へ戻す（XML の strtod は "nan" や
+// "inf" も読むので、比較だけの丸めでは NaN が素通りし、∞ が範囲の端になってしまう）。
+// テレインの値・UI の性質の値などが共用する。
 inline double clampOrFallback(double v, double lo, double hi, double fallback) {
-    if (!(v == v)) return fallback;
+    if (!std::isfinite(v)) return fallback;
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
@@ -22,10 +23,10 @@ inline int roundToInt(double v, int fallback) {
     return inRange ? int(r) : fallback;
 }
 
-// 置き場所の角度（度）。有限でなければ 0、±360 の外は 1 周ぶん畳む
-// （地面・テレイン・UI の板の rotation。オイラー角の意味は変えない）。
+// 置き場所の角度（度）。有限でない値（NaN と ±∞）と ±1e9 を超える値は 0、±360 の外は
+// 1 周ぶん畳む（地面・テレイン・UI の板の rotation。オイラー角の意味は変えない）。
 inline double clampAngleDegrees(double v) {
-    if (!(v == v) || v > 1e9 || v < -1e9) return 0.0;
+    if (!std::isfinite(v) || v > 1e9 || v < -1e9) return 0.0;
     return std::fmod(v, 360.0);
 }
 

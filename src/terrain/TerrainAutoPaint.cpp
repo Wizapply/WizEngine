@@ -4,8 +4,8 @@
 #include <cmath>
 #include <utility>
 
+#include "core/Clamp.h"
 #include "core/MathConstants.h"
-#include "terrain/TerrainMath.h"
 
 namespace wizengine {
 namespace terrain {
@@ -68,14 +68,14 @@ AutoPaintRules clampAutoPaintRules(AutoPaintRules rules) {
     for (std::size_t k = 0; k < rules.layer.size(); ++k) {
         AutoPaintBand& b = rules.layer[k];
         const AutoPaintBand& d = def.layer[k];
-        b.slopeMinDeg = clampOr(b.slopeMinDeg, kSlopeLo, kSlopeHi, d.slopeMinDeg);
-        b.slopeMaxDeg = clampOr(b.slopeMaxDeg, kSlopeLo, kSlopeHi, d.slopeMaxDeg);
-        b.heightMin = clampOr(b.heightMin, -kAutoPaintMaxHeight, kAutoPaintMaxHeight, d.heightMin);
-        b.heightMax = clampOr(b.heightMax, -kAutoPaintMaxHeight, kAutoPaintMaxHeight, d.heightMax);
+        b.slopeMinDeg = clampOrFallback(b.slopeMinDeg, kSlopeLo, kSlopeHi, d.slopeMinDeg);
+        b.slopeMaxDeg = clampOrFallback(b.slopeMaxDeg, kSlopeLo, kSlopeHi, d.slopeMaxDeg);
+        b.heightMin = clampOrFallback(b.heightMin, -kAutoPaintMaxHeight, kAutoPaintMaxHeight, d.heightMin);
+        b.heightMax = clampOrFallback(b.heightMax, -kAutoPaintMaxHeight, kAutoPaintMaxHeight, d.heightMax);
         if (b.slopeMinDeg > b.slopeMaxDeg) std::swap(b.slopeMinDeg, b.slopeMaxDeg);
         if (b.heightMin > b.heightMax) std::swap(b.heightMin, b.heightMax);
     }
-    rules.softness = clampOr(rules.softness, 0.0, 1.0, def.softness);
+    rules.softness = clampOrFallback(rules.softness, 0.0, 1.0, def.softness);
     return rules;
 }
 

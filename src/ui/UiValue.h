@@ -124,7 +124,7 @@ std::string formatValue(const ValueSpec& spec, const PropValue& value);
 nlohmann::json valueToJson(const ValueSpec& spec, const PropValue& value);
 bool valueFromJson(const ValueSpec& spec, const nlohmann::json& obj,
                    const char* key, PropValue& out);
-// 範囲へ丸める（NaN は既定値、名前は正規化、許されないパスは既定値）。
+// 範囲へ丸める（有限でない値（NaN と ±∞）は既定値、名前は正規化、許されないパスは既定値）。
 PropValue clampValue(const ValueSpec& spec, PropValue value);
 // 補間。数値系は成分ごとに線形、それ以外（文字列・Bool・Enum・IndexList）は
 // 段（t < 1 の間は a、1 で b）。
