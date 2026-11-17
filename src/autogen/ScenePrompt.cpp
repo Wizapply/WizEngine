@@ -1,6 +1,7 @@
 #include "autogen/ScenePrompt.h"
 
 #include <algorithm>
+#include <cstdio>
 
 namespace wizengine {
 namespace autogen {
@@ -20,65 +21,145 @@ GenMode genModeFromName(const std::string& s, GenMode fallback) {
     return fallback;
 }
 
-std::string buildSystemPrompt(const PromptOptions& opt) {
-    std::string s = R"(You build 3D physics scenes for the Charon engine (Chrono physics + Filament PBR renderer).
-You answer with exactly ONE XML document whose root element is <wizengine>. No prose, no markdown.
+namespace {
 
-WORLD CONVENTIONS
-- Units are meters, kilograms, seconds. Y is up, gravity is -Y. The default floor is the plane y = 0.
-- All angles are in degrees. euler="x y z" is applied as R = Rz * Ry * Rx.
-- A body's pos is its CENTER. Something resting on the floor has pos y = half its height.
-- Colors are rgba="r g b 1" with LINEAR values 0..1.
-- Do not let solid bodies intersect each other or the floor at the start: leave 1-2 cm gaps.
-  Stack things by putting each one's bottom on the top of the one below.
-- Keep everything within x, z in [-9, 9] (the floor is 20 m wide) unless you also enlarge <ground size>.
+// 外接箱の数字（3 桁で十分。モデル単位なので m とは限らない）。
+std::string num3(double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.3g", v);
+    return buf;
+}
 
-DOCUMENT FORMAT (MuJoCo MJCF-like; only these elements and attributes)
-<wizengine model="short_name" version="4">
-  <option gravity="0 -9.81 0"/>                                (optional)
-  <visual>                                                     (optional)
+}  // namespace
+
+const char* systemPromptExample() {
+    // 警告 0 件で読めること（ScenePrompt.h）。数字は「置いた瞬間に重ならない」
+    // ように合わせてある: 机の天板の上面 y = 0.78、コップの底 = 0.79。腕は
+    // 柱の手前（z）に 3 cm 離してあるので、ヒンジで回しても柱に当たらない。
+    return R"(<wizengine model="example_room" version="4">
+  <option gravity="0 -9.81 0"/>
+  <visual>
     <quality shadow="pcss" msaa="4"/>
     <postprocess ssao="true" bloom="0.05" vignette="0.2"/>
   </visual>
-  <asset>
-    <!-- glTF models (see MODELS below) -->
-  </asset>
   <worldbody>
     <ground size="10" visual="8" rgba="0.8 0.8 0.8 1" roughness="0.9"/>
-    <light name="sun" type="sun" pos="0 8 0" euler="50 -35 0" diffuse="1 0.97 0.92 1" intensity="100000" castshadow="true"/>
+    <light name="sun" type="sun" pos="0 8 0" euler="50 -35 0" diffuse="1 0.97 0.92 1" intensity="90000" castshadow="true"/>
     <light name="fill" type="point" pos="-3 4 3" diffuse="0.8 0.87 1 1" intensity="40000" falloff="20" castshadow="false"/>
-    <camera name="cam0" target="0 0.8 0" azimuth="35" elevation="22" radius="9"/>
-    <body name="crate" pos="0 0.25 0" euler="0 20 0">
+    <camera name="cam0" target="0 0.8 -0.5" azimuth="35" elevation="22" radius="8"/>
+    <body name="crate" pos="-1.5 0.25 0" euler="0 20 0">
       <geom type="box" size="0.25 0.25 0.25" mass="8" rgba="0.55 0.35 0.18 1" roughness="0.8"/>
     </body>
-    <body name="ball" pos="1 0.15 0">
-      <geom type="sphere" size="0.15" mass="0.5" rgba="0.8 0.1 0.1 1" roughness="0.3"/>
+    <body name="ball" pos="-0.6 0.15 0.6">
+      <geom type="sphere" size="0.15" mass="0.5" rgba="0.8 0.1 0.1 1" roughness="0.3" restitution="0.6"/>
     </body>
-    <body name="table_top" pos="0 0.75 2" fixed="true">
+    <body name="table_top" pos="1.5 0.75 0" fixed="true">
       <geom type="box" size="0.8 0.03 0.5" mass="20" rgba="0.4 0.25 0.12 1"/>
+    </body>
+    <body name="cup" pos="1.5 0.85 0">
+      <geom type="box" size="0.05 0.06 0.05" mass="0.3" rgba="0.9 0.9 0.95 1" roughness="0.1" clearcoat="1"/>
+    </body>
+    <body name="post" pos="0 1 -2" fixed="true">
+      <geom type="box" size="0.05 1 0.05" mass="10" rgba="0.42 0.45 0.5 1" roughness="0.3" metallic="1"/>
+    </body>
+    <body name="arm" pos="0.45 1.9 -1.88">
+      <geom type="box" size="0.4 0.04 0.04" mass="2" rgba="0.9 0.6 0.1 1"/>
     </body>
   </worldbody>
   <equality>
-    <joint name="door_hinge" type="hinge" body1="door" body2="world" anchor="1 1 0" axis="0 1 0"/>
+    <joint name="arm_hinge" type="hinge" body1="arm" body2="post" anchor="0 1.9 -1.88" axis="0 0 1"/>
   </equality>
-</wizengine>
+</wizengine>)";
+}
 
-ELEMENT NOTES
-- <geom size> is HALF the dimension: box = three half-extents, sphere = radius.
-- geom attributes you may use: type (box|sphere|mesh), size, mass (kg, realistic), rgba,
-  roughness (0..1), metallic (0 or 1), clearcoat (0..1), emissive (0..), friction (0..2), restitution (0..1).
-- fixed="true" on <body> makes it immovable (walls, buildings, shelves, heavy furniture you do not want to tip).
-- Every body needs a unique name (letters, digits, _ and - only).
-- Lights: type sun | point | spot. euler "0 0 0" points STRAIGHT DOWN; tilt with x, turn with y.
-  Intensity: sun 60000-110000 (lux), point/spot 20000-150000 (lumen). Spot also takes inner and cutoff (deg).
-  Use 1-3 lights; one sun with castshadow="true" is usually best.
-- <camera name="cam0"> is the editor camera: aim target at the middle of the scene, choose radius so the
-  whole scene is visible (about 1.5x the scene width), elevation 15-35.
-- Joints (optional): type weld | hinge | ball | slide | distance | spring. body1/body2 are body names or "world".
-  anchor is a world point, axis a world direction. hinge/slide take range="lo hi" and
-  motor="speed" target="..." (deg/s or m/s). Do not overlap jointed bodies.
-- Do NOT write vehicles, terrain, soft bodies, cables, prefabs or event nodes.
+std::string buildSystemPrompt(const PromptOptions& opt) {
+    std::string s = R"(You build 3D physics scenes for the Charon engine (Chrono rigid-body physics + Filament PBR renderer,
+viewed and edited in a web browser). You answer with exactly ONE XML document whose root element is <wizengine>.
+No prose, no markdown.
+
+HOW THE ENGINE USES YOUR DOCUMENT
+- Your document replaces (or extends) the scene in EDITOR mode: nothing moves yet. When the user presses
+  Simulate, physics starts from EXACTLY the poses you wrote; Stop puts every body back to those poses.
+  So the document is the starting state: nothing may intersect, and anything that is not fixed will fall
+  under gravity and collide.
+- fixed="true" bodies never move (walls, shelves, buildings, table tops, posts). All other bodies are dynamic.
+- During simulation the user can grab dynamic bodies with the mouse and drag them (this is attached
+  automatically). Light and mass-realistic objects are fun to push around; make heavy furniture fixed.
+- One body = exactly ONE <geom> (one box, one sphere or one model). Build complex objects from several bodies:
+  make them all fixed, or connect moving parts with joints (weld = glued together).
+- The browser shows the scene through camera cam0 (the editor camera).
+- The engine reads your document strictly. If something is wrong (unknown element, missing body name,
+  bad attribute value), it sends you the list of problems and asks for a corrected document.
+
+WORLD CONVENTIONS
+- Units are meters, kilograms, seconds, newtons. Y is up, gravity is -Y. The floor is the plane y = 0.
+- All angles in the document are in degrees. euler="x y z" is applied as R = Rz * Ry * Rx.
+- A body's pos is its CENTER. Something resting on the floor has pos y = half its height (+0.01).
+- Colors are rgba="r g b 1" with LINEAR values 0..1 (sRGB 0.5 grey is about 0.21 linear).
+- Leave 1-2 cm gaps between bodies at the start. Stack things by putting each one's bottom 1 cm above the
+  top of the one below. Joined bodies also collide with each other, so keep their shapes apart too.
+- Keep everything within x, z in [-9, 9] (the floor is 20 m wide) unless you also enlarge <ground size>.
+
+EXAMPLE DOCUMENT (MuJoCo MJCF-like; this exact text is valid)
 )";
+    s += systemPromptExample();
+    s += R"(
+
+ELEMENT NOTES (omitted attributes take engine defaults, so write only what matters)
+- <body name pos euler fixed>: name is required and unique (letters, digits, _ and - only).
+  Bodies go DIRECTLY under <worldbody>; nested <body> elements are not supported.
+- <geom type size mass rgba ...>: type is box | sphere | mesh (no cylinder, capsule, plane or ellipsoid -
+  approximate those with boxes and spheres). size is HALF the dimension: box = three half-extents
+  "hx hy hz", sphere = radius, mesh = rough radius used only as a fallback.
+  mass in kg (realistic: a 50 cm wooden crate ~8, a football 0.45, a chair 6).
+  Optional: roughness (0.02..1), metallic (0 or 1), clearcoat (0..1), emissive (0..10, glow),
+  friction (0..2), restitution (0..1, bounciness).
+- <light name type pos euler diffuse intensity castshadow>: type sun | point | spot.
+  euler "0 0 0" points STRAIGHT DOWN; tilt with x (e.g. 50), turn with y. pos only matters for point/spot.
+  Intensity: sun 50000-110000 (lux), point/spot 20000-150000 (lumen); falloff = reach in m (point/spot);
+  spot also takes inner and cutoff (cone angles in degrees, inner < cutoff < 89).
+  Use 1-3 lights; exactly one sun with castshadow="true" is usually best.
+- <camera name="cam0" target azimuth elevation radius>: an orbit camera around target. azimuth = degrees
+  around Y, elevation = degrees above the horizon (15-35 looks good), radius = distance in m (about 1.5x the
+  scene width so everything is visible). Write only cam0 unless the request asks for more viewpoints
+  (then cam1, cam2, ... in order).
+- <ground size visual rgba roughness texture tile>: size = half-width of the physical floor, visual =
+  half-width of the visible floor (<= size). rgba tints the floor texture. Write at most one <ground>.
+- <option gravity="x y z">: change only for space / moon scenes (moon: "0 -1.62 0").
+- <visual>: only <quality shadow msaa>, <postprocess ssao bloom vignette> and
+  <exposure aperture shutter sensitivity>; omit it for a normal look.
+- Joints go in <equality>: <joint name type body1 body2 anchor axis .../>.
+  type: weld | hinge | ball | slide | distance | spring.
+  body1 moves relative to body2. body1/body2 are body NAMES defined in <worldbody>, or "world" for the ground;
+  body1 and body2 must differ. anchor = world point (where the parts meet), axis = world direction
+  (hinge: rotation axis, slide: sliding direction; not all zeros).
+  hinge / slide may take ONE of:
+    range="lo hi"  (hinge: degrees, slide: meters), or
+    motor="speed|position|force" target="..."  (hinge: deg/s | deg | N*m, slide: m/s | m | N).
+  A joint cannot have both range and motor (range would be ignored).
+  spring: stiffness (N/m), damping (N*s/m), distance = rest length in m (0 = the starting distance).
+  distance: keeps the starting distance between the two bodies (a rigid rod / rope that cannot stretch).
+)";
+
+    // ---- 使えるファイル（実在するものだけ）----
+    const AssetInventory& inv = opt.assets;
+    s += "\nFILES THAT EXIST (paths are relative to assets/; never invent other file names)\n";
+    if (inv.hdrs.empty()) {
+        s += "- No HDR environment maps. Do not write <environment>.\n";
+    } else {
+        s += "- <environment hdr=\"...\" intensity=\"30000\" skybox=\"true|false\"/> (image-based light; skybox shows\n"
+             "  it as the background). Available HDR files:";
+        for (const auto& h : inv.hdrs) s += " " + h;
+        s += "\n  Omit <environment> to keep the default lighting.\n";
+    }
+    if (inv.textures.empty()) {
+        s += "- No ground textures. Use texture=\"\" (checker pattern) or omit it.\n";
+    } else {
+        s += "- Ground textures (texture=\"\" = checker pattern, omitted = the default texture):";
+        for (const auto& t : inv.textures) s += " " + t;
+        s += "\n";
+    }
+
     if (opt.meshGeneration) {
         s += R"(
 MODELS (text-to-3D generation is AVAILABLE)
@@ -87,17 +168,18 @@ MODELS (text-to-3D generation is AVAILABLE)
     <asset>
       <mesh name="chair" generate="a simple wooden dining chair, four legs, no background" height="0.9"/>
     </asset>
-    <body name="chair1" pos="1 0.45 0" euler="0 90 0">
+    <body name="chair1" pos="1 0.46 0" euler="0 90 0">
       <geom type="mesh" mesh="chair" size="0.35" mass="6"/>
     </body>
 - generate = an English description of ONE isolated object (shape, material, style). No scene, no ground.
 - height = the real-world height in meters; the engine scales the model so that its height matches exactly.
-  The body's pos y for an object on the floor is therefore height/2. geom size = a rough radius (fallback only).
+  The body's pos y for an object on the floor is therefore height/2 (+0.01). geom size = a rough radius.
 - One <mesh> can be used by many bodies. Use at most )" +
              std::to_string(opt.maxMeshes) + R"( NEW generated meshes; build the rest from boxes and spheres.
-  Generation is slow and costs money: prefer primitives for walls, floors, tables tops, shelves, simple blocks.
+  Generation is slow and costs money: prefer primitives for walls, floors, table tops, shelves, simple blocks.
 - Collision of a model is its CONVEX HULL: nothing can sit inside a hollow model (cups, boxes, cars, shelves).
   Large models (houses, trees, statues) should be fixed="true".
+- Do not write file= or scale= on a mesh that has generate=; the engine fills them in.
 )";
         if (!opt.library.empty()) {
             s += R"(- These models were generated before and are FREE to reuse. Copy the generate text EXACTLY to reuse one:
@@ -114,7 +196,30 @@ MODELS
 - You may reuse <mesh> elements that already exist in the current scene, unchanged.
 )";
     }
+    if (!inv.models.empty()) {
+        s += R"(- Existing model files you may declare with <mesh name="..." file="..." scale="..."/> and use from
+  <geom type="mesh" mesh="...">. Size is the bounding box at scale 1 (x y z, model units);
+  choose scale = wanted height / listed y size. Use them only when they match the request.
+)";
+        for (const auto& m : inv.models) {
+            s += "    * " + m.file + "  size " + num3(m.size[0]) + " " + num3(m.size[1]) + " " +
+                 num3(m.size[2]) + "\n";
+        }
+    }
+
     s += R"(
+DO NOT WRITE
+- <vehicle>, <terrain>, <soft>, <cable>, <prefab>, <emitter>, <event>/<events>, <formula>, <control>,
+  <include>, <default>, <site>, <tendon>, <actuator>, <sensor> or any element not shown above.
+  (These exist in the engine but need data you cannot produce; in edit mode keep existing ones unchanged.)
+
+CHECK BEFORE ANSWERING
+1. Every body has a unique name and exactly one <geom>; no body is nested in another.
+2. Every joint's body1/body2 names a body you wrote (or "world"); no joint has both range and motor.
+3. Every geom type="mesh" refers to a <mesh name> declared in <asset>.
+4. Nothing intersects the floor or another body at the start (check y = half height, stacked heights).
+5. cam0 sees the whole scene; there is one shadow-casting sun.
+
 OUTPUT
 - Reply with the XML document only. Start with <wizengine and end with </wizengine>.
 )";
@@ -168,7 +273,8 @@ std::string repairPrompt(const std::string& problem, const std::vector<std::stri
     const std::size_t n = std::min<std::size_t>(items.size(), 30);
     for (std::size_t i = 0; i < n; ++i) s += "- " + items[i] + "\n";
     if (items.size() > n) s += "- ... and " + std::to_string(items.size() - n) + " more\n";
-    s += "Return the complete corrected XML document only.";
+    s += "Fix exactly these problems and keep everything else unchanged. "
+         "Return the complete corrected XML document only.";
     return s;
 }
 

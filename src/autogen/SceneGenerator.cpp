@@ -1,6 +1,7 @@
 #include "autogen/SceneGenerator.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -136,6 +137,96 @@ std::vector<LibraryEntry> libraryForPrompt(const Library& lib, const AiConfig& c
         out.push_back({prompt, file});
     }
     return out;
+}
+
+// ---- 指示文に載せる「実在するファイル」の一覧 ---------------------------------
+// LLM はもっともらしいファイル名（"sky.hdr"・"textures/wood.png"）を作り上げる。
+// 文書としては正しいので検査を通り、読込で初めて「見つからない」になる（環境光は
+// 前のまま・モデルは球で描く）。指示文に実在するものだけを並べて、それを防ぐ。
+// 見ないフォルダはアセットパネルのモデル一覧と同じ（web / scenes / events /
+// formulas / prefabs / terrains / materials）に、生成モデルの置き場（そちらは
+// 「再利用できる生成モデル」として説明文つきで別に載せる）を足したもの。
+AssetInventory scanAssetInventory(const AiConfig& cfg) {
+    constexpr std::size_t kMaxFiles = 2000;  // 歩くファイル数の上限
+    constexpr std::size_t kMaxModels = 40;   // 指示文に載せるモデルの上限
+    constexpr std::size_t kMaxOthers = 20;   // HDR / テクスチャの上限
+    AssetInventory inv;
+    const fs::path root(cfg.assetRoot);
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return inv;
+
+    const std::set<std::string> skipDirs = {"web",      "scenes",   "events",
+                                            "formulas", "prefabs",  "terrains",
+                                            "materials", cfg.generatedDir};
+    auto lower = [](std::string t) {
+        for (auto& c : t) c = char(std::tolower(static_cast<unsigned char>(c)));
+        return t;
+    };
+    std::vector<std::string> models;
+    std::size_t walked = 0;
+    fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+    for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (++walked > kMaxFiles) break;
+        const fs::path rel = fs::relative(it->path(), root, ec);
+        if (ec) break;
+        if (it.depth() == 0 && it->is_directory(ec) &&
+            skipDirs.count(rel.generic_string())) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        if (!it->is_regular_file(ec)) continue;
+        const std::string relText = rel.generic_string();
+        // 空白・引用符入りの名前は属性の中で壊れやすいので載せない。
+        if (relText.find_first_of(" \"<>&") != std::string::npos) continue;
+        const std::string ext = lower(rel.extension().string());
+        if (ext == ".hdr") {
+            inv.hdrs.push_back(relText);
+        } else if ((ext == ".png" || ext == ".jpg" || ext == ".jpeg") &&
+                   relText.rfind("textures/", 0) == 0) {
+            inv.textures.push_back(relText);
+        } else if (ext == ".glb" || ext == ".gltf") {
+            models.push_back(relText);
+        }
+    }
+    auto trim = [](std::vector<std::string>& v, std::size_t n) {
+        std::sort(v.begin(), v.end());
+        if (v.size() > n) v.resize(n);
+    };
+    trim(inv.hdrs, kMaxOthers);
+    trim(inv.textures, kMaxOthers);
+    trim(models, kMaxModels);
+    for (const auto& m : models) {
+        // 外接箱が読めないモデルは倍率を決められないので載せない。
+        const Bounds b = gltfBounds(joinPath(cfg.assetRoot, m));
+        if (!b.valid) continue;
+        InventoryModel im;
+        im.file = m;
+        for (int a = 0; a < 3; ++a) im.size[a] = b.size(a);
+        inv.models.push_back(im);
+    }
+    return inv;
+}
+
+// LLM との往復をそのまま書き残す（<generatedDir>/last_chat.txt）。指示文が
+// 実際にどう組まれ、LLM が何を返し、どの警告で直させたかを後から読むため
+// （「なぜこのシーンになったか」の切り分けはまずこれを見る）。キーは入らない。
+void saveChatTranscript(const AiConfig& cfg, const std::vector<ChatMessage>& messages,
+                        const std::string& lastReply,
+                        const std::vector<std::string>& problems) {
+    const std::string path = joinPath(cfg.assetRoot, cfg.generatedDir + "/last_chat.txt");
+    std::error_code ec;
+    fs::create_directories(fs::path(path).parent_path(), ec);
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) return;
+    f << "# model: " << cfg.llmModel << "  url: " << cfg.llmUrl << "\n";
+    auto write = [&](const std::string& role, const std::string& text) {
+        f << "\n======== " << role << " (" << text.size() << " chars) ========\n" << text
+          << "\n";
+    };
+    for (const auto& m : messages) write(m.role, m.content);
+    write("assistant", lastReply);
+    f << "\n======== engine check: " << problems.size() << " problem(s) ========\n";
+    for (const auto& p : problems) f << "- " << p << "\n";
 }
 
 std::string cacheKey(const AiConfig& cfg, const std::string& prompt) {
@@ -502,6 +593,9 @@ GenOutcome generateScene(const AiConfig& cfg, const GenRequest& req, const GenHo
     po.meshGeneration = meshAllowed;
     po.maxMeshes = cfg.maxMeshes;
     if (meshAllowed) po.library = libraryForPrompt(lib, cfg);
+    po.assets = scanAssetInventory(cfg);
+    LOGI("ai", "prompt inventory: %zu hdr, %zu textures, %zu models",
+         po.assets.hdrs.size(), po.assets.textures.size(), po.assets.models.size());
 
     std::vector<ChatMessage> messages;
     messages.push_back({"system", buildSystemPrompt(po)});
@@ -547,6 +641,7 @@ GenOutcome generateScene(const AiConfig& cfg, const GenRequest& req, const GenHo
             if (lastProblems.empty()) accepted = true;
         }
         for (const auto& p : lastProblems) LOGW("ai", "reply problem: %s", p.c_str());
+        saveChatTranscript(cfg, messages, res.content, lastProblems);
         if (accepted) break;
         if (attempt == cfg.llmRepairs) {
             // 直しきれなかった。XML として読めていれば警告付きで使う

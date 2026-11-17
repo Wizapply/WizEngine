@@ -1110,6 +1110,37 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   （数値の整合を LLM が取れず、黙って動かないシーンになるため）。編集モードは
   今のシーンの XML を渡して「触らない物はそのまま返せ」と言う（96 KB を超える
   シーンは断る - 途中で切った XML を渡すと壊れた文書が返る）。
+- **指示文の構成**（`buildSystemPrompt`）: ①エンジンが文書をどう使うか（エディタで
+  置かれ、シミュレートで書いた姿勢から物理が始まる・fixed 以外は落ちる・マウスで
+  掴める・1 body = 1 geom・cam0 がブラウザの視点・問題は送り返される）②座標と
+  単位 ③見本の文書（`systemPromptExample()`）④要素ごとの注意（読込が警告にする
+  組み合わせ = motor と range の併用・存在しない body 名・入れ子 body などを
+  先に言う。ジョイントの単位はモードと種類ごと）⑤**実在するファイルの一覧**
+  （`scanAssetInventory` が assets/ を歩いて HDR・地面テクスチャ・.glb を集め、
+  モデルは倍率 1 の外接箱つき = LLM が scale を決められる。作り上げた
+  ファイル名は文書としては正しいので検査を通ってしまうため）⑥書かない物 ⑦出す前の
+  点検表。**見本の文書は警告 0 件で読めること**（以前の見本は存在しない body
+  "door" を参照していて、真似た LLM が毎回修正の往復になっていた）。文書の
+  書式を変えたら見本も `fromXml` に通して確かめる。
+- **手元の Text to 3D（`samples/meshgen/`、Python）**: Meshy を使わずに .glb を作る
+  第 1 段。LLM（接続先は同じ `ai.llm`）が `cad.py` の API（box / cylinder /
+  revolve / extrude / tube / hull と + - &、材質）で `build(m)` を書き、別プロセスで
+  制限付きに回して .glb と確認用 PNG にする。例外・規則違反（import など）・
+  **浮いた部品**（全部品の和を `decompose` して 2 個以上）は LLM に返して直させる。
+  スクリプトは .glb の隣に残る = 手で直して `--script` で作り直せる（v6_engine と
+  同じ「コードが正」）。出力は既定で `assets/generated/local/`（.gitignore 済み）で、
+  シーンからは `<mesh file="generated/local/x.glb">` で使える。**動く所のある物は
+  部品（`m.part`）と関節（`m.joint` = hinge / slide / ball / weld、range / motor）で
+  書く**と、V6 の見本と同じく部品ごとの .glb（原点 = その部品の凸包の体積重心 =
+  エンジンが凸包の剛体の原点を寄せる先。文書の pos がそのまま置き場所になる）と、
+  剛体 + `<equality>` のシーン文書（質量 = 体積 × 材質の密度、部品どうしは
+  `layer="7" nocollide="7"` で当たらない）を出す。`--scene` で `assets/scenes/` にも置く。
+  確認用 PNG の右は関節を range の 70% まで動かした姿勢（開く向き = range の符号の確認）。
+  文書は `fromXml` で警告 0 件まで確認済み、Chrono での動きは実機待ち。**まだエンジンの
+  生成経路（`<mesh generate>`）にはつながっていない**。
+- **LLM との往復は `assets/generated/last_chat.txt` に残る**（system / user /
+  assistant の全文と、エンジンの検査で見つかった問題。返答のたびに上書き、
+  キーは入らない）。「なぜこのシーンになったか」はまずこれを見る。
 - **生成モデルのキャッシュ**は `assets/generated/index.json`（キー = 説明文 +
   画風 + refine + モデルの FNV-1a）。同じ説明文は再生成しない（再課金しない）
   ので、指示文にも過去の説明文を最大 40 件載せて再利用を促す。モデルはでき
@@ -1808,6 +1839,9 @@ tests/document/  シーン文書の単体テスト（同上。Chrono も Filamen
 cmake/           LuaJIT.cmake（LuaJIT の検出・ビルド）
 samples/         見本シーンの素材を作るもの（エンジンのビルド・実行には使わない）。
                  v6_engine/ = V6 の部品メッシュと環境光を作る Python（manifold3d + trimesh）
+                 meshgen/ = 手元の Text to 3D（LLM が cad.py の API で CSG のスクリプトを書き、
+                 ここで回して .glb にする。動く物は部品ごとの .glb + ジョイントのシーン文書。
+                 Meshy の代わりの第 1 段。README.md）
 web/             ブラウザ UI（ビルド時に assets/web/ へコピー）
 assets/          実行時に読むもの（materials / textures / scenes）
 third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, json, httplib, cgltf, stb）
