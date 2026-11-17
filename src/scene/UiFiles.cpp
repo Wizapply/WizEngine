@@ -39,6 +39,16 @@ std::string libraryFile(const std::string& name) {
 
 std::string libraryText(const ui::UiAssetDesc& asset) { return ui::uiAssetToXmlText(asset); }
 
+void rememberBaseline(LibraryBaseline& baseline, const ui::UiAssetDesc& asset) {
+    baseline.remember(kUiLibraryKind, asset.name, libraryText(asset));
+}
+
+void syncReadable(UiState& state, const LibraryBaseline& baseline) {
+    state.syncReadable([&baseline](const std::string& name) {
+        return baseline.find(kUiLibraryKind, name) != nullptr;
+    });
+}
+
 std::vector<std::string> listLibrary() {
     return sharedasset::listLibrary(kUiLibraryDir, kUiLibraryExt);
 }

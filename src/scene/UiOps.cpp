@@ -10,7 +10,7 @@
 #include "core/Log.h"
 #include "core/SafeName.h"
 #include "document/EditorTypes.h"  // kMaxXmlEditBytes
-#include "scene/LibraryStatus.h"  // warningCountCaveat
+#include "scene/StatusCaveat.h"  // warningCountCaveat, unusableNameCaveat
 #include "ui/UiKinds.h"
 #include "ui/UiProps.h"
 #include "ui/UiValue.h"
@@ -59,19 +59,12 @@ std::string keysCaveat(std::size_t keys, const char* what) {
     return "（アニメのキー " + std::to_string(keys) + " 個も" + what + "）";
 }
 
-// 正規化で全部落ちる名前を受けたときの注意（名前は変えない / 既定の名前で作る）。
-constexpr const char* kUnusableNameCaveat = "（名前に使えるのは英数字と _ - だけです。その名前は使っていません）";
-
 // args の name を名前の決まり（ui::nameSpec の clampValue）で正規化して読む。
-enum class NameArg { Absent, Ok, Unusable };
 NameArg nameArg(const nlohmann::json& args, std::string& out) {
-    if (!args.is_object()) return NameArg::Absent;
-    const auto it = args.find("name");
-    if (it == args.end() || !it->is_string()) return NameArg::Absent;
-    const std::string raw = it->get<std::string>();
-    out = ui::clampValue(ui::nameSpec(), ui::textValue(raw)).s;
-    // 書いた名前が正規化で全部落ちた（日本語だけなど）= 消したいのではない。
-    return (!raw.empty() && out.empty()) ? NameArg::Unusable : NameArg::Ok;
+    auto normalize = [](const std::string& raw) {
+        return ui::clampValue(ui::nameSpec(), ui::textValue(raw)).s;
+    };
+    return readNameArg(args, normalize, out);
 }
 
 // args の name を current へ当てる。taken(名前) = ほかの物が使っているか。当てなかったら
@@ -84,7 +77,7 @@ std::string applyName(const nlohmann::json& args, std::string& current, Taken ta
         case NameArg::Absent:
             return {};
         case NameArg::Unusable:
-            return kUnusableNameCaveat;
+            return unusableNameCaveat();
         case NameArg::Ok:
             break;
     }
@@ -94,13 +87,6 @@ std::string applyName(const nlohmann::json& args, std::string& current, Taken ta
     return {};
 }
 
-// 生きている Canvas に同じ名前があるか（self の枠は数えない。規則は ui::nameTaken）。
-bool canvasNameTaken(const UiState::Snapshot& snap, const std::string& name,
-                     const UiState::CanvasItem* self) {
-    return ui::nameTaken(snap.canvases, name, [self](const UiState::CanvasItem& c) {
-        return (c.alive && &c != self) ? &c.desc.name : nullptr;
-    });
-}
 // 同じ並びに同じ名前の要素があるか（except の id は数えない）。
 bool elementNameTaken(const std::vector<ui::ElementDesc>& elements, const std::string& name,
                       int except) {
@@ -140,57 +126,54 @@ nlohmann::json member(const nlohmann::json& args, const char* key) {
 }
 
 // ---- Canvas の操作 -------------------------------------------------------------
+// 確かめ（名前の重なり・宣言の有無）は UiState がロックの下で答える（全体を写さない）。
+// 書くのは PHYSICS だけなので、確かめと書き込みの間に他の書き手は入らない。
 Result addCanvas(UiState& state, const nlohmann::json& args) {
-    const UiState::Snapshot snap = state.snapshot();
-    auto taken = [&snap](const std::string& n) { return canvasNameTaken(snap, n, nullptr); };
+    auto taken = [&state](const std::string& n) { return state.canvasNameTaken(n, -1); };
     ui::CanvasDesc desc;
     std::string name;
     const NameArg given = nameArg(args, name);
     const bool named = given == NameArg::Ok && !name.empty();
     desc.name = firstFreeName(named ? name : kNewCanvasName, kSafeNameMaxLength, taken);
     // 正規化で全部落ちた名前は既定の名前で作り、理由を出す（setCanvas と同じ文）。
-    const std::string caveat = given == NameArg::Unusable ? kUnusableNameCaveat : "";
+    const std::string caveat = given == NameArg::Unusable ? unusableNameCaveat() : "";
     const std::vector<std::string> rejected = setCanvasAttrs(member(args, "attrs"), desc);
     // 宣言した UI を表示する Canvas（アセットパネルの UI のタイル）。宣言が無ければ空の
     // Canvas にして知らせる。
     const std::string uiName = jsonString(args, "ui", "");
-    const bool uiDeclared = !uiName.empty() && snap.uiAsset(uiName) != nullptr;
+    std::string uiFile;
+    const bool uiDeclared = !uiName.empty() && state.findUiAsset(uiName, uiFile);
     if (uiDeclared) desc.ui = uiName;
     const std::string uiCaveat =
         (!uiName.empty() && !uiDeclared) ? "（UI " + uiName + " の宣言がありません）" : "";
+    const std::string tail = caveat + uiCaveat + rejectedCaveat(rejected) + camerasCaveat(desc);
     Result r;
     r.select = true;
     r.canvas = state.addCanvas(desc);
-    r.status = "UI: " + ui::canvasLabel(desc, r.canvas) + " を追加しました" + caveat + uiCaveat +
-               rejectedCaveat(rejected) + camerasCaveat(desc);
+    r.status = "UI: " + ui::canvasLabel(desc, r.canvas) + " を追加しました" + tail;
     return r;
 }
 
 Result removeCanvas(UiState& state, const nlohmann::json& args) {
     const int index = jsonInt(args, "canvas", -1);
-    const UiState::Snapshot snap = state.snapshot();
-    const ui::CanvasDesc* desc = snap.liveCanvas(index);
+    ui::CanvasDesc removed;
     Result r;
-    if (!desc || !state.removeCanvas(index)) return r;  // 行き違い（もう無い）
-    r.status = "UI: " + ui::canvasLabel(*desc, index) + " を削除しました";
+    if (!state.removeCanvas(index, &removed)) return r;  // 行き違い（もう無い）
+    r.status = "UI: " + ui::canvasLabel(removed, index) + " を削除しました";
     return r;
 }
 
 Result setCanvas(UiState& state, const nlohmann::json& args) {
     const int index = jsonInt(args, "canvas", -1);
-    const UiState::Snapshot snap = state.snapshot();
-    const ui::CanvasDesc* found = snap.liveCanvas(index);
+    ui::CanvasDesc desc;
     Result r;
-    if (!found) return r;
-    ui::CanvasDesc desc = *found;
-    const UiState::CanvasItem* self = &snap.canvases[std::size_t(index)];
-    const std::string caveat = applyName(
-        args, desc.name,
-        [&snap, self](const std::string& n) { return canvasNameTaken(snap, n, self); }, " Canvas ");
+    if (!state.copyCanvas(index, desc)) return r;  // 行き違い（もう無い）
+    auto taken = [&state, index](const std::string& n) { return state.canvasNameTaken(n, index); };
+    const std::string caveat = applyName(args, desc.name, taken, " Canvas ");
     const std::vector<std::string> rejected = setCanvasAttrs(member(args, "attrs"), desc);
-    state.replaceCanvas(index, desc);
     r.status = "UI: " + ui::canvasLabel(desc, index) + " を更新しました" + caveat +
                rejectedCaveat(rejected) + camerasCaveat(desc);
+    state.replaceCanvas(index, std::move(desc));
     return r;
 }
 
@@ -210,10 +193,12 @@ ui::PropMask ownPropMask(const ui::ElementDesc& e) {
 
 // Canvas canvas の中身（要素とアニメ）を書き換える手順（唯一の定義。要素の操作・XML の
 // 適用・editElement が通る）: 持ち主ごと 1 枚写し、編集してよいかを確かめ、
-// edit(写した Canvas, 持ち主の様子) が true を返したら持ち主へ戻す。
+// edit(写した Canvas, 持ち主の様子) が true を返したら持ち主へ戻す。wholesale = 中身を丸ごと
+// 入れ替える（戻すのと同じロックで中身の世代を新しくする = UiState::replaceCanvasContents）。
 ElementWrite editContents(
     UiState& state, int canvas,
-    const std::function<bool(ui::CanvasDesc&, const UiState::ContentsInfo&)>& edit) {
+    const std::function<bool(ui::CanvasDesc&, const UiState::ContentsInfo&)>& edit,
+    bool wholesale = false) {
     ElementWrite w;
     ui::CanvasDesc desc;
     UiState::ContentsInfo info;
@@ -223,7 +208,7 @@ ElementWrite editContents(
         return w;
     }
     if (!edit(desc, info)) return w;
-    w.written = state.replaceCanvasContents(canvas, std::move(desc));
+    w.written = state.replaceCanvasContents(canvas, std::move(desc), wholesale);
     return w;
 }
 
@@ -273,21 +258,18 @@ Result removeElementOp(UiState& state, const nlohmann::json& args) {
     Result r;
     std::string label;
     RemoveCount removed;
-    const ElementWrite w =
-        editContents(state, index, [&](ui::CanvasDesc& desc, const UiState::ContentsInfo&) {
-            const std::size_t at = ui::elementIndex(desc.elements, id);
-            if (at == desc.elements.size()) return false;  // 行き違い（もう無い）
-            label = ui::elementLabel(desc.elements[at]);
-            removed = removeElement(desc, id);
-            return true;
-        });
+    const ElementWrite w = editElement(state, index, id, [&](ui::CanvasDesc& desc, std::size_t at) {
+        label = ui::elementLabel(desc.elements[at]);
+        removed = removeElement(desc, id);
+        return true;
+    });
     r.status = w.refusal;
-    if (!w.written) return r;
-    r.status = "UI: " + label + " を削除しました" +
-               (removed.elements > 1
-                    ? "（中の要素 " + std::to_string(removed.elements - 1) + " 個も）"
-                    : std::string()) +
-               keysCaveat(removed.keys, "外しました");
+    if (!w.written) return r;  // 行き違い（もう無い）・編集してよくない
+    const std::string children =
+        removed.elements > 1 ? "（中の要素 " + std::to_string(removed.elements - 1) + " 個も）"
+                             : std::string();
+    r.status =
+        "UI: " + label + " を削除しました" + children + keysCaveat(removed.keys, "外しました");
     return r;
 }
 
@@ -308,6 +290,7 @@ Result setElementOp(UiState& state, const nlohmann::json& args) {
         ui::ElementDesc& e = desc.elements[at];
         rejected = setElementProps(member(args, "props"), member(args, "reset"), e);
         label = ui::elementLabel(e);
+        return true;
     });
     r.status = w.refusal;
     if (!w.written) return r;  // 行き違い（もう無い）・編集してよくない
@@ -320,28 +303,25 @@ Result setElementOp(UiState& state, const nlohmann::json& args) {
 // 一覧と Inspector で変える）。警告は LOGW と件数。
 Result xmlOp(UiState& state, const nlohmann::json& args) {
     const int index = jsonInt(args, "canvas", -1);
-    const std::string text = jsonString(args, "text", "");
     Result r;
-    const std::string problem = xmlTextProblem(text);
-    if (!problem.empty()) {
-        r.status = problem;
-        return r;
-    }
+    // 確かめと読み込みは 1 回（INPUT が積む前に確かめたテキストでも、PHYSICS で読み直す）。
     ui::UiAssetDesc got;
-    std::string error;
     std::vector<std::string> warnings;
-    ui::parseUiAssetXml(text, got, error, &warnings);  // 壊れていないことは上で確かめた
+    r.status = readXmlText(jsonString(args, "text", ""), got, warnings);
+    if (!r.status.empty()) return r;
     std::string label, nameCaveat;
-    const ElementWrite w =
-        editContents(state, index, [&](ui::CanvasDesc& desc, const UiState::ContentsInfo& info) {
-            const std::string& own = info.asset.empty() ? desc.name : info.asset;
-            if (!got.name.empty() && got.name != own) {
-                nameCaveat = "（XML の name は使いません。名前は一覧と Inspector で変えます）";
-            }
-            ui::moveContents(got, desc);
-            label = info.asset.empty() ? ui::canvasLabel(desc, index) : "UI " + info.asset;
-            return true;
-        });
+    auto replace = [&](ui::CanvasDesc& desc, const UiState::ContentsInfo& info) {
+        const std::string& own = info.asset.empty() ? desc.name : info.asset;
+        if (!got.name.empty() && got.name != own) {
+            nameCaveat = "（XML の name は使いません。名前は一覧と Inspector で変えます）";
+        }
+        ui::moveContents(got, desc);
+        label = info.asset.empty() ? ui::canvasLabel(desc, index) : "UI " + info.asset;
+        return true;
+    };
+    // 中身を丸ごと入れ替える = その中身の上の映像のドラッグを止める（同じ id の別の要素に
+    // 書かない）。世代は入れ替えと同じロックで新しくなる。
+    const ElementWrite w = editContents(state, index, replace, true);
     r.status = w.refusal;
     if (!w.written) return r;  // 行き違い（もう無い）・編集してよくない
     for (const auto& m : warnings) LOGW("ui", "ui.xml: %s", m.c_str());
@@ -356,16 +336,33 @@ bool elementsEditable(const UiState::ContentsInfo& info) {
     return info.asset.empty() || (info.declared && !info.unreadable);
 }
 
-std::string xmlTextProblem(const std::string& text) {
+std::string readXmlText(const std::string& text, ui::UiAssetDesc& out,
+                        std::vector<std::string>& warnings) {
     if (text.empty()) return "UI: XML が空です";
     if (text.size() > editor::kMaxXmlEditBytes) {
-        return "UI: XML が大きすぎます（" + std::to_string(editor::kMaxXmlEditBytes / (1024 * 1024)) +
-               "MB まで）";
+        const std::size_t mb = editor::kMaxXmlEditBytes / (1024 * 1024);
+        return "UI: XML が大きすぎます（" + std::to_string(mb) + "MB まで）";
     }
-    ui::UiAssetDesc got;
     std::string error;
-    if (!ui::parseUiAssetXml(text, got, error)) return "UI: XML が読めません: " + error;
+    if (!ui::parseUiAssetXml(text, out, error, &warnings)) return "UI: XML が読めません: " + error;
     return {};
+}
+
+NameArg readNameArg(const nlohmann::json& args,
+                    const std::function<std::string(const std::string&)>& normalize,
+                    std::string& out) {
+    if (!args.is_object()) return NameArg::Absent;
+    const auto it = args.find("name");
+    if (it == args.end() || !it->is_string()) return NameArg::Absent;
+    const std::string raw = it->get<std::string>();
+    out = normalize(raw);
+    return (!raw.empty() && out.empty()) ? NameArg::Unusable : NameArg::Ok;
+}
+
+std::string xmlTextProblem(const std::string& text) {
+    ui::UiAssetDesc got;
+    std::vector<std::string> warnings;
+    return readXmlText(text, got, warnings);
 }
 
 bool isUiOp(const std::string& kind) {
@@ -443,14 +440,12 @@ std::vector<std::string> writeOwnProps(ui::ElementDesc& e, ui::PropSet incoming)
 }
 
 ElementWrite editElement(UiState& state, int canvas, int id,
-                         const std::function<void(ui::CanvasDesc&, std::size_t)>& edit) {
-    return editContents(state, canvas,
-                        [&](ui::CanvasDesc& desc, const UiState::ContentsInfo&) {
-                            const std::size_t at = ui::elementIndex(desc.elements, id);
-                            if (at == desc.elements.size()) return false;  // 消えた
-                            edit(desc, at);
-                            return true;
-                        });
+                         const std::function<bool(ui::CanvasDesc&, std::size_t)>& edit) {
+    return editContents(state, canvas, [&](ui::CanvasDesc& desc, const UiState::ContentsInfo&) {
+        const std::size_t at = ui::elementIndex(desc.elements, id);
+        if (at == desc.elements.size()) return false;  // 消えた
+        return edit(desc, at);
+    });
 }
 
 void addElement(std::vector<ui::ElementDesc>& elements, ui::ElementDesc e, int id) {
@@ -475,9 +470,8 @@ RemoveCount removeElement(ui::CanvasDesc& desc, int id) {
     }
     count.keys = retargetKeys(desc, keyNames, std::string());
     const std::size_t before = elements.size();
-    elements.erase(std::remove_if(elements.begin(), elements.end(),
-                                  [&gone](const ui::ElementDesc& e) { return gone.count(e.id) > 0; }),
-                   elements.end());
+    const auto removed = [&gone](const ui::ElementDesc& e) { return gone.count(e.id) > 0; };
+    elements.erase(std::remove_if(elements.begin(), elements.end(), removed), elements.end());
     count.elements = before - elements.size();
     return count;
 }

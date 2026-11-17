@@ -24,11 +24,13 @@
 //                                 XML をここで弾く（uiops::xmlTextProblem）。
 //   edit.lib.* {kind: "ui"}     … 共用 UI の操作（share / unshare / import / delete）。
 //                                 同じく受け付けるページだけ Op（"lib.*"）として積む
-//                                 （当てるのは Scene::applyLibraryOp。UI の部品は UiLibraryOps）。
-//                                 ほかの kind はここでは取らない（EditorComponent へ）。
-//   pick / drag / release       … 選んでいる要素の枠とつまみ（ui/UiHandles.h）を掴んで
-//                                 動かす・大きさを変える。当たらなければ素通し（ギズモ・
-//                                 カメラ・物の選択へ）。
+//                                 （当てるのは Scene::applyLibraryOp。UI の部品は
+//                                 UiLibraryOps）。プレハブ編集中・知らない操作はステータスで
+//                                 知らせる。ほかの kind と refresh（一覧の取り直し。種類に
+//                                 よらない）はここでは取らない（EditorComponent へ）。
+//   pick / drag / release       … 選んでいる要素の枠の中とつまみ（ui/UiHandles.h）を掴んで
+//                                 動かす・大きさを変える。枠の外・見えない要素・編集できない
+//                                 中身の押下は素通し（ギズモ・カメラ・物の選択へ）。
 //
 // 選択の実体は EditorState の editorSel（SelKind::Canvas、index = Canvas の番号、
 // sub = 要素の id）。受け付けるページの判定（Scene::editsUiFrom = エディタモード ×
@@ -37,12 +39,17 @@
 //
 // ドラッグ: INPUT は掴んだ物（Canvas の番号・要素の id・つまみ）と押した位置・今の
 // 位置・押したときのビューの大きさとモードの世代を atomic に置くだけ（ギズモと同じ形）。
+// 欄は別々の atomic なので、書いている間は通し番号を奇数にし（書き終えたら偶数）、PHYSICS は
+// 読んだ後に通し番号が変わっていないかを確かめる（変わっていれば混ざった = 次のパスで読み直す）。
 // PHYSICS が最初のパスで開始時の性質を UiState から撮り、以後は「開始時の値 + 動かした
 // 量」だけから pos / size を出して、変わったときだけ書き換える（Inspector と同じ手順 =
 // uiops::editElement / writeOwnProps）。離したら届いている最後の位置を当ててから止める。
-// 消えた・読み直した・モードが切り替わった・編集してよくなくなったドラッグはそこで止める
-// （もう書かない）。ドラッグ中に Canvas の中身を共用 UI にしても、要素の id は変わらない
-// ので、そのまま共用 UI の中身を動かし続ける。
+// 消えた・読み直した（読込・全消し・シーンの XML の適用、その中身だけの XML の適用）・
+// モードが切り替わった・編集してよくなくなった・アンカー / ピボット / 親 / Canvas の高さ・
+// 表示方法・出すカメラが変わったドラッグはそこで止める（もう書かない。開始時の値で計算すると
+// 要素が飛ぶため）。
+// ドラッグ中に Canvas の中身を共用 UI にしても、要素の id は変わらないので、そのまま
+// 共用 UI の中身を動かし続ける。
 // 当たり判定は版の写し（copyIfChanged）を読む（1 フレーム古くてよい。PHYSICS の
 // 書き換えとロックで競らない）。ビューの大きさは onRender（RENDER）が atomic へ写す。
 // ギズモより前に登録する（UI の枠を押したら、後ろのハンドルや物を掴まない）。
@@ -71,12 +78,17 @@ private:
     // edit.lib.* の kind = ui を Op として積む（ほかの kind は false = 取らない）。
     bool pushLibrary(Scene& scene, std::size_t camIndex, const std::string& cmd,
                      const nlohmann::json& msg);
-    // 選んでいる要素の枠・つまみに当たれば掴んで true（INPUT）。
+    // 選んでいる要素の枠の中・つまみに当たれば掴んで true（INPUT）。前の押下の印が
+    // 残っていれば（届かなかった release）、ここで下ろす。
     bool pick(Scene& scene, std::size_t camIndex, const nlohmann::json& msg);
+    struct Grab;  // 掴んだときに INPUT が置いた欄の写し（.cpp）
+    // 掴んだときの欄を写す（PHYSICS）。書いている途中・読んでいる間に変わったら false。
+    static bool readGrab(const Cam& cam, std::uint64_t serial, Grab& out);
     // ドラッグを始める: 開始時の性質と親の矩形を撮る（PHYSICS）。続けられなければ false。
-    bool beginDrag(Scene& scene, std::size_t camIndex, Cam& cam);
-    // 開始時の値 + 動かした量を当てる（PHYSICS）。続けられなければ false。
-    bool applyDrag(Scene& scene, Cam& cam);
+    bool beginDrag(Scene& scene, std::size_t camIndex, Cam& cam, const Grab& grab);
+    // 開始時の値 + 動かした量を当てる（PHYSICS）。続けられなければ false。serial = この
+    // パスの初めに読んだ通し番号。
+    bool applyDrag(Scene& scene, std::size_t camIndex, Cam& cam, std::uint64_t serial);
     // UiState の写し（INPUT スレッド専用。版が変わったときだけ取り直す）。
     const wizengine::UiState::Snapshot& snapshot(Scene& scene);
 

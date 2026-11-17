@@ -59,10 +59,22 @@ Result apply(UiState& state, const std::string& kind, const nlohmann::json& args
 // copyCanvasContents から。
 bool elementsEditable(const UiState::ContentsInfo& info);
 
-// ui.xml の text を確かめる（INPUT が積む前と、PHYSICS が当てる前の唯一の確かめ）。
-// 空・大きすぎる（editor::kMaxXmlEditBytes）・XML として壊れていれば、その理由の
-// ステータス（日本語）。正しければ空。
+// ui.xml の text を確かめて読む（唯一の確かめ）。空・大きすぎる
+// （editor::kMaxXmlEditBytes）・XML として壊れていれば、その理由のステータス（日本語）を
+// 返す。正しければ空を返し、out に中身、warnings に中身の警告（PHYSICS が当てるときは
+// これ 1 回だけ読む）。
+std::string readXmlText(const std::string& text, ui::UiAssetDesc& out,
+                        std::vector<std::string>& warnings);
+// readXmlText の確かめだけ（INPUT が積む前。中身は捨てる）。
 std::string xmlTextProblem(const std::string& text);
+
+// args の name の読み方（唯一の定義。UiOps の名前の変更と、UiLibraryOps の共用にする名前が
+// 使う）: 無い・文字列でない = Absent、normalize（名前の正規化）で全部落ちた（日本語だけ
+// など = 消したいのではない）= Unusable、それ以外は Ok で out に正規化した名前。
+enum class NameArg { Absent, Ok, Unusable };
+NameArg readNameArg(const nlohmann::json& args,
+                    const std::function<std::string(const std::string&)>& normalize,
+                    std::string& out);
 
 // ---- 部品（apply が使う。tests/document が直接検査する）---------------------
 // Canvas の属性の部分更新。attrs の中の、表にあって書き換えてよい属性だけを丸めて
@@ -77,15 +89,15 @@ std::vector<std::string> setElementProps(const nlohmann::json& props,
 std::vector<std::string> writeOwnProps(ui::ElementDesc& e, ui::PropSet incoming);
 // Canvas canvas の要素 id を書き換える手順（唯一の定義）: 今の Canvas を中身の持ち主ごと
 // 1 枚写し（UiState::copyCanvasContents）、要素を編集してよい（elementsEditable）か・要素が
-// あるかを確かめ、edit(写した Canvas, 要素の添字) を呼んで持ち主へ戻す
-// （replaceCanvasContents）。written = false なら何もしていない（refusal は編集してよく
-// ないために断ったときの理由のステータス。消えていただけなら空）。
+// あるかを確かめ、edit(写した Canvas, 要素の添字) が true を返したら持ち主へ戻す
+// （replaceCanvasContents。false = 書かない）。written = false なら何もしていない
+// （refusal は編集してよくないために断ったときの理由のステータス。消えていただけなら空）。
 struct ElementWrite {
     bool written = false;
     std::string refusal;
 };
 ElementWrite editElement(UiState& state, int canvas, int id,
-                         const std::function<void(ui::CanvasDesc&, std::size_t)>& edit);
+                         const std::function<bool(ui::CanvasDesc&, std::size_t)>& edit);
 // 要素を末尾へ足す（文書順 = 描く順の一番手前。親は自分より前、の約束も保つ）。
 // id は呼び手が渡す（UiState が Canvas ごとに持つ増える一方の番号 = 消した番号を
 // 使い回さない）。parent は並びに無ければ -1（Canvas の直下）。

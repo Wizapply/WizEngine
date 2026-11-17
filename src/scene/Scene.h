@@ -22,6 +22,8 @@
 #include "scene/GameObject.h"
 #include "scene/SceneComponent.h"
 #include "scene/SceneMath.h"  // cameraRay の Basis / Vec3
+#include "scene/LibraryFlow.h"  // LibraryBaseline / LibraryKind
+#include "scene/UiJson.h"      // uijson::Cache
 #include "scene/UiState.h"
 #include "document/SceneDocument.h"
 #include "physics/MeshCollision.h"  // CollisionTriangles
@@ -30,8 +32,6 @@
 #include "terrain/TerrainUndo.h"     // TerrainEdit / GridRect（ストロークの状態が値で持つ）
 
 namespace wizengine {
-// グローバル（ライブラリ）のアセットの種類ごとに違うところ（定義は SceneLibrary.cpp）。
-struct LibraryKind;
 class Renderer;
 namespace terrain {
 class HeightField;
@@ -631,11 +631,10 @@ private:
     // edit.lib.share / unshare / import / delete / refresh（kind = event / formula /
     // prefab / ui。ui の部品は scene/UiLibraryOps）と edit.mesh.add。扱ったら true。
     bool applyLibraryOp(const EditorState::Op& op);
-    // 種類ごとに違うところの関数の組（applyLibraryOp が 1 つ選んで判断の流れに渡す。
-    // 型の定義は SceneLibrary.cpp）。args は UI の canvas を読むため。
+    // 種類ごとに違うところの関数の組（applyLibraryOp が 1 つ選んで判断の流れ =
+    // scene/LibraryFlow に渡す。UI の組は uilibrary::libraryKind）。
     wizengine::LibraryKind formulaLibraryKind();
     wizengine::LibraryKind prefabLibraryKind();
-    wizengine::LibraryKind uiLibraryKind(const nlohmann::json& args);
     void addMeshDeclaration(const nlohmann::json& args);
     std::vector<wizengine::editor::MeshAssetDesc> meshDescs();
     // 実行状態（タイマー・接触の記憶・発火カウント）と、アクションが加えた
@@ -1062,6 +1061,9 @@ private:
     std::vector<std::unique_ptr<SceneComponent>> components_;
     EditorState editor_;
     wizengine::UiState ui_;
+    // /scene の "ui" の写しと JSON（版と選択が変わったときだけ組み直す。HTTP スレッド。
+    // 中のロックは UiState の末端のロックより前に取る）。
+    wizengine::uijson::Cache uiJsonCache_;
     // 地面の物理ボディ。ジョイントの「ワールド側」に使う。
     std::size_t groundPhysId_ = GameObject::kInvalidId;
     // 文書のジョイント番号 → PhysicsWorld のジョイント番号（作れなかった /
@@ -1215,11 +1217,10 @@ private:
     std::unique_ptr<wizengine::terrain::TerrainLibrary> terrainLibrary_;
     std::unique_ptr<wizengine::terrain::TerrainUndoStack> terrainUndo_;
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る
-    // グローバルの計算式・プレハブ・共用 UI の「読んだ / 書いたときの中身」（"formula:名前" /
-    // "prefab:名前" / "ui:名前" = sharedasset::libraryBaselineKey → 正規化した XML）。保存で
-    // 比べて変わったものだけ
-    // 書く。PHYSICS。
-    std::map<std::string, std::string> libBaseline_;
+    // グローバルの計算式・プレハブ・共用 UI の「読んだ / 書いたときの中身」（種類と名前 →
+    // 正規化した XML。scene/LibraryFlow）。保存で比べて変わったものだけ書く。全消し・読込で
+    // 空にする。PHYSICS。
+    wizengine::LibraryBaseline libBaseline_;
     std::mutex poseMutex_;
     std::vector<BodyTransform> latestPoses_;  // one per box, in box order
     // ソフトボディの粒子位置（3 個で 1 粒子、オブジェクト番号ごと。剛体は

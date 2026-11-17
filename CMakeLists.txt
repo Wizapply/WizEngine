@@ -398,6 +398,7 @@ set(WIZ_DOCUMENT_SOURCES
 set(WIZ_SCENE_SOURCES
     src/scene/CameraObject.cpp
     src/scene/EditorState.cpp
+    src/scene/LibraryFlow.cpp
     src/scene/PrefabDefaults.cpp
     src/scene/Scene.cpp
     src/scene/SceneEdit.cpp

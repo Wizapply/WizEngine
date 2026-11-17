@@ -8,11 +8,14 @@
 // editorSel の kind "canvas"（index = Canvas の番号、sub = 要素の id。-1 = Canvas そのもの）。
 // Inspector の欄は ui-inspector.js。編集は edit.ui.*（サーバーの scene/UiOps.h）。
 
-  // 種類ごとの一覧のアイコン（知らない種類は •）。
-  const UI_KIND_ICON = { text: 'T', image: '▣', button: '◉' };
-
   function uiData() {
     return (sceneData && sceneData.ui) ? sceneData.ui : null;
+  }
+  // 種類ごとの一覧のアイコン（サーバーの種類の表 = schema.kinds の icon。知らない種類は •）。
+  function uiKindIcon(kind) {
+    const u = uiData();
+    const k = ((u && u.schema && u.schema.kinds) || []).find((x) => x.name === kind);
+    return (k && k.icon) ? ndEsc(k.icon) : '•';
   }
   // 表示名はサーバーが label として送る（名前の無い物の呼び方はサーバーの 1 か所）。
 
@@ -23,8 +26,9 @@
     return s.kind === 'canvas' && s.index === canvas && sub === element;
   }
 
-  // 階層一覧の UI の行: Canvas の行と、その下に要素を親子の段で字下げして並べる
-  // （要素は文書順 = 親は自分より前にある）。canPick / color は地面・テレインの行と同じ。
+  // 階層一覧の UI の行: Canvas の行と、その下に要素を文書順に、親子の段で字下げして並べる。
+  // 段（depth）と親を引けなかった印（parentMissing）はサーバーの scene/UiJson が配置の規則
+  // （ui/UiLayout の parentIndices）から作る。canPick / color は地面・テレインの行と同じ。
   function uiHierarchyRows(canPick, color) {
     const u = uiData();
     if (!u || !u.canvases) return '';
@@ -40,20 +44,26 @@
         title: 'クリックで選択（Canvas の設定を見る）' + (c.ui ? '。共用 UI: ' + ndEsc(c.ui) : ''),
         selected: uiRowSelected(c.index, -1), canPick: canPick, color: color,
         attrs: attrs(-1), depth: 0 });
-      const depthOf = {};  // 要素の id → 段
       for (const e of (c.elements || [])) {
-        const d = (e.parent >= 0 && depthOf[e.parent] !== undefined) ? depthOf[e.parent] + 1 : 1;
-        depthOf[e.id] = d;
+        // 段と「親を引けなかった」の印はサーバーが配置と同じ規則で作って送る（ここは出すだけ）。
+        const note = e.parentMissing ? ' · 親 #' + e.parent + ' を引けない（直下に置く）' : '';
         html += sceneItemRow({
-          kind: 'canvas', icon: UI_KIND_ICON[e.kind] || '•', label: ndEsc(e.label),
-          sub: ndEsc(e.kind), title: 'クリックで選択（要素の性質を見る）',
+          kind: 'canvas', icon: uiKindIcon(e.kind), label: ndEsc(e.label),
+          sub: ndEsc(e.kind) + note, title: 'クリックで選択（要素の性質を見る）',
           selected: uiRowSelected(c.index, e.id), canPick: canPick, color: color,
-          attrs: attrs(e.id), depth: d });
+          attrs: attrs(e.id), depth: e.depth || 1 });
       }
     }
     return html;
   }
 
+  // このページから UI を選べないときの理由（選べるなら空）。選べるかはサーバーの判定
+  // （editsUiFrom）を /scene の editsUi でそのまま受け、ここは理由の文を出し分けるだけ。
+  function uiSelectRefusal() {
+    if (sceneData && sceneData.editsUi) return '';
+    if (prefabEdit()) return 'プレハブの編集中は UI を選べません（◀ 戻る で抜けてから）';
+    return 'UI はエディタモードの Editor Camera のページでだけ選べます';
+  }
   // 選ぶ（canvas < 0 で解除）。判定はサーバー（エディタモード × エディタカメラのページ、
   // 消えた物は選ばない）。
   function selectUi(canvas, element) {
@@ -78,11 +88,16 @@
     const u = uiData();
     const c = u && (u.canvases || []).find((x) => x.index === canvas);
     const editable = !!(c && c.editable);
-    const items = [
-      { head: label ? label.textContent : 'UI' },
-      { label: selected ? '選択を解除' : '選択',
-        onClick: () => selectUi(selected ? -1 : canvas, element) },
-    ];
+    const items = [{ head: label ? label.textContent : 'UI' }];
+    // このページから UI を選べない・編集できない（サーバーの editsUiFrom = /scene の editsUi）
+    // ときは、押しても何も起きない項目を出さず、理由だけを出す。
+    const refusal = uiSelectRefusal();
+    if (refusal) {
+      items.push({ label: refusal, disabled: true });
+      return items;
+    }
+    items.push({ label: selected ? '選択を解除' : '選択',
+                 onClick: () => selectUi(selected ? -1 : canvas, element) });
     if (editable) {
       for (const k of ((u && u.schema && u.schema.kinds) || [])) {
         items.push({ label: '＋ ' + k.name + (element < 0 ? ' を追加' : ' を子に追加'),
@@ -138,8 +153,8 @@
   }
 
   // ---- 宣言した UI と共用（グローバル）--------------------------------------------
-  // サーバーは edit.lib.share / unshare / import / delete（kind = ui。scene/UiOps.h の
-  // applyLibrary）。名前の正規化と重なりの判定もサーバー。
+  // サーバーは edit.lib.share / unshare / import / delete（kind = ui。判断の流れは
+  // scene/LibraryFlow、UI の部品は scene/UiLibraryOps）。名前の正規化と重なりの判定もサーバー。
   function uiAsset(name) {
     const u = uiData();
     return ((u && u.assets) || []).find((a) => a.name === name) || null;
@@ -155,21 +170,21 @@
     }
     const a = uiAsset(c.ui);
     if (!a) return null;  // 宣言が無い
-    return a.file
-      ? { label: '📍 UI ' + c.ui + ' をローカルにする', hint: 'グローバルのファイルは残ります',
-          onClick: () => unshareLibraryAsset('ui', c.ui) }
-      : { label: '🌐 UI ' + c.ui + ' をグローバルにする', hint: 'assets/' + LIB_DIR.ui + '/' + c.ui + '.xml',
-          onClick: () => shareLibraryAsset('ui', c.ui) };
+    // グローバルにする / ローカルにするの項目はタイルの右クリックと同じ（app.js の
+    // libraryMenuItems）。Canvas の行からは、どの UI のことかを見出しに足す。
+    const item = libraryMenuItems('ui', c.ui, a.file)[0];
+    item.label += '（UI ' + c.ui + '）';
+    return item;
   }
   // 自分の中身の Canvas を共用 UI にする（名前の既定は Canvas の名前）。名前はサーバーと
-  // 同じ規則で正規化してから、上書きの確認（shareLibraryAsset）に渡す。
+  // 同じ規則で正規化してから、上書きの確認（shareLibraryAsset）に渡す。正規化で全部落ちた
+  // 名前は打った字のまま送る（断る理由の文はサーバーの 1 か所 = libstatus::unusableName）。
   function uiShareCanvas(c) {
     const name = prompt('共用 UI の名前（英数字と _ -。assets/' + LIB_DIR.ui +
                         '/<名前>.xml に書きます）', c.name || 'ui');
     if (name === null) return;
     const clean = cleanAssetName(name);
-    if (!clean) return;
-    shareLibraryAsset('ui', clean, { canvas: c.index });
+    shareLibraryAsset('ui', clean || name, { canvas: c.index });
   }
   // 宣言した UI を表示する Canvas を足す（アセットパネルのタイルのクリック）。
   function uiAddCanvasWith(name) {

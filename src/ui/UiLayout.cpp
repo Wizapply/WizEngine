@@ -11,6 +11,11 @@ Rect canvasRect(double designHeight, double viewWidth, double viewHeight) {
     return Rect{0.0, 0.0, designHeight * aspect, designHeight};
 }
 
+void ndcToCanvas(const Rect& canvas, double x, double y, double& px, double& py) {
+    px = canvas.x + (x + 1.0) * 0.5 * canvas.w;
+    py = canvas.y + (1.0 - y) * 0.5 * canvas.h;
+}
+
 AxisLayout axisLayout(double parentStart, double parentLength, double anchorMin,
                       double anchorMax, double pivot) {
     AxisLayout a;

@@ -30,6 +30,10 @@ struct Rect {
 // Canvas 全体の矩形（設計上の画素）。高さは基準の高さ、幅は映像の縦横比に
 // 合わせる。viewWidth / viewHeight が 0 以下なら正方形。
 Rect canvasRect(double designHeight, double viewWidth, double viewHeight);
+// 映像の位置（NDC: 左下 -1・右上 +1。ブラウザの toNdc と同じ）→ Canvas の設計の画素
+// （canvas = canvasRect の結果。左上が原点・y 下向き）。overlay の Canvas は映像全体に重なる。
+// 映像の上の編集（UiInputComponent）と、後のクリック・3D の板が使う。
+void ndcToCanvas(const Rect& canvas, double x, double y, double& px, double& py);
 
 // 1 軸ぶんの解き方（solveRect の式の唯一の定義。映像の上のドラッグ = ui/UiHandles.h は
 // 同じ式を逆に使う）。lo / hi = アンカーの範囲（親の中の位置）、ref = ピボットが来る点

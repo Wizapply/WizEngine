@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -35,6 +36,16 @@ public:
         // 古い選択・ドラッグが新しい要素に当たらない）。入れたとき・置き換えたときに
         // ui::nextElementId（今の最大の次）を下限に持ち上げる。文書には書かない。
         int nextElementId = 1;
+        // 中身（要素とアニメ）の世代: 作ったとき・丸ごと入れ替えたとき（ui.xml の適用 =
+        // replaceCanvasContents の wholesale）に新しい値になる。値は通し番号から配る（持ち主を
+        // 別の UI に差し替えれば違う値になる）。ただし共用にしたとき（moveCanvasContentsToAsset）は
+        // 引き継ぐので、Canvas とその UI が同じ値になりうる（同じ中身のまま = ドラッグは続く）。
+        // 自分の中身を持つ Canvas のぶんで、共用 UI の中身は UiAssetState の同じ欄。映像の上の
+        // ドラッグが「同じ id の別の要素」に書かないための目印で、描画は見ない。
+        std::uint64_t contentsGeneration = 0;
+        // この枠が最後に変わったときの版（version()。1 より大きい = 0 は「写していない」）。
+        // 写し（copyIfChanged）と描く側（contentsRevision）が、変わった物だけを扱う目印。
+        std::uint64_t revision = 0;
     };
     // シーンが宣言する UI（<asset> の <ui>。file があれば共用 = 中身は読込でファイルから
     // 入れる）。ファイルへ書く変更の目印は持たない（保存は読んだとき・書いたときの中身と
@@ -42,11 +53,17 @@ public:
     struct UiAssetState {
         ui::UiAssetDesc desc;
         // 共用 UI のファイルが読めなかった（中身は空）。この中身は編集しない（保存で
-        // ファイルへ書かれず、編集が黙って消えるため）。
+        // ファイルへ書かれず、編集が黙って消えるため）。持ち主は変更の目印（Scene の
+        // libBaseline_ に記録が無い = 読めない）で、ここはその写し（syncReadable が写す。
+        // ほかのスレッドが読めるように UiState に置く）。
         bool unreadable = false;
         // 次にエディタで足す要素の id（CanvasItem::nextElementId と同じ約束。この UI を
         // 使う Canvas が何枚あっても 1 つ）。
         int nextElementId = 1;
+        // 中身の世代（CanvasItem::contentsGeneration と同じ約束）。
+        std::uint64_t contentsGeneration = 0;
+        // 最後に変わったときの版（CanvasItem::revision と同じ約束）。
+        std::uint64_t revision = 0;
     };
     // Canvas の要素の持ち主の様子（編集してよいかの規則は uiops::elementsEditable）。
     struct ContentsInfo {
@@ -54,6 +71,8 @@ public:
         bool declared = true;     // その名前の UI が宣言されているか
         bool unreadable = false;  // その UI のファイルが読めなかった
         int nextElementId = 1;    // 次にエディタで足す要素の id
+        // 中身の持ち主（自分か使っている UI）の contentsGeneration（宣言の無い UI は 0）。
+        std::uint64_t contentsGeneration = 0;
     };
     // 設計値の写し（描画・入力・ブラウザ API が版ごとに 1 回だけ取る）。
     struct Snapshot {
@@ -63,7 +82,12 @@ public:
         std::vector<CanvasItem> canvases;
         std::vector<UiAssetState> uiAssets;
         std::vector<ui::FontAssetDesc> fonts;
+        std::uint64_t fontsRevision = 0;  // フォントの宣言が最後に変わった版
 
+        // Canvas index を組む材料（自分の設計値・使っている UI の中身・フォントの宣言）が
+        // 最後に変わった版（描く側がこの Canvas だけを組み直す目印。消えた物は 0）。
+        // 版は 1 つの数で増える一方なので、どれかが変わればこの値も必ず変わる。
+        std::uint64_t contentsRevision(int index) const;
         // 番号 index の Canvas が生きていればその設計値（範囲外・消えた物は nullptr）。
         const ui::CanvasDesc* liveCanvas(int index) const;
         // 名前 name の UI の宣言（無ければ nullptr）。
@@ -86,22 +110,36 @@ public:
         std::size_t base = 0;
         // 名前が今のシーンと重なったので入れなかった UI とフォントの名前（取込）。
         std::vector<std::string> skippedUi, skippedFonts;
+        // 同じ文書の中で 2 回目以降に出た UI の名前（先のものを入れ、後は入れない）。
+        std::vector<std::string> duplicatedUi;
+        // 渡した uiAssets と同じ並び: その宣言が入ったか（覚えを入れるのは入った物だけ）。
+        std::vector<bool> enteredUi;
     };
 
     // 設計値の版（変わるたびに進む。0 は「まだ一度も写していない」に使える）。
     std::uint64_t version() const;
-    // 読込の世代: 中身を丸ごと入れ替えたとき（fromDocument = 読込・XML の適用・取込と、
-    // clear）だけ進む。エディタの編集では進まない。読めなかったフォント・画像を
-    // 読み直す区切りに使う（編集のたびに読み直すと、ドラッグの間ずっと無いファイルを
-    // 読みに行き、警告も毎回出る）。
+    // 読込の世代: 中身を丸ごと入れ替えたとき（fromDocument = 読込・シーンの XML の適用・
+    // 取込と、clear）だけ進む。エディタの編集（Canvas の中身の XML の適用も）では進まない。
+    // 映像の上のドラッグもこの世代が変われば止める。読めなかったフォント・画像を読み直す
+    // 区切りにも使う（編集のたびに読み直すと、ドラッグの間ずっと無いファイルを読みに行き、
+    // 警告も毎回出る）。
     std::uint64_t loadGeneration() const;
     // version と known が違えば out へ写して known を進め、true。同じなら何もしない。
+    // out は前にこの口で埋めた写し（または空）を渡す: 変わった枠・宣言（revision が違う
+    // 物）だけを写し直す（ドラッグの 1 パスで写すのは動かした Canvas 1 枚ぶん）。
     bool copyIfChanged(std::uint64_t& known, Snapshot& out) const;
     Snapshot snapshot() const;
     // 生きている Canvas index の設計値を 1 枚だけ out へ写す（範囲外・消えた物は false で
     // out は触らない）。全体の写し（snapshot）より軽い = 映像の上のドラッグのように、
     // 1 枚を何度も読み書きする口。
     bool copyCanvas(int index, ui::CanvasDesc& out) const;
+    // 写さずにロックの下で答える口（PHYSICS の編集の確かめ。規則は Snapshot の同じ名前の
+    // 関数と同じ）。
+    bool selectionExists(int canvas, int element) const;
+    // 生きている Canvas に同じ名前があるか（except の番号は数えない。-1 = 全部）。
+    bool canvasNameTaken(const std::string& name, int except) const;
+    // 名前 name の UI の宣言があれば true と、その file。
+    bool findUiAsset(const std::string& name, std::string& file) const;
 
     // 文書へ書く（生きている Canvas だけを詰め、共用 UI とフォントの宣言はそのまま）。
     // 戻り値 = Canvas の番号 → 文書の中の番号（消えた物は -1。保存で Canvas を
@@ -109,12 +147,18 @@ public:
     std::vector<int> toDocument(editor::SceneDocument& doc) const;
     // 文書から入れる。Replace（読込・XML の適用）は置き換え、Append（取込）は
     // 後ろへ足す（共用 UI とフォントは名前が重ならないものだけ。重なった名前は
-    // LoadResult に返す）。共用 UI の中身は呼び手が先にファイルから入れておく
-    // （UiFiles）。unreadable = そのとき読めなかった共用 UI の名前（編集しない印）。
+    // LoadResult に返す。同じ文書の中で名前が 2 回出た UI は先のものを入れる）。
+    // 共用 UI の中身は呼び手が先にファイルから入れておく（UiFiles）。読めなかった印は
+    // 入れない（入れた後に syncReadable で変更の目印から写す）。
     LoadResult fromDocument(const std::vector<ui::CanvasDesc>& canvases,
                             const std::vector<ui::UiAssetDesc>& uiAssets,
-                            const std::vector<ui::FontAssetDesc>& fonts, LoadMode mode,
-                            const std::vector<std::string>& unreadable = {});
+                            const std::vector<ui::FontAssetDesc>& fonts, LoadMode mode);
+    // 共用 UI（file あり）の「読めなかった」の印を readable(名前) から写し直す（印の唯一の
+    // 書き手。readable は変更の目印に記録があるか = uifiles::syncReadable）。ローカルの UI は
+    // 読めている。変わったときだけ版を進める。
+    void syncReadable(const std::function<bool(const std::string& name)>& readable);
+    // Canvas index の中身の持ち主の contentsGeneration（消えた物は 0。写さずに答える）。
+    std::uint64_t contentsGeneration(int index) const;
     // 全部消す（シーンの全消し）。
     void clear();
 
@@ -122,8 +166,9 @@ public:
     // ---- UiInputComponent::onEditorStep が呼ぶ）-------------------------------
     // 後ろへ足して番号を返す。
     int addCanvas(ui::CanvasDesc desc);
-    // 生きている Canvas を消す（番号は残す = alive = false）。無ければ false。
-    bool removeCanvas(int index);
+    // 生きている Canvas を消す（番号は残す = alive = false）。無ければ false。removed が
+    // あれば、消した設計値をそこへ移す（ステータスの呼び名に使う）。
+    bool removeCanvas(int index, ui::CanvasDesc* removed = nullptr);
     // 生きている Canvas の設計値を置き換える。無ければ false（何もしない）。次の要素の
     // id は下がらない（置き換えた中身の最大の次までは上がる）。
     bool replaceCanvas(int index, ui::CanvasDesc desc);
@@ -135,15 +180,18 @@ public:
     // 物なら Canvas ごと置き換え、使っている UI なら UI の中身だけ = Canvas の属性は
     // 触らない）。Canvas が消えた・使う UI が写したときと変わった・UI の宣言が無いなら
     // false（何もしない）。
-    bool replaceCanvasContents(int index, ui::CanvasDesc desc);
+    // wholesale = 中身を丸ごと入れ替えた（ui.xml の適用）: 同じロックの中で持ち主の
+    // contentsGeneration を新しくする（その中身の上のドラッグだけを止める。ほかの Canvas の
+    // ドラッグ・描画の読み直しは起こさない。写しにも同じ版で入る）。
+    bool replaceCanvasContents(int index, ui::CanvasDesc desc, bool wholesale = false);
 
     // ---- 宣言した UI（<asset> の <ui>。共用にする・やめる・読み込む = UiOps）-----
     // 名前 name の UI を out へ写す（無ければ false）。
     bool copyUiAsset(const std::string& name, ui::UiAssetDesc& out) const;
     // UI を宣言に足す（同じ名前があれば false で何もしない）。
     bool addUiAsset(ui::UiAssetDesc asset);
-    // 名前 name の UI の file（空 = このシーン専用）を変える。今の中身がそのまま正になる
-    // （読めなかった印を下ろす）。無ければ false。
+    // 名前 name の UI の file（空 = このシーン専用）を変える。無ければ false。読めたかの印は
+    // 変えない（syncReadable が変更の目印から写す）。
     bool setUiAssetFile(const std::string& name, const std::string& file);
     // 生きている Canvas の中身（要素とアニメ）を UI asset にして宣言に足し、Canvas は
     // その UI を使う（ui = asset.name、自分の要素とアニメは空）。asset.elements / anims は
@@ -153,16 +201,21 @@ public:
     bool moveCanvasContentsToAsset(int index, ui::UiAssetDesc asset);
 
 private:
-    void bumpLocked() { ++version_; }
+    // 版を進めて新しい版を返す（変えた枠・宣言の revision に入れる）。
+    std::uint64_t bumpLocked() { return ++version_; }
+    // 中身の世代の新しい値（contentsGeneration。mutex_ を持って呼ぶ）。
+    std::uint64_t nextGenerationLocked() { return ++generations_; }
     // 全 Canvas を生きていない枠にする（番号は残し、中身は空に）。mutex_ を持って呼ぶ。
-    void retireAllCanvasesLocked();
+    void retireAllCanvasesLocked(std::uint64_t revision);
 
     mutable std::mutex mutex_;
     std::vector<CanvasItem> canvases_;
     std::vector<UiAssetState> uiAssets_;
     std::vector<ui::FontAssetDesc> fonts_;
+    std::uint64_t fontsRevision_ = 1;
     std::uint64_t version_ = 1;
     std::uint64_t loadGeneration_ = 1;
+    std::uint64_t generations_ = 0;  // 最後に配った中身の世代
 };
 
 }  // namespace wizengine

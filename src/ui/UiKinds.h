@@ -8,7 +8,7 @@
 #include "ui/UiProps.h"
 #include "ui/UiTypes.h"
 
-// 要素の種類の表。種類ごとの違い（名前・id のビット・操作の仕方・見た目の
+// 要素の種類の表。種類ごとの違い（名前・一覧のアイコン・id のビット・操作の仕方・見た目の
 // 組み立て）はこの表の 1 行と、組み立て関数 1 本（Ui<種類>.cpp）だけが持つ。
 // 種類が持つ性質は性質の表（UiProps の kinds）から引く（propsOfKind）ので、
 // ここには写しを持たない。種類を足す = 新しい Ui<種類>.cpp + kKinds に 1 行
@@ -35,6 +35,7 @@ using BuildFn = void (*)(const ResolvedElement&, FontProvider&, MeshSink&);
 
 struct ElementKindInfo {
     const char* name;  // XML の要素名 = JSON の kind
+    const char* icon;  // ブラウザの階層一覧に出すアイコン（1 文字。schema の kinds で送る）
     KindMask id;       // 性質の表の kinds と照らすビット
     Interaction interaction;
     BuildFn build;

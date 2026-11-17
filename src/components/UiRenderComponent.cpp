@@ -215,7 +215,9 @@ ui::UiMeshData UiRenderComponent::buildOne(wizengine::Renderer& renderer,
 
     ui::UiTextureLookup lookup;
     lookup.fontPage = [this](int /*page*/) { return atlasTexture_; };
-    lookup.image = [this, &renderer](const std::string& file) { return imageTexture(renderer, file); };
+    lookup.image = [this, &renderer](const std::string& file) {
+        return imageTexture(renderer, file);
+    };
     const ui::Rect canvas{0.0, 0.0, canvasWidth, desc.height};
     return ui::buildCanvasMesh(elements, resolved, canvas, *atlas_, lookup);
 }
@@ -224,13 +226,16 @@ void UiRenderComponent::buildMeshes(wizengine::Renderer& renderer, bool all) {
     const int generation = atlas_->generation();
     for (auto& [index, slot] : canvases_) {
         const ui::CanvasDesc& desc = snap_.canvases[index].desc;
+        // 組み直すのは、この Canvas の材料（自分・使っている UI・フォント）が変わったときだけ
+        // （ほかの Canvas の編集やドラッグでは組まない）。
+        const std::uint64_t revision = snap_.contentsRevision(int(index));
         // 同じ縦横比のビューは同じ中身（組むのは幅ごとに 1 回）。
         std::map<double, std::vector<std::size_t>> pending;  // 幅 → 組み直すビュー
         for (const std::size_t view : slot.views) {
             const double width = canvasWidthOn(renderer, desc, view);
             const ViewBuild& b = slot.built[view];
             const bool upToDate =
-                b.version == version_ && b.canvasWidth == width && b.generation == generation;
+                b.revision == revision && b.canvasWidth == width && b.generation == generation;
             if (!upToDate || all) pending[width].push_back(view);
         }
         for (const auto& [width, views] : pending) {
@@ -240,7 +245,7 @@ void UiRenderComponent::buildMeshes(wizengine::Renderer& renderer, bool all) {
                 const bool last = k + 1 == views.size();
                 renderer.setUiCanvasMesh(slot.rendererId, views[k],
                                          last ? std::move(mesh) : ui::UiMeshData(mesh));
-                slot.built[views[k]] = {version_, width, generation};
+                slot.built[views[k]] = {revision, width, generation};
             }
         }
     }
@@ -295,7 +300,8 @@ void UiRenderComponent::updateFrame(wizengine::Renderer& renderer) {
     FrameKey key;
     if (shown) {
         const auto size = renderer.viewSize(std::size_t(view));
-        key = {version_, frameCanvas_, frameElement_, view, size.x, size.y};
+        key = {snap_.contentsRevision(frameCanvas_), frameCanvas_, frameElement_, view, size.x,
+               size.y};
     }
     if (key == frameSent_) return;
     frameSent_ = key;
@@ -305,8 +311,7 @@ void UiRenderComponent::updateFrame(wizengine::Renderer& renderer) {
     }
     if (!frameCreated_) {
         frameRendererId_ = renderer.addUiCanvas();
-        // どの Canvas よりも手前（同じ order なら番号順なので、文書の order が INT_MAX の
-        // Canvas とは番号で決まる）。
+        // どの Canvas よりも手前（文書の order は ±10000 までなので、常にいちばん手前）。
         renderer.setUiCanvasOrder(frameRendererId_, INT_MAX);
         frameCreated_ = true;
     }
@@ -316,8 +321,10 @@ void UiRenderComponent::updateFrame(wizengine::Renderer& renderer) {
     const ui::Rect canvas{0.0, 0.0, canvasWidthOn(renderer, *desc, std::size_t(view)),
                           desc->height};
     const std::vector<ui::LayoutNode> nodes = ui::layoutTree(*elements, {}, canvas);
-    // 動かせない要素（読めなかった共用 UI の中身など）は枠だけ（つまみを出さない = 掴めない）。
-    const bool handles = wizengine::uiops::elementsEditable(snap_.contentsInfo(frameCanvas_));
+    // 掴めない要素（読めなかった共用 UI の中身・見えない要素）は枠の線だけ（つまみを出さない。
+    // 当たりの規則は ui::frameGrabbable = UiInputComponent と同じ）。
+    const bool editable = wizengine::uiops::elementsEditable(snap_.contentsInfo(frameCanvas_));
+    const bool handles = ui::frameGrabbable(editable, nodes[at]);
     renderer.setUiCanvasMesh(
         frameRendererId_, std::size_t(view),
         ui::buildFrameMesh(nodes[at].rect, ui::designPerScreenPx(desc->height, key.viewHeight),
@@ -341,7 +348,11 @@ void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::U
         // 読み直す区切り。
         const bool reloaded = snap_.loadGeneration != loadGeneration_;
         loadGeneration_ = snap_.loadGeneration;
-        syncFonts(reloaded);
+        // フォントの宣言が変わったとき（読込・全消し）だけ読み直す（要素の編集では読まない）。
+        if (reloaded || snap_.fontsRevision != fontsRevision_) {
+            fontsRevision_ = snap_.fontsRevision;
+            syncFonts(reloaded);
+        }
         releaseUnusedImages(renderer, reloaded);
     }
     syncCanvases(renderer, changed);

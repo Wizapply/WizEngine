@@ -9,6 +9,9 @@
 #include "scene/UiFiles.h"
 #include "scene/UiJson.h"
 
+#include <cassert>
+#include <set>
+
 using namespace chrono;
 using namespace scene_detail;
 
@@ -17,48 +20,69 @@ namespace {
 // 読めないファイルの読込の注意（ステータスの末尾に足す日本語 1 文）。label は
 // 種類（"共通イベント" / "共用 UI"）。0 件なら空。
 std::string unreadableFilesCaveat(const char* label, std::size_t count) {
-    if (count == 0) return {};
-    return std::string("（") + label + " " + std::to_string(count) +
-           " 件のファイルが読めません - コンソール参照）";
+    return countCaveat(label, count, "のファイルが読めません");
+}
+
+// 取込で足す物のうち、名前が今のシーンの物（have）と重ならず、文書の中でも初めて出る物
+// だけ（文書の並びのまま）。dropEmpty = 名前の空の物も外す（計算式）。
+template <class Desc>
+std::vector<Desc> newNamesOnly(const std::vector<Desc>& incoming, const std::vector<Desc>& have,
+                               bool dropEmpty) {
+    std::set<std::string> taken;
+    for (const auto& h : have) taken.insert(h.name);
+    std::vector<Desc> out;
+    for (const auto& d : incoming) {
+        if (dropEmpty && d.name.empty()) continue;
+        if (!taken.insert(d.name).second) continue;
+        out.push_back(d);
+    }
+    return out;
 }
 
 // 文書の UI（<canvas> / <ui> / <font>）を UiState へ入れる（読込と取込の共通の道）。
 // 共用 UI（file あり）は中身をファイルから入れる。読めなくても参照は残す（中身は
 // 空 = 何も出ない。ファイルを戻して読み直せば元に戻る。共通イベントと同じ扱い）。
-// 読めて入った共用 UI は、そのときの中身を変更の目印（baseline = libBaseline_）に
-// 覚える（保存で変わったものだけ書く = Scene::saveLibraryAssets）。取込で名前が今の
-// シーンと重なった UI・フォントは入れず（今のシーンの物が勝つ）、LOGW に出す。
+// 読めて入った共用 UI は、そのときの中身を変更の目印に覚え（uifiles::rememberBaseline。
+// 保存で変わったものだけ書く = Scene::saveLibraryAssets）、読めずに入った物は前の覚えを
+// 消す（目印が「読めたか」の持ち主。古い覚えが残ると読めた扱いになる）。UiState の
+// 「読めなかった」の印はその後で目印から写す（uifiles::syncReadable）。取込で名前が
+// 今のシーンと重なった UI・フォントは入れず（今のシーンの物が勝つ）、同じ文書の中で 2 回
+// 出た UI は先のものを入れて、どちらも LOGW に出す。
 // 戻り値 = ステータスの末尾に足す注意（読めなかった件数・名前の重なった件数）。
 std::string loadUiFromDocument(wizengine::UiState& ui, const ed::SceneDocument& doc,
                                wizengine::UiState::LoadMode mode,
-                               std::map<std::string, std::string>& baseline) {
+                               wizengine::LibraryBaseline& baseline) {
     // 書き換える（ファイルの中身を入れる）のは共用 UI だけなので、それだけを写す。
     std::vector<wizengine::ui::UiAssetDesc> uiAssets = doc.uiAssets;
-    std::vector<std::string> unreadable;
-    for (auto& a : uiAssets) {
+    std::vector<bool> readOk(uiAssets.size(), true);
+    for (std::size_t i = 0; i < uiAssets.size(); ++i) {
+        auto& a = uiAssets[i];
         if (a.file.empty()) continue;
         std::string reason;
         if (!wizengine::uifiles::readSharedUi(a, reason)) {
             LOGW("scene", "shared ui '%s': %s - it shows nothing until the file is back",
                  a.name.c_str(), reason.c_str());
-            unreadable.push_back(a.name);
+            readOk[i] = false;
         }
     }
     const wizengine::UiState::LoadResult got =
-        ui.fromDocument(doc.canvases, uiAssets, doc.fonts, mode, unreadable);
-    auto listed = [](const std::vector<std::string>& names, const std::string& n) {
-        return std::find(names.begin(), names.end(), n) != names.end();
-    };
-    std::size_t missing = 0;  // 入った（重ならなかった）うちの読めなかった物
-    for (const auto& a : uiAssets) {
-        if (a.file.empty() || listed(got.skippedUi, a.name)) continue;
-        if (listed(unreadable, a.name)) {
+        ui.fromDocument(doc.canvases, uiAssets, doc.fonts, mode);
+    std::size_t missing = 0;  // 入ったうちの読めなかった物
+    for (std::size_t i = 0; i < uiAssets.size(); ++i) {
+        const auto& a = uiAssets[i];
+        const bool entered = i < got.enteredUi.size() && got.enteredUi[i];
+        if (a.file.empty() || !entered) continue;
+        if (!readOk[i]) {
             ++missing;
+            baseline.forget(wizengine::uifiles::kUiLibraryKind, a.name);
             continue;
         }
-        baseline[wizengine::sharedasset::libraryBaselineKey(wizengine::uifiles::kUiLibraryKind,
-                                                             a.name)] =
-            wizengine::uifiles::libraryText(a);
+        wizengine::uifiles::rememberBaseline(baseline, a);
+    }
+    wizengine::uifiles::syncReadable(ui, baseline);
+    for (const auto& n : got.duplicatedUi) {
+        LOGW("scene", "ui '%s' is declared twice in the document - using the first one",
+             n.c_str());
     }
     for (const auto& n : got.skippedUi) {
         LOGW("scene", "ui '%s' is already in this scene - keeping the current one (imported "
@@ -67,12 +91,11 @@ std::string loadUiFromDocument(wizengine::UiState& ui, const ed::SceneDocument& 
     for (const auto& n : got.skippedFonts) {
         LOGW("scene", "font '%s' is already in this scene - keeping the current one", n.c_str());
     }
-    const std::size_t skippedCount = got.skippedUi.size() + got.skippedFonts.size();
+    const std::size_t skipped = got.skippedUi.size() + got.skippedFonts.size();
     return unreadableFilesCaveat("共用 UI", missing) +
-           (skippedCount == 0 ? std::string()
-                              : "（名前が今のシーンと重なった UI / フォント " +
-                                    std::to_string(skippedCount) +
-                                    " 件は今のシーンの物を使います - コンソール参照）");
+           countCaveat("名前が今のシーンと重なった UI / フォント", skipped,
+                       "は今のシーンの物を使います") +
+           countCaveat("同じ名前で 2 回宣言した UI", got.duplicatedUi.size(), "は先の物を使います");
 }
 
 }  // namespace
@@ -91,15 +114,21 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
 
     nlohmann::json j;
     j["camera"] = int(cameraIndex);
+    // このページから UI を選べる・編集できるか（判定の唯一の定義 editsUiFrom をそのまま送る。
+    // カメラごとに違うので "ui" の写しの外に置く。ブラウザは理由の出し分けにだけ使う）。
+    j["editsUi"] = editsUiFrom(cameraIndex);
 
-    // UI の設計値の写しはロックの前に取る（UiState の mutex_ は末端で、オブジェクトの
-    // 一覧とは別の持ち主）。選択の確かめと "ui" の両方がこの 1 つの写しを読む。
-    const wizengine::UiState::Snapshot uiSnap = ui_.snapshot();
     // エディタ選択（種類・番号・UI の要素）は続けて読む（別々の atomic なので、間を
     // 空けるほど食い違いやすい。読む側は対象が今もあるかを必ず確かめる）。
     const auto selKind = editor_.selKind();
     const int selIndex = editor_.selIndex();
     const int selSub = editor_.selSub();
+    // UI の一覧と選択中の設計値はロックの前に取る（UiState の mutex_ は末端で、オブジェクトの
+    // 一覧とは別の持ち主）。版と選択が前回と同じなら組み直さない（uijson::Cache）。選択が
+    // 今もあるかの確かめは中で 1 回だけ（無ければ selected が null）。書き出した文字列を
+    // 最後に埋める（ポーリングのたびに写し直さない）。
+    const std::shared_ptr<const wizengine::uijson::Cache::Entry> uiEntry = uiJsonCache_.get(
+        ui_, selKind == EditorState::SelKind::Canvas ? selIndex : -1, selSub);
     // ここからライト・カメラ有効フラグ・オブジェクト一覧を読むのでロックする
     // （物理スレッドが追加・削除している最中かもしれない）。ロック順は
     // objects → editor → poses の一方向（CLAUDE.md の規約）。
@@ -137,11 +166,8 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             selKind == EditorState::SelKind::Ground && ground_.enabled;
         const bool terrainSel =
             selKind == EditorState::SelKind::Terrain && hasTerrain_;
-        // UI の一覧（Scene タブの階層）と選択中の設計値（Inspector）と欄の形。選択が
-        // 今もあるかの確かめは toJson の 1 回だけ（無ければ selected が null）。
-        j["ui"] = wizengine::uijson::toJson(
-            uiSnap, selKind == EditorState::SelKind::Canvas ? selIndex : -1, selSub);
-        const bool canvasSel = !j["ui"]["selected"].is_null();
+        // UI の一覧（Scene タブの階層）と選択中の設計値（Inspector）と欄の形。
+        const bool canvasSel = uiEntry->selected;
         s["kind"] = selKind == EditorState::SelKind::Light    ? "light"
                     : selKind == EditorState::SelKind::Camera ? "camera"
                     : selKind == EditorState::SelKind::Part   ? "part"
@@ -451,7 +477,13 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         }
         j["selected"] = d;
     }
-    return j.dump();
+    // "ui" は前に書き出した文字列をそのまま足す。前提: j は camera などを持つ空でない object で、
+    // "ui" をまだ持たない（書き出した末尾の '}' の前に ,"ui":… を差し込む）。
+    assert(j.is_object() && !j.empty() && !j.contains("ui"));
+    std::string out = j.dump();
+    assert(!out.empty() && out.back() == '}');
+    out.insert(out.size() - 1, ",\"ui\":" + uiEntry->text);
+    return out;
 }
 
 // シーンの今の中身を文書にする。保存されるのはこれを XML にしたもので、
@@ -860,36 +892,23 @@ std::string Scene::appendDocument(const ed::SceneDocument& doc) {
             meshes_.push_back(std::move(a));
         }
     }
-    // 足す側の文書がグローバルの計算式・プレハブを参照していれば中身を入れる。
-    auto docFormulas = doc.formulas;
-    auto docPrefabs = doc.prefabs;
+    // 足す側の文書がグローバルの計算式・プレハブを参照していれば中身を入れる。同じ名前が
+    // 既にあれば今のものを残す（計算式と制御器はどちらも名前で付く）。重なる物は読む前に
+    // 外す: 読みに行くと、今のシーンの同じ名前の変更の目印を上書き・消してしまう（保存で
+    // 書かれない・ローカルにできなくなる）。
+    auto prefabs = editor_.prefabAssets();
+    auto formulas = editor_.formulaAssets();
+    auto docPrefabs = newNamesOnly(doc.prefabs, prefabs, false);
+    auto docFormulas = newNamesOnly(doc.formulas, formulas, true);
     {
         std::size_t missing = 0;
         resolveLibraryAssets(docFormulas, docPrefabs, missing);
     }
-    {
-        auto prefabs = editor_.prefabAssets();
-        for (const auto& p : docPrefabs) {
-            bool dup = false;
-            for (const auto& have : prefabs) dup = dup || have.name == p.name;
-            if (!dup) prefabs.push_back(p);
-        }
-        editor_.setPrefabAssets(std::move(prefabs));
-    }
-    // 計算式と制御器。どちらも名前で付くので、同じ名前が既にあれば今の
-    // ものを残す。
-    {
-        auto formulas = editor_.formulaAssets();
-        bool added = false;
-        for (const auto& f : docFormulas) {
-            bool dup = false;
-            for (const auto& have : formulas) dup = dup || have.name == f.name;
-            if (!dup && !f.name.empty()) {
-                formulas.push_back(f);
-                added = true;
-            }
-        }
-        if (added) editor_.setFormulaAssets(std::move(formulas));
+    prefabs.insert(prefabs.end(), docPrefabs.begin(), docPrefabs.end());
+    editor_.setPrefabAssets(std::move(prefabs));
+    if (!docFormulas.empty()) {
+        formulas.insert(formulas.end(), docFormulas.begin(), docFormulas.end());
+        editor_.setFormulaAssets(std::move(formulas));
     }
     {
         auto ctl = editor_.controllers();

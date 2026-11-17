@@ -13,7 +13,7 @@
 //
 // 座標は UiLayout と同じ設計上の画素（左上が原点・y 下向き）。つまみの大きさは画面の
 // 画素で決めるので、呼び手が「設計の画素で半分の大きさ」（half）に直して渡す。
-//   当たり      … hitHandle（どのつまみか、枠の中か）
+//   当たり      … hitHandle（どのつまみか、枠の中か。枠の外は当たらない）
 //   ドラッグ    … dragPlacement（開始時の性質 + 動かした量 → 新しい pos / size）
 //   選択枠      … frameShape（四角の並び）/ buildFrameMesh（UI のメッシュ）
 // ドラッグは**開始時の値だけ**から計算する（今の値からの差分を取らない = 当てた結果が
@@ -28,8 +28,12 @@ enum class FrameHandle : int {
     TopLeft, TopRight, BottomLeft, BottomRight
 };
 
-// つまみの一辺（画面の画素）と枠の線の太さ（画面の画素）。
-inline constexpr double kHandleScreenPx = 10.0;
+// 描くつまみの一辺（画面の画素）と枠の線の太さ（画面の画素）。画面の画素は映像の画素で、
+// ブラウザは映像を縮めて表示する（1920 幅を半分ほどにしても見える大きさにしてある）。
+inline constexpr double kHandleScreenPx = 14.0;
+// つまみの当たりの一辺（画面の画素）。描く四角より大きくする（縮めて表示した映像の数画素の
+// 四角は狙って押せないため）。枠の外へのはみ出しの当たりも同じ幅。
+inline constexpr double kHandleHitScreenPx = 28.0;
 inline constexpr double kFrameLineScreenPx = 2.0;
 // スナップの刻み（設計の画素）。スナップしないときも 1 画素の刻みに揃える
 // （保存される値が小数の端数だらけにならない）。
@@ -71,15 +75,24 @@ inline double designPerScreenPx(double designHeight, int viewHeight) {
     return viewHeight > 0 ? designHeight / double(viewHeight) : 1.0;
 }
 
-// つまみの一辺の半分（設計の画素）。scale = designPerScreenPx。当たり（hitHandle の half）と
-// 描く大きさ（buildFrameMesh）が同じ値を使う。
+// 描くつまみの一辺の半分（設計の画素）。scale = designPerScreenPx（buildFrameMesh が使う）。
 inline double handleHalfDesign(double scale) { return kHandleScreenPx * 0.5 * scale; }
+// つまみの当たりの一辺の半分（設計の画素。hitHandle の half に渡す。換算は handleHalfDesign と
+// 同じ）。
+inline double handleHitHalfDesign(double scale) { return kHandleHitScreenPx * 0.5 * scale; }
 
 // 映像の上で枠を出して動かせる Canvas か（唯一の定義）: 映像に重ねる overlay（camera /
 // world は板の上の座標になるので、映像の位置をそのまま Canvas の画素に写せない）で、
 // そのカメラに出ている。
 inline bool frameShownOnCamera(const CanvasDesc& desc, int camera) {
     return desc.mode == CanvasMode::Overlay && canvasShownOnCamera(desc, camera);
+}
+
+// 選択枠のつまみを出して映像の上で掴めるか（唯一の定義。当たり = UiInputComponent、描く =
+// UiRenderComponent）: 中身を編集してよく（editable = uiops::elementsEditable の答え）、要素が
+// 見えている（自分と祖先が visible）。掴めない要素も枠の線は出す（Inspector の数字で直す）。
+inline bool frameGrabbable(bool editable, const LayoutNode& node) {
+    return editable && node.visible;
 }
 
 // 大きさを変える 8 つのつまみ（当たりは角を先に見るので、この並びで調べる）。
@@ -98,13 +111,17 @@ inline void handleCenter(const Rect& r, FrameHandle h, double& x, double& y) {
     y = at(r.y, r.h, e.y);
 }
 
-// 点 (px, py) が当たるつまみ。half = つまみの一辺の半分（設計の画素）。角 → 辺 → 枠の
-// 中（線の上 = half だけ外まで含む）の順で、どれにも当たらなければ None。
+// 点 (px, py) が当たるつまみ。half = つまみの当たりの一辺の半分（設計の画素。
+// handleHitHalfDesign）。角 → 辺 → 枠の中（外へ half だけはみ出した所 = 線の上も含む）の
+// 順で、どれにも当たらなければ None（枠の外の押下は、後ろの 3D の物・別の UI の選択へ流す）。
+// つまみの当たりは要素の短い辺の 1/4 までに抑える（唯一の決め所）: 小さい要素でも真ん中に
+// 動かす場所（Body）が残る。描く大きさは抑えない。
 inline FrameHandle hitHandle(const Rect& r, double px, double py, double half) {
+    const double handleHalf = std::min(half, std::min(r.w, r.h) * 0.25);
     for (const FrameHandle h : kResizeHandles) {
         double cx = 0.0, cy = 0.0;
         handleCenter(r, h, cx, cy);
-        if (std::fabs(px - cx) <= half && std::fabs(py - cy) <= half) return h;
+        if (std::fabs(px - cx) <= handleHalf && std::fabs(py - cy) <= handleHalf) return h;
     }
     const bool insideX = px >= r.x - half && px <= r.x + r.w + half;
     const bool insideY = py >= r.y - half && py <= r.y + r.h + half;
@@ -115,6 +132,11 @@ inline FrameHandle hitHandle(const Rect& r, double px, double py, double half) {
 struct Placement {
     double pos[2] = {0.0, 0.0};
     double size[2] = {0.0, 0.0};
+    bool operator==(const Placement& o) const {
+        return pos[0] == o.pos[0] && pos[1] == o.pos[1] && size[0] == o.size[0] &&
+               size[1] == o.size[1];
+    }
+    bool operator!=(const Placement& o) const { return !(*this == o); }
 };
 
 // 1 軸ぶん。解き方は solveRect と同じ AxisLayout（UiLayout.h）で、動かした辺について

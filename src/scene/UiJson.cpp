@@ -4,6 +4,7 @@
 
 #include "scene/UiOps.h"
 #include "ui/UiKinds.h"
+#include "ui/UiLayout.h"  // parentIndices
 #include "ui/UiProps.h"
 #include "ui/UiValue.h"
 #include "ui/UiXml.h"
@@ -46,7 +47,7 @@ nlohmann::json buildSchema() {
             const ui::Prop p = static_cast<ui::Prop>(i);
             if (mask & ui::propBit(p)) names.push_back(ui::propInfo(p).name);
         }
-        kinds.push_back({{"name", info.name}, {"props", names}});
+        kinds.push_back({{"name", info.name}, {"icon", info.icon}, {"props", names}});
     }
     nlohmann::json canvas = nlohmann::json::array();
     for (const auto& a : ui::kCanvasAttrs) {
@@ -116,16 +117,44 @@ nlohmann::json canvasAttrsJson(const ui::CanvasDesc& desc) {
     return j;
 }
 
+std::shared_ptr<const Cache::Entry> Cache::get(const UiState& state, int selCanvas,
+                                               int selElement) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const bool changed = state.copyIfChanged(known_, snap_);
+    const bool sameSelection = selCanvas == canvas_ && selElement == element_;
+    if (!entry_ || changed || !sameSelection) {
+        auto e = std::make_shared<Entry>();
+        const nlohmann::json j = toJson(snap_, selCanvas, selElement);
+        e->text = j.dump();
+        e->selected = !j.at("selected").is_null();
+        entry_ = std::move(e);
+        canvas_ = selCanvas;
+        element_ = selElement;
+    }
+    return entry_;
+}
+
 nlohmann::json toJson(const UiState::Snapshot& snap, int selCanvas, int selElement) {
     nlohmann::json canvases = nlohmann::json::array();
     for (std::size_t i = 0; i < snap.canvases.size(); ++i) {
         const ui::CanvasDesc* desc = snap.liveCanvas(int(i));
         if (!desc) continue;  // 消えた枠は出さない（番号は空く）
         nlohmann::json elements = nlohmann::json::array();
-        for (const auto& e : snap.elementsOf(*desc)) {
+        // 一覧の段（depth。Canvas の直下が 1）と、書いた親を引けなかった印（parentMissing =
+        // 無い・後ろにある親。その要素は Canvas の直下に置く）は、配置と同じ規則
+        // （ui::parentIndices）から作る = ブラウザは表示するだけ。
+        const std::vector<ui::ElementDesc>& list = snap.elementsOf(*desc);
+        const std::vector<int> parents = ui::parentIndices(list);
+        std::vector<int> depth(list.size(), 1);
+        for (std::size_t k = 0; k < list.size(); ++k) {
+            const ui::ElementDesc& e = list[k];
+            const int p = parents[k];
+            if (p >= 0) depth[k] = depth[std::size_t(p)] + 1;
             elements.push_back({{"id", e.id},
                                 {"kind", e.kind},
                                 {"parent", e.parent},
+                                {"depth", depth[k]},
+                                {"parentMissing", e.parent >= 0 && p < 0},
                                 {"name", e.name},
                                 {"label", ui::elementLabel(e)}});
         }

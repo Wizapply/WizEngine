@@ -34,6 +34,23 @@
   function uiFormatNumber(v) {
     return Number.isFinite(v) ? String(Math.round(v * 1000) / 1000) : '—';
   }
+  // 数の欄に入れる字（有効数字 10 桁で丸めて、0.30000000000000004 のような計算の端数を
+  // 出さない。表示だけの行の uiFormatNumber より細かい = 欄から送り返しても値がほぼ変わらない）。
+  // 整数の欄（isInt）は丸めない（10 桁を超える整数の字が変わるため）。
+  function uiFieldNumber(v, isInt) {
+    return isInt ? String(v) : String(Number(v.toPrecision(10)));
+  }
+  // 打った数を schema の lo / hi に収めて欄に出す（見た目だけ。送る値の丸めはサーバー）。
+  // 丸めた結果が送る前の値と同じでも、範囲の外の字が欄に残らない。
+  function uiShowInRange(row, spec) {
+    if (!(spec.hi > spec.lo)) return;
+    for (const el of row.querySelectorAll('input[type="number"][data-ui-field]')) {
+      const v = parseFloat(el.value);
+      if (!Number.isFinite(v)) continue;
+      const clamped = Math.min(spec.hi, Math.max(spec.lo, v));
+      if (clamped !== v) el.value = uiFieldNumber(clamped, spec.type === 'int');
+    }
+  }
   // 値 → 表示の HTML（型は schema の type。表示だけの行に使う）。
   function uiFormatValue(spec, v) {
     if (v === undefined || v === null) return '—';
@@ -127,14 +144,14 @@
     const k = el.dataset.uiK !== undefined ? parseInt(el.dataset.uiK, 10) : -1;
     switch (spec.type) {
       case 'number': case 'int':
-        el.value = Number.isFinite(v) ? String(v) : '';
+        el.value = Number.isFinite(v) ? uiFieldNumber(v, spec.type === 'int') : '';
         break;
       case 'vec2': case 'vec3': case 'euler': case 'rect':
-        el.value = Array.isArray(v) && Number.isFinite(v[k]) ? String(v[k]) : '';
+        el.value = Array.isArray(v) && Number.isFinite(v[k]) ? uiFieldNumber(v[k], false) : '';
         break;
       case 'color':
         if (!Array.isArray(v)) break;
-        el.value = k === 3 ? String(v.length > 3 ? v[3] : 1) : uiColorToHex(v);
+        el.value = k === 3 ? uiFieldNumber(v.length > 3 ? v[3] : 1, false) : uiColorToHex(v);
         break;
       case 'bool':
         el.checked = !!v;
@@ -200,13 +217,24 @@
   // この行に、自分が送った操作の戻りを入れ直すか（フォーカス中でも 1 回だけ）。入れ直すのは
   // 戻った値が送る前の値とも送った値とも違うとき = サーバーが丸めた・正規化したとき
   // だけ。送る前の値のままなら、まだ届いていない（別の変更で版が進んだだけ）ので待つ。
-  // 送った値のままなら欄はもう正しいので覚えを捨てるだけ。
+  // 送った値のままなら欄はもう正しいので覚えを捨てるだけ。待ち切った（丸めた結果が送る前の
+  // 値と同じ = 上限の欄に上限超えを打った、など）ときも 1 回入れ直す（打った字を残さない）。
   function uiTakePendingRow(u, sel, row, now) {
     const p = uiPendingField;
     if (!p) return false;
-    if (Date.now() > p.until) { uiPendingField = null; return false; }
-    const same = p.canvas === sel.canvas && p.element === sel.element && p.row === row.dataset.uiRow;
-    if (!same || u.version === p.version) return false;
+    const sameSel = p.canvas === sel.canvas && p.element === sel.element;
+    if (!sameSel) {
+      if (Date.now() > p.until) uiPendingField = null;  // 別の物を選んだまま待ち切った
+      return false;
+    }
+    if (p.row !== row.dataset.uiRow) return false;  // この行の番が来るまで残す
+    if (Date.now() > p.until) {
+      // 待ち切った: サーバーが当てていれば（版が進んだ）1 回入れ直す。まだ当てていなければ
+      // 入れ直さない（古い値に戻さない。届けば次の版で欄は普段どおり入れ直される）。
+      uiPendingField = null;
+      return u.version !== p.version && uiFieldTexts(row) === p.sent;
+    }
+    if (u.version === p.version) return false;
     const got = JSON.stringify(now);
     if (got === p.before) return false;
     uiPendingField = null;
@@ -344,6 +372,7 @@
     if (v === undefined) return;
     const values = {};
     values[name] = v;
+    uiShowInRange(row, spec);
     remember(current, v);
     send(cmd, Object.assign(target, isCanvas ? { attrs: values } : { props: values }));
   }

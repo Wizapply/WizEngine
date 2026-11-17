@@ -191,7 +191,7 @@ void buildText(const ResolvedElement& e, FontProvider& fonts, MeshSink& sink) {
 
 }  // namespace
 
-const ElementKindInfo kTextKind = {"text", kKindText, Interaction::None, &buildText};
+const ElementKindInfo kTextKind = {"text", "T", kKindText, Interaction::None, &buildText};
 
 }  // namespace ui
 }  // namespace wizengine

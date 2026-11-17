@@ -2553,23 +2553,38 @@
     xmlEdOpen = false;
     document.getElementById('xmlEd').hidden = true;
   }
+  // 開くとき・↻ のとき。UI の中身は開いたときの Canvas（xmlEdCanvas）で読む: 選択が
+  // 別の物に変わっていれば、その Canvas を選び直してから届くのを待つ。
   function reloadXml() {
     const box = document.getElementById('xmText');
     if (xmlEdCanvas >= 0) {
-      // 選んでいる Canvas の中身（サーバーが選択に付けて送る）。まだ届いていなければ
-      // 次のポーリングで入れる（一覧の右クリックは選んですぐ開くため）。
       const u = uiData();
       const sel = u ? u.selected : null;
-      xmlEdWaiting = !(sel && sel.canvas === xmlEdCanvas && sel.element < 0);
-      if (!xmlEdWaiting) box.value = sel.xml || '';
-      document.getElementById('xmStatus').textContent =
-        xmlEdWaiting ? '読み込み中...（その Canvas を一覧で選ぶと出ます）' : '';
+      const selectedHere = sel && sel.canvas === xmlEdCanvas && sel.element < 0;
+      if (!selectedHere) selectUi(xmlEdCanvas, -1);
+      fillUiXml();
       return;
     }
     fetch('scene.xml')
       .then((r) => r.text())
       .then((t) => { box.value = t; })
       .catch(() => { box.value = ''; });
+  }
+  // UI の中身を欄へ入れる（選んでいる Canvas の中身 = サーバーが選択に付けて送る）。まだ
+  // 届いていなければ次のポーリングで入れる（選んですぐ開くため）。Canvas が消えた・この
+  // ページから選べない（選び直しが通らない）ときは、待たずに理由を出す。
+  function fillUiXml() {
+    const box = document.getElementById('xmText');
+    const u = uiData();
+    const sel = u ? u.selected : null;
+    const alive = !!(u && (u.canvases || []).some((c) => c.index === xmlEdCanvas));
+    const here = !!(sel && sel.canvas === xmlEdCanvas && sel.element < 0);
+    const refusal = here ? '' : uiSelectRefusal();
+    xmlEdWaiting = alive && !here && !refusal;
+    if (alive && here) box.value = sel.xml || '';
+    const status = !alive ? 'この Canvas はもうありません'
+      : (refusal || (xmlEdWaiting ? '読み込み中...' : ''));
+    document.getElementById('xmStatus').textContent = status;
   }
   function applyXml() {
     const text = document.getElementById('xmText').value;
@@ -4905,7 +4920,7 @@
       noteSceneChanges(sceneData);
       const status = sceneData.status || '';
       if (xmlEdOpen && xmlEdWaiting) {
-        reloadXml();
+        fillUiXml();  // UI の中身を待っている（選び直しは開いたとき・↻ のときだけ）
       } else if (xmlEdOpen) {
         document.getElementById('xmStatus').textContent = status;
       }
