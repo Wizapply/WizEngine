@@ -33,5 +33,15 @@ bool readSharedUi(ui::UiAssetDesc& asset, std::string& reason) {
     return true;
 }
 
+std::string libraryFile(const std::string& name) {
+    return sharedasset::libraryFile(kUiLibraryDir, name, kUiLibraryExt);
+}
+
+std::string libraryText(const ui::UiAssetDesc& asset) { return ui::uiAssetToXmlText(asset); }
+
+std::vector<std::string> listLibrary() {
+    return sharedasset::listLibrary(kUiLibraryDir, kUiLibraryExt);
+}
+
 }  // namespace uifiles
 }  // namespace wizengine

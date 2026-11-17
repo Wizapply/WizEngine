@@ -13,20 +13,28 @@
 // UI のエディタ操作（ブラウザの edit.ui.* → EditorState の Op → PHYSICS スレッド）を
 // UiState の設計値へ当てる。直すきっかけは「UI の編集の操作を足す・変える」だけ。
 //
-//   ui.add            {name?, attrs?}                    Canvas を足す（追加した物を選ぶ）
+//   ui.add            {name?, attrs?, ui?}               Canvas を足す（追加した物を選ぶ。
+//                                                        ui = 宣言した UI を表示する Canvas）
 //   ui.remove         {canvas}                           Canvas を消す（番号は詰めない）
 //   ui.set            {canvas, name?, attrs?}            Canvas の名前・属性の部分更新
 //   ui.element.add    {canvas, kind, parent?, name?, props?}  要素を足す（選ぶ）
 //   ui.element.remove {canvas, element}                  要素とその子孫を消す
 //   ui.element.set    {canvas, element, name?, props?, reset?}  要素の名前・性質の部分更新
+//   ui.xml            {canvas, text}                     Canvas の中身（要素とアニメ）を XML
+//                                                        （<ui name> の書式）で置き換える
 //
 // attrs / props は /scene の ui.selected と同じ形（{名前: 値}）。属性ごと・性質ごとの
 // キーはここに書き並べない: 値は Canvas の属性の表（kCanvasAttrs）と性質の表
 // （ui::fromJson）を走って読み、表の範囲へ丸める（clampValue / clampProps。ブラウザの
 // 欄の lo / hi は見た目だけ）。型の合わない・知らない・その種類に無い名前は書かずに
 // ステータスで知らせる。reset は既定値に戻す性質の名前の並び。
-// 共用 UI（<canvas ui>）の要素はここでは編集しない（ファイルへ書く側が無い間は、
-// 編集が保存で黙って消えるため）。Canvas の属性（表示方法・カメラ…）は編集できる。
+// 要素の操作が書き換えるのは Canvas の中身の持ち主（UiState::copyCanvasContents）:
+// <canvas ui> なら使っている UI の中身（同じ UI を使う全 Canvas に効き、共用 UI なら
+// 保存でファイルへ書く = Scene::saveLibraryAssets）。ファイルが読めなかった・宣言の
+// 無い UI の中身は編集しない（elementsEditable）。
+//
+// ファイルは読み書きしない（ui.xml も受けたテキストを読むだけ）。共用 UI のファイル・
+// グローバル（ライブラリ）の操作（edit.lib.* の kind = ui）は scene/UiLibraryOps。
 //
 // Chrono / Filament / Scene を知らない（tests/document で単体で検査する）。選択と
 // ステータスは結果（Result）として返し、呼び手（Scene）が写す。
@@ -44,9 +52,17 @@ struct Result {
 bool isUiOp(const std::string& kind);
 // 操作を当てる（PHYSICS スレッド）。args は型を信じない。
 Result apply(UiState& state, const std::string& kind, const nlohmann::json& args);
-// この Canvas の要素をエディタで編集してよいか（唯一の定義。Inspector の操作と映像の
-// 上のドラッグが引く）: 共用 UI（<canvas ui>）の中身は編集しない。
-bool elementsEditable(const ui::CanvasDesc& desc);
+// Canvas の要素をエディタで編集してよいか（唯一の定義。Inspector の操作・映像の上の
+// ドラッグ・選択枠のつまみ・ブラウザの editable が引く）: 自分の中身と、読めている UI の
+// 中身は編集する。宣言の無い UI・ファイルが読めなかった共用 UI の中身は編集しない
+// （書いても保存でファイルへ書かれず、黙って消えるため）。info は Snapshot::contentsInfo か
+// copyCanvasContents から。
+bool elementsEditable(const UiState::ContentsInfo& info);
+
+// ui.xml の text を確かめる（INPUT が積む前と、PHYSICS が当てる前の唯一の確かめ）。
+// 空・大きすぎる（editor::kMaxXmlEditBytes）・XML として壊れていれば、その理由の
+// ステータス（日本語）。正しければ空。
+std::string xmlTextProblem(const std::string& text);
 
 // ---- 部品（apply が使う。tests/document が直接検査する）---------------------
 // Canvas の属性の部分更新。attrs の中の、表にあって書き換えてよい属性だけを丸めて
@@ -59,13 +75,14 @@ std::vector<std::string> setElementProps(const nlohmann::json& props,
 // 要素 e が持つ性質（種類の表から）だけを丸めて重ねる（唯一の手順。Inspector の欄と
 // 映像の上のドラッグが通る）。戻り値 = その種類に無いので書かなかった性質の名前。
 std::vector<std::string> writeOwnProps(ui::ElementDesc& e, ui::PropSet incoming);
-// Canvas canvas の要素 id を書き換える手順（唯一の定義）: 今の Canvas を 1 枚写し、要素を
-// 編集してよい（elementsEditable）か・要素があるかを確かめ、edit(写した Canvas, 要素の
-// 添字) を呼んで UiState へ戻す。written = false なら何もしていない（shared は共用 UI の
-// ために断ったとき、その名前）。
+// Canvas canvas の要素 id を書き換える手順（唯一の定義）: 今の Canvas を中身の持ち主ごと
+// 1 枚写し（UiState::copyCanvasContents）、要素を編集してよい（elementsEditable）か・要素が
+// あるかを確かめ、edit(写した Canvas, 要素の添字) を呼んで持ち主へ戻す
+// （replaceCanvasContents）。written = false なら何もしていない（refusal は編集してよく
+// ないために断ったときの理由のステータス。消えていただけなら空）。
 struct ElementWrite {
     bool written = false;
-    std::string shared;
+    std::string refusal;
 };
 ElementWrite editElement(UiState& state, int canvas, int id,
                          const std::function<void(ui::CanvasDesc&, std::size_t)>& edit);

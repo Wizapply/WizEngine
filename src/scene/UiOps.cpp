@@ -7,10 +7,14 @@
 
 #include "core/Clamp.h"
 #include "core/Json.h"
+#include "core/Log.h"
 #include "core/SafeName.h"
+#include "document/EditorTypes.h"  // kMaxXmlEditBytes
+#include "scene/LibraryStatus.h"  // warningCountCaveat
 #include "ui/UiKinds.h"
 #include "ui/UiProps.h"
 #include "ui/UiValue.h"
+#include "ui/UiXml.h"
 
 namespace wizengine {
 namespace uiops {
@@ -23,8 +27,10 @@ constexpr const char* kSet = "ui.set";
 constexpr const char* kElementAdd = "ui.element.add";
 constexpr const char* kElementRemove = "ui.element.remove";
 constexpr const char* kElementSet = "ui.element.set";
-constexpr const char* const kOps[] = {kAdd,        kRemove,        kSet,
-                                      kElementAdd, kElementRemove, kElementSet};
+constexpr const char* kXml = "ui.xml";
+constexpr const char* const kOps[] = {kAdd,        kRemove,        kSet,        kElementAdd,
+                                      kElementRemove, kElementSet, kXml};
+
 
 // 新しい Canvas の名前の元（空いていなければ canvas_2 …）。
 constexpr const char* kNewCanvasName = "canvas";
@@ -145,10 +151,17 @@ Result addCanvas(UiState& state, const nlohmann::json& args) {
     // 正規化で全部落ちた名前は既定の名前で作り、理由を出す（setCanvas と同じ文）。
     const std::string caveat = given == NameArg::Unusable ? kUnusableNameCaveat : "";
     const std::vector<std::string> rejected = setCanvasAttrs(member(args, "attrs"), desc);
+    // 宣言した UI を表示する Canvas（アセットパネルの UI のタイル）。宣言が無ければ空の
+    // Canvas にして知らせる。
+    const std::string uiName = jsonString(args, "ui", "");
+    const bool uiDeclared = !uiName.empty() && snap.uiAsset(uiName) != nullptr;
+    if (uiDeclared) desc.ui = uiName;
+    const std::string uiCaveat =
+        (!uiName.empty() && !uiDeclared) ? "（UI " + uiName + " の宣言がありません）" : "";
     Result r;
     r.select = true;
     r.canvas = state.addCanvas(desc);
-    r.status = "UI: " + ui::canvasLabel(desc, r.canvas) + " を追加しました" + caveat +
+    r.status = "UI: " + ui::canvasLabel(desc, r.canvas) + " を追加しました" + caveat + uiCaveat +
                rejectedCaveat(rejected) + camerasCaveat(desc);
     return r;
 }
@@ -182,9 +195,11 @@ Result setCanvas(UiState& state, const nlohmann::json& args) {
 }
 
 // ---- 要素の操作 -----------------------------------------------------------------
-// 共用 UI の要素を断ったときのステータス。
-std::string sharedStatus(const std::string& ui) {
-    return "UI: 共用 UI（" + ui + "）の要素はここでは編集できません";
+// 中身を編集してよくないときのステータス（elementsEditable が false の理由）。
+std::string notEditableStatus(const UiState::ContentsInfo& info) {
+    if (!info.declared) return "UI: UI " + info.asset + " の宣言が無いので、中身は編集できません";
+    return "UI: 共用 UI（" + info.asset +
+           "）のファイルが読めないので、中身は編集できません（ファイルを戻して読み直してください）";
 }
 
 // 要素 e の種類が持つ性質の集合（種類の表から。知らない種類は 0）。
@@ -193,63 +208,81 @@ ui::PropMask ownPropMask(const ui::ElementDesc& e) {
     return kind ? ui::propsOfKind(kind->id) : 0;
 }
 
-// 要素を編集してよい Canvas の写し（無い・共用 UI なら nullptr で、r.status に理由）。
-const ui::CanvasDesc* editableCanvas(const UiState::Snapshot& snap, int index, Result& r) {
-    const ui::CanvasDesc* desc = snap.liveCanvas(index);
-    if (!desc) return nullptr;  // 行き違い（もう無い）
-    if (!elementsEditable(*desc)) {
-        r.status = sharedStatus(desc->ui);
-        return nullptr;
+// Canvas canvas の中身（要素とアニメ）を書き換える手順（唯一の定義。要素の操作・XML の
+// 適用・editElement が通る）: 持ち主ごと 1 枚写し、編集してよいかを確かめ、
+// edit(写した Canvas, 持ち主の様子) が true を返したら持ち主へ戻す。
+ElementWrite editContents(
+    UiState& state, int canvas,
+    const std::function<bool(ui::CanvasDesc&, const UiState::ContentsInfo&)>& edit) {
+    ElementWrite w;
+    ui::CanvasDesc desc;
+    UiState::ContentsInfo info;
+    if (!state.copyCanvasContents(canvas, desc, info)) return w;  // 消えた
+    if (!elementsEditable(info)) {
+        w.refusal = notEditableStatus(info);
+        return w;
     }
-    return desc;
+    if (!edit(desc, info)) return w;
+    w.written = state.replaceCanvasContents(canvas, std::move(desc));
+    return w;
 }
 
 Result addElementOp(UiState& state, const nlohmann::json& args) {
     const int index = jsonInt(args, "canvas", -1);
-    const UiState::Snapshot snap = state.snapshot();
     Result r;
-    const ui::CanvasDesc* found = editableCanvas(snap, index, r);
-    if (!found) return r;
     const std::string kindName = jsonString(args, "kind", "");
     const ui::ElementKindInfo* kind = ui::kindInfo(kindName);
     if (!kind) {
-        r.status = "UI: 知らない種類の要素です: " + kindName;
+        // 知らない種類（Canvas が今もあるときだけ知らせる = 行き違いは黙る）。
+        ui::CanvasDesc probe;
+        if (state.copyCanvas(index, probe)) r.status = "UI: 知らない種類の要素です: " + kindName;
         return r;
     }
-    ui::CanvasDesc desc = *found;
-    ui::ElementDesc e;
-    e.kind = kind->name;
-    e.parent = jsonInt(args, "parent", -1);
-    const std::string caveat = applyName(
-        args, e.name,
-        [&desc](const std::string& n) { return elementNameTaken(desc.elements, n, -1); }, "要素");
-    const std::vector<std::string> rejected =
-        setElementProps(member(args, "props"), nlohmann::json(), e);
-    const int id = snap.nextElementIdOf(index);
-    addElement(desc.elements, e, id);
-    const std::string label = ui::elementLabel(desc.elements.back());
-    state.replaceCanvas(index, desc);
+    std::string caveat, label, canvasLabel;
+    std::vector<std::string> rejected;
+    int id = -1;
+    const ElementWrite w = editContents(
+        state, index, [&](ui::CanvasDesc& desc, const UiState::ContentsInfo& info) {
+            ui::ElementDesc e;
+            e.kind = kind->name;
+            e.parent = jsonInt(args, "parent", -1);
+            caveat = applyName(
+                args, e.name,
+                [&desc](const std::string& n) { return elementNameTaken(desc.elements, n, -1); },
+                "要素");
+            rejected = setElementProps(member(args, "props"), nlohmann::json(), e);
+            id = info.nextElementId;
+            addElement(desc.elements, e, id);
+            label = ui::elementLabel(desc.elements.back());
+            canvasLabel = ui::canvasLabel(desc, index);
+            return true;
+        });
+    r.status = w.refusal;
+    if (!w.written) return r;  // 行き違い（もう無い）・編集してよくない
     r.select = true;
     r.canvas = index;
     r.element = id;
-    r.status = "UI: " + label + " を " + ui::canvasLabel(desc, index) + " に追加しました" +
-               caveat + rejectedCaveat(rejected);
+    r.status = "UI: " + label + " を " + canvasLabel + " に追加しました" + caveat +
+               rejectedCaveat(rejected);
     return r;
 }
 
 Result removeElementOp(UiState& state, const nlohmann::json& args) {
     const int index = jsonInt(args, "canvas", -1);
     const int id = jsonInt(args, "element", -1);
-    const UiState::Snapshot snap = state.snapshot();
     Result r;
-    const ui::CanvasDesc* found = editableCanvas(snap, index, r);
-    if (!found) return r;
-    ui::CanvasDesc desc = *found;
-    const std::size_t at = ui::elementIndex(desc.elements, id);
-    if (at == desc.elements.size()) return r;  // 行き違い（もう無い）
-    const std::string label = ui::elementLabel(desc.elements[at]);
-    const RemoveCount removed = removeElement(desc, id);
-    state.replaceCanvas(index, desc);
+    std::string label;
+    RemoveCount removed;
+    const ElementWrite w =
+        editContents(state, index, [&](ui::CanvasDesc& desc, const UiState::ContentsInfo&) {
+            const std::size_t at = ui::elementIndex(desc.elements, id);
+            if (at == desc.elements.size()) return false;  // 行き違い（もう無い）
+            label = ui::elementLabel(desc.elements[at]);
+            removed = removeElement(desc, id);
+            return true;
+        });
+    r.status = w.refusal;
+    if (!w.written) return r;
     r.status = "UI: " + label + " を削除しました" +
                (removed.elements > 1
                     ? "（中の要素 " + std::to_string(removed.elements - 1) + " 個も）"
@@ -276,16 +309,64 @@ Result setElementOp(UiState& state, const nlohmann::json& args) {
         rejected = setElementProps(member(args, "props"), member(args, "reset"), e);
         label = ui::elementLabel(e);
     });
-    if (!w.shared.empty()) r.status = sharedStatus(w.shared);
-    if (!w.written) return r;  // 行き違い（もう無い）・共用 UI
+    r.status = w.refusal;
+    if (!w.written) return r;  // 行き違い（もう無い）・編集してよくない
     r.status = "UI: " + label + " を更新しました" + caveat + rejectedCaveat(rejected) +
                keysCaveat(keys, name.empty() ? "外しました" : "付け替えました");
     return r;
 }
 
+// ui.xml: Canvas の中身を <ui name> の書式のテキストで置き換える。name は使わない（名前は
+// 一覧と Inspector で変える）。警告は LOGW と件数。
+Result xmlOp(UiState& state, const nlohmann::json& args) {
+    const int index = jsonInt(args, "canvas", -1);
+    const std::string text = jsonString(args, "text", "");
+    Result r;
+    const std::string problem = xmlTextProblem(text);
+    if (!problem.empty()) {
+        r.status = problem;
+        return r;
+    }
+    ui::UiAssetDesc got;
+    std::string error;
+    std::vector<std::string> warnings;
+    ui::parseUiAssetXml(text, got, error, &warnings);  // 壊れていないことは上で確かめた
+    std::string label, nameCaveat;
+    const ElementWrite w =
+        editContents(state, index, [&](ui::CanvasDesc& desc, const UiState::ContentsInfo& info) {
+            const std::string& own = info.asset.empty() ? desc.name : info.asset;
+            if (!got.name.empty() && got.name != own) {
+                nameCaveat = "（XML の name は使いません。名前は一覧と Inspector で変えます）";
+            }
+            ui::moveContents(got, desc);
+            label = info.asset.empty() ? ui::canvasLabel(desc, index) : "UI " + info.asset;
+            return true;
+        });
+    r.status = w.refusal;
+    if (!w.written) return r;  // 行き違い（もう無い）・編集してよくない
+    for (const auto& m : warnings) LOGW("ui", "ui.xml: %s", m.c_str());
+    r.status = "UI: " + label + " の中身を XML で置き換えました" + nameCaveat +
+               warningCountCaveat("警告", warnings.size());
+    return r;
+}
+
 }  // namespace
 
-bool elementsEditable(const ui::CanvasDesc& desc) { return desc.ui.empty(); }
+bool elementsEditable(const UiState::ContentsInfo& info) {
+    return info.asset.empty() || (info.declared && !info.unreadable);
+}
+
+std::string xmlTextProblem(const std::string& text) {
+    if (text.empty()) return "UI: XML が空です";
+    if (text.size() > editor::kMaxXmlEditBytes) {
+        return "UI: XML が大きすぎます（" + std::to_string(editor::kMaxXmlEditBytes / (1024 * 1024)) +
+               "MB まで）";
+    }
+    ui::UiAssetDesc got;
+    std::string error;
+    if (!ui::parseUiAssetXml(text, got, error)) return "UI: XML が読めません: " + error;
+    return {};
+}
 
 bool isUiOp(const std::string& kind) {
     return std::any_of(std::begin(kOps), std::end(kOps),
@@ -299,6 +380,7 @@ Result apply(UiState& state, const std::string& kind, const nlohmann::json& args
     if (kind == kElementAdd) return addElementOp(state, args);
     if (kind == kElementRemove) return removeElementOp(state, args);
     if (kind == kElementSet) return setElementOp(state, args);
+    if (kind == kXml) return xmlOp(state, args);
     return {};
 }
 
@@ -362,18 +444,13 @@ std::vector<std::string> writeOwnProps(ui::ElementDesc& e, ui::PropSet incoming)
 
 ElementWrite editElement(UiState& state, int canvas, int id,
                          const std::function<void(ui::CanvasDesc&, std::size_t)>& edit) {
-    ElementWrite w;
-    ui::CanvasDesc desc;
-    if (!state.copyCanvas(canvas, desc)) return w;  // 消えた
-    if (!elementsEditable(desc)) {
-        w.shared = desc.ui;
-        return w;
-    }
-    const std::size_t at = ui::elementIndex(desc.elements, id);
-    if (at == desc.elements.size()) return w;  // 消えた
-    edit(desc, at);
-    w.written = state.replaceCanvas(canvas, std::move(desc));
-    return w;
+    return editContents(state, canvas,
+                        [&](ui::CanvasDesc& desc, const UiState::ContentsInfo&) {
+                            const std::size_t at = ui::elementIndex(desc.elements, id);
+                            if (at == desc.elements.size()) return false;  // 消えた
+                            edit(desc, at);
+                            return true;
+                        });
 }
 
 void addElement(std::vector<ui::ElementDesc>& elements, ui::ElementDesc e, int id) {

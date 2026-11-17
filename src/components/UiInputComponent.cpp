@@ -7,6 +7,7 @@
 #include "core/Json.h"
 #include "render/Renderer.h"
 #include "scene/Scene.h"
+#include "scene/UiFiles.h"
 #include "scene/UiOps.h"
 #include "ui/UiHandles.h"
 #include "ui/UiLayout.h"
@@ -86,6 +87,7 @@ bool UiInputComponent::onCommand(Scene& scene, std::size_t camIndex,
                                  const nlohmann::json& msg) {
     const std::string cmd = wizengine::jsonString(msg, "cmd", "");
     if (cmd.rfind(kEditPrefix, 0) == 0) return pushEdit(scene, camIndex, cmd, msg);
+    if (cmd.rfind(kLibPrefix, 0) == 0) return pushLibrary(scene, camIndex, cmd, msg);
     if (cmd == "select.ui") return select(scene, camIndex, msg);
     if (cmd == "pick") return pick(scene, camIndex, msg);
     if (cmd != "drag" && cmd != "release") return false;  // not ours
@@ -136,9 +138,34 @@ bool UiInputComponent::pushEdit(Scene& scene, std::size_t camIndex, const std::s
         state.setStatus("UI: 知らない操作です: " + cmd);
         return true;
     }
+    // XML の直接編集は壊れたテキストをキューに積まない（理由をステータスへ。適用は
+    // 非同期なので、レスポンスでは返せない）。PHYSICS ももう一度確かめてから当てる。
+    if (kind == "ui.xml") {
+        const std::string problem =
+            wizengine::uiops::xmlTextProblem(wizengine::jsonString(msg, "text", ""));
+        if (!problem.empty()) {
+            state.setStatus(problem);
+            return true;
+        }
+    }
     // 値の読み方と丸め・対象が今もあるかの確かめは PHYSICS の UiOps（ここで読んだ
     // 写しは 1 フレーム古いことがあるので、判断に使わない）。
     state.push({kind, msg, camIndex});
+    return true;
+}
+
+bool UiInputComponent::pushLibrary(Scene& scene, std::size_t camIndex, const std::string& cmd,
+                                   const nlohmann::json& msg) {
+    // kind = ui だけを受ける（ほかの種類・refresh は EditorComponent へ回す）。
+    if (wizengine::jsonString(msg, "kind", "") != wizengine::uifiles::kUiLibraryKind) return false;
+    if (!scene.editsUiFrom(camIndex)) return true;
+    const std::string what = cmd.substr(std::char_traits<char>::length(kLibPrefix));
+    if (what != "share" && what != "unshare" && what != "import" && what != "delete") {
+        return true;
+    }
+    // Op の種類は計算式・プレハブと同じ "lib.*"（当てるのは Scene::applyLibraryOp →
+    // UI の部品は scene/UiLibraryOps。名前と canvas の読み方も向こう）。
+    scene.editor().push({"lib." + what, msg, camIndex});
     return true;
 }
 
@@ -159,8 +186,9 @@ bool UiInputComponent::pick(Scene& scene, std::size_t camIndex, const nlohmann::
     const wizengine::UiState::Snapshot& snap = snapshot(scene);
     const ui::CanvasDesc* desc = snap.liveCanvas(canvasIndex);
     if (!desc || !ui::frameShownOnCamera(*desc, int(camIndex))) return false;
-    // 共用 UI の要素は動かさない（Inspector と同じ規則）。押しても下へ流す。
-    if (!wizengine::uiops::elementsEditable(*desc)) return false;
+    // 編集してよくない中身（読めなかった共用 UI など）の要素は動かさない（Inspector と
+    // 同じ規則）。押しても下へ流す。
+    if (!wizengine::uiops::elementsEditable(snap.contentsInfo(canvasIndex))) return false;
     const int viewW = cam.viewW.load();
     const int viewH = cam.viewH.load();
     if (viewW <= 0 || viewH <= 0) return false;  // まだビューが無い
@@ -226,9 +254,10 @@ bool UiInputComponent::beginDrag(Scene& scene, std::size_t camIndex, Cam& cam) {
     const bool sameLoad = cam.loadGeneration.load() == scene.ui().loadGeneration();
     if (!sameMode || !sameLoad || !scene.editsUiFrom(camIndex)) return false;
     const int canvasIndex = cam.canvas.load();
-    ui::CanvasDesc desc;
-    if (!scene.ui().copyCanvas(canvasIndex, desc)) return false;  // 消えた
-    if (!wizengine::uiops::elementsEditable(desc) || !ui::frameShownOnCamera(desc, int(camIndex))) {
+    ui::CanvasDesc desc;  // 要素は中身の持ち主（自分か、使っている UI）から
+    wizengine::UiState::ContentsInfo info;
+    if (!scene.ui().copyCanvasContents(canvasIndex, desc, info)) return false;  // 消えた
+    if (!wizengine::uiops::elementsEditable(info) || !ui::frameShownOnCamera(desc, int(camIndex))) {
         return false;
     }
     const int elementId = cam.element.load();
@@ -286,7 +315,7 @@ bool UiInputComponent::applyDrag(Scene& scene, Cam& cam) {
         [&incoming](ui::CanvasDesc& desc, std::size_t at) {
             wizengine::uiops::writeOwnProps(desc.elements[at], std::move(incoming));
         });
-    if (!w.written) return false;  // 消えた・共用になった
+    if (!w.written) return false;  // 消えた・編集してよくなくなった
     cam.wrotePos = writePos;
     cam.wroteSize = writeSize;
     cam.last = next;

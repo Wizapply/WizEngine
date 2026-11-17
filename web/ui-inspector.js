@@ -7,7 +7,10 @@
 // 属性を足しても、この節の変更は 0）。欄の形は schema の type で決め、lo / hi は欄の
 // 見た目（min / max）にだけ使う - 丸めはサーバー（scene/UiOps.h）が持つ。欄は離れた
 // とき（change）に、その 1 つの値だけを送る（edit.ui.set / edit.ui.element.set の部分更新）。
-// 共用 UI の要素と、書き換えられない属性（editable = false）は表示だけ。
+// 表示だけにするのは、サーバーが editable = false と送った要素（読めなかった共用 UI の
+// 中身など。規則はサーバーの uiops::elementsEditable）と、書き換えられない属性（schema の
+// editable = false）。共用 UI の要素も編集できる（同じ UI を使う全 Canvas に効き、共用の
+// ファイルへは保存で書く）。
 
   // UI の色 [r,g,b,a]（リニア値 0..1）→ <input type="color"> と同じ "#rrggbb"。規則は
   // ほかのブラウザ API の色と同じ（リニア値をそのまま 0-255 へ四捨五入して写す。
@@ -221,7 +224,7 @@
     const canvasName = canvas ? canvas.label : sel.canvasLabel;
     const schema = u.schema || { props: [], kinds: [], canvas: [] };
     const isCanvas = sel.element < 0;
-    const readOnly = !isCanvas && sel.shared;  // 共用 UI の要素は表示だけ
+    const readOnly = !isCanvas && !sel.editable;  // サーバーが編集させない要素は表示だけ
     const kind = isCanvas ? null : schema.kinds.find((k) => k.name === sel.kind);
     const specs = isCanvas ? schema.canvas
       : (kind ? kind.props : []).map((n) => schema.props.find((p) => p.name === n)).filter((p) => p);
@@ -231,9 +234,10 @@
                 : canvasName + ' / ' + sel.label) +
       (sel.shared ? '（共用 UI）' : '');
 
-    // 欄の形（どの選択の・どの欄か・共用 UI か = 追加ボタンの有無）が変わったときだけ
+    // 欄の形（どの選択の・どの欄か・共用 UI か・グローバルか = ボタン）が変わったときだけ
     // 組み直す。表示だけの行は値も形に入れる（中身ごと組み直す）。
     const key = [sel.canvas, sel.element, sel.kind || '', readOnly, canvas ? canvas.ui : '',
+                 canvas ? canvas.editable : '', uiSharedFileOf(canvas),
                  readOnly ? JSON.stringify(sel.props) : ''].join('|');
     const props = sel.props || {};
     const has = (name) => Object.prototype.hasOwnProperty.call(props, name);
@@ -272,22 +276,39 @@
       }
     }
     document.getElementById('uiHint').textContent = readOnly
-      ? '共用 UI の要素はここでは編集できません（中身は共用のファイルが持ちます）。'
-      : isCanvas ? '値は欄を離れたときに送ります。'
-      : '薄い値は既定値（XML に書いていない値）です。↺ で既定値に戻します。';
+      ? 'この要素は編集できません（共用 UI のファイルが読めないか、UI の宣言がありません）。'
+      : (isCanvas ? '値は欄を離れたときに送ります。'
+                  : '薄い値は既定値（XML に書いていない値）です。↺ で既定値に戻します。') +
+        (sel.shared && canvas ? ' 共用 UI（' + canvas.ui + '）の中身は、これを使う全部の Canvas に効き、' +
+                      'グローバルならシーンの保存でファイルに書きます。' : '');
   }
 
-  // 節の末尾のボタン（要素の追加・削除）。追加は種類の表（schema.kinds）から並べる。
+  // Canvas が使う UI の file（空 = ローカルか、UI を使っていない）。共用にする / ローカルに
+  // する で変わる = ボタンの組み直しの目印。
+  function uiSharedFileOf(canvas) {
+    const a = canvas && canvas.ui ? uiAsset(canvas.ui) : null;
+    return (a && a.file) || '';
+  }
+  // 節の末尾のボタン（要素の追加・削除、Canvas なら中身の XML・共用）。追加は種類の表
+  // （schema.kinds）から並べる。
   function uiActionsHtml(schema, sel, canvas) {
-    const shared = canvas && canvas.ui;
+    const editable = !!(canvas && canvas.editable);
     let html = '';
-    if (!shared) {
+    if (editable) {
       html += '<div class="edLabel">' + (sel.element < 0 ? '要素を追加' : '子の要素を追加') + '</div>' +
         '<div class="edRow btnRow">' + schema.kinds.map((k) =>
           '<button data-ui-add="' + ndEsc(k.name) + '">＋ ' + ndEsc(k.name) + '</button>').join('') +
         '</div>';
     }
-    if (sel.element < 0 || !shared) {
+    if (sel.element < 0 && canvas) {
+      const share = uiShareMenuItem(canvas);
+      html += '<div class="edRow btnRow">' +
+        (editable ? '<button data-ui-xml="1" title="中身（要素とアニメ）を XML で直す">📄 XML で編集</button>' : '') +
+        (share ? '<button data-ui-share="1" title="' + ndEsc(share.hint || '') + '">' +
+                 ndEsc(share.label) + '</button>' : '') +
+        '</div>';
+    }
+    if (sel.element < 0 || editable) {
       html += '<div class="edRow btnRow"><button class="danger" data-ui-remove="1">🗑 ' +
         (sel.element < 0 ? 'Canvas を削除' : '要素を削除') + '</button></div>';
     }
@@ -345,6 +366,13 @@
         uiAddElement(sel.canvas, b.dataset.uiAdd, sel.element);
       } else if (b.dataset.uiRemove) {
         uiRemove(sel.canvas, sel.element);
+      } else if (b.dataset.uiXml) {
+        openUiXmlEditor(sel.canvas);
+      } else if (b.dataset.uiShare) {
+        const u = uiData();
+        const c = u && (u.canvases || []).find((x) => x.index === sel.canvas);
+        const share = c && uiShareMenuItem(c);
+        if (share) share.onClick();
       }
     });
   })();

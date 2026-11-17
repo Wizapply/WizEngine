@@ -813,6 +813,8 @@
     display: flex; align-items: center; justify-content: center;
   }
   #xmlEd[hidden] { display: none; }
+  /* UI の中身を開いたときに隠すもの（⧉ と、シーン用の説明）。 */
+  #xmlEd [hidden] { display: none; }
   #xmlEd, #xmlEd * { cursor: auto; }
   #xmlEd button, #xmlEd .ndBack { cursor: pointer; }
   #xmText {

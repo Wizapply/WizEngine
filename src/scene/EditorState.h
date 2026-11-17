@@ -176,6 +176,8 @@ public:
     std::vector<std::string> formulaLibrary() const;
     std::vector<std::string> prefabLibrary() const;
     std::vector<std::string> meshLibrary() const;
+    // 共用 UI（assets/ui/<名前>.xml の名前。置き場は scene/UiFiles）。
+    std::vector<std::string> uiLibrary() const;
     void refreshLibraries();  // イベントも含めて全部
     // ライブラリのファイル（assets/ 相対）。名前が不正なら空。
     static std::string formulaLibraryFile(const std::string& name);
@@ -388,7 +390,8 @@ private:
     };
     std::vector<EventAssetState> events_;
     std::vector<std::string> eventLibrary_;  // mutex_ の下
-    std::vector<std::string> formulaLibrary_, prefabLibrary_, meshLibrary_;  // mutex_ の下
+    std::vector<std::string> formulaLibrary_, prefabLibrary_, meshLibrary_,
+        uiLibrary_;  // mutex_ の下
     std::vector<std::string> worldEvents_;
     // 計算式アセット（mutex_ の下）。
     struct FormulaAssetState {

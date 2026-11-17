@@ -2526,10 +2526,26 @@
   // 送る。検証と適用はサーバー側（壊れた XML は適用されず、理由が status に
   // 出る）ので、ここは取得・送信・表示だけ。適用結果はモーダル右上に
   // status をミラーして見せる（送信は非同期でレスポンスに結果が無いため）。
+  // 同じモーダルで UI の Canvas の中身（要素とアニメ、<ui name> の書式）も直す
+  // （openUiXmlEditor。xmlEdCanvas = その Canvas の番号、-1 = シーン全体）。テキストは
+  // /scene の ui.selected.xml（選んでいる Canvas の中身）、適用は edit.ui.xml。
   let xmlEdOpen = false;
+  let xmlEdCanvas = -1;
+  let xmlEdWaiting = false;  // UI の中身がまだ届いていない（選んだ直後。ポーリングで入れる）
   function toggleXmlEditor() { xmlEdOpen ? closeXmlEditor() : openXmlEditor(); }
-  function openXmlEditor() {
+  function openXmlEditor() { showXmlEditor(-1); }
+  function openUiXmlEditor(canvas) { showXmlEditor(canvas); }
+  function showXmlEditor(canvas) {
     xmlEdOpen = true;
+    xmlEdCanvas = canvas;
+    xmlEdWaiting = false;
+    const ui = canvas >= 0;
+    document.getElementById('xmTitle').textContent = ui ? 'UI の中身の XML' : 'シーン XML';
+    document.getElementById('xmOpenTab').hidden = ui;
+    document.getElementById('xmHintScene').hidden = ui;
+    document.getElementById('xmHintUi').hidden = !ui;
+    document.getElementById('xmStatus').textContent = '';
+    document.getElementById('xmText').value = '';
     document.getElementById('xmlEd').hidden = false;
     reloadXml();
   }
@@ -2538,14 +2554,31 @@
     document.getElementById('xmlEd').hidden = true;
   }
   function reloadXml() {
+    const box = document.getElementById('xmText');
+    if (xmlEdCanvas >= 0) {
+      // 選んでいる Canvas の中身（サーバーが選択に付けて送る）。まだ届いていなければ
+      // 次のポーリングで入れる（一覧の右クリックは選んですぐ開くため）。
+      const u = uiData();
+      const sel = u ? u.selected : null;
+      xmlEdWaiting = !(sel && sel.canvas === xmlEdCanvas && sel.element < 0);
+      if (!xmlEdWaiting) box.value = sel.xml || '';
+      document.getElementById('xmStatus').textContent =
+        xmlEdWaiting ? '読み込み中...（その Canvas を一覧で選ぶと出ます）' : '';
+      return;
+    }
     fetch('scene.xml')
       .then((r) => r.text())
-      .then((t) => { document.getElementById('xmText').value = t; })
-      .catch(() => { document.getElementById('xmText').value = ''; });
+      .then((t) => { box.value = t; })
+      .catch(() => { box.value = ''; });
   }
   function applyXml() {
-    discardTerrain();
-    send('edit.xml', { text: document.getElementById('xmText').value });
+    const text = document.getElementById('xmText').value;
+    if (xmlEdCanvas >= 0) {
+      send('edit.ui.xml', { canvas: xmlEdCanvas, text: text });
+    } else {
+      discardTerrain();
+      send('edit.xml', { text: text });
+    }
     document.getElementById('xmStatus').textContent = '適用中...';
   }
 
@@ -2999,6 +3032,12 @@
     const libMeshes = lib.meshes || [];
     currentAsset();  // ndAsset を今ある一覧に合わせる（タイルの選択表示用）
     currentFormula();
+    const BADGE = '<span class="asBadge">🌐</span>';
+    const tile = (attrs, title, ico, name, kind, cls) =>
+      '<div class="asItem' + (cls ? ' ' + cls : '') + '" ' + attrs + ' title="' +
+      ndEsc(title) + '"><span class="ico">' + ico + '</span><span class="name">' +
+      name + '</span><span class="kind">' + kind + '</span></div>';
+    const uiTiles = uiAssetTiles(tile, BADGE);  // 宣言した UI と共用 UI（ui.js）
     const key = files.join('|') + '@' + (sceneData.sceneFile || '') + '#' +
       meshes.map((m) => m.name + '=' + m.file).join('|') + '%' +
       events.map((e) => e.name + ':' + (e.nodes || []).length + ':' + (e.file || '') +
@@ -3008,7 +3047,7 @@
       '&' + ndFormula + ndKind + '^' +
       prefabs.map((p) => p.name + ':' + p.parts + ':' + (p.file || '')).join('|') + '~' +
       libFormulas.join('|') + '~' + libPrefabs.join('|') + '~' + libMeshes.join('|') + '~' +
-      terrainTilesKey();
+      terrainTilesKey() + '~' + uiTiles.key;
     if (key === assetListKey) return;  // 変化が無ければ DOM を組み直さない
     assetListKey = key;
 
@@ -3020,11 +3059,6 @@
     // 名前はサーバー側で英数字と _ - に正規化済み（シーン・イベント・計算式・
     // プレハブ）なので属性へ埋めてよい。メッシュとテレインは XML 由来なので
     // エスケープし、onclick へは配列番号か data 属性で渡す。
-    const BADGE = '<span class="asBadge">🌐</span>';
-    const tile = (attrs, title, ico, name, kind, cls) =>
-      '<div class="asItem' + (cls ? ' ' + cls : '') + '" ' + attrs + ' title="' +
-      ndEsc(title) + '"><span class="ico">' + ico + '</span><span class="name">' +
-      name + '</span><span class="kind">' + kind + '</span></div>';
 
     // ---- 🧱 作成（組み込み）------------------------------------------------
     let create =
@@ -3093,6 +3127,7 @@
     for (const e of events) if (!e.file) local += eventTile(e);
     for (const f of formulas) if (!f.file) local += formulaTile(f);
     for (const p of prefabs) if (!p.file) local += prefabTile(p);
+    local += uiTiles.local;
 
     // ---- 🌐 グローバル（全シーン共通）----------------------------------------
     let global = '';
@@ -3112,6 +3147,7 @@
     const usedPrefabs = new Set(prefabs.map((p) => p.name));
     for (const p of prefabs) if (p.file) global += prefabTile(p);
     for (const n of libPrefabs) if (!usedPrefabs.has(n)) global += libTile('data-plib', n, '🧩', 'prefab', 'prefab');
+    global += uiTiles.global;
     // assets/ のモデル（.glb / .gltf）でこのシーンがまだ宣言していないもの。
     // クリックでこのシーンに宣言して置く（以後はローカルのメッシュに並ぶ）。
     const declared = new Set(meshes.map((m) => m.file));
@@ -3157,13 +3193,16 @@
     const ftile = e.target.closest ? e.target.closest('[data-formula]') : null;
     const ptile = e.target.closest ? e.target.closest('[data-prefab]') : null;
     const ttile = e.target.closest ? e.target.closest('[data-terrain]') : null;
-    const ltile = e.target.closest ? e.target.closest('[data-evlib], [data-flib], [data-plib]') : null;
+    const ltile = e.target.closest ? e.target.closest('[data-evlib], [data-flib], [data-plib], [data-ulib]') : null;
+    const utile = e.target.closest ? e.target.closest('[data-uiasset]') : null;
     const mtile = e.target.closest ? e.target.closest('[data-mlib]') : null;
     const sel = mySelectedDesc();
     if (ltile) {
       const kind = ltile.dataset.evlib !== undefined ? 'event'
-                 : ltile.dataset.flib !== undefined ? 'formula' : 'prefab';
-      const lname = ltile.dataset.evlib || ltile.dataset.flib || ltile.dataset.plib;
+                 : ltile.dataset.flib !== undefined ? 'formula'
+                 : ltile.dataset.ulib !== undefined ? 'ui' : 'prefab';
+      const lname = ltile.dataset.evlib || ltile.dataset.flib || ltile.dataset.plib ||
+                    ltile.dataset.ulib;
       showContextMenu(e, [
         { head: '🌐 ' + lname + '（グローバルの' + LIB_LABEL[kind] + '）' },
         { label: 'このシーンで使う', hint: '参照として読み込む',
@@ -3173,6 +3212,10 @@
           hint: 'ごみ箱へ（使っている他のシーンでは読めなくなります）',
           onClick: () => deleteLibraryAsset(kind, lname) },
       ]);
+      return;
+    }
+    if (utile) {
+      showContextMenu(e, uiAssetMenuItems(utile.dataset.uiasset));
       return;
     }
     if (mtile) {
@@ -3713,11 +3756,13 @@
   }
   // ---- グローバル（ライブラリ）の計算式・プレハブ・メッシュ ------------------
   // サーバーは edit.lib.share / unshare / import / delete（kind = event / formula /
-  // prefab）と edit.mesh.add。イベントは従来の edit.event.* でも同じ。
-  const LIB_LABEL = { event: 'イベント', formula: '計算式', prefab: 'プレハブ' };
+  // prefab / ui）と edit.mesh.add。イベントは従来の edit.event.* でも同じ。
+  const LIB_LABEL = { event: 'イベント', formula: '計算式', prefab: 'プレハブ', ui: 'UI' };
+  // 置き場（assets/ 相対のフォルダ）。/scene の library のキーも同じ名前。
+  const LIB_DIR = { event: 'events', formula: 'formulas', prefab: 'prefabs', ui: 'ui' };
   function libraryList(kind) {
     const lib = (sceneData && sceneData.library) || {};
-    return kind === 'event' ? eventLibrary() : (lib[kind + 's'] || []);
+    return kind === 'event' ? eventLibrary() : (lib[LIB_DIR[kind]] || []);
   }
   function importLibraryAsset(kind, name) {
     if (!name) return;
@@ -3725,9 +3770,10 @@
     if (kind === 'formula') { ndKind = 'formula'; ndFormula = name; ndGraphKey = ''; }
     send('edit.lib.import', { kind: kind, name: name });
   }
-  function shareLibraryAsset(kind, name) {
+  // extra = 種類ごとの追加の引数（UI の Canvas から作るときの {canvas} など）。
+  function shareLibraryAsset(kind, name, extra) {
     if (kind === 'event') { shareEventAsset(name); return; }
-    const msg = { kind: kind, name: name };
+    const msg = Object.assign({ kind: kind, name: name }, extra || {});
     if (libraryList(kind).includes(name)) {
       if (!confirm('グローバルに同じ名前の' + LIB_LABEL[kind] + '「' + name + '」があります。\n' +
                    'このシーンの中身で上書きしますか？（それを使っている他のシーンも変わります）')) {
@@ -3769,7 +3815,7 @@
     return file
       ? [{ label: '📍 ローカルにする（このシーン専用）', hint: 'グローバルのファイルは残ります',
            onClick: () => unshareLibraryAsset(kind, name) }]
-      : [{ label: '🌐 グローバルにする（全シーン共通）', hint: 'assets/' + kind + 's/' + name + '.xml',
+      : [{ label: '🌐 グローバルにする（全シーン共通）', hint: 'assets/' + LIB_DIR[kind] + '/' + name + '.xml',
            onClick: () => shareLibraryAsset(kind, name) }];
   }
   function deleteLibraryEvent(name) {
@@ -4858,7 +4904,9 @@
       applyFieldLimits();
       noteSceneChanges(sceneData);
       const status = sceneData.status || '';
-      if (xmlEdOpen) {
+      if (xmlEdOpen && xmlEdWaiting) {
+        reloadXml();
+      } else if (xmlEdOpen) {
         document.getElementById('xmStatus').textContent = status;
       }
       noteServerStatus(sceneData.statusSeq, status);

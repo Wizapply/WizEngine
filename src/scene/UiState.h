@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include "document/SceneDocument.h"
@@ -35,11 +36,24 @@ public:
         // ui::nextElementId（今の最大の次）を下限に持ち上げる。文書には書かない。
         int nextElementId = 1;
     };
-    // 共用の UI（file あり）は読込で中身をファイルから入れる。dirty はファイルへ
-    // 書いていない変更の目印（書く側は後の PR。今は常に false）。
+    // シーンが宣言する UI（<asset> の <ui>。file があれば共用 = 中身は読込でファイルから
+    // 入れる）。ファイルへ書く変更の目印は持たない（保存は読んだとき・書いたときの中身と
+    // 比べる = Scene の libBaseline_）。
     struct UiAssetState {
         ui::UiAssetDesc desc;
-        bool dirty = false;
+        // 共用 UI のファイルが読めなかった（中身は空）。この中身は編集しない（保存で
+        // ファイルへ書かれず、編集が黙って消えるため）。
+        bool unreadable = false;
+        // 次にエディタで足す要素の id（CanvasItem::nextElementId と同じ約束。この UI を
+        // 使う Canvas が何枚あっても 1 つ）。
+        int nextElementId = 1;
+    };
+    // Canvas の要素の持ち主の様子（編集してよいかの規則は uiops::elementsEditable）。
+    struct ContentsInfo {
+        std::string asset;        // 空 = Canvas 自身。あり = 使っている UI（<canvas ui>）の名前
+        bool declared = true;     // その名前の UI が宣言されているか
+        bool unreadable = false;  // その UI のファイルが読めなかった
+        int nextElementId = 1;    // 次にエディタで足す要素の id
     };
     // 設計値の写し（描画・入力・ブラウザ API が版ごとに 1 回だけ取る）。
     struct Snapshot {
@@ -52,8 +66,11 @@ public:
 
         // 番号 index の Canvas が生きていればその設計値（範囲外・消えた物は nullptr）。
         const ui::CanvasDesc* liveCanvas(int index) const;
-        // 番号 index の Canvas に次に足す要素の id（生きていなければ 1）。
-        int nextElementIdOf(int index) const;
+        // 名前 name の UI の宣言（無ければ nullptr）。
+        const UiAssetState* uiAsset(const std::string& name) const;
+        // 生きている Canvas index の要素の持ち主の様子（copyCanvasContents と同じ答え。
+        // 消えた物は既定値）。
+        ContentsInfo contentsInfo(int index) const;
         // Canvas が使う要素の並び（唯一の定義）: ui を書いていれば共用 UI の中身、
         // 無ければ自分の elements。宣言の無い共用 UI は空。
         const std::vector<ui::ElementDesc>& elementsOf(const ui::CanvasDesc& desc) const;
@@ -63,6 +80,13 @@ public:
     };
 
     enum class LoadMode { Replace, Append };
+    // fromDocument の結果。
+    struct LoadResult {
+        // 文書の Canvas 0 番が入った番号（読込のノードの番号をずらすため = lightBase）。
+        std::size_t base = 0;
+        // 名前が今のシーンと重なったので入れなかった UI とフォントの名前（取込）。
+        std::vector<std::string> skippedUi, skippedFonts;
+    };
 
     // 設計値の版（変わるたびに進む。0 は「まだ一度も写していない」に使える）。
     std::uint64_t version() const;
@@ -84,12 +108,13 @@ public:
     // 番号で指すノードを付け替えるため。ライトの lightRemap と同じ形）。
     std::vector<int> toDocument(editor::SceneDocument& doc) const;
     // 文書から入れる。Replace（読込・XML の適用）は置き換え、Append（取込）は
-    // 後ろへ足す（共用 UI とフォントは名前が重ならないものだけ）。戻り値 =
-    // 文書の Canvas 0 番が入った番号（読込のノードの番号をずらすため = lightBase）。
-    // 共用 UI の中身は呼び手が先にファイルから入れておく（UiFiles）。
-    std::size_t fromDocument(const std::vector<ui::CanvasDesc>& canvases,
-                             const std::vector<ui::UiAssetDesc>& uiAssets,
-                             const std::vector<ui::FontAssetDesc>& fonts, LoadMode mode);
+    // 後ろへ足す（共用 UI とフォントは名前が重ならないものだけ。重なった名前は
+    // LoadResult に返す）。共用 UI の中身は呼び手が先にファイルから入れておく
+    // （UiFiles）。unreadable = そのとき読めなかった共用 UI の名前（編集しない印）。
+    LoadResult fromDocument(const std::vector<ui::CanvasDesc>& canvases,
+                            const std::vector<ui::UiAssetDesc>& uiAssets,
+                            const std::vector<ui::FontAssetDesc>& fonts, LoadMode mode,
+                            const std::vector<std::string>& unreadable = {});
     // 全部消す（シーンの全消し）。
     void clear();
 
@@ -102,6 +127,30 @@ public:
     // 生きている Canvas の設計値を置き換える。無ければ false（何もしない）。次の要素の
     // id は下がらない（置き換えた中身の最大の次までは上がる）。
     bool replaceCanvas(int index, ui::CanvasDesc desc);
+    // 生きている Canvas の設計値を写し、要素とアニメ（elements / anims）は持ち主から
+    // 入れる: 自分の物か、<canvas ui> なら使っている UI の中身（宣言が無ければ空）。
+    // info に持ち主の様子。消えた物は false（out は触らない）。
+    bool copyCanvasContents(int index, ui::CanvasDesc& out, ContentsInfo& info) const;
+    // copyCanvasContents で写して書き換えた desc の要素とアニメを持ち主へ戻す（自分の
+    // 物なら Canvas ごと置き換え、使っている UI なら UI の中身だけ = Canvas の属性は
+    // 触らない）。Canvas が消えた・使う UI が写したときと変わった・UI の宣言が無いなら
+    // false（何もしない）。
+    bool replaceCanvasContents(int index, ui::CanvasDesc desc);
+
+    // ---- 宣言した UI（<asset> の <ui>。共用にする・やめる・読み込む = UiOps）-----
+    // 名前 name の UI を out へ写す（無ければ false）。
+    bool copyUiAsset(const std::string& name, ui::UiAssetDesc& out) const;
+    // UI を宣言に足す（同じ名前があれば false で何もしない）。
+    bool addUiAsset(ui::UiAssetDesc asset);
+    // 名前 name の UI の file（空 = このシーン専用）を変える。今の中身がそのまま正になる
+    // （読めなかった印を下ろす）。無ければ false。
+    bool setUiAssetFile(const std::string& name, const std::string& file);
+    // 生きている Canvas の中身（要素とアニメ）を UI asset にして宣言に足し、Canvas は
+    // その UI を使う（ui = asset.name、自分の要素とアニメは空）。asset.elements / anims は
+    // 呼び手が Canvas の今の中身を写して入れておく（要素の id はそのまま = 選択と映像の
+    // 上のドラッグは同じ要素を指し続ける）。Canvas が消えた・既に UI を使っている・同じ
+    // 名前の宣言があるなら false（何もしない）。
+    bool moveCanvasContentsToAsset(int index, ui::UiAssetDesc asset);
 
 private:
     void bumpLocked() { ++version_; }

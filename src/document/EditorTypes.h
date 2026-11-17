@@ -49,6 +49,10 @@ using wizengine::kPlacementMaxMeters;
 using wizengine::stringList;
 using wizengine::Vec3d;
 
+// ブラウザが XML のモーダルから直接送る文書（edit.xml のシーン全体と edit.ui.xml の
+// UI の中身）の上限（バイト）。
+inline constexpr std::size_t kMaxXmlEditBytes = std::size_t(1024) * 1024;
+
 // エディタ（配置・設計）とシミュレート（実行）の2モード。
 enum class AppMode { Editor, Simulate };
 

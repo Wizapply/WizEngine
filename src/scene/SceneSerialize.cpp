@@ -14,34 +14,65 @@ using namespace scene_detail;
 
 namespace {
 
-// 文書の UI（<canvas> / <ui> / <font>）を UiState へ入れる（読込と取込の共通の道）。
-// 共用 UI（file あり）は中身をファイルから入れる。読めなくても参照は残す（中身は
-// 空 = 何も出ない。ファイルを戻して読み直せば元に戻る。共通イベントと同じ扱い）。
-// 戻り値 = 読めなかった共用 UI の件数（呼び手がステータスに足す）。
-std::size_t loadUiFromDocument(wizengine::UiState& ui, const ed::SceneDocument& doc,
-                               wizengine::UiState::LoadMode mode) {
-    // 書き換える（ファイルの中身を入れる）のは共用 UI だけなので、それだけを写す。
-    std::vector<wizengine::ui::UiAssetDesc> uiAssets = doc.uiAssets;
-    std::size_t missing = 0;
-    for (auto& a : uiAssets) {
-        if (a.file.empty()) continue;
-        std::string reason;
-        if (!wizengine::uifiles::readSharedUi(a, reason)) {
-            LOGW("scene", "shared ui '%s': %s - it shows nothing until the file is back",
-                 a.name.c_str(), reason.c_str());
-            ++missing;
-        }
-    }
-    ui.fromDocument(doc.canvases, uiAssets, doc.fonts, mode);
-    return missing;
-}
-
 // 読めないファイルの読込の注意（ステータスの末尾に足す日本語 1 文）。label は
 // 種類（"共通イベント" / "共用 UI"）。0 件なら空。
 std::string unreadableFilesCaveat(const char* label, std::size_t count) {
     if (count == 0) return {};
     return std::string("（") + label + " " + std::to_string(count) +
            " 件のファイルが読めません - コンソール参照）";
+}
+
+// 文書の UI（<canvas> / <ui> / <font>）を UiState へ入れる（読込と取込の共通の道）。
+// 共用 UI（file あり）は中身をファイルから入れる。読めなくても参照は残す（中身は
+// 空 = 何も出ない。ファイルを戻して読み直せば元に戻る。共通イベントと同じ扱い）。
+// 読めて入った共用 UI は、そのときの中身を変更の目印（baseline = libBaseline_）に
+// 覚える（保存で変わったものだけ書く = Scene::saveLibraryAssets）。取込で名前が今の
+// シーンと重なった UI・フォントは入れず（今のシーンの物が勝つ）、LOGW に出す。
+// 戻り値 = ステータスの末尾に足す注意（読めなかった件数・名前の重なった件数）。
+std::string loadUiFromDocument(wizengine::UiState& ui, const ed::SceneDocument& doc,
+                               wizengine::UiState::LoadMode mode,
+                               std::map<std::string, std::string>& baseline) {
+    // 書き換える（ファイルの中身を入れる）のは共用 UI だけなので、それだけを写す。
+    std::vector<wizengine::ui::UiAssetDesc> uiAssets = doc.uiAssets;
+    std::vector<std::string> unreadable;
+    for (auto& a : uiAssets) {
+        if (a.file.empty()) continue;
+        std::string reason;
+        if (!wizengine::uifiles::readSharedUi(a, reason)) {
+            LOGW("scene", "shared ui '%s': %s - it shows nothing until the file is back",
+                 a.name.c_str(), reason.c_str());
+            unreadable.push_back(a.name);
+        }
+    }
+    const wizengine::UiState::LoadResult got =
+        ui.fromDocument(doc.canvases, uiAssets, doc.fonts, mode, unreadable);
+    auto listed = [](const std::vector<std::string>& names, const std::string& n) {
+        return std::find(names.begin(), names.end(), n) != names.end();
+    };
+    std::size_t missing = 0;  // 入った（重ならなかった）うちの読めなかった物
+    for (const auto& a : uiAssets) {
+        if (a.file.empty() || listed(got.skippedUi, a.name)) continue;
+        if (listed(unreadable, a.name)) {
+            ++missing;
+            continue;
+        }
+        baseline[wizengine::sharedasset::libraryBaselineKey(wizengine::uifiles::kUiLibraryKind,
+                                                             a.name)] =
+            wizengine::uifiles::libraryText(a);
+    }
+    for (const auto& n : got.skippedUi) {
+        LOGW("scene", "ui '%s' is already in this scene - keeping the current one (imported "
+             "canvases that use it show the current contents)", n.c_str());
+    }
+    for (const auto& n : got.skippedFonts) {
+        LOGW("scene", "font '%s' is already in this scene - keeping the current one", n.c_str());
+    }
+    const std::size_t skippedCount = got.skippedUi.size() + got.skippedFonts.size();
+    return unreadableFilesCaveat("共用 UI", missing) +
+           (skippedCount == 0 ? std::string()
+                              : "（名前が今のシーンと重なった UI / フォント " +
+                                    std::to_string(skippedCount) +
+                                    " 件は今のシーンの物を使います - コンソール参照）");
 }
 
 }  // namespace
@@ -276,7 +307,8 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         j["library"] = {{"events", editor_.eventLibrary()},
                         {"formulas", editor_.formulaLibrary()},
                         {"prefabs", editor_.prefabLibrary()},
-                        {"meshes", editor_.meshLibrary()}};
+                        {"meshes", editor_.meshLibrary()},
+                        {"ui", editor_.uiLibrary()}};
         j["events"] = ev;
     }
     // プレハブ（ASSETS パネルの 🧩 タイル）と、プレハブ編集モードの中身
@@ -791,14 +823,14 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     setTerrainFromDocument(doc, keepSameTerrain);
 
     // UI（Canvas・共用 UI・フォント）。節の無い文書は UI 無し。
-    const std::size_t uiMissing =
-        loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Replace);
+    const std::string uiCaveat =
+        loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Replace, libBaseline_);
 
     // 読込の注意（ステータスの末尾に足す日本語）。並びは計算式 / プレハブ（上の
     // resolveLibraryAssets の後で足した）→ テレイン（setTerrainFromDocument が
     // 足した）→ 共通イベント → 共用 UI の順。
     loadCaveat_ += unreadableFilesCaveat("共通イベント", sharedMissing);
-    loadCaveat_ += unreadableFilesCaveat("共用 UI", uiMissing);
+    loadCaveat_ += uiCaveat;
 
     // 文書が Core 専用の機能を使っていれば系を切り替える（使わなくなって
     // いれば既定へ戻す）。setTerrainFromDocument の中で済んでいるので、ここは確認だけ。
@@ -912,9 +944,9 @@ std::string Scene::appendDocument(const ed::SceneDocument& doc) {
         editor_.setEmitters(std::move(emitters));
     }
     // UI は後ろへ足す（共用 UI とフォントは名前が重ならないものだけ）。読めない
-    // 共用 UI は loadUiFromDocument が LOGW に出し、件数は読込と同じ文で注意に返す。
-    const std::size_t uiMissing =
-        loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Append);
+    // 共用 UI と名前の重なった物は loadUiFromDocument が LOGW に出し、件数を注意に返す。
+    const std::string uiCaveat =
+        loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Append, libBaseline_);
     editor_.bumpGraphVersion();
     syncBackend();
     if (editor_.mode() == ed::AppMode::Simulate) {
@@ -922,5 +954,5 @@ std::string Scene::appendDocument(const ed::SceneDocument& doc) {
         buildCables();
     }
     snapshot();
-    return unreadableFilesCaveat("共用 UI", uiMissing);
+    return uiCaveat;
 }

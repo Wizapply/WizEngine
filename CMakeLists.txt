@@ -416,6 +416,7 @@ set(WIZ_SCENE_SOURCES
     src/scene/SoftLattice.cpp
     src/scene/UiFiles.cpp
     src/scene/UiJson.cpp
+    src/scene/UiLibraryOps.cpp
     src/scene/UiOps.cpp
     src/scene/UiState.cpp)
 set(WIZ_COMPONENT_SOURCES

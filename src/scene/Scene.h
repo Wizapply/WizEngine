@@ -30,6 +30,8 @@
 #include "terrain/TerrainUndo.h"     // TerrainEdit / GridRect（ストロークの状態が値で持つ）
 
 namespace wizengine {
+// グローバル（ライブラリ）のアセットの種類ごとに違うところ（定義は SceneLibrary.cpp）。
+struct LibraryKind;
 class Renderer;
 namespace terrain {
 class HeightField;
@@ -622,13 +624,18 @@ private:
     void resolveLibraryAssets(std::vector<wizengine::formula::FormulaGraphDesc>& formulas,
                               std::vector<wizengine::editor::PrefabDesc>& prefabs,
                               std::size_t& missing);
-    // 保存: グローバルの計算式・プレハブのうち、読んだとき / 書いたときから
+    // 保存: グローバルの計算式・プレハブ・共用 UI のうち、読んだとき / 書いたときから
     // 中身が変わったものだけをファイルへ書く。written に書いた名前。
     bool saveLibraryAssets(const wizengine::editor::SceneDocument& doc, std::string& written,
                            std::string& reason);
     // edit.lib.share / unshare / import / delete / refresh（kind = event / formula /
-    // prefab）と edit.mesh.add。扱ったら true。
+    // prefab / ui。ui の部品は scene/UiLibraryOps）と edit.mesh.add。扱ったら true。
     bool applyLibraryOp(const EditorState::Op& op);
+    // 種類ごとに違うところの関数の組（applyLibraryOp が 1 つ選んで判断の流れに渡す。
+    // 型の定義は SceneLibrary.cpp）。args は UI の canvas を読むため。
+    wizengine::LibraryKind formulaLibraryKind();
+    wizengine::LibraryKind prefabLibraryKind();
+    wizengine::LibraryKind uiLibraryKind(const nlohmann::json& args);
     void addMeshDeclaration(const nlohmann::json& args);
     std::vector<wizengine::editor::MeshAssetDesc> meshDescs();
     // 実行状態（タイマー・接触の記憶・発火カウント）と、アクションが加えた
@@ -1208,8 +1215,10 @@ private:
     std::unique_ptr<wizengine::terrain::TerrainLibrary> terrainLibrary_;
     std::unique_ptr<wizengine::terrain::TerrainUndoStack> terrainUndo_;
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る
-    // グローバルの計算式・プレハブの「読んだ / 書いたときの中身」（"formula:名前" /
-    // "prefab:名前" → 正規化した XML）。保存で比べて変わったものだけ書く。PHYSICS。
+    // グローバルの計算式・プレハブ・共用 UI の「読んだ / 書いたときの中身」（"formula:名前" /
+    // "prefab:名前" / "ui:名前" = sharedasset::libraryBaselineKey → 正規化した XML）。保存で
+    // 比べて変わったものだけ
+    // 書く。PHYSICS。
     std::map<std::string, std::string> libBaseline_;
     std::mutex poseMutex_;
     std::vector<BodyTransform> latestPoses_;  // one per box, in box order

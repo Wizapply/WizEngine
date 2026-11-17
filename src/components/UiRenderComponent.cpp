@@ -316,8 +316,8 @@ void UiRenderComponent::updateFrame(wizengine::Renderer& renderer) {
     const ui::Rect canvas{0.0, 0.0, canvasWidthOn(renderer, *desc, std::size_t(view)),
                           desc->height};
     const std::vector<ui::LayoutNode> nodes = ui::layoutTree(*elements, {}, canvas);
-    // 動かせない要素（共用 UI の中身）は枠だけ（つまみを出さない = 掴めない）。
-    const bool handles = wizengine::uiops::elementsEditable(*desc);
+    // 動かせない要素（読めなかった共用 UI の中身など）は枠だけ（つまみを出さない = 掴めない）。
+    const bool handles = wizengine::uiops::elementsEditable(snap_.contentsInfo(frameCanvas_));
     renderer.setUiCanvasMesh(
         frameRendererId_, std::size_t(view),
         ui::buildFrameMesh(nodes[at].rect, ui::designPerScreenPx(desc->height, key.viewHeight),

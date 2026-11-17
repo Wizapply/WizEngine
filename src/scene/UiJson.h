@@ -28,8 +28,9 @@ const nlohmann::json& schema();
 // Canvas 1 枚の属性（{属性の名前: 値}。kCanvasAttrs の全行）。
 nlohmann::json canvasAttrsJson(const ui::CanvasDesc& desc);
 
-// /scene の "ui": canvases（生きている Canvas と要素の木 = 階層一覧）・selected（選択中の
-// Canvas か要素の設計値。無ければ null）・schema。selCanvas / selElement はエディタの
+// /scene の "ui": canvases（生きている Canvas と要素の木 = 階層一覧。editable = 要素を
+// 編集してよいか）・assets（宣言した UI = アセットパネルのタイル）・selected（選択中の
+// Canvas か要素の設計値。Canvas なら中身の XML（xml）も。無ければ null）・schema。selCanvas / selElement はエディタの
 // 選択をそのまま渡す（Canvas を選んでいなければ selCanvas = -1。selElement = -1 は Canvas
 // そのもの）。選択が今もあるかはここで 1 回だけ確かめ（Snapshot::selectionExists）、
 // 消えた物を指していれば selected は null（呼び手はこれで選択の有無を知る）。

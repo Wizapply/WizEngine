@@ -22,6 +22,29 @@ void retire(UiState::CanvasItem& item) {
     item.desc = ui::CanvasDesc{};
 }
 
+// 名前 name の UI の宣言（無ければ nullptr）。Snapshot と UiState（ロックの中）が使う。
+template <class Assets>
+auto findAsset(Assets& assets, const std::string& name) -> decltype(&assets[0]) {
+    for (auto& a : assets) {
+        if (a.desc.name == name) return &a;
+    }
+    return nullptr;
+}
+
+// Canvas の要素の持ち主の様子（唯一の定義。Snapshot::contentsInfo と copyCanvasContents）。
+UiState::ContentsInfo infoOf(const UiState::CanvasItem& item,
+                             const std::vector<UiState::UiAssetState>& assets) {
+    UiState::ContentsInfo info;
+    info.asset = item.desc.ui;
+    info.nextElementId = item.nextElementId;
+    if (info.asset.empty()) return info;
+    const UiState::UiAssetState* a = findAsset(assets, info.asset);
+    info.declared = a != nullptr;
+    info.unreadable = a && a->unreadable;
+    info.nextElementId = a ? a->nextElementId : 1;
+    return info;
+}
+
 }  // namespace
 
 std::uint64_t UiState::version() const {
@@ -68,16 +91,19 @@ const ui::CanvasDesc* UiState::Snapshot::liveCanvas(int index) const {
     return item.alive ? &item.desc : nullptr;
 }
 
-int UiState::Snapshot::nextElementIdOf(int index) const {
-    return liveCanvas(index) ? canvases[std::size_t(index)].nextElementId : 1;
+const UiState::UiAssetState* UiState::Snapshot::uiAsset(const std::string& name) const {
+    return findAsset(uiAssets, name);
+}
+
+UiState::ContentsInfo UiState::Snapshot::contentsInfo(int index) const {
+    if (!liveCanvas(index)) return {};
+    return infoOf(canvases[std::size_t(index)], uiAssets);
 }
 
 const std::vector<ui::ElementDesc>& UiState::Snapshot::elementsOf(
     const ui::CanvasDesc& desc) const {
     if (desc.ui.empty()) return desc.elements;
-    for (const auto& a : uiAssets) {
-        if (a.desc.name == desc.ui) return a.desc.elements;
-    }
+    if (const UiAssetState* a = uiAsset(desc.ui)) return a->desc.elements;
     static const std::vector<ui::ElementDesc> kNone;
     return kNone;
 }
@@ -104,9 +130,11 @@ std::vector<int> UiState::toDocument(editor::SceneDocument& doc) const {
     return remap;
 }
 
-std::size_t UiState::fromDocument(const std::vector<ui::CanvasDesc>& canvases,
-                                  const std::vector<ui::UiAssetDesc>& uiAssets,
-                                  const std::vector<ui::FontAssetDesc>& fonts, LoadMode mode) {
+UiState::LoadResult UiState::fromDocument(const std::vector<ui::CanvasDesc>& canvases,
+                                          const std::vector<ui::UiAssetDesc>& uiAssets,
+                                          const std::vector<ui::FontAssetDesc>& fonts,
+                                          LoadMode mode,
+                                          const std::vector<std::string>& unreadable) {
     std::lock_guard<std::mutex> lk(mutex_);
     if (mode == LoadMode::Replace) {
         // 番号は詰めずに残す（前の Canvas を指していたものが、読込後の別の
@@ -116,16 +144,20 @@ std::size_t UiState::fromDocument(const std::vector<ui::CanvasDesc>& canvases,
         uiAssets_.clear();
         fonts_.clear();
     }
-    const std::size_t base = canvases_.size();
+    LoadResult result;
+    result.base = canvases_.size();
     for (const auto& c : canvases) canvases_.push_back(liveItem(c));
-    auto hasAsset = [this](const std::string& name) {
-        for (const auto& a : uiAssets_) {
-            if (a.desc.name == name) return true;
-        }
-        return false;
-    };
     for (const auto& a : uiAssets) {
-        if (!hasAsset(a.name)) uiAssets_.push_back({a, false});
+        if (findAsset(uiAssets_, a.name)) {
+            result.skippedUi.push_back(a.name);
+            continue;
+        }
+        UiAssetState state;
+        state.desc = a;
+        state.unreadable =
+            std::find(unreadable.begin(), unreadable.end(), a.name) != unreadable.end();
+        state.nextElementId = ui::nextElementId(a.elements);
+        uiAssets_.push_back(std::move(state));
     }
     auto hasFont = [this](const std::string& name) {
         for (const auto& f : fonts_) {
@@ -134,11 +166,15 @@ std::size_t UiState::fromDocument(const std::vector<ui::CanvasDesc>& canvases,
         return false;
     };
     for (const auto& f : fonts) {
-        if (!hasFont(f.name)) fonts_.push_back(f);
+        if (hasFont(f.name)) {
+            result.skippedFonts.push_back(f.name);
+            continue;
+        }
+        fonts_.push_back(f);
     }
     ++loadGeneration_;
     bumpLocked();
-    return base;
+    return result;
 }
 
 void UiState::retireAllCanvasesLocked() {
@@ -178,6 +214,90 @@ bool UiState::replaceCanvas(int index, ui::CanvasDesc desc) {
     if (!item.alive) return false;
     item.nextElementId = std::max(item.nextElementId, ui::nextElementId(desc.elements));
     item.desc = std::move(desc);
+    bumpLocked();
+    return true;
+}
+
+bool UiState::copyCanvasContents(int index, ui::CanvasDesc& out, ContentsInfo& info) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (index < 0 || std::size_t(index) >= canvases_.size()) return false;
+    const CanvasItem& item = canvases_[std::size_t(index)];
+    if (!item.alive) return false;
+    out = item.desc;
+    info = infoOf(item, uiAssets_);
+    if (info.asset.empty()) return true;
+    const UiAssetState* a = findAsset(uiAssets_, info.asset);
+    if (a) {
+        ui::copyContents(a->desc, out);
+    } else {
+        ui::clearContents(out);  // 宣言の無い UI は空
+    }
+    return true;
+}
+
+bool UiState::replaceCanvasContents(int index, ui::CanvasDesc desc) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (index < 0 || std::size_t(index) >= canvases_.size()) return false;
+    CanvasItem& item = canvases_[std::size_t(index)];
+    if (!item.alive || item.desc.ui != desc.ui) return false;
+    if (desc.ui.empty()) {
+        item.nextElementId = std::max(item.nextElementId, ui::nextElementId(desc.elements));
+        item.desc = std::move(desc);
+        bumpLocked();
+        return true;
+    }
+    UiAssetState* a = findAsset(uiAssets_, desc.ui);
+    if (!a) return false;
+    a->nextElementId = std::max(a->nextElementId, ui::nextElementId(desc.elements));
+    ui::moveContents(desc, a->desc);
+    bumpLocked();
+    return true;
+}
+
+bool UiState::copyUiAsset(const std::string& name, ui::UiAssetDesc& out) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const UiAssetState* a = findAsset(uiAssets_, name);
+    if (!a) return false;
+    out = a->desc;
+    return true;
+}
+
+bool UiState::addUiAsset(ui::UiAssetDesc asset) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (asset.name.empty() || findAsset(uiAssets_, asset.name)) return false;
+    UiAssetState state;
+    state.nextElementId = ui::nextElementId(asset.elements);
+    state.desc = std::move(asset);
+    uiAssets_.push_back(std::move(state));
+    bumpLocked();
+    return true;
+}
+
+bool UiState::setUiAssetFile(const std::string& name, const std::string& file) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    UiAssetState* a = findAsset(uiAssets_, name);
+    if (!a) return false;
+    a->desc.file = file;
+    // 共用にした（今の中身を書いた）・やめた（中身はこのシーンの物）= どちらも、今の中身が
+    // そのまま正になる。
+    a->unreadable = false;
+    bumpLocked();
+    return true;
+}
+
+bool UiState::moveCanvasContentsToAsset(int index, ui::UiAssetDesc asset) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (index < 0 || std::size_t(index) >= canvases_.size()) return false;
+    CanvasItem& item = canvases_[std::size_t(index)];
+    if (!item.alive || !item.desc.ui.empty()) return false;
+    if (asset.name.empty() || findAsset(uiAssets_, asset.name)) return false;
+    UiAssetState state;
+    // 消した番号を使い回さない約束は、Canvas の番号から引き継ぐ。
+    state.nextElementId = std::max(item.nextElementId, ui::nextElementId(asset.elements));
+    item.desc.ui = asset.name;
+    ui::clearContents(item.desc);
+    state.desc = std::move(asset);
+    uiAssets_.push_back(std::move(state));
     bumpLocked();
     return true;
 }

@@ -20,7 +20,12 @@
 //                                 ページかだけを見て、EditorState の Op（種類 = "ui.*"）
 //                                 として積む。当てるのは PHYSICS（Scene::applyEditorOp →
 //                                 UiOps）。EditorComponent より先に登録されているので、
-//                                 edit.ui.* はそちらへ届かない。
+//                                 edit.ui.* はそちらへ届かない。edit.ui.xml は壊れた
+//                                 XML をここで弾く（uiops::xmlTextProblem）。
+//   edit.lib.* {kind: "ui"}     … 共用 UI の操作（share / unshare / import / delete）。
+//                                 同じく受け付けるページだけ Op（"lib.*"）として積む
+//                                 （当てるのは Scene::applyLibraryOp。UI の部品は UiLibraryOps）。
+//                                 ほかの kind はここでは取らない（EditorComponent へ）。
 //   pick / drag / release       … 選んでいる要素の枠とつまみ（ui/UiHandles.h）を掴んで
 //                                 動かす・大きさを変える。当たらなければ素通し（ギズモ・
 //                                 カメラ・物の選択へ）。
@@ -34,8 +39,10 @@
 // 位置・押したときのビューの大きさとモードの世代を atomic に置くだけ（ギズモと同じ形）。
 // PHYSICS が最初のパスで開始時の性質を UiState から撮り、以後は「開始時の値 + 動かした
 // 量」だけから pos / size を出して、変わったときだけ書き換える（Inspector と同じ手順 =
-// uiops::editElement / writeOwnProps）。離したら届いている最後の位置を当ててから止める。消えた・読み直した・モードが切り替わった・共用になった
-// ドラッグはそこで止める（もう書かない）。
+// uiops::editElement / writeOwnProps）。離したら届いている最後の位置を当ててから止める。
+// 消えた・読み直した・モードが切り替わった・編集してよくなくなったドラッグはそこで止める
+// （もう書かない）。ドラッグ中に Canvas の中身を共用 UI にしても、要素の id は変わらない
+// ので、そのまま共用 UI の中身を動かし続ける。
 // 当たり判定は版の写し（copyIfChanged）を読む（1 フレーム古くてよい。PHYSICS の
 // 書き換えとロックで競らない）。ビューの大きさは onRender（RENDER）が atomic へ写す。
 // ギズモより前に登録する（UI の枠を押したら、後ろのハンドルや物を掴まない）。
@@ -55,10 +62,15 @@ private:
 
     // 編集のコマンドの前置き（edit.ui.*）。
     static constexpr const char* kEditPrefix = "edit.ui.";
+    // ライブラリの操作のコマンドの前置き（edit.lib.*。kind = ui だけを取る）。
+    static constexpr const char* kLibPrefix = "edit.lib.";
     bool select(Scene& scene, std::size_t camIndex, const nlohmann::json& msg);
     // edit.ui.* を Op として積む（受け付けないページ・知らない操作は捨てる）。
     bool pushEdit(Scene& scene, std::size_t camIndex, const std::string& cmd,
                   const nlohmann::json& msg);
+    // edit.lib.* の kind = ui を Op として積む（ほかの kind は false = 取らない）。
+    bool pushLibrary(Scene& scene, std::size_t camIndex, const std::string& cmd,
+                     const nlohmann::json& msg);
     // 選んでいる要素の枠・つまみに当たれば掴んで true（INPUT）。
     bool pick(Scene& scene, std::size_t camIndex, const nlohmann::json& msg);
     // ドラッグを始める: 開始時の性質と親の矩形を撮る（PHYSICS）。続けられなければ false。

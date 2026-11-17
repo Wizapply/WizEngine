@@ -15,6 +15,7 @@
 //   SceneTerrainScatter.cpp: 散布物（木や小物）のサーバー側の操作
 //   SceneTerrainScatterBody.cpp: 散布物の幹の当たり判定のボディ
 
+#include "scene/LibraryStatus.h"  // warningCountCaveat
 #include "scene/Scene.h"
 #include "scene/SceneConfig.h"
 #include "physics/MeshCollision.h"
@@ -399,13 +400,8 @@ inline void noteBadPatchKey(bool ok, const char* key, std::string* badKey) {
     if (!ok && badKey && badKey->empty()) *badKey = key;
 }
 
-// ステータスの末尾に付ける警告の件数「（<label> N 件 - コンソール参照）」の唯一の
-// 定義。0 件なら空。label は "警告" / "テレインの警告" など。
-inline std::string warningCountCaveat(const char* label, std::size_t count) {
-    if (count == 0) return {};
-    return std::string("（") + label + " " + std::to_string(count) +
-           " 件 - コンソール参照）";
-}
+// ステータスの末尾に付ける警告の件数（定義は scene/LibraryStatus.h。UiOps も使う）。
+using wizengine::warningCountCaveat;
 
 // ---- 塗り分けの層（.terrain の LAYR）-----------------------------------------
 // 層の値の検査と JSON の唯一の定義（型は terrain::TerrainLayer 1 つ。文書の型には

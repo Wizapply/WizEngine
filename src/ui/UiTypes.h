@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/Clamp.h"
@@ -149,6 +150,25 @@ struct CanvasDesc {
     std::vector<ElementDesc> elements;
     std::vector<AnimDesc> anims;
 };
+
+// ---- 中身（要素とアニメ）------------------------------------------------------
+// Canvas（CanvasDesc）と UI の宣言（UiAssetDesc）が持つ「中身」= elements と anims の
+// 写し・移し・空にする手順（唯一の定義）。中身に欄を足したら、ここの 3 つに 1 行ずつ。
+template <class From, class To>
+void copyContents(const From& from, To& to) {
+    to.elements = from.elements;
+    to.anims = from.anims;
+}
+template <class From, class To>
+void moveContents(From& from, To& to) {
+    to.elements = std::move(from.elements);
+    to.anims = std::move(from.anims);
+}
+template <class T>
+void clearContents(T& t) {
+    t.elements.clear();
+    t.anims.clear();
+}
 
 // Canvas の呼び方（elementLabel と同じ流儀。index は UiState の Canvas の番号）。
 inline std::string canvasLabel(const CanvasDesc& c, int index) {

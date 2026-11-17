@@ -2,9 +2,11 @@
 
 #include <cstddef>
 
+#include "scene/UiOps.h"
 #include "ui/UiKinds.h"
 #include "ui/UiProps.h"
 #include "ui/UiValue.h"
+#include "ui/UiXml.h"
 
 namespace wizengine {
 namespace uijson {
@@ -56,18 +58,36 @@ nlohmann::json buildSchema() {
     return {{"props", props}, {"kinds", kinds}, {"canvas", canvas}};
 }
 
-// 選択中の物の設計値（Canvas そのものなら属性、要素ならその性質）。
+// Canvas の中身（要素とアニメ）を XML のモーダルで編集するテキスト（<ui name> の書式 =
+// ui.xml が受ける形）。<canvas ui> なら使っている UI の中身、無ければ自分の中身。
+std::string contentsXmlText(const UiState::Snapshot& snap, const ui::CanvasDesc& desc) {
+    if (desc.ui.empty()) {
+        ui::UiAssetDesc own;
+        own.name = desc.name;
+        ui::copyContents(desc, own);
+        return ui::uiAssetToXmlText(own);
+    }
+    const UiState::UiAssetState* a = snap.uiAsset(desc.ui);
+    if (!a) return {};
+    return ui::uiAssetToXmlText(a->desc);
+}
+
+// 選択中の物の設計値（Canvas そのものなら属性と中身の XML、要素ならその性質）。
 nlohmann::json selectedJson(const UiState::Snapshot& snap, int canvas, int element) {
     const ui::CanvasDesc& desc = *snap.liveCanvas(canvas);
     nlohmann::json j;
     j["canvas"] = canvas;
     j["element"] = element;
     j["shared"] = !desc.ui.empty();
+    // 要素を編集してよいか（唯一の規則 uiops::elementsEditable。ブラウザは表示だけかを
+    // これで決める）。
+    j["editable"] = uiops::elementsEditable(snap.contentsInfo(canvas));
     j["canvasLabel"] = ui::canvasLabel(desc, canvas);
     if (element < 0) {
         j["name"] = desc.name;
         j["label"] = ui::canvasLabel(desc, canvas);
         j["attrs"] = canvasAttrsJson(desc);
+        j["xml"] = contentsXmlText(snap, desc);
         return j;
     }
     for (const auto& e : snap.elementsOf(desc)) {
@@ -115,13 +135,23 @@ nlohmann::json toJson(const UiState::Snapshot& snap, int selCanvas, int selEleme
         c["label"] = ui::canvasLabel(*desc, int(i));
         c["mode"] = ui::kCanvasModeNames[static_cast<std::size_t>(desc->mode)];
         c["ui"] = desc->ui;
+        c["editable"] = uiops::elementsEditable(snap.contentsInfo(int(i)));
         c["camerasValid"] = desc->invalidCameras.empty();
         c["elements"] = elements;
         canvases.push_back(c);
     }
+    // 宣言した UI（アセットパネルのタイル。file あり = 共用）。
+    nlohmann::json assets = nlohmann::json::array();
+    for (const auto& a : snap.uiAssets) {
+        assets.push_back({{"name", a.desc.name},
+                          {"file", a.desc.file},
+                          {"elements", a.desc.elements.size()},
+                          {"unreadable", a.unreadable}});
+    }
     nlohmann::json j;
     j["version"] = snap.version;  // 設計値の版（ブラウザが送った値の戻りを待つ目印）
     j["canvases"] = canvases;
+    j["assets"] = assets;
     j["selected"] = snap.selectionExists(selCanvas, selElement)
                         ? selectedJson(snap, selCanvas, selElement)
                         : nlohmann::json(nullptr);
