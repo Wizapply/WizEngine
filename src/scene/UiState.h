@@ -74,6 +74,10 @@ public:
     // version と known が違えば out へ写して known を進め、true。同じなら何もしない。
     bool copyIfChanged(std::uint64_t& known, Snapshot& out) const;
     Snapshot snapshot() const;
+    // 生きている Canvas index の設計値を 1 枚だけ out へ写す（範囲外・消えた物は false で
+    // out は触らない）。全体の写し（snapshot）より軽い = 映像の上のドラッグのように、
+    // 1 枚を何度も読み書きする口。
+    bool copyCanvas(int index, ui::CanvasDesc& out) const;
 
     // 文書へ書く（生きている Canvas だけを詰め、共用 UI とフォントの宣言はそのまま）。
     // 戻り値 = Canvas の番号 → 文書の中の番号（消えた物は -1。保存で Canvas を
@@ -89,7 +93,8 @@ public:
     // 全部消す（シーンの全消し）。
     void clear();
 
-    // ---- エディタの編集（PHYSICS の UiOps だけが呼ぶ）----------------------
+    // ---- エディタの編集（PHYSICS の UiOps と、映像の上のドラッグ = ----------
+    // ---- UiInputComponent::onEditorStep が呼ぶ）-------------------------------
     // 後ろへ足して番号を返す。
     int addCanvas(ui::CanvasDesc desc);
     // 生きている Canvas を消す（番号は残す = alive = false）。無ければ false。

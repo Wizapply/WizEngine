@@ -54,6 +54,15 @@ inline const ElementDesc* findElementByName(const std::vector<ElementDesc>& elem
     return nullptr;
 }
 
+// 要素 id の添字（唯一の定義。無ければ elements.size()）。エディタの編集・映像の上の
+// ドラッグ・選択枠が、id で運んだ要素を今の並びの中で引き直すのに使う。
+inline std::size_t elementIndex(const std::vector<ElementDesc>& elements, int id) {
+    for (std::size_t i = 0; i < elements.size(); ++i) {
+        if (elements[i].id == id) return i;
+    }
+    return elements.size();
+}
+
 // 名前の値の決まり（Name 型 = core/SafeName.h の sanitizeSafeName で正規化）。Canvas・
 // 要素・宣言の名前を読む・書く側はこの決まりの clampValue で正規化する（1 本）。
 inline const ValueSpec& nameSpec() {

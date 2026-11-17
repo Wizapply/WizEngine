@@ -11,26 +11,35 @@ Rect canvasRect(double designHeight, double viewWidth, double viewHeight) {
     return Rect{0.0, 0.0, designHeight * aspect, designHeight};
 }
 
-Rect solveRect(const Rect& parent, const PropSet& props) {
+AxisLayout axisLayout(double parentStart, double parentLength, double anchorMin,
+                      double anchorMax, double pivot) {
+    AxisLayout a;
+    a.lo = parentStart + parentLength * anchorMin;
+    a.hi = parentStart + parentLength * anchorMax;
+    a.pivot = pivot;
+    a.ref = a.lo + (a.hi - a.lo) * pivot;
+    return a;
+}
+
+AxisLayout axisLayoutOf(const Rect& parent, const PropSet& props, int axis) {
     const PropValue& anchor = props.get(Prop::Anchor);
     const PropValue& pivot = props.get(Prop::Pivot);
+    const std::size_t k = axis == 0 ? 0 : 1;
+    const double start = k == 0 ? parent.x : parent.y;
+    const double length = k == 0 ? parent.w : parent.h;
+    return axisLayout(start, length, anchor.v[k], anchor.v[k + 2], pivot.v[k]);
+}
+
+Rect solveRect(const Rect& parent, const PropSet& props) {
     const PropValue& pos = props.get(Prop::Pos);
     const PropValue& size = props.get(Prop::Size);
-    // 1 軸ぶん: 親の始点と長さ、アンカーの min / max、ピボット、位置、大きさ。
-    auto axis = [](double start, double length, double aMin, double aMax, double pv,
-                   double p, double s, double& outStart, double& outLength) {
-        const double lo = start + length * aMin;
-        const double hi = start + length * aMax;
-        const double len = hi - lo + s;
-        outLength = len > 0.0 ? len : 0.0;
-        const double ref = lo + (hi - lo) * pv + p;
-        outStart = ref - outLength * pv;
-    };
+    const AxisLayout ax = axisLayoutOf(parent, props, 0);
+    const AxisLayout ay = axisLayoutOf(parent, props, 1);
     Rect r;
-    axis(parent.x, parent.w, anchor.v[0], anchor.v[2], pivot.v[0], pos.v[0], size.v[0],
-         r.x, r.w);
-    axis(parent.y, parent.h, anchor.v[1], anchor.v[3], pivot.v[1], pos.v[1], size.v[1],
-         r.y, r.h);
+    r.w = ax.length(size.v[0]);
+    r.h = ay.length(size.v[1]);
+    r.x = ax.start(pos.v[0], r.w);
+    r.y = ay.start(pos.v[1], r.h);
     return r;
 }
 

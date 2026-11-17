@@ -1,12 +1,15 @@
 #include "components/UiRenderComponent.h"
 
 #include <algorithm>
+#include <climits>
 #include <unordered_map>
 
 #include "core/Log.h"
 #include "render/Renderer.h"
 #include "scene/Scene.h"
 #include "scene/SharedAssetFile.h"
+#include "scene/UiOps.h"
+#include "ui/UiHandles.h"
 #include "ui/UiLayout.h"
 #include "ui/UiMesh.h"
 #include "ui/UiProps.h"
@@ -257,14 +260,68 @@ void UiRenderComponent::onRender(Scene& scene) {
     // 写しが古いまま残らない）。
     cameraViews_.resize(scene.cameraCount());
     for (std::size_t cam = 0; cam < cameraViews_.size(); ++cam) {
-        cameraViews_[cam] = scene.cameraActive(cam) ? scene.camera(cam).viewIndex() : -1;
+        cameraViews_[cam] = scene.cameraViewIndex(cam);
     }
+    // 選択枠の対象: UI の編集を受け付けるとき（editsUiFrom = エディタモード × エディタ
+    // カメラ × プレハブ編集中でない）に、要素を選んでいれば。今もあるかは組むときに
+    // 写しで確かめる。
+    const std::size_t editorCam = scene.editorCamera();
+    const EditorState& editor = scene.editor();
+    const bool element = editor.selKind() == EditorState::SelKind::Canvas && editor.selSub() >= 0;
+    const bool wanted = element && scene.editsUiFrom(editorCam);
+    frameCanvas_ = wanted ? editor.selIndex() : -1;
+    frameElement_ = wanted ? editor.selSub() : -1;
+    frameCamera_ = int(editorCam);
 }
 
 void UiRenderComponent::onRenderUnlocked(Scene& scene) {
     // ロックの外で使うのは Renderer と UI の状態だけ（下の関数は Scene を受けない =
     // オブジェクト一覧を読むコードが書けない）。
     update(scene.renderer(), scene.ui());
+    updateFrame(scene.renderer());
+}
+
+void UiRenderComponent::updateFrame(wizengine::Renderer& renderer) {
+    // 出す条件: 対象があり、エディタカメラのビューが決まっていて、その Canvas が映像の
+    // 上で枠を出せる物（frameShownOnCamera）で、要素が今もある。
+    const bool camKnown = frameCamera_ >= 0 && std::size_t(frameCamera_) < cameraViews_.size();
+    const int view = frameCanvas_ >= 0 && camKnown ? cameraViews_[std::size_t(frameCamera_)] : -1;
+    const ui::CanvasDesc* desc = view >= 0 ? snap_.liveCanvas(frameCanvas_) : nullptr;
+    const bool canvasOk = desc && ui::frameShownOnCamera(*desc, frameCamera_);
+    const std::vector<ui::ElementDesc>* elements = canvasOk ? &snap_.elementsOf(*desc) : nullptr;
+    const std::size_t at = elements ? ui::elementIndex(*elements, frameElement_) : 0;
+    const bool shown = elements && at < elements->size();
+
+    FrameKey key;
+    if (shown) {
+        const auto size = renderer.viewSize(std::size_t(view));
+        key = {version_, frameCanvas_, frameElement_, view, size.x, size.y};
+    }
+    if (key == frameSent_) return;
+    frameSent_ = key;
+    if (!shown) {
+        if (frameCreated_) renderer.setUiCanvasViews(frameRendererId_, {});
+        return;
+    }
+    if (!frameCreated_) {
+        frameRendererId_ = renderer.addUiCanvas();
+        // どの Canvas よりも手前（同じ order なら番号順なので、文書の order が INT_MAX の
+        // Canvas とは番号で決まる）。
+        renderer.setUiCanvasOrder(frameRendererId_, INT_MAX);
+        frameCreated_ = true;
+    }
+    renderer.setUiCanvasDesignHeight(frameRendererId_, float(desc->height));
+    renderer.setUiCanvasViews(frameRendererId_, {std::size_t(view)});
+    // 要素の矩形は描く側（buildOne）と同じく設計値で解く（重ね順の後の段は後の PR）。
+    const ui::Rect canvas{0.0, 0.0, canvasWidthOn(renderer, *desc, std::size_t(view)),
+                          desc->height};
+    const std::vector<ui::LayoutNode> nodes = ui::layoutTree(*elements, {}, canvas);
+    // 動かせない要素（共用 UI の中身）は枠だけ（つまみを出さない = 掴めない）。
+    const bool handles = wizengine::uiops::elementsEditable(*desc);
+    renderer.setUiCanvasMesh(
+        frameRendererId_, std::size_t(view),
+        ui::buildFrameMesh(nodes[at].rect, ui::designPerScreenPx(desc->height, key.viewHeight),
+                           handles));
 }
 
 void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::UiState& state) {

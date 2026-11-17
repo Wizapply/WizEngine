@@ -103,14 +103,6 @@ bool elementNameTaken(const std::vector<ui::ElementDesc>& elements, const std::s
     });
 }
 
-// 要素 id の位置（無ければ elements.size()）。
-std::size_t indexOfElement(const std::vector<ui::ElementDesc>& elements, int id) {
-    for (std::size_t i = 0; i < elements.size(); ++i) {
-        if (elements[i].id == id) return i;
-    }
-    return elements.size();
-}
-
 // アニメのキーのうち、要素の名前が names にあるものを to へ付け替える（to が空なら外す）。
 // 戻り値 = 付け替えた・外した数。
 std::size_t retargetKeys(ui::CanvasDesc& desc, const std::set<std::string>& names,
@@ -190,12 +182,23 @@ Result setCanvas(UiState& state, const nlohmann::json& args) {
 }
 
 // ---- 要素の操作 -----------------------------------------------------------------
+// 共用 UI の要素を断ったときのステータス。
+std::string sharedStatus(const std::string& ui) {
+    return "UI: 共用 UI（" + ui + "）の要素はここでは編集できません";
+}
+
+// 要素 e の種類が持つ性質の集合（種類の表から。知らない種類は 0）。
+ui::PropMask ownPropMask(const ui::ElementDesc& e) {
+    const ui::ElementKindInfo* kind = ui::kindInfo(e.kind);
+    return kind ? ui::propsOfKind(kind->id) : 0;
+}
+
 // 要素を編集してよい Canvas の写し（無い・共用 UI なら nullptr で、r.status に理由）。
 const ui::CanvasDesc* editableCanvas(const UiState::Snapshot& snap, int index, Result& r) {
     const ui::CanvasDesc* desc = snap.liveCanvas(index);
     if (!desc) return nullptr;  // 行き違い（もう無い）
-    if (!desc->ui.empty()) {
-        r.status = "UI: 共用 UI（" + desc->ui + "）の要素はここでは編集できません";
+    if (!elementsEditable(*desc)) {
+        r.status = sharedStatus(desc->ui);
         return nullptr;
     }
     return desc;
@@ -242,7 +245,7 @@ Result removeElementOp(UiState& state, const nlohmann::json& args) {
     const ui::CanvasDesc* found = editableCanvas(snap, index, r);
     if (!found) return r;
     ui::CanvasDesc desc = *found;
-    const std::size_t at = indexOfElement(desc.elements, id);
+    const std::size_t at = ui::elementIndex(desc.elements, id);
     if (at == desc.elements.size()) return r;  // 行き違い（もう無い）
     const std::string label = ui::elementLabel(desc.elements[at]);
     const RemoveCount removed = removeElement(desc, id);
@@ -258,30 +261,31 @@ Result removeElementOp(UiState& state, const nlohmann::json& args) {
 Result setElementOp(UiState& state, const nlohmann::json& args) {
     const int index = jsonInt(args, "canvas", -1);
     const int id = jsonInt(args, "element", -1);
-    const UiState::Snapshot snap = state.snapshot();
     Result r;
-    const ui::CanvasDesc* found = editableCanvas(snap, index, r);
-    if (!found) return r;
-    ui::CanvasDesc desc = *found;
-    const std::size_t at = indexOfElement(desc.elements, id);
-    if (at == desc.elements.size()) return r;  // 行き違い（もう無い）
-    std::string name = desc.elements[at].name;
-    const std::string caveat = applyName(
-        args, name,
-        [&desc, id](const std::string& n) { return elementNameTaken(desc.elements, n, id); },
-        "要素");
-    const std::size_t keys = renameElement(desc, id, name);
-    ui::ElementDesc& e = desc.elements[at];
-    const std::vector<std::string> rejected =
-        setElementProps(member(args, "props"), member(args, "reset"), e);
-    const std::string label = ui::elementLabel(e);
-    state.replaceCanvas(index, desc);
+    std::string caveat, label, name;
+    std::vector<std::string> rejected;
+    std::size_t keys = 0;
+    const ElementWrite w = editElement(state, index, id, [&](ui::CanvasDesc& desc, std::size_t at) {
+        name = desc.elements[at].name;
+        caveat = applyName(
+            args, name,
+            [&desc, id](const std::string& n) { return elementNameTaken(desc.elements, n, id); },
+            "要素");
+        keys = renameElement(desc, id, name);
+        ui::ElementDesc& e = desc.elements[at];
+        rejected = setElementProps(member(args, "props"), member(args, "reset"), e);
+        label = ui::elementLabel(e);
+    });
+    if (!w.shared.empty()) r.status = sharedStatus(w.shared);
+    if (!w.written) return r;  // 行き違い（もう無い）・共用 UI
     r.status = "UI: " + label + " を更新しました" + caveat + rejectedCaveat(rejected) +
                keysCaveat(keys, name.empty() ? "外しました" : "付け替えました");
     return r;
 }
 
 }  // namespace
+
+bool elementsEditable(const ui::CanvasDesc& desc) { return desc.ui.empty(); }
 
 bool isUiOp(const std::string& kind) {
     return std::any_of(std::begin(kOps), std::end(kOps),
@@ -317,8 +321,7 @@ std::vector<std::string> setCanvasAttrs(const nlohmann::json& attrs, ui::CanvasD
 std::vector<std::string> setElementProps(const nlohmann::json& props,
                                          const nlohmann::json& reset, ui::ElementDesc& e) {
     std::vector<std::string> rejected;
-    const ui::ElementKindInfo* kind = ui::kindInfo(e.kind);
-    const ui::PropMask mask = kind ? ui::propsOfKind(kind->id) : 0;
+    const ui::PropMask mask = ownPropMask(e);
     auto ownProp = [mask](const std::string& name) -> const ui::PropInfo* {
         const ui::PropInfo* p = ui::propFromName(name);
         return (p && (mask & ui::propBit(p->id))) ? p : nullptr;
@@ -335,7 +338,7 @@ std::vector<std::string> setElementProps(const nlohmann::json& props,
             if (!listed) rejected.push_back(it.key());
             if (const ui::PropInfo* known = ui::propFromName(it.key())) incoming.clear(known->id);
         }
-        e.props.overlay(ui::clampProps(std::move(incoming)));
+        writeOwnProps(e, std::move(incoming));
     }
     for (const std::string& name : stringList(reset)) {
         if (const ui::PropInfo* p = ownProp(name)) e.props.clear(p->id);
@@ -344,16 +347,45 @@ std::vector<std::string> setElementProps(const nlohmann::json& props,
     return rejected;
 }
 
+std::vector<std::string> writeOwnProps(ui::ElementDesc& e, ui::PropSet incoming) {
+    std::vector<std::string> rejected;
+    const ui::PropMask mask = ownPropMask(e);
+    for (std::size_t k = 0; k < ui::kPropCount; ++k) {
+        const ui::Prop p = ui::Prop(k);
+        if (!incoming.has(p) || (mask & ui::propBit(p))) continue;
+        rejected.push_back(ui::propInfo(p).name);
+        incoming.clear(p);
+    }
+    e.props.overlay(ui::clampProps(std::move(incoming)));
+    return rejected;
+}
+
+ElementWrite editElement(UiState& state, int canvas, int id,
+                         const std::function<void(ui::CanvasDesc&, std::size_t)>& edit) {
+    ElementWrite w;
+    ui::CanvasDesc desc;
+    if (!state.copyCanvas(canvas, desc)) return w;  // 消えた
+    if (!elementsEditable(desc)) {
+        w.shared = desc.ui;
+        return w;
+    }
+    const std::size_t at = ui::elementIndex(desc.elements, id);
+    if (at == desc.elements.size()) return w;  // 消えた
+    edit(desc, at);
+    w.written = state.replaceCanvas(canvas, std::move(desc));
+    return w;
+}
+
 void addElement(std::vector<ui::ElementDesc>& elements, ui::ElementDesc e, int id) {
     e.id = id;
-    if (indexOfElement(elements, e.parent) == elements.size()) e.parent = -1;
+    if (ui::elementIndex(elements, e.parent) == elements.size()) e.parent = -1;
     elements.push_back(std::move(e));
 }
 
 RemoveCount removeElement(ui::CanvasDesc& desc, int id) {
     RemoveCount count;
     std::vector<ui::ElementDesc>& elements = desc.elements;
-    if (indexOfElement(elements, id) == elements.size()) return count;
+    if (ui::elementIndex(elements, id) == elements.size()) return count;
     // 子孫を集める（親は自分より前 = 文書順に 1 回なめれば足りる）。消える要素がキーの
     // 指す先なら、その名前も集める（名前が重なった後ろの要素を消してもキーは残る）。
     std::set<int> gone{id};
@@ -374,7 +406,7 @@ RemoveCount removeElement(ui::CanvasDesc& desc, int id) {
 }
 
 std::size_t renameElement(ui::CanvasDesc& desc, int id, const std::string& name) {
-    const std::size_t at = indexOfElement(desc.elements, id);
+    const std::size_t at = ui::elementIndex(desc.elements, id);
     if (at == desc.elements.size()) return 0;
     ui::ElementDesc& e = desc.elements[at];
     if (e.name == name) return 0;

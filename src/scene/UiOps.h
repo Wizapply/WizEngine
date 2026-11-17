@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -41,8 +42,11 @@ struct Result {
 
 // kind が UI の編集の操作か（上の一覧の唯一の定義。INPUT が積む前の確かめにも使う）。
 bool isUiOp(const std::string& kind);
-// 操作を当てる（PHYSICS スレッド。設計値の書き手はここだけ）。args は型を信じない。
+// 操作を当てる（PHYSICS スレッド）。args は型を信じない。
 Result apply(UiState& state, const std::string& kind, const nlohmann::json& args);
+// この Canvas の要素をエディタで編集してよいか（唯一の定義。Inspector の操作と映像の
+// 上のドラッグが引く）: 共用 UI（<canvas ui>）の中身は編集しない。
+bool elementsEditable(const ui::CanvasDesc& desc);
 
 // ---- 部品（apply が使う。tests/document が直接検査する）---------------------
 // Canvas の属性の部分更新。attrs の中の、表にあって書き換えてよい属性だけを丸めて
@@ -52,6 +56,19 @@ std::vector<std::string> setCanvasAttrs(const nlohmann::json& attrs, ui::CanvasD
 // 名前の性質を既定値へ戻す（書いていない状態にする）。戻り値 = 書かなかった名前。
 std::vector<std::string> setElementProps(const nlohmann::json& props,
                                          const nlohmann::json& reset, ui::ElementDesc& e);
+// 要素 e が持つ性質（種類の表から）だけを丸めて重ねる（唯一の手順。Inspector の欄と
+// 映像の上のドラッグが通る）。戻り値 = その種類に無いので書かなかった性質の名前。
+std::vector<std::string> writeOwnProps(ui::ElementDesc& e, ui::PropSet incoming);
+// Canvas canvas の要素 id を書き換える手順（唯一の定義）: 今の Canvas を 1 枚写し、要素を
+// 編集してよい（elementsEditable）か・要素があるかを確かめ、edit(写した Canvas, 要素の
+// 添字) を呼んで UiState へ戻す。written = false なら何もしていない（shared は共用 UI の
+// ために断ったとき、その名前）。
+struct ElementWrite {
+    bool written = false;
+    std::string shared;
+};
+ElementWrite editElement(UiState& state, int canvas, int id,
+                         const std::function<void(ui::CanvasDesc&, std::size_t)>& edit);
 // 要素を末尾へ足す（文書順 = 描く順の一番手前。親は自分より前、の約束も保つ）。
 // id は呼び手が渡す（UiState が Canvas ごとに持つ増える一方の番号 = 消した番号を
 // 使い回さない）。parent は並びに無ければ -1（Canvas の直下）。

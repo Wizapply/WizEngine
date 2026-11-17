@@ -31,6 +31,30 @@ struct Rect {
 // 合わせる。viewWidth / viewHeight が 0 以下なら正方形。
 Rect canvasRect(double designHeight, double viewWidth, double viewHeight);
 
+// 1 軸ぶんの解き方（solveRect の式の唯一の定義。映像の上のドラッグ = ui/UiHandles.h は
+// 同じ式を逆に使う）。lo / hi = アンカーの範囲（親の中の位置）、ref = ピボットが来る点
+// から pos を引いた点。
+struct AxisLayout {
+    double lo = 0.0, hi = 0.0, pivot = 0.0, ref = 0.0;
+    // 大きさ size のときの長さ（負にはしない）。
+    double length(double size) const {
+        const double len = hi - lo + size;
+        return len > 0.0 ? len : 0.0;
+    }
+    // 位置 pos・長さ len のときの始点。
+    double start(double pos, double len) const { return ref + pos - len * pivot; }
+    // 逆向き: 長さ len（0 以上）になる size と、始点 start・長さ len になる pos。
+    double sizeFor(double len) const { return len - (hi - lo); }
+    double posFor(double startAt, double len) const { return startAt - ref + len * pivot; }
+};
+// 親の始点・長さと、アンカーの min / max・ピボットから 1 軸ぶんの解き方を作る。
+AxisLayout axisLayout(double parentStart, double parentLength, double anchorMin,
+                      double anchorMax, double pivot);
+// 親の矩形と性質（Anchor / Pivot）から、軸 axis（0 = x、1 = y）の解き方を作る（アンカーの
+// 成分の並び = x の min / max が 0 / 2、y が 1 / 3 の唯一の読み手）。pos / size の成分は
+// axis 番目。
+AxisLayout axisLayoutOf(const Rect& parent, const PropSet& props, int axis);
+
 // 親の矩形の中で要素の矩形を解く（性質は Anchor / Pivot / Pos / Size を使う）。
 Rect solveRect(const Rect& parent, const PropSet& props);
 

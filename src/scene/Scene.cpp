@@ -239,10 +239,11 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     // 固定プールなので後から増えない = 描画スレッドが読んでいる最中に
     // 配列が伸びる、が起きない。
     ensureGrabState();
-    // UI の入力が最初（UI の上を押したら、後ろのハンドルや物を掴まない）。いまは
-    // select.ui と edit.ui.* を取る。edit.ui.* は EditorComponent（main が後で登録する、
-    // edit.* を全部受け止める係）より先に取る必要があるので、ここで最初に登録する。
-    addComponent(std::make_unique<UiInputComponent>());
+    // UI の入力が最初（選んでいる UI の枠・つまみを押したら、後ろのハンドルや物を
+    // 掴まない。当たらなければ pick を素通し）。select.ui・edit.ui.*・pick / drag /
+    // release を取る。edit.ui.* は EditorComponent（main が後で登録する、edit.* を全部
+    // 受け止める係）より先に取る必要があるので、ここで最初に登録する。
+    addComponent(std::make_unique<UiInputComponent>(cameras_.size()));
     // 次がギズモ。pick / drag をカメラやグラブより先に見て、ハンドルに
     // 当たっていればそこで止める（選択し直しや自由移動をさせないため）。
     addComponent(std::make_unique<GizmoComponent>());
@@ -373,6 +374,10 @@ std::size_t Scene::pickBoxAt(double ndcX, double ndcY,
 
 std::size_t Scene::editorCamera() const {
     return sys_.editorCamera < cameras_.size() ? sys_.editorCamera : 0;
+}
+
+int Scene::cameraViewIndex(std::size_t index) const {
+    return index < cameras_.size() && cameraActive(index) ? cameras_[index]->viewIndex() : -1;
 }
 
 bool Scene::editsFrom(std::size_t cam) const {

@@ -28,6 +28,9 @@ class Renderer;
 // （UiState の内部は持たない）。Canvas × ビューごとにメッシュを組んで Renderer へ送る。毎フレームの
 // 仕事は「版・そのビューの縦横比・字の置き場の世代」のどれかが変わったときだけ。
 // 字の置き場（FontAtlas）とフォント・画像のテクスチャの持ち主もここ（RENDER 専用）。
+// エディタの選択枠（選んでいる要素の枠とつまみ、ui/UiHandles.h の形）も、エディタ
+// カメラのビューにだけ出す専用の Canvas として描く（どの UI よりも手前。後処理なし）。
+// onRender が選択とエディタカメラを写し、組み立ては onRenderUnlocked。
 class UiRenderComponent : public SceneComponent {
 public:
     UiRenderComponent();
@@ -72,6 +75,19 @@ private:
     wizengine::ui::UiMeshData buildOne(wizengine::Renderer& renderer,
                                        const wizengine::ui::CanvasDesc& desc, double canvasWidth);
     void uploadAtlas(wizengine::Renderer& renderer);
+    // 選択枠: 出すときは専用の Canvas をエディタカメラのビューに置いてメッシュを送り、
+    // 出さないときはどのビューにも置かない。条件が前回と同じなら何もしない。
+    void updateFrame(wizengine::Renderer& renderer);
+
+    // 選択枠を最後に送った条件（全部同じなら組み直さない。出さないときは既定値のまま）。
+    struct FrameKey {
+        std::uint64_t version = 0;
+        int canvas = -1, element = -1, view = -1, viewWidth = 0, viewHeight = 0;
+        bool operator==(const FrameKey& o) const {
+            return version == o.version && canvas == o.canvas && element == o.element &&
+                   view == o.view && viewWidth == o.viewWidth && viewHeight == o.viewHeight;
+        }
+    };
 
     std::uint64_t version_ = 0;
     std::uint64_t loadGeneration_ = 0;  // 最後に見た UiState の読込の世代
@@ -86,4 +102,12 @@ private:
     bool anyAlive_ = false;  // 写しに生きている Canvas があるか（UI の無いシーンは何もしない）
     // カメラ（スロット番号）→ ビュー番号（無効・ビュー未定は -1）。onRender が写す。
     std::vector<int> cameraViews_;
+    // 選択枠の対象（onRender が写す。-1 = 出さない = 選択が無い・エディタモードでない・
+    // プレハブ編集中）とエディタカメラのスロット番号。
+    int frameCanvas_ = -1, frameElement_ = -1;
+    int frameCamera_ = 0;
+    // 選択枠の Canvas（Renderer の番号。最初に出すときに作る）。
+    bool frameCreated_ = false;
+    std::size_t frameRendererId_ = 0;
+    FrameKey frameSent_;
 };

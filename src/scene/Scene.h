@@ -96,6 +96,9 @@ public:
     bool cameraActive(std::size_t index) const {
         return index < camerasActive_.size() && camerasActive_[index] != 0;
     }
+    // カメラ index のビューの番号（無効なカメラ・まだビューが決まっていなければ -1）。
+    // RENDER スレッドのオブジェクトのロックの中（onRender）から読む。
+    int cameraViewIndex(std::size_t index) const;
 
     // One grab/push component per camera, so each viewer holds and drives its
     // own object without fighting over a shared selection.
