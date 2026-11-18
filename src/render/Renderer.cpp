@@ -195,8 +195,9 @@ std::size_t Renderer::addView() {
     slot.view->setCamera(slot.camera);
     slot.view->setViewport({0, 0, uint32_t(slot.width), uint32_t(slot.height)});
     // エディタ専用レイヤ（ギズモ）は既定で見せない。見せるビューは
-    // setViewEditorLayerVisible で明示的に選ぶ。
-    slot.view->setVisibleLayers(kLayerEditorOnly, 0);
+    // setViewEditorLayerVisible で明示的に選ぶ。kLayerUiHidden はどのビューも
+    // 見せない（そのビューに出さない板の置き場）。
+    slot.view->setVisibleLayers(kLayerEditorOnly | kLayerUiHidden, 0);
     // 描画設定（後処理・露出）は全ビュー共通。あとから作ったビュー
     // （カメラの遅延生成）にもここで当てる - ページを開いた順で絵が
     // 変わらないため。
@@ -423,6 +424,7 @@ void Renderer::renderFrame(
     }
 
     if (!renderer_->beginFrame(slot.swapChain)) return;
+    applyUiVisibility(viewIndex);  // 板の姿勢と可視はビューごと（描く直前に当てる）
     renderer_->render(slot.view);
     // UI を同じ描画先へ重ねる（半透明のビュー = 主の絵の上に乗る。読み戻しに入る）。
     // 中身が空のビューは描かない。

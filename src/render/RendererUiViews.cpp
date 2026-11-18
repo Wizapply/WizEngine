@@ -10,6 +10,10 @@
 //   * 影なし・自分専用のシーン（主のシーンの物は映らない）。
 //   * 直交投影: 「ビューの高さ = 1」の単位で、左上が原点・y 下向き（Q3）。
 //     ORTHO(0, 縦横比, 1, 0)。Canvas ごとの 1 / 基準の高さ は Canvas の変換が持つ。
+//
+// 板の Canvas（camera / world）はこのビューではなく主のシーンに居る。シーンは全ビュー
+// 共有なので、各ビューを描く直前に applyUiVisibility が板ごとの姿勢と可視を当て直す
+// （Filament は render(view) の時点のレイヤと変換で描く物を選ぶ）。
 #include "render/RendererInternal.h"
 
 using namespace filament;
@@ -40,6 +44,30 @@ void Renderer::applyUiProjection(ViewSlot& slot) {
     // 左 0・右 縦横比・下 1・上 0（y 下向き）。深さは使わない（ui.mat）。
     slot.uiCamera->setProjection(Camera::Projection::ORTHO, 0.0, aspect, 1.0, 0.0, -1.0,
                                  1.0);
+}
+
+void Renderer::applyUiVisibility(std::size_t viewIndex) {
+    for (auto& canvas : uiCanvases_) {
+        const bool plate = canvas.used && canvas.placement == UiCanvasPlacement::Plate;
+        if (!plate || canvas.parts.empty()) continue;
+        UiCanvasPart& part = canvas.parts.front();
+        if (part.entity.isNull()) continue;
+        const UiPlateView* pose = nullptr;
+        for (const auto& pv : canvas.plateViews) {
+            if (pv.view == viewIndex && pv.posed) pose = &pv;
+        }
+        if (pose) {
+            setEntityTransform(*engine_, part.entity,
+                               pose->transform * uiDesignScale(canvas.designHeight));
+        }
+        setUiPlateShown(part.entity, pose != nullptr);
+    }
+}
+
+void Renderer::setUiPlateShown(utils::Entity entity, bool shown) {
+    auto& rm = engine_->getRenderableManager();
+    rm.setLayerMask(rm.getInstance(entity), kLayerScene | kLayerUiHidden,
+                    shown ? kLayerScene : kLayerUiHidden);
 }
 
 int2 Renderer::viewSize(std::size_t viewIndex) const {

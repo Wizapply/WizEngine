@@ -388,6 +388,7 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererTerrainSurface.cpp
     src/render/RendererTextures.cpp
     src/render/RendererUiMeshes.cpp
+    src/render/RendererUiTextures.cpp
     src/render/RendererUiViews.cpp)
 set(WIZ_STREAMING_SOURCES
     src/streaming/HttpServer.cpp

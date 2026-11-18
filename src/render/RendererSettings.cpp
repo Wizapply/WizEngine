@@ -26,6 +26,8 @@ void Renderer::setRenderSettings(const RenderSettings& settings) {
         before.tint != settings_.tint;
     if (gradingChanged) rebuildColorGrading();
     for (auto& slot : views_) applyViewSettings(slot);
+    // 板の UI の sRGB への直しは後処理の有無に従う（RendererUiMeshes.cpp）。
+    if (before.postProcess != settings_.postProcess) refreshUiPlateSrgbOut();
     applyShadowSettings();
 }
 

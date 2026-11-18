@@ -450,8 +450,14 @@ public:
     // レイヤ分け。シーンは全ビュー共有のままなので、レンダラブルの
     // レイヤマスクとビューの可視レイヤで映る/映らないを切り替える。
     // 通常のレンダラブルは kLayerScene（Filament の既定）に居て全ビューに映る。
+    // 例外は UI の板（UiCanvasPlacement::Plate）で、ビューを描くたびに kLayerScene と
+    // kLayerUiHidden を行き来する（applyUiVisibility）。
     static constexpr uint8_t kLayerScene = 0x01;
     static constexpr uint8_t kLayerEditorOnly = 0x02;
+    // どのビューにも映さないレイヤ（どのビューもこのビットを見せない = addView）。
+    // 板の Canvas（UiCanvasPlacement::Plate）を、出さないビューを描く間だけここへ
+    // 移す（applyUiVisibility）。
+    static constexpr uint8_t kLayerUiHidden = 0x04;
     // このビューでエディタ専用レイヤ（＝線分バッチ）を見せるか。addView は
     // どのビューも「見せない」で作るので、エディタカメラのビューだけ
     // 明示的に true にする（main.cpp）。RENDER スレッド。
@@ -531,19 +537,39 @@ public:
     // 番号を返す（使っている Canvas は次の setUiCanvasMesh まで描かない）。
     void releaseUiTexture(int textureId);
 
-    // Canvas（overlay）。番号は削除しても詰めない（空きは再利用）。
-    std::size_t addUiCanvas();
+    // Canvas の描き方。
+    //   Overlay: 上の UI のビューに重ねる（後処理なし・深さなし・中身はビューごと）。
+    //   Plate:   主のシーンの板（camera / world の Canvas）。手前の物に隠れ（深さで
+    //            比べる。書きはしない）、後処理（トーンマップ・ブルーム）も掛かる。
+    //            中身は全ビューで 1 つ（板の大きさで配置が決まり、ビューの縦横比に
+    //            依らない）。姿勢はビューごと（camera の板はカメラごとに違う）。
+    //            映すかどうかは各ビューを描く直前に当て直す（applyUiVisibility）。
+    enum class UiCanvasPlacement : uint8_t { Overlay, Plate };
+    // Canvas。番号は削除しても詰めない（空きは再利用）。
+    std::size_t addUiCanvas(UiCanvasPlacement placement = UiCanvasPlacement::Overlay);
     void removeUiCanvas(std::size_t id);
     // そのビューでの中身（UiMesh の組み立ての結果）。前回と同じなら送らない。
     // 頂点数・描く回数（run）が変わったときだけレンダラブルを作り直す。空 = 描かない。
     // setUiCanvasViews に無いビューへの中身は捨てる。
     // 中身は受け取って持つ（次の比較に使う。同じ中身を他のビューにも送るなら呼び手が写す）。
+    // 板は全ビュー共通の中身なので viewIndex を見ない（出すビューが無くても持つ）。
     void setUiCanvasMesh(std::size_t id, std::size_t viewIndex, ui::UiMeshData mesh);
     // 出すビューの一覧（ビュー番号）。まだ無いビューの番号は無視する
-    // （呼び手は次のフレームにまた呼ぶ）。外れたビューの中身は壊す。
+    // （呼び手は次のフレームにまた呼ぶ）。外れたビューの中身は壊す（板は
+    // そのビューの姿勢を忘れる）。
     void setUiCanvasViews(std::size_t id, const std::vector<std::size_t>& viewIndices);
+    // 板の、そのビューでの姿勢。transform は「Canvas の高さ = 1 の単位（左上が原点・
+    // x 右・y 下。overlay と同じ座標）」→ ワールドの変換で、板の大きさ・置き場所・
+    // 向き・y の反転は呼び手が入れる（設計上の画素 → この単位は Renderer が
+    // setUiCanvasDesignHeight で掛ける）。world の板は出す全ビューへ同じ値を送る。
+    // 出すビューの一覧（setUiCanvasViews）に無いビューへの姿勢は捨てる。姿勢を
+    // まだ受けていないビューには映さない。overlay の Canvas では何もしない。
+    void setUiCanvasTransform(std::size_t id, std::size_t viewIndex,
+                              const filament::math::mat4f& transform);
     // Canvas どうしの重なり順（大きいほど手前）。前後の規則は呼び手が持ち（ui::canvasBehind の
     // 順位）、Canvas ごとに違う値を渡す（同じ値が来たときだけ番号の小さい方が奥）。
+    // 板には効かない（板どうし・他の半透明の物とはカメラからの距離で並ぶ。板の
+    // 中の run は並び順 = 文書順）。
     void setUiCanvasOrder(std::size_t id, int order);
     // Canvas の基準の高さ（設計上の画素。CanvasDesc::height）。
     void setUiCanvasDesignHeight(std::size_t id, float designHeight);
@@ -642,15 +668,18 @@ private:
         filament::Texture* texture = nullptr;
         int width = 0, height = 0;
         bool mipmapped = false;
-        filament::MaterialInstance* instances[2] = {nullptr, nullptr};  // UiMaterialId
+        // UiMaterialId（0 画像 / 1 字）+ 板なら 2（uiInstance の添字）。
+        filament::MaterialInstance* instances[4] = {nullptr, nullptr, nullptr, nullptr};
         int generation = 0;  // 枠の世代（使い直すたびに進む。番号に入る = UiTextureId.h）
         bool used = false;
     };
-    // overlay の Canvas の、あるビューでの中身 = レンダラブル 1 個（run ごとに
-    // プリミティブ 1 つ）。そのビューの uiScene にだけ入る。約束: 入れ物は
+    // Canvas の中身 = レンダラブル 1 個（run ごとにプリミティブ 1 つ）。overlay は
+    // ビューごとに 1 個で、そのビューの uiScene にだけ入る。約束: overlay の入れ物は
     // setUiCanvasViews が ensureUiView の後にだけ作る = 入れ物があれば uiScene もある。
+    // 板は 1 個（addUiCanvas が作る）で、主のシーンに入る。
     struct UiCanvasPart {
-        std::size_t view = 0;
+        std::size_t view = 0;              // overlay: そのビュー（板は使わない）
+        filament::Scene* scene = nullptr;  // 入るシーン（uiScene か主のシーン）
         utils::Entity entity;
         filament::VertexBuffer* vb = nullptr;
         filament::IndexBuffer* ib = nullptr;
@@ -659,8 +688,16 @@ private:
         // 同じ中身でも解決し直して差し替える）。
         std::vector<filament::MaterialInstance*> instances;
     };
+    // 板を出すビューと、そのビューでの姿勢（setUiCanvasTransform の値）。
+    struct UiPlateView {
+        std::size_t view = 0;
+        filament::math::mat4f transform;
+        bool posed = false;  // 姿勢を受けたか（受けるまでは映さない）
+    };
     struct UiCanvas {
-        std::vector<UiCanvasPart> parts;  // 出しているビューごと
+        UiCanvasPlacement placement = UiCanvasPlacement::Overlay;
+        std::vector<UiCanvasPart> parts;  // overlay: 出しているビューごと / 板: 1 つ
+        std::vector<UiPlateView> plateViews;  // 板: 出すビュー
         int order = 0;
         float designHeight = 1.0f;
         bool used = false;
@@ -681,11 +718,24 @@ private:
     UiCanvas* uiCanvasAt(std::size_t id);
     // 描くときのテクスチャ（無効な番号は 1×1 の白）。
     UiTexture& uiTextureOrWhite(int textureId);
-    filament::MaterialInstance* uiInstance(int textureId, int materialId);
+    filament::MaterialInstance* uiInstance(int textureId, int materialId,
+                                           UiCanvasPlacement placement);
     void destroyUiCanvasPart(UiCanvasPart& part);
     // 作り直さずに済んだ中身の run の材質インスタンスを解決し直す（テクスチャが
     // 後から用意されたら差し替える）。
-    void refreshUiPartInstances(UiCanvasPart& part);
+    void refreshUiPartInstances(const UiCanvas& canvas, UiCanvasPart& part);
+    // 板の境界の箱を中身の頂点から当て直す（半透明の物の前後はその中心の距離で並ぶ）。
+    void refreshUiPlateBounds(UiCanvasPart& part);
+    // これから描くビューに合わせて、板ごとに姿勢と映す / 映さない（kLayerScene /
+    // kLayerUiHidden）を当てる（renderFrame がビューを描く直前に呼ぶ）。
+    void applyUiVisibility(std::size_t viewIndex);
+    // 板を映すか（kLayerScene）/ どのビューにも映さないか（kLayerUiHidden）。
+    // 板のレイヤのビットを決めるのはここだけ（作った直後と applyUiVisibility）。
+    void setUiPlateShown(utils::Entity entity, bool shown);
+    // 板の材質の srgbOut（主のビューの後処理が切れていれば true）。判断はここだけ。
+    bool uiPlateSrgbOut() const;
+    // 後処理の有無が変わったとき、作り置きの板の材質インスタンスへ当て直す。
+    void refreshUiPlateSrgbOut();
     // テクスチャ 1 枚の後始末（材質インスタンス → テクスチャ → 空に戻す）。
     void destroyUiTexture(UiTexture& t);
     // 作ったテクスチャを空いた枠に入れ、世代を進めた番号を返す（R8 と画像の共通）。
