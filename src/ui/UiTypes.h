@@ -1,8 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/Clamp.h"
@@ -26,15 +28,62 @@ struct ElementDesc {
     std::string name;   // ノードやアニメのキーが要素を名前で指すための名前（空可）
 };
 
+// 名前が同じか（重なり・名前での参照の規則の唯一の定義）: 空の名前はどれとも同じでない
+// （名前の無い物どうしは重ならず、名前で指されもしない）。
+inline bool sameName(const std::string& a, const std::string& b) {
+    return !a.empty() && a == b;
+}
+// 並びに name と同じ名前の物があるか（sameName の規則）。nameOf(item) はその物の名前を
+// 返す（数えない物 = 自分自身・生きていない枠などは nullptr）。Canvas・要素の名前の
+// 重なりの確かめ（文書の読み込みの警告とエディタの名前の変更）が使う。
+template <class List, class NameOf>
+bool nameTaken(const List& list, const std::string& name, NameOf nameOf) {
+    for (const auto& item : list) {
+        const std::string* n = nameOf(item);
+        if (n && sameName(*n, name)) return true;
+    }
+    return false;
+}
+
 // 名前で要素を引く規則（唯一の定義）: 最初に一致した要素（無い・空の名前は
 // nullptr）。名前が重なった文書は読み込みが警告し、キーやノードは最初の要素を指す。
 inline const ElementDesc* findElementByName(const std::vector<ElementDesc>& elements,
                                             const std::string& name) {
-    if (name.empty()) return nullptr;
     for (const auto& e : elements) {
-        if (e.name == name) return &e;
+        if (sameName(e.name, name)) return &e;
     }
     return nullptr;
+}
+
+// 要素 id の添字（唯一の定義。無ければ elements.size()）。エディタの編集・映像の上の
+// ドラッグ・選択枠が、id で運んだ要素を今の並びの中で引き直すのに使う。
+inline std::size_t elementIndex(const std::vector<ElementDesc>& elements, int id) {
+    for (std::size_t i = 0; i < elements.size(); ++i) {
+        if (elements[i].id == id) return i;
+    }
+    return elements.size();
+}
+
+// 名前の値の決まり（Name 型 = core/SafeName.h の sanitizeSafeName で正規化）。Canvas・
+// 要素・宣言の名前を読む・書く側はこの決まりの clampValue で正規化する（1 本）。
+inline const ValueSpec& nameSpec() {
+    static const ValueSpec spec{PropType::Name, textValue(""), 0.0, 0.0, nullptr};
+    return spec;
+}
+
+// 名前の無い物の呼び方（ブラウザの一覧・Inspector とステータスが同じ文字列を使う唯一の
+// 定義）: 名前があれば名前、無ければ「種類 + 番号」。
+inline std::string elementLabel(const ElementDesc& e) {
+    return e.name.empty() ? e.kind + " " + std::to_string(e.id) : e.name;
+}
+
+// 次に振る要素の id の下限（文書の読み込みの採番と、読み込んだ Canvas の採番の始まり）:
+// 今ある最大の id の次（1 から。番号の無い -1 は数えない）。エディタの追加は消した番号を
+// 使い回さないよう、UiState が Canvas ごとに増える一方の番号を持つ（これが下限）。
+inline int nextElementId(const std::vector<ElementDesc>& elements) {
+    int maxId = 0;
+    for (const auto& e : elements) maxId = std::max(maxId, e.id);
+    return maxId + 1;
 }
 
 // アニメのキー 1 個（<key element t ...>）。props はその時刻の値。評価は UiAnim。
@@ -73,6 +122,8 @@ static_assert(sizeof(kCanvasModeNames) / sizeof(kCanvasModeNames[0]) - 1 ==
               "kCanvasModeNames must have one name per CanvasMode");
 // cameras 属性の名前（表の行と、それを名前で引く側が共用する）。
 inline constexpr const char* kCanvasCamerasAttr = "cameras";
+// ui 属性（共用の UI の名前）の名前（表の行と canvasAttrEditable が共用する）。
+inline constexpr const char* kCanvasUiAttr = "ui";
 
 // Canvas の既定値（CanvasDesc の初期値と kCanvasAttrs の既定値が同じ値を使う）。
 inline constexpr double kCanvasDefaultHeight = 1080.0;
@@ -99,6 +150,30 @@ struct CanvasDesc {
     std::vector<ElementDesc> elements;
     std::vector<AnimDesc> anims;
 };
+
+// ---- 中身（要素とアニメ）------------------------------------------------------
+// Canvas（CanvasDesc）と UI の宣言（UiAssetDesc）が持つ「中身」= elements と anims の
+// 写し・移し・空にする手順（唯一の定義）。中身に欄を足したら、ここの 3 つに 1 行ずつ。
+template <class From, class To>
+void copyContents(const From& from, To& to) {
+    to.elements = from.elements;
+    to.anims = from.anims;
+}
+template <class From, class To>
+void moveContents(From& from, To& to) {
+    to.elements = std::move(from.elements);
+    to.anims = std::move(from.anims);
+}
+template <class T>
+void clearContents(T& t) {
+    t.elements.clear();
+    t.anims.clear();
+}
+
+// Canvas の呼び方（elementLabel と同じ流儀。index は UiState の Canvas の番号）。
+inline std::string canvasLabel(const CanvasDesc& c, int index) {
+    return c.name.empty() ? "Canvas " + std::to_string(index) : c.name;
+}
 
 // Canvas 専用の属性の表（mode / cameras / height / order / distance / pos /
 // euler / size / ui）。値の型・既定値・範囲は性質と同じ ValueSpec で持つので、
@@ -167,7 +242,7 @@ inline const CanvasAttrInfo kCanvasAttrs[] = {
          c.sizeX = v.v[0];
          c.sizeY = v.v[1];
      }},
-    {"ui", {PropType::Name, textValue(""), 0.0, 0.0}, "共用の UI",
+    {kCanvasUiAttr, {PropType::Name, textValue(""), 0.0, 0.0}, "共用の UI",
      [](const CanvasDesc& c) { return textValue(c.ui); },
      [](CanvasDesc& c, const PropValue& v) { c.ui = v.s; }},
 };
@@ -182,6 +257,13 @@ inline bool canvasShownOnCamera(const CanvasDesc& c, int camera) {
         if (k == camera) return true;
     }
     return false;
+}
+
+// エディタの部分更新（Inspector の欄）で書き換えてよい属性か（唯一の定義。編集の操作と
+// ブラウザの schema が引く）。ui は付け替えると Canvas の中身の持ち主が変わる（自分の
+// 要素は書き出されなくなり保存で消える）ので、共用にする / やめる操作だけが書き換える。
+inline bool canvasAttrEditable(const CanvasAttrInfo& a) {
+    return std::string(a.name) != kCanvasUiAttr;
 }
 
 inline const CanvasAttrInfo* canvasAttrFromName(const std::string& name) {

@@ -1,6 +1,10 @@
 // グローバル（ライブラリ）のアセット: 計算式・プレハブの読み書きと、ブラウザの
 // edit.lib.* / edit.mesh.add。イベントの共通化（SceneEvents.cpp の
-// applySharedEventOp）と同じ流儀で、種類を増やしたもの。
+// applySharedEventOp）と同じ流儀で、種類を増やしたもの。共用にする・ローカルにする・
+// 読み込む・削除の判断の流れは計算式・プレハブ・UI で 1 本（scene/LibraryFlow の
+// applyLibraryFlow）で、ここは種類ごとに違うところ（どれか・中身の書式・今のシーンへの
+// 入れ方）の組（LibraryKind）を作って渡す。UI の部品は scene/UiLibraryOps。保存の
+// 「変わったものだけ書く」も 3 種を同じ手順で行う。
 //
 //   ローカル  = このシーンの文書に中身を書く（今までどおり）
 //   グローバル = assets/<種類>/<名前>.xml に中身があり、シーンの文書は
@@ -13,60 +17,79 @@
 // それを使う）。
 //
 // 変更の目印: 読み込んだとき / 書いたときのファイルの中身（正規化した XML の
-// テキスト）を libBaseline_ に覚え、保存で今の中身から作ったテキストと比べて
-// 違うものだけ書く = 触っていないものは書き戻さない（他のシーンの編集を巻き
-// 戻さない）。読めなかったもの（覚えが無い）は書かない（空で上書きしない）。
+// テキスト）を libBaseline_（LibraryBaseline）に覚え、保存で今の中身から作った
+// テキストと比べて違うものだけ書く = 触っていないものは書き戻さない（他のシーンの
+// 編集を巻き戻さない）。読めなかったもの（覚えが無い）は書かない（空で上書きしない）。
 // すべて PHYSICS thread。
 #include "scene/SceneInternal.h"
+#include "scene/LibraryFlow.h"
 #include "scene/SharedAssetFile.h"
+#include "scene/UiFiles.h"
+#include "scene/UiLibraryOps.h"
 
 #include <filesystem>
+#include <functional>
 
 using namespace scene_detail;
 namespace fml = wizengine::formula;
 
 namespace {
+using wizengine::LibraryKind;
+
+// 種類の名前（edit.lib.* の kind・ログ・覚えのキー）。UI は uifiles::kUiLibraryKind。
+constexpr const char* kFormulaKind = "formula";
+constexpr const char* kPrefabKind = "prefab";
+
 bool argIsTrue(const nlohmann::json& a, const char* key) {
     const auto it = a.find(key);
     return it != a.end() && it->is_boolean() && it->get<bool>();
 }
-bool libraryFileExists(const std::string& file) {
-    std::error_code ec;
-    return !file.empty() && std::filesystem::exists(wizengine::assetPath(file), ec);
-}
+
 }  // namespace
 
 // ---- 読み書き ------------------------------------------------------------------
 bool Scene::readLibraryFormula(fml::FormulaGraphDesc& g, std::string& reason) {
     const std::string name = g.name, file = g.file;
+    // 読めなければ前の覚えも消す（覚えが「読めたか」の持ち主。古い覚えが残ると、空の中身を
+    // 保存でファイルへ書いたり、ローカルにできたりする）。
+    auto fail = [this, &name]() {
+        libBaseline_.forget(kFormulaKind, name);
+        return false;
+    };
     std::string text;
-    if (!wizengine::sharedasset::readAssetText(file, text, reason)) return false;
+    if (!wizengine::sharedasset::readAssetText(file, text, reason)) return fail();
     fml::FormulaGraphDesc got;
     std::string error;
     std::vector<std::string> warnings;
     if (!ed::parseFormulaLibraryXml(text, got, error, &warnings)) {
         reason = file + ": " + error;
-        return false;
+        return fail();
     }
     for (const auto& w : warnings) LOGW("scene", "formula file '%s': %s", file.c_str(), w.c_str());
     got.name = name;  // 参照名はシーンの側が正（制御器がこの名前で指している）
     got.file = file;
     g = std::move(got);
-    libBaseline_["formula:" + name] = ed::formulaToLibraryXmlText(g);
+    libBaseline_.remember(kFormulaKind, name, ed::formulaToLibraryXmlText(g));
     return true;
 }
 
 bool Scene::readLibraryPrefab(ed::PrefabDesc& d, std::string& reason) {
     const std::string name = d.name, file = d.file;
+    // 読めなければ前の覚えも消す（覚えが「読めたか」の持ち主。古い覚えが残ると、空の中身を
+    // 保存でファイルへ書いたり、ローカルにできたりする）。
+    auto fail = [this, &name]() {
+        libBaseline_.forget(kPrefabKind, name);
+        return false;
+    };
     std::string text;
-    if (!wizengine::sharedasset::readAssetText(file, text, reason)) return false;
+    if (!wizengine::sharedasset::readAssetText(file, text, reason)) return fail();
     ed::PrefabDesc got;
     std::vector<ed::MeshAssetDesc> decls;
     std::string error;
     std::vector<std::string> warnings;
     if (!ed::parsePrefabLibraryXml(text, got, decls, error, &warnings)) {
         reason = file + ": " + error;
-        return false;
+        return fail();
     }
     for (const auto& w : warnings) LOGW("scene", "prefab file '%s': %s", file.c_str(), w.c_str());
     // 部品が使うメッシュの宣言を、このシーンに無ければ足す（同じ名前があれば
@@ -85,7 +108,7 @@ bool Scene::readLibraryPrefab(ed::PrefabDesc& d, std::string& reason) {
     got.name = name;
     got.file = file;
     d = std::move(got);
-    libBaseline_["prefab:" + name] = ed::prefabToLibraryXmlText(d, meshDescs());
+    libBaseline_.remember(kPrefabKind, name, ed::prefabToLibraryXmlText(d, meshDescs()));
     return true;
 }
 
@@ -125,29 +148,38 @@ bool Scene::saveLibraryAssets(const ed::SceneDocument& doc, std::string& written
                               std::string& reason) {
     written.clear();
     bool any = false;
+    // 1 つぶん: 覚えがあり（読めなかった = 空で上書きしない）、今の中身のテキストが
+    // 覚えと違うときだけ書く。
+    auto writeChanged = [&](const char* kind, const std::string& name, const std::string& file,
+                            const std::string& text) {
+        const std::string* known = libBaseline_.find(kind, name);
+        if (!known) return true;          // 読めなかった = 空で上書きしない
+        if (text == *known) return true;  // 変更なし
+        if (!wizengine::sharedasset::writeAssetText(file, text, reason)) return false;
+        libBaseline_.remember(kind, name, text);
+        written += (written.empty() ? "" : " ") + name;
+        any = true;
+        return true;
+    };
     for (const auto& g : doc.formulas) {
         if (g.file.empty()) continue;
-        const std::string key = "formula:" + g.name;
-        const auto it = libBaseline_.find(key);
-        if (it == libBaseline_.end()) continue;  // 読めなかった = 空で上書きしない
-        const std::string text = ed::formulaToLibraryXmlText(g);
-        if (text == it->second) continue;       // 変更なし
-        if (!wizengine::sharedasset::writeAssetText(g.file, text, reason)) return false;
-        it->second = text;
-        written += (written.empty() ? "" : " ") + g.name;
-        any = true;
+        if (!writeChanged(kFormulaKind, g.name, g.file, ed::formulaToLibraryXmlText(g))) {
+            return false;
+        }
     }
     for (const auto& d : doc.prefabs) {
         if (d.file.empty()) continue;
-        const std::string key = "prefab:" + d.name;
-        const auto it = libBaseline_.find(key);
-        if (it == libBaseline_.end()) continue;
-        const std::string text = ed::prefabToLibraryXmlText(d, doc.meshes);
-        if (text == it->second) continue;
-        if (!wizengine::sharedasset::writeAssetText(d.file, text, reason)) return false;
-        it->second = text;
-        written += (written.empty() ? "" : " ") + d.name;
-        any = true;
+        if (!writeChanged(kPrefabKind, d.name, d.file,
+                          ed::prefabToLibraryXmlText(d, doc.meshes))) {
+            return false;
+        }
+    }
+    for (const auto& u : doc.uiAssets) {
+        if (u.file.empty()) continue;
+        if (!writeChanged(wizengine::uifiles::kUiLibraryKind, u.name, u.file,
+                          wizengine::uifiles::libraryText(u))) {
+            return false;
+        }
     }
     if (any) editor_.refreshLibraries();
     return true;
@@ -155,7 +187,7 @@ bool Scene::saveLibraryAssets(const ed::SceneDocument& doc, std::string& written
 
 // ---- ブラウザの操作 ------------------------------------------------------------
 // edit.lib.share / unshare / import / delete / refresh（kind = event / formula /
-// prefab）と edit.mesh.add。扱ったら true。
+// prefab / ui）と edit.mesh.add。扱ったら true。
 bool Scene::applyLibraryOp(const EditorState::Op& op) {
     const nlohmann::json& a = op.args;
     if (op.kind == "mesh.add") {
@@ -178,136 +210,67 @@ bool Scene::applyLibraryOp(const EditorState::Op& op) {
         applySharedEventOp(ev);
         return true;
     }
-    if (kind != "formula" && kind != "prefab") return true;
-    const bool isFormula = kind == "formula";
-    const std::string label = isFormula ? "計算式" : "プレハブ";
-    const std::string file = isFormula ? EditorState::formulaLibraryFile(name)
-                                       : EditorState::prefabLibraryFile(name);
-    if (name.empty() || file.empty()) return true;
-
-    // 今のシーンの同じ名前のアセット（無ければ found = false）。
-    auto formulas = editor_.formulaAssets();
-    auto prefabs = editor_.prefabAssets();
-    fml::FormulaGraphDesc* g = nullptr;
-    ed::PrefabDesc* d = nullptr;
-    for (auto& f : formulas) if (f.name == name) g = &f;
-    for (auto& p : prefabs) if (p.name == name) d = &p;
-    const bool found = isFormula ? g != nullptr : d != nullptr;
-    const std::string curFile = !found ? std::string() : isFormula ? g->file : d->file;
-
-    // グローバルにする: 中身をライブラリへ書き、以後は参照にする。
-    if (what == "share") {
-        if (!found) return true;
-        if (!curFile.empty()) {
-            editor_.setStatus(label + " " + name + " は既にグローバルです");
-            return true;
-        }
-        if (libraryFileExists(file) && !argIsTrue(a, "overwrite")) {
-            editor_.setStatus("グローバルに同じ名前の" + label + " " + name +
-                              " があります（もう一度選ぶと上書きを確認します）");
-            return true;
-        }
-        std::string reason, text;
-        if (isFormula) {
-            g->file = file;
-            text = ed::formulaToLibraryXmlText(*g);
-        } else {
-            d->file = file;
-            text = ed::prefabToLibraryXmlText(*d, meshDescs());
-        }
-        if (!wizengine::sharedasset::writeAssetText(file, text, reason)) {
-            LOGW("scene", "%s share '%s': %s", kind.c_str(), name.c_str(), reason.c_str());
-            editor_.setStatus(label + "をグローバルにできません（コンソール参照）");
-            return true;
-        }
-        libBaseline_[kind + ":" + name] = text;
-        if (isFormula) {
-            editor_.setFormulaAssets(std::move(formulas));
-        } else {
-            editor_.setPrefabAssets(std::move(prefabs));
-        }
-        editor_.refreshLibraries();
-        editor_.setStatus(label + " " + name + " をグローバルにしました（" + file +
-                          "。他のシーンからも使えます）");
+    LibraryKind k;
+    if (kind == kFormulaKind) {
+        k = formulaLibraryKind();
+    } else if (kind == kPrefabKind) {
+        k = prefabLibraryKind();
+    } else if (kind == wizengine::uifiles::kUiLibraryKind) {
+        k = wizengine::uilibrary::libraryKind(ui_, a, libBaseline_);
+    } else {
         return true;
     }
-
-    // ローカルに戻す: 中身はそのまま、次の保存でシーンの XML に埋まる。
-    // ライブラリのファイルは消さない（他のシーンが使っているかもしれない）。
-    if (what == "unshare") {
-        if (!found || curFile.empty()) return true;
-        if (isFormula) {
-            g->file.clear();
-            editor_.setFormulaAssets(std::move(formulas));
-        } else {
-            d->file.clear();
-            editor_.setPrefabAssets(std::move(prefabs));
-        }
-        libBaseline_.erase(kind + ":" + name);
-        editor_.setStatus(label + " " + name + " をこのシーン専用（ローカル）にしました"
-                          "（保存でシーンに埋め込みます。グローバルのファイルは残ります）");
-        return true;
+    const wizengine::LibraryResult r =
+        wizengine::applyLibraryFlow(k, what, name, argIsTrue(a, "overwrite"),
+                                    editor_.mode() != ed::AppMode::Simulate, libBaseline_);
+    // UI の「読めなかった」の印は覚えの写し（共用にした・読み込んだで覚えが変わる）。
+    if (kind == wizengine::uifiles::kUiLibraryKind) {
+        wizengine::uifiles::syncReadable(ui_, libBaseline_);
     }
-
-    // グローバルのものを今のシーンで使えるようにする（参照のまま）。
-    if (what == "import") {
-        if (found) {
-            editor_.setStatus("このシーンには既に" + label + " " + name + " があります");
-            return true;
-        }
-        std::string reason;
-        if (isFormula) {
-            fml::FormulaGraphDesc ng;
-            ng.name = name;
-            ng.file = file;
-            if (!readLibraryFormula(ng, reason) || !editor_.addFormulaAsset(std::move(ng))) {
-                LOGW("scene", "formula import '%s': %s", name.c_str(), reason.c_str());
-                editor_.setStatus("計算式 " + name + " を読み込めません（コンソール参照）");
-                editor_.refreshLibraries();
-                return true;
-            }
-            editor_.setStatus("計算式 " + name +
-                              " をこのシーンで使えるようにしました（制御器にすると回ります）");
-        } else {
-            ed::PrefabDesc nd;
-            nd.name = name;
-            nd.file = file;
-            if (!readLibraryPrefab(nd, reason) || !editor_.addPrefabAsset(nd)) {
-                LOGW("scene", "prefab import '%s': %s", name.c_str(), reason.c_str());
-                editor_.setStatus("プレハブ " + name + " を読み込めません（コンソール参照）");
-                editor_.refreshLibraries();
-                return true;
-            }
-            editor_.setStatus("プレハブ " + name +
-                              " をこのシーンで使えるようにしました（オブジェクトに付けて使います）");
-        }
-        return true;
-    }
-
-    // ライブラリのファイルをごみ箱へ。今のシーンが使っているものは消さない。
-    if (what == "delete") {
-        if (editor_.mode() == ed::AppMode::Simulate) {
-            editor_.setStatus("グローバルからの削除はエディタモードでだけできます");
-            return true;
-        }
-        if (found && curFile == file) {
-            editor_.setStatus("このシーンが使っている" + label +
-                              "は削除できません（ローカルにするか消してから）");
-            return true;
-        }
-        std::string reason;
-        if (!wizengine::sharedasset::trashLibraryFile(file, reason)) {
-            LOGW("scene", "%s library delete '%s': %s", kind.c_str(), name.c_str(),
-                 reason.c_str());
-            editor_.setStatus(label + " " + name + " をごみ箱へ移せません（コンソール参照）");
-        } else {
-            LOGI("scene", "%s '%s' moved to the trash", kind.c_str(), name.c_str());
-            editor_.setStatus("グローバルの" + label + " " + name + " をごみ箱へ移しました");
-        }
-        editor_.refreshLibraries();
-        return true;
-    }
+    if (r.refresh) editor_.refreshLibraries();
+    if (!r.status.empty()) editor_.setStatus(r.status);
     return true;
+}
+
+// ---- 種類ごとの関数の組 ----------------------------------------------------------
+// 計算式とプレハブは同じ形（EditorState の一覧の 1 つ）なので、部品は bindListKind が組み、
+// ここは一覧の出し入れとファイルの書式、読み込み方だけを渡す。
+LibraryKind Scene::formulaLibraryKind() {
+    LibraryKind k;
+    k.id = kFormulaKind;
+    k.label = "計算式";
+    k.importHint = "制御器にすると回ります";
+    k.libraryFile = &EditorState::formulaLibraryFile;
+    wizengine::bindListKind<fml::FormulaGraphDesc>(
+        k, [this] { return editor_.formulaAssets(); },
+        [this](std::vector<fml::FormulaGraphDesc> v) { editor_.setFormulaAssets(std::move(v)); },
+        [](const fml::FormulaGraphDesc& g) { return ed::formulaToLibraryXmlText(g); });
+    k.import = [this](const std::string& n, const std::string& file, std::string& reason) {
+        fml::FormulaGraphDesc g;
+        g.name = n;
+        g.file = file;
+        return readLibraryFormula(g, reason) && editor_.addFormulaAsset(std::move(g));
+    };
+    return k;
+}
+
+LibraryKind Scene::prefabLibraryKind() {
+    LibraryKind k;
+    k.id = kPrefabKind;
+    k.label = "プレハブ";
+    k.importHint = "オブジェクトに付けて使います";
+    k.libraryFile = &EditorState::prefabLibraryFile;
+    wizengine::bindListKind<ed::PrefabDesc>(
+        k, [this] { return editor_.prefabAssets(); },
+        [this](std::vector<ed::PrefabDesc> v) { editor_.setPrefabAssets(std::move(v)); },
+        [this](const ed::PrefabDesc& d) { return ed::prefabToLibraryXmlText(d, meshDescs()); });
+    k.import = [this](const std::string& n, const std::string& file, std::string& reason) {
+        ed::PrefabDesc d;
+        d.name = n;
+        d.file = file;
+        return readLibraryPrefab(d, reason) && editor_.addPrefabAsset(d);
+    };
+    return k;
 }
 
 // assets/ のメッシュファイルをこのシーンに宣言する（{file, name?, scale?}）。

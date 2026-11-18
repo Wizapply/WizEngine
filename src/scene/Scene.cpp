@@ -4,6 +4,7 @@
 // 文書との変換は SceneSerialize.cpp。共通の下準備は SceneInternal.h。
 #include "scene/SceneInternal.h"
 #include "scene/PrefabDefaults.h"
+#include "components/UiInputComponent.h"
 #include "components/UiRenderComponent.h"
 
 #include <chrono>
@@ -238,7 +239,12 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     // 固定プールなので後から増えない = 描画スレッドが読んでいる最中に
     // 配列が伸びる、が起きない。
     ensureGrabState();
-    // ギズモが最初。pick / drag をカメラやグラブより先に見て、ハンドルに
+    // UI の入力が最初（選んでいる UI の枠・つまみを押したら、後ろのハンドルや物を
+    // 掴まない。当たらなければ pick を素通し）。select.ui・edit.ui.*・pick / drag /
+    // release を取る。edit.ui.* は EditorComponent（main が後で登録する、edit.* を全部
+    // 受け止める係）より先に取る必要があるので、ここで最初に登録する。
+    addComponent(std::make_unique<UiInputComponent>(cameras_.size()));
+    // 次がギズモ。pick / drag をカメラやグラブより先に見て、ハンドルに
     // 当たっていればそこで止める（選択し直しや自由移動をさせないため）。
     addComponent(std::make_unique<GizmoComponent>());
     addComponent(std::make_unique<CameraControlComponent>());
@@ -249,7 +255,6 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     // 順番も問わない。3D の板（後の PR）で車体・プレハブの姿勢が要るなら、その
     // 姿勢を onRender（ロックの中）で写し、組み立てはロックの外で行う（写す姿勢を
     // 他の部品の onRender が決めるなら、その部品より後に登録する）。
-    // UI の入力（後の PR）はギズモより前に登録する。
     addComponent(std::make_unique<UiRenderComponent>());
 }
 
@@ -369,6 +374,23 @@ std::size_t Scene::pickBoxAt(double ndcX, double ndcY,
 
 std::size_t Scene::editorCamera() const {
     return sys_.editorCamera < cameras_.size() ? sys_.editorCamera : 0;
+}
+
+int Scene::cameraViewIndex(std::size_t index) const {
+    return index < cameras_.size() && cameraActive(index) ? cameras_[index]->viewIndex() : -1;
+}
+
+bool Scene::editsFrom(std::size_t cam) const {
+    return cam == editorCamera() && editor_.isEditor();
+}
+
+bool Scene::editsUiFrom(std::size_t cam) const {
+    return editsFrom(cam) && editor_.prefabEditObject() < 0;
+}
+
+void Scene::setEditorSel(std::size_t cam, EditorState::SelKind kind, int index, int sub) {
+    if (cam < controllers_.size()) controllers_[cam]->setSelected(BoxController::kNone);
+    editor_.setSel(kind, index, sub);
 }
 
 // 実行時に変わりうる値は EditorState の設定が正。SceneConfig.h の定数は

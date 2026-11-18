@@ -22,6 +22,8 @@
 #include "scene/GameObject.h"
 #include "scene/SceneComponent.h"
 #include "scene/SceneMath.h"  // cameraRay の Basis / Vec3
+#include "scene/LibraryFlow.h"  // LibraryBaseline / LibraryKind
+#include "scene/UiJson.h"      // uijson::Cache
 #include "scene/UiState.h"
 #include "document/SceneDocument.h"
 #include "physics/MeshCollision.h"  // CollisionTriangles
@@ -96,6 +98,9 @@ public:
     bool cameraActive(std::size_t index) const {
         return index < camerasActive_.size() && camerasActive_[index] != 0;
     }
+    // カメラ index のビューの番号（無効なカメラ・まだビューが決まっていなければ -1）。
+    // RENDER スレッドのオブジェクトのロックの中（onRender）から読む。
+    int cameraViewIndex(std::size_t index) const;
 
     // One grab/push component per camera, so each viewer holds and drives its
     // own object without fighting over a shared selection.
@@ -400,6 +405,20 @@ public:
     // エディタ操作（モード切替・配置・ギズモ・ジョイント・保存/読込）を
     // 受け付けるカメラ。SceneSystemConfig::editorCamera（既定 0）。
     std::size_t editorCamera() const;
+    // カメラ cam のページからエディタの選択・編集を受け付けるか（唯一の定義）:
+    // エディタモード × エディタカメラ。サイドバーのクリック（select.*）もビューの
+    // pick（UI の当たり判定など）もこれで判定する。どのスレッドからでも（atomic だけ）。
+    bool editsFrom(std::size_t cam) const;
+    // カメラ cam のページから UI（Canvas と要素）の選択・編集を受け付けるか（唯一の定義）:
+    // editsFrom に加えて、プレハブ編集中でないこと（その間に選べるのは部品だけ）。
+    // INPUT（select.ui・edit.ui.*・後の pick / drag）と PHYSICS（ui.* の Op を当てる
+    // とき）の両方がこれで判定する。atomic だけを読む。
+    bool editsUiFrom(std::size_t cam) const;
+    // エディタ選択（ライト・カメラ・地面・テレイン・UI など）を立てる口: カメラ cam の
+    // オブジェクト選択（BoxController）を外してから setSel する（両方が同時に立つと
+    // ギズモと Inspector の対象が曖昧になるため = 排他）。sub は UI の要素の id
+    // （他の種類は -1）。対象が今もあるかは呼び手が確かめる。atomic だけを書く。
+    void setEditorSel(std::size_t cam, EditorState::SelKind kind, int index, int sub = -1);
 
     // PHYSICS thread: エディタモードの1パス（積分しない）。
     void stepEditor(double dt);
@@ -605,13 +624,17 @@ private:
     void resolveLibraryAssets(std::vector<wizengine::formula::FormulaGraphDesc>& formulas,
                               std::vector<wizengine::editor::PrefabDesc>& prefabs,
                               std::size_t& missing);
-    // 保存: グローバルの計算式・プレハブのうち、読んだとき / 書いたときから
+    // 保存: グローバルの計算式・プレハブ・共用 UI のうち、読んだとき / 書いたときから
     // 中身が変わったものだけをファイルへ書く。written に書いた名前。
     bool saveLibraryAssets(const wizengine::editor::SceneDocument& doc, std::string& written,
                            std::string& reason);
     // edit.lib.share / unshare / import / delete / refresh（kind = event / formula /
-    // prefab）と edit.mesh.add。扱ったら true。
+    // prefab / ui。ui の部品は scene/UiLibraryOps）と edit.mesh.add。扱ったら true。
     bool applyLibraryOp(const EditorState::Op& op);
+    // 種類ごとに違うところの関数の組（applyLibraryOp が 1 つ選んで判断の流れ =
+    // scene/LibraryFlow に渡す。UI の組は uilibrary::libraryKind）。
+    wizengine::LibraryKind formulaLibraryKind();
+    wizengine::LibraryKind prefabLibraryKind();
     void addMeshDeclaration(const nlohmann::json& args);
     std::vector<wizengine::editor::MeshAssetDesc> meshDescs();
     // 実行状態（タイマー・接触の記憶・発火カウント）と、アクションが加えた
@@ -1038,6 +1061,9 @@ private:
     std::vector<std::unique_ptr<SceneComponent>> components_;
     EditorState editor_;
     wizengine::UiState ui_;
+    // /scene の "ui" の写しと JSON（版と選択が変わったときだけ組み直す。HTTP スレッド。
+    // 中のロックは UiState の末端のロックより前に取る）。
+    wizengine::uijson::Cache uiJsonCache_;
     // 地面の物理ボディ。ジョイントの「ワールド側」に使う。
     std::size_t groundPhysId_ = GameObject::kInvalidId;
     // 文書のジョイント番号 → PhysicsWorld のジョイント番号（作れなかった /
@@ -1191,9 +1217,10 @@ private:
     std::unique_ptr<wizengine::terrain::TerrainLibrary> terrainLibrary_;
     std::unique_ptr<wizengine::terrain::TerrainUndoStack> terrainUndo_;
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る
-    // グローバルの計算式・プレハブの「読んだ / 書いたときの中身」（"formula:名前" /
-    // "prefab:名前" → 正規化した XML）。保存で比べて変わったものだけ書く。PHYSICS。
-    std::map<std::string, std::string> libBaseline_;
+    // グローバルの計算式・プレハブ・共用 UI の「読んだ / 書いたときの中身」（種類と名前 →
+    // 正規化した XML。scene/LibraryFlow）。保存で比べて変わったものだけ書く。全消し・読込で
+    // 空にする。PHYSICS。
+    wizengine::LibraryBaseline libBaseline_;
     std::mutex poseMutex_;
     std::vector<BodyTransform> latestPoses_;  // one per box, in box order
     // ソフトボディの粒子位置（3 個で 1 粒子、オブジェクト番号ごと。剛体は

@@ -87,16 +87,21 @@ public:
     // Ground / Terrain はシーンに 1 つずつのオブジェクト（index は使わない、
     // 常に 0）。階層一覧のクリックで選び、Inspector にその節が出る。ギズモで
     // 移動 / 回転できる（GizmoComponent の対象の種類 4 / 5。拡縮は移動に丸める）。
+    // Canvas は UI（index = Canvas の番号、sub = 要素の id。-1 = Canvas そのもの）。
+    // 立てるのは UiInputComponent（select.ui）。sub を使うのは Canvas だけで、他の
+    // 種類は -1。
     enum class SelKind : int {
-        None = 0, Light = 1, Camera = 2, Part = 3, Ground = 4, Terrain = 5
+        None = 0, Light = 1, Camera = 2, Part = 3, Ground = 4, Terrain = 5, Canvas = 6
     };
-    void setSel(SelKind kind, int index) {
+    void setSel(SelKind kind, int index, int sub = -1) {
         selIndex_.store(index);
+        selSub_.store(sub);
         selKind_.store(int(kind));
     }
     void clearSel() { setSel(SelKind::None, -1); }
     SelKind selKind() const { return SelKind(selKind_.load()); }
     int selIndex() const { return selIndex_.load(); }
+    int selSub() const { return selSub_.load(); }
 
     // ---- ジョイント -----------------------------------------------------
     std::vector<wizengine::editor::JointDesc> joints() const;
@@ -171,6 +176,8 @@ public:
     std::vector<std::string> formulaLibrary() const;
     std::vector<std::string> prefabLibrary() const;
     std::vector<std::string> meshLibrary() const;
+    // 共用 UI（assets/ui/<名前>.xml の名前。置き場は scene/UiFiles）。
+    std::vector<std::string> uiLibrary() const;
     void refreshLibraries();  // イベントも含めて全部
     // ライブラリのファイル（assets/ 相対）。名前が不正なら空。
     static std::string formulaLibraryFile(const std::string& name);
@@ -364,6 +371,7 @@ private:
 
     std::atomic<int> selKind_{0};    // SelKind
     std::atomic<int> selIndex_{-1};
+    std::atomic<int> selSub_{-1};    // Canvas の要素の id（-1 = Canvas そのもの）
 
     mutable std::mutex mutex_;
     std::vector<Op> pending_;
@@ -382,7 +390,8 @@ private:
     };
     std::vector<EventAssetState> events_;
     std::vector<std::string> eventLibrary_;  // mutex_ の下
-    std::vector<std::string> formulaLibrary_, prefabLibrary_, meshLibrary_;  // mutex_ の下
+    std::vector<std::string> formulaLibrary_, prefabLibrary_, meshLibrary_,
+        uiLibrary_;  // mutex_ の下
     std::vector<std::string> worldEvents_;
     // 計算式アセット（mutex_ の下）。
     struct FormulaAssetState {

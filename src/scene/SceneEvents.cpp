@@ -795,10 +795,6 @@ bool Scene::applySharedEventOp(const EditorState::Op& op) {
         }
         return false;
     };
-    const auto libraryHas = [](const std::string& file) {
-        std::error_code ec;
-        return std::filesystem::exists(wizengine::assetPath(file), ec);
-    };
 
     if (op.kind == "event.refresh") {
         editor_.refreshLibraries();  // ブラウザのタブに戻ったとき。ステータスは変えない
@@ -815,7 +811,7 @@ bool Scene::applySharedEventOp(const EditorState::Op& op) {
         }
         asset.file = EditorState::eventLibraryFile(name);
         // 同じ名前がライブラリにあれば、上書きの確認（overwrite）が付いたときだけ。
-        if (libraryHas(asset.file) && !argTrue(a, "overwrite")) {
+        if (wizengine::sharedasset::libraryFileExists(asset.file) && !argTrue(a, "overwrite")) {
             editor_.setStatus("ライブラリに同じ名前のイベント " + name +
                               " があります（もう一度選ぶと上書きを確認します）");
             return true;

@@ -80,10 +80,6 @@ std::string readText(const xml::Element& e, const char* attr, const ValueSpec& s
 }
 
 // 名前（英数字と _ - だけ = 性質の表の Name 型と同じ正規化）。
-const ValueSpec& nameSpec() {
-    static const ValueSpec spec{PropType::Name, textValue(""), 0.0, 0.0, nullptr};
-    return spec;
-}
 std::string readName(const xml::Element& e, const std::string& label, Warn& warn) {
     return readText(e, kNameAttr, nameSpec(), label, warn);
 }
@@ -170,7 +166,7 @@ int readIndex(const xml::Element& e, const char* key, int fallback, bool& ok) {
 }
 
 // 警告の見出し（"<worldbody> <canvas name=..."）。where が空なら要素だけ。
-std::string elementLabel(const std::string& where, const xml::Element& e) {
+std::string xmlLabel(const std::string& where, const xml::Element& e) {
     std::string s = (where.empty() ? std::string() : where + " ") + "<" + e.name();
     if (e.has(kIdAttr)) s += " id=" + inQuotes(e.attr(kIdAttr));
     if (e.has(kNameAttr)) s += " name=" + inQuotes(e.attr(kNameAttr));
@@ -180,7 +176,7 @@ std::string elementLabel(const std::string& where, const xml::Element& e) {
 // アニメ 1 本。キーの element は els の名前でなければならない。
 AnimDesc readAnim(const xml::Element& e, const std::vector<ElementDesc>& els,
                   const std::string& where, Warn& warn) {
-    const std::string label = elementLabel(where, e);
+    const std::string label = xmlLabel(where, e);
     warnUnknownAttrs(e, {kNameAttr, kLoopAttr, kAutoplayAttr}, label, warn);
     xml::warnUnknownChildren(e, {kKeyTag}, label.c_str(), warn);
     AnimDesc a;
@@ -230,7 +226,7 @@ void readContents(const xml::Element& c, std::vector<ElementDesc>& elements,
             warn(msg + " - ignored");
             continue;
         }
-        const std::string elLabel = elementLabel(label, child);
+        const std::string elLabel = xmlLabel(label, child);
         ElementDesc el;
         el.kind = kind->name;
         bool idOk = true;
@@ -279,7 +275,7 @@ void readContents(const xml::Element& c, std::vector<ElementDesc>& elements,
         pending.push_back(std::move(el));
     }
     // 番号の無い要素に空き番号を振る（イベントのノードと同じ: 最大の次から）。
-    int nextId = usedIds.empty() ? 1 : (*usedIds.rbegin() + 1);
+    int nextId = nextElementId(pending);
     for (auto& el : pending) {
         if (el.id <= 0) el.id = nextId++;
     }
@@ -407,7 +403,7 @@ xml::Element canvasElement(const CanvasDesc& canvas) {
 void readUiAssets(const xml::Element& asset, std::vector<FontAssetDesc>& fonts,
                   std::vector<UiAssetDesc>& uiAssets, Warn& warn) {
     for (const xml::Element* f : asset.all(kFontTag)) {
-        const std::string label = elementLabel("<asset>", *f);
+        const std::string label = xmlLabel("<asset>", *f);
         warnUnknownAttrs(*f, {kNameAttr, kFileAttr}, label, warn);
         FontAssetDesc font;
         font.name = readName(*f, label, warn);
@@ -425,7 +421,7 @@ void readUiAssets(const xml::Element& asset, std::vector<FontAssetDesc>& fonts,
         fonts.push_back(std::move(font));
     }
     for (const xml::Element* u : asset.all(kUiAssetTag)) {
-        const std::string label = elementLabel("<asset>", *u);
+        const std::string label = xmlLabel("<asset>", *u);
         UiAssetDesc a;
         if (!readUiAsset(*u, &fonts, true, label, warn, a)) continue;
         if (a.name.empty()) {
@@ -446,13 +442,12 @@ void readCanvases(const xml::Element& world, const std::vector<FontAssetDesc>& f
                   Warn& warn) {
     std::vector<const char*> known = {kNameAttr};
     for (const auto& a : kCanvasAttrs) known.push_back(a.name);
-    std::set<std::string> names;
     for (const xml::Element* e : world.all(kCanvasTag)) {
-        const std::string label = elementLabel("", *e);
+        const std::string label = xmlLabel("", *e);
         warnUnknownAttrs(*e, known, label, warn);
         CanvasDesc c;
         c.name = readName(*e, label, warn);
-        if (!c.name.empty() && !names.insert(c.name).second) {
+        if (nameTaken(out, c.name, [](const CanvasDesc& d) { return &d.name; })) {
             warn(label + ": another <canvas> has the same name");
         }
         for (const auto& a : kCanvasAttrs) {

@@ -25,9 +25,13 @@ class Renderer;
 // 組み立てと転送）は全部 onRenderUnlocked（ロックの外。Renderer は使ってよく、Scene の
 // オブジェクト一覧は読まない = 要るものは onRender の写しを使う）。
 // UiState の設計値は版（copyIfChanged。UiState の末端のロック）で写し、写しを読むだけ
-// （UiState の内部は持たない）。Canvas × ビューごとにメッシュを組んで Renderer へ送る。毎フレームの
-// 仕事は「版・そのビューの縦横比・字の置き場の世代」のどれかが変わったときだけ。
+// （UiState の内部は持たない）。Canvas × ビューごとにメッシュを組んで Renderer へ送る。
+// 毎フレームの仕事は「その Canvas の材料の版（Snapshot::contentsRevision）・そのビューの
+// 縦横比・字の置き場の世代」のどれかが変わったときだけ（ほかの Canvas のドラッグでは組まない）。
 // 字の置き場（FontAtlas）とフォント・画像のテクスチャの持ち主もここ（RENDER 専用）。
+// エディタの選択枠（選んでいる要素の枠とつまみ、ui/UiHandles.h の形）も、エディタ
+// カメラのビューにだけ出す専用の Canvas として描く（どの UI よりも手前。後処理なし）。
+// onRender が選択とエディタカメラを写し、組み立ては onRenderUnlocked。
 class UiRenderComponent : public SceneComponent {
 public:
     UiRenderComponent();
@@ -38,7 +42,7 @@ public:
 private:
     // Canvas 1 枚の、あるビューで最後に送った組み立ての条件。
     struct ViewBuild {
-        std::uint64_t version = 0;
+        std::uint64_t revision = 0;  // 組んだ材料の版（Snapshot::contentsRevision）
         double canvasWidth = -1.0;  // canvasRect の幅（= 基準の高さ × 縦横比）
         int generation = -1;        // 字の置き場の世代
     };
@@ -52,14 +56,13 @@ private:
     void update(wizengine::Renderer& renderer, const wizengine::UiState& state);
     void ensureAtlas(wizengine::Renderer& renderer);
     // 版が変わったとき: 宣言のフォントを読み（ファイルごとに 1 回）、名前の対応を引き直す。
-    void syncFonts();
-    // 版が変わったとき: どの生きている Canvas も使わなくなった画像を返し、読めなかった
-    // 記録を捨てる（次の組み立てでもう一度試す）。
-    void releaseUnusedImages(wizengine::Renderer& renderer);
+    // 読めなかったファイルを読み直すのは reloaded（読込の世代が進んだ）か、宣言から
+    // 外れたときだけ。
+    void syncFonts(bool reloaded);
+    // 版が変わったとき: どの生きている Canvas も使わなくなった画像を返す。読めなかった
+    // 記録は、使わなくなったときか reloaded のときに捨てる（次の組み立てでもう一度試す）。
+    void releaseUnusedImages(wizengine::Renderer& renderer, bool reloaded);
     int imageTexture(wizengine::Renderer& renderer, const std::string& file);
-    // その Canvas の要素（<canvas ui> なら共用 UI の中身）。
-    const std::vector<wizengine::ui::ElementDesc>& elementsOf(
-        const wizengine::ui::CanvasDesc& desc) const;
     // 生きている Canvas の Renderer 側の入れ物・順序・高さ・出すビューを揃える。
     void syncCanvases(wizengine::Renderer& renderer, bool designChanged);
     // 組み直しが要る（canvas, view）を組んで送る。all = 全部（字の置き場の組み直し）。
@@ -73,8 +76,23 @@ private:
     wizengine::ui::UiMeshData buildOne(wizengine::Renderer& renderer,
                                        const wizengine::ui::CanvasDesc& desc, double canvasWidth);
     void uploadAtlas(wizengine::Renderer& renderer);
+    // 選択枠: 出すときは専用の Canvas をエディタカメラのビューに置いてメッシュを送り、
+    // 出さないときはどのビューにも置かない。条件が前回と同じなら何もしない。
+    void updateFrame(wizengine::Renderer& renderer);
 
-    std::uint64_t version_ = 0;
+    // 選択枠を最後に送った条件（全部同じなら組み直さない。出さないときは既定値のまま）。
+    struct FrameKey {
+        std::uint64_t revision = 0;  // その Canvas の材料の版（Snapshot::contentsRevision）
+        int canvas = -1, element = -1, view = -1, viewWidth = 0, viewHeight = 0;
+        bool operator==(const FrameKey& o) const {
+            return revision == o.revision && canvas == o.canvas && element == o.element &&
+                   view == o.view && viewWidth == o.viewWidth && viewHeight == o.viewHeight;
+        }
+    };
+
+    std::uint64_t version_ = 0;         // 最後に写した UiState の版
+    std::uint64_t fontsRevision_ = 0;   // 最後に読んだフォントの宣言の版
+    std::uint64_t loadGeneration_ = 0;  // 最後に見た UiState の読込の世代
     wizengine::UiState::Snapshot snap_;
     std::unique_ptr<wizengine::ui::FontAtlas> atlas_;
     int atlasTexture_ = -1;
@@ -86,4 +104,12 @@ private:
     bool anyAlive_ = false;  // 写しに生きている Canvas があるか（UI の無いシーンは何もしない）
     // カメラ（スロット番号）→ ビュー番号（無効・ビュー未定は -1）。onRender が写す。
     std::vector<int> cameraViews_;
+    // 選択枠の対象（onRender が写す。-1 = 出さない = 選択が無い・エディタモードでない・
+    // プレハブ編集中）とエディタカメラのスロット番号。
+    int frameCanvas_ = -1, frameElement_ = -1;
+    int frameCamera_ = 0;
+    // 選択枠の Canvas（Renderer の番号。最初に出すときに作る）。
+    bool frameCreated_ = false;
+    std::size_t frameRendererId_ = 0;
+    FrameKey frameSent_;
 };

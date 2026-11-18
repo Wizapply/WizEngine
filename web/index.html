@@ -608,6 +608,17 @@
           カメラ操作と編集は、後から動かしたほうが勝ちます。</div>
       </section>
 
+      <!-- 選択中の UI（Canvas かその中の要素。エディタモード×Editor Camera 専用。
+           XML の <canvas> とその子）。Objects 一覧の UI の行で選ぶ。欄は
+           ui-inspector.js がサーバーの schema（性質の表）から組み、変えた値は
+           edit.ui.* で送る（共用 UI の要素は表示だけ）。 -->
+      <section class="sbSec" id="secUi" hidden>
+        <div class="sbSecHead">選択オブジェクト: UI</div>
+        <div id="uiSelLabel" class="edStatus"></div>
+        <div id="uiProps"></div>
+        <div id="uiHint" class="edHint"></div>
+      </section>
+
       <!-- 選択中の地面（エディタモード×Editor Camera 専用。XML の <ground>）。
            シーンに 1 つのオブジェクトで、Objects 一覧の「Ground」行で選ぶ。
            削除すると <ground enabled="false">（見える地面も物理の床も無し）。
@@ -1622,27 +1633,34 @@
     <!-- シーン XML エディタ。ノードエディタと同じモーダルの流儀（.ndBack /
          .ndWin）。中身は /scene.xml と同じ文書で、「✓ 適用」が edit.xml と
          して送る（サーバーが検証し、壊れた XML は適用せず理由をステータス
-         へ）。ファイルには書かない - 保存はいままでどおり 💾。 -->
+         へ）。ファイルには書かない - 保存はいままでどおり 💾。
+         UI の Canvas の中身（要素とアニメ）も同じモーダルで直す（app.js の
+         openUiXmlEditor。適用は edit.ui.xml）。 -->
     <div id="xmlEd" hidden>
       <div class="ndBack" onclick="closeXmlEditor()" title="クリックで閉じる"></div>
       <div class="ndWin">
         <div class="ndHead">
-          <span class="ndTitle">📄&#xFE0E; シーン XML</span>
+          <span class="ndTitle">📄&#xFE0E; <span id="xmTitle">シーン XML</span></span>
           <button onclick="applyXml()"
-                  title="この内容でシーンを置き換える（ファイルには書かない）"
+                  title="この内容で置き換える（ファイルには書かない）"
                   >✓ 適用</button>
           <button onclick="reloadXml()"
-                  title="いまのシーンから読み直す（編集内容は破棄）">↻ 再読込</button>
-          <button onclick="openSceneXml()" title="別タブで開く">⧉</button>
+                  title="いまの中身から読み直す（編集内容は破棄）">↻ 再読込</button>
+          <button id="xmOpenTab" onclick="openSceneXml()" title="別タブで開く">⧉</button>
           <span id="xmStatus" class="xmStatus"></span>
           <button id="xmClose" onclick="closeXmlEditor()" title="閉じる">✕</button>
         </div>
         <textarea id="xmText" spellcheck="false" wrap="off"
                   placeholder="読み込み中..."></textarea>
-        <div class="ndHint">MuJoCo 風のシーン文書（書式は CLAUDE.md の
+        <div class="ndHint" id="xmHintScene">MuJoCo 風のシーン文書（書式は CLAUDE.md の
           「シーン文書（XML）」の章）。「✓ 適用」で現在の配置を置き換えます。
           打ち間違いは警告としてステータスとコンソールに出ます。ファイルへの
           保存は Assets パネルの 💾（assets/scenes/&lt;名前&gt;.xml）。</div>
+        <div class="ndHint" id="xmHintUi" hidden>選んだ Canvas の中身（要素とアニメ。
+          &lt;ui name&gt; の書式。名前は使いません）。「✓ 適用」で中身を置き換えます。
+          共用 UI を使う Canvas では、その UI を使う全部の Canvas が変わります（グローバルの
+          ファイルへはシーンの 💾 保存で書きます）。打ち間違いは警告としてステータスと
+          コンソールに出ます。</div>
       </div><!-- /.ndWin -->
     </div>
     <!-- 計算式の数式エディタ（control.js）。書いた式はサーバーがノードの
@@ -1775,6 +1793,8 @@
   </main>
 </div>
 <script src="app.js"></script>
+<script src="ui.js"></script>
+<script src="ui-inspector.js"></script>
 <script src="terrain.js"></script>
 <script src="terrain-rows.js"></script>
 <script src="terrain-layers.js"></script>

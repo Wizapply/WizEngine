@@ -10,13 +10,14 @@
 #include "core/SafeName.h"
 
 // 共用ファイル（シーンをまたいで使うアセット = assets/<サブフォルダ>/<名前>.<拡張子>）
-// の原始関数。イベントライブラリ（assets/events/*.xml）・共用 UI
-// （assets/ui/*.xml）・グローバルの計算式 / プレハブ（assets/formulas/*.xml /
-// assets/prefabs/*.xml。一覧と道は EditorState がここの listLibrary /
-// libraryFile で、読み書きとごみ箱は SceneLibrary.cpp）が使う。置き場の規則（assets/ 相対のパスだけ・名前は
-// sanitizeSafeName で変わらないものだけ・ごみ箱へ移す）はここ 1 か所。
-// 共通化・読み込み・削除といった流れ（何をいつ書くか、ステータスの文）は
-// 使う側（SceneEvents.cpp / SceneLibrary.cpp / 後の UiFiles・UiOps）に残す。
+// の原始関数。イベントライブラリ（assets/events/*.xml）・共用 UI（assets/ui/*.xml）・
+// グローバルの計算式 / プレハブ（assets/formulas/*.xml / assets/prefabs/*.xml）が使う
+// （一覧は EditorState が listLibrary / libraryFile で取る）。置き場の規則（assets/ 相対の
+// パスだけ・名前は sanitizeSafeName で変わらないものだけ・ごみ箱へ移す）はここ 1 か所。
+// 共通化・読み込み・削除といった流れ（何をいつ書くか）は使う側: イベントは
+// SceneEvents.cpp、計算式・プレハブ・UI は scene/LibraryFlow（判断の流れと変更の目印）と
+// 種類ごとの部品（SceneLibrary.cpp / scene/UiLibraryOps）。ステータスの文は
+// scene/LibraryStatus.h。
 namespace wizengine {
 namespace sharedasset {
 
@@ -39,6 +40,8 @@ std::string libraryFile(const std::string& subdir, const std::string& name,
                         const std::string& ext);
 // assets/<subdir> にある <名前><ext> の一覧（拡張子を落とした名前、並べ替え済み）。
 std::vector<std::string> listLibrary(const std::string& subdir, const std::string& ext);
+// ライブラリのファイル（assets/ 相対）があるか（共用にするときの上書きの確かめ）。
+bool libraryFileExists(const std::string& file);
 // ライブラリのファイル（assets/ 相対）を OS のごみ箱へ。
 bool trashLibraryFile(const std::string& file, std::string& reason);
 

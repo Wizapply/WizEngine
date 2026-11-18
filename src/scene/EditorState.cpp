@@ -10,6 +10,7 @@
 #include "core/Log.h"
 #include "core/SafeName.h"
 #include "scene/SharedAssetFile.h"
+#include "scene/UiFiles.h"
 
 // 保存名に使ってよい文字だけ残す。".." や "/" を弾くのが目的（保存先は
 // assets/scenes に固定したい）。
@@ -1019,6 +1020,10 @@ std::vector<std::string> EditorState::meshLibrary() const {
     std::lock_guard<std::mutex> lk(mutex_);
     return meshLibrary_;
 }
+std::vector<std::string> EditorState::uiLibrary() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return uiLibrary_;
+}
 
 void EditorState::refreshLibraries() {
     refreshEventLibrary();
@@ -1027,10 +1032,12 @@ void EditorState::refreshLibraries() {
     std::vector<std::string> p =
         wizengine::sharedasset::listLibrary(kPrefabLibraryDir, kLibraryXmlExt);
     std::vector<std::string> m = listMeshFiles();
+    std::vector<std::string> u = wizengine::uifiles::listLibrary();
     std::lock_guard<std::mutex> lk(mutex_);
     formulaLibrary_.swap(f);
     prefabLibrary_.swap(p);
     meshLibrary_.swap(m);
+    uiLibrary_.swap(u);
 }
 
 std::string EditorState::formulaLibraryFile(const std::string& name) {

@@ -18,7 +18,7 @@ void buildImage(const ResolvedElement& e, FontProvider&, MeshSink& sink) {
 
 }  // namespace
 
-const ElementKindInfo kImageKind = {"image", kKindImage, Interaction::None, &buildImage};
+const ElementKindInfo kImageKind = {"image", "▣", kKindImage, Interaction::None, &buildImage};
 
 }  // namespace ui
 }  // namespace wizengine

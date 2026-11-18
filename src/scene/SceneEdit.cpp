@@ -5,6 +5,7 @@
 
 #include "control/ControlTemplates.h"
 #include "formula/FormulaText.h"
+#include "scene/UiOps.h"
 
 #include <filesystem>
 
@@ -511,10 +512,8 @@ void Scene::rotateGround(double xDeg, double yDeg, double zDeg) {
 
 void Scene::selectSceneItem(EditorState::SelKind kind) {
     // エディタ選択はエディタモードの状態（シミュレートに入るときに畳む）。
-    if (editor_.mode() != ed::AppMode::Editor) return;
-    const std::size_t cam = editorCamera();
-    if (cam < controllers_.size()) controllers_[cam]->setSelected(BoxController::kNone);
-    editor_.setSel(kind, 0);
+    if (!editor_.isEditor()) return;
+    setEditorSel(editorCamera(), kind, 0);
 }
 
 void Scene::setGroundAndEnvironment(const ed::GroundDesc& ground,
@@ -584,6 +583,22 @@ void Scene::applyPendingEdits() {
 
 void Scene::applyEditorOp(const EditorState::Op& op) {
     const nlohmann::json& a = op.args;
+
+    // UI の設計値（ui.*。読み方は UiOps）。受け付ける規則は INPUT と同じ editsUiFrom:
+    // 積んだ後にシミュレートへ切り替わった・プレハブ編集に入った操作は捨てる（モードの
+    // 切替は drain より先 = applyPendingEdits）。
+    if (wizengine::uiops::isUiOp(op.kind)) {
+        if (!editsUiFrom(op.camera)) return;
+        const wizengine::uiops::Result r = wizengine::uiops::apply(ui_, op.kind, a);
+        if (r.select) {
+            setEditorSel(op.camera, EditorState::SelKind::Canvas, r.canvas, r.element);
+        } else if (editor_.selKind() == EditorState::SelKind::Canvas &&
+                   !ui_.selectionExists(editor_.selIndex(), editor_.selSub())) {
+            editor_.clearSel();  // 消した物を指していた（番号が後で別の物に使われる前に）
+        }
+        if (!r.status.empty()) editor_.setStatus(r.status);
+        return;
+    }
 
     if (op.kind == "add") {
         ed::BodyDesc d = ed::bodyFromJson(a, ed::BodyDesc{});
@@ -875,8 +890,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                             a["shared"].get<bool>();
         const std::string file = shared ? EditorState::eventLibraryFile(name) : std::string();
         if (shared) {
-            std::error_code ec;
-            if (std::filesystem::exists(wizengine::assetPath(file), ec)) {
+            if (wizengine::sharedasset::libraryFileExists(file)) {
                 editor_.setStatus("ライブラリに同じ名前のイベント " + name +
                                   " があります（読み込むならアセットパネルのタイルから）");
                 return;
@@ -1613,6 +1627,9 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         editor_.setCharts({});
         editor_.setPrefabAssets({});
         ui_.clear();  // UI（Canvas・共用 UI・フォント）もシーンの一部
+        // 共用のファイルの覚えも捨てる（残すと、全消しの後に同じ名前を作って保存したとき、
+        // 前のシーンの覚えと比べてファイルを上書きしうる）。
+        libBaseline_.clear();
         editor_.setPrefabEditObject(-1);
         editor_.clearSel();
         // edit.new は名前付きの空のシーン（保存先がその名前になる）。

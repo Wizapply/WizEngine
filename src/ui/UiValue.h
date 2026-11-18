@@ -110,6 +110,8 @@ inline bool indexListValid(const PropValue& value) { return value.s.empty(); }
 
 // 型の成分の数（数値系）。文字列系と Bool / Enum / IndexList は 1。
 std::size_t componentCount(PropType type);
+// 型の名前（ブラウザの Inspector が欄の形を選ぶための JSON の値。schema が送る）。
+const char* propTypeName(PropType type);
 
 // ---- 表記と丸め --------------------------------------------------------------
 // XML の属性文字列 → 値。型に合わなければ false で out は変えない。色は
@@ -120,7 +122,8 @@ bool parseValue(const ValueSpec& spec, const std::string& text, PropValue& out);
 std::string formatValue(const ValueSpec& spec, const PropValue& value);
 // 値 ⇄ JSON。valueFromJson は obj[key] を読み、無い・型が合わなければ false で
 // out は変えない（/input は誰でも叩けるので型を信じない）。色は [r,g,b,a] の
-// 配列で返し、[r,g,b] と色の文字列（parseColorText）も受ける。
+// 配列で返し、[r,g,b] と色の文字列（parseColorText）も受ける。IndexList は正しい
+// 並びを番号の配列で、正しくない並びを書かれた文字列で返し、どちらも受ける。
 nlohmann::json valueToJson(const ValueSpec& spec, const PropValue& value);
 bool valueFromJson(const ValueSpec& spec, const nlohmann::json& obj,
                    const char* key, PropValue& out);

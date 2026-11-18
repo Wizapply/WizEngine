@@ -1064,7 +1064,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
     // 単純で間違いが無い）。
     if (what == "xml") {
         const std::string text = msg.value("text", std::string());
-        if (text.empty() || text.size() > 1024 * 1024) {
+        if (text.empty() || text.size() > ed::kMaxXmlEditBytes) {
             state.setStatus(text.empty() ? "XML が空です"
                                          : "XML が大きすぎます（1MB まで）");
             return true;

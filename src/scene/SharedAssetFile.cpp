@@ -81,6 +81,11 @@ std::vector<std::string> listLibrary(const std::string& subdir, const std::strin
     return listLibraryIn(std::filesystem::path(assetPath(subdir)), ext);
 }
 
+bool libraryFileExists(const std::string& file) {
+    std::error_code ec;
+    return !file.empty() && std::filesystem::exists(assetPath(file), ec);
+}
+
 bool trashLibraryFile(const std::string& file, std::string& reason) {
     if (!allowed(file, reason)) return false;
     return moveToTrash(std::filesystem::path(assetPath(file)), reason);
