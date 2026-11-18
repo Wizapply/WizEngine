@@ -55,7 +55,7 @@ private:
         ButtonHit press;         // 押したボタン
         bool pressOver = false;  // 今もそのボタンの上にいる（最後の drag の位置）
         std::uint64_t pressEpoch = 0;       // 押したときの EditorState::modeEpoch
-        std::uint64_t pressGeneration = 0;  // 押したときの UiState::runtimeGeneration
+        wizengine::UiState::Generations pressGenerations;  // 押したときの UiState::generations
     };
 
     // 映像の位置 (x, y)（NDC）にあるボタン（押下を受け止める種類だけ = ui::catchesPointer）。
@@ -63,10 +63,11 @@ private:
                        double x, double y, int viewW, int viewH) const;
     // ボタン hit の上にいる（pressed = 押している）ときのポインタ（hit が無ければ「無し」）。
     static wizengine::UiState::Pointer pointerOver(const ButtonHit& hit, bool pressed);
-    // hover / pick。epoch / generation = 受け付けるかを見る前に読んだ世代。
+    // hover / pick。epoch / generations = 受け付けるかを見る前に読んだ世代。
     bool hoverOrPick(Scene& scene, std::size_t camIndex, const std::string& cmd,
                      const nlohmann::json& msg, const wizengine::UiState::Snapshot& snap,
-                     int viewW, int viewH, std::uint64_t epoch, std::uint64_t generation);
+                     int viewW, int viewH, std::uint64_t epoch,
+                     const wizengine::UiState::Generations& generations);
     // 受け止めた押下の drag / release（押している間だけ呼ぶ）。
     void pressCommand(Scene& scene, std::size_t camIndex, const std::string& cmd,
                       const nlohmann::json& msg, const wizengine::UiState::Snapshot& snap,

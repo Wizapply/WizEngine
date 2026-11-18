@@ -22,10 +22,12 @@ void Scene::collectUiClicks() {
 void Scene::collectUiTriggers(const ed::NodeDesc& node, const GraphContext& base,
                               std::vector<GraphContext>& fires) {
     if (node.kind != ed::NodeKind::OnUiClick) return;
+    // 受け付ける Canvas（-1 = 何でも。規則は editor::uiTriggerCanvas = 「未設定」の印と同じ）。
+    const int onlyCanvas = ed::uiTriggerCanvas(node);
     for (const UiState::Click& c : graphRt_.ui.clicks) {
-        // target = Canvas の番号（-1 = 何でも）、element = 要素の名前（空 = 何でも。名前の
-        // 規則は ui::sameName = 空の名前はどれとも同じでない）。
-        if (node.target >= 0 && c.canvas != node.target) continue;
+        // element = 要素の名前（空 = 何でも。名前の規則は ui::sameName = 空の名前はどれとも
+        // 同じでない）。
+        if (onlyCanvas >= 0 && c.canvas != onlyCanvas) continue;
         if (!node.element.empty() && !ui::sameName(node.element, c.name)) continue;
         GraphContext ctx = base;
         ctx.camera = c.camera;

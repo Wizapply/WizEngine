@@ -141,6 +141,14 @@
   // 送った欄へサーバーの戻り（丸めた値・正規化した名前）を 1 回だけ入れ直すとき）。
   function uiSetFieldValue(el, spec, v, force) {
     if (el === document.activeElement && !force) return;
+    // 値が無い（uiSelectedValue が null / undefined = 既定値が届かない種類）なら欄を空にする
+    // （前の選択の値を残さない。色の欄は空にできないので黒）。
+    if (v === undefined || v === null) {
+      if (el.type === 'checkbox') el.checked = false;
+      else el.value = '';
+      el.classList.remove('uiBad');
+      return;
+    }
     const k = el.dataset.uiK !== undefined ? parseInt(el.dataset.uiK, 10) : -1;
     switch (spec.type) {
       case 'number': case 'int':

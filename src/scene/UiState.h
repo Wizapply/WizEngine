@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -243,12 +244,22 @@ public:
             return hover == element ? ui::PointerPhase::Hover : ui::PointerPhase::None;
         }
     };
+    // 実行時の世代の組（generations() が 1 回のロックで読む）。押下とクリックに添え、今と
+    // 違えば捨てる。
+    struct Generations {
+        // resetRuntime（シミュレートの開始・停止・Reset）で進む。Reset をまたいだ押下を捨てる
+        // （Reset ではモードの世代が進まないため）。
+        std::uint64_t runtime = 0;
+        // setPaused で止める・再開するたびに進む。押してから取り出すまでに一時停止をまたいだ
+        // クリックを捨てる。
+        std::uint64_t pause = 0;
+    };
     // 押して離した 1 回（INPUT が積む）。世代は押したときの値（PHYSICS が今と比べる）。
     struct PendingClick {
         std::size_t camera = 0;
         ElementRef ref;                        // 押したボタン（押したときの写しの世代）
         std::uint64_t modeEpoch = 0;           // EditorState::modeEpoch
-        std::uint64_t runtimeGeneration = 0;   // runtimeGeneration()（Reset で進む）
+        Generations generations;               // generations()（押したときの値）
     };
     // 確かめたクリック 1 回（takeClicks の結果 = ノードの OnUiClick が受ける形）。
     struct Click {
@@ -283,15 +294,21 @@ public:
     std::uint64_t pointersVersion() const;
     // ノードの上書きの版（ポインタとは別 = ボタンをまたいでも上書きを写し直さない）。
     std::uint64_t overridesVersion() const;
-    // 実行時の状態の世代（resetRuntime = シミュレートの開始・停止・Reset で進む）。押下と
-    // クリックに添え、Reset をまたいだ押下を捨てる（Reset ではモードの世代が進まないため）。
-    std::uint64_t runtimeGeneration() const;
+    // 今の実行時の世代の組（1 回のロックで両方を読む）。
+    Generations generations() const;
+    // 一時停止しているか（PHYSICS が毎パス Scene::setPaused から渡す）。変わったときだけロックを
+    // 取って一時停止の世代を進め、止まったときは積んだクリックを捨てる（止まっている間は取り
+    // 出されず、再開した瞬間にまとめて発火させない）。止まっている間の pushClick も捨てる。
+    // ポインタ（hover / pressed の見た目）は触らない。
+    void setPaused(bool paused);
     // このカメラのページに押せる UI があるか（そのカメラに出ている overlay の Canvas に、
     // 押下を受け止める要素がある。ブラウザがホバーを送るかの判断 = /scene の uiClickable）。
     bool clickableOnCamera(int camera) const;
     // カメラ camera のポインタを置く（INPUT。変わったときだけ版を進める）。スロットの範囲
-    // （kMaxCameraSlots）の外は捨てる。
-    void setPointer(std::size_t camera, const Pointer& pointer);
+    // （kMaxCameraSlots）の外と、runtimeGeneration（置く側が受け付けるかを決める前に読んだ
+    // Generations::runtime）が今と違う物は捨てる（比べるのはロックの下 = resetRuntime と競らない。
+    // 止めた・Reset した後に古いポインタを残さない）。
+    void setPointer(std::size_t camera, const Pointer& pointer, std::uint64_t runtimeGeneration);
     // pointersVersion と known が違えばポインタの一覧を out へ写して known を進め、true。
     bool copyPointersIfChanged(std::uint64_t& known, std::vector<Pointer>& out) const;
     // overridesVersion と known が違えば、ノードの上書きのうち変わった Canvas だけを out へ写し
@@ -306,10 +323,10 @@ public:
     // 設計値は書き換えない（resetRuntime で消える）。
     NodePropResult setNodeProp(int canvas, const std::string& element, int elementId,
                                ui::Prop prop, const ui::PropValue& value);
-    // 押して離した 1 回を積む（INPUT）。
+    // 押して離した 1 回を積む（INPUT。一時停止中は捨てる）。
     void pushClick(const PendingClick& click);
     // 積まれたクリックを全部取り出し、今も有効な物だけを返す（PHYSICS。唯一の確かめ）:
-    // 押したときのモードの世代が modeEpoch と同じ・実行時の世代が今と同じ・参照が今も同じ
+    // 押したときのモードの世代が modeEpoch と同じ・実行時と一時停止の世代が今と同じ・参照が今も同じ
     // 要素（refValid）・そのカメラの映像に重なる Canvas（ui::overlayShownOnCamera）・クリックを
     // 受け付ける（ui::acceptsClick。性質はノードの上書きまで重ねた値 = ui::resolveElements）。
     std::vector<Click> takeClicks(std::uint64_t modeEpoch);
@@ -336,6 +353,10 @@ private:
     std::uint64_t pointersVersion_ = 1;
     std::uint64_t overridesVersion_ = 1;
     std::uint64_t runtimeGeneration_ = 1;
+    std::uint64_t pauseGeneration_ = 1;
+    // setPaused（積み込みを捨てるかの判断）。書くのは setPaused（PHYSICS）だけで、変わったときは
+    // mutex_ の下で書く。atomic なのは、毎パスの「変わっていない」をロック無しで見るため。
+    std::atomic<bool> paused_{false};
     std::vector<CanvasItem> canvases_;
     std::vector<UiAssetState> uiAssets_;
     std::vector<ui::FontAssetDesc> fonts_;

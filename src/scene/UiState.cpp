@@ -440,9 +440,20 @@ std::uint64_t UiState::overridesVersion() const {
     return overridesVersion_;
 }
 
-std::uint64_t UiState::runtimeGeneration() const {
+UiState::Generations UiState::generations() const {
     std::lock_guard<std::mutex> lk(mutex_);
-    return runtimeGeneration_;
+    Generations g;
+    g.runtime = runtimeGeneration_;
+    g.pause = pauseGeneration_;
+    return g;
+}
+
+void UiState::setPaused(bool paused) {
+    if (paused_.load() == paused) return;  // 毎パスの「変わっていない」はロックを取らない
+    std::lock_guard<std::mutex> lk(mutex_);
+    paused_.store(paused);
+    ++pauseGeneration_;
+    if (paused) clicks_.clear();
 }
 
 bool UiState::clickableOnCamera(int camera) const {
@@ -455,9 +466,11 @@ bool UiState::clickableOnCamera(int camera) const {
     return false;
 }
 
-void UiState::setPointer(std::size_t camera, const Pointer& pointer) {
+void UiState::setPointer(std::size_t camera, const Pointer& pointer,
+                         std::uint64_t runtimeGeneration) {
     if (camera >= std::size_t(kMaxCameraSlots)) return;
     std::lock_guard<std::mutex> lk(mutex_);
+    if (runtimeGeneration != runtimeGeneration_) return;  // 止めた・Reset の前に読んだ
     if (pointers_.size() <= camera) {
         if (pointer == Pointer{}) return;  // 無い枠は「無し」と同じ
         pointers_.resize(camera + 1);
@@ -536,12 +549,14 @@ UiState::NodePropResult UiState::setNodeProp(int canvas, const std::string& elem
 
 void UiState::pushClick(const PendingClick& click) {
     std::lock_guard<std::mutex> lk(mutex_);
+    if (paused_.load()) return;  // 止まっている間に離した（再開後に押したぶんだけ効く）
     if (clicks_.size() >= kMaxPendingClicks) clicks_.erase(clicks_.begin());
     clicks_.push_back(click);
 }
 
 bool UiState::clickValidLocked(const PendingClick& c, Click& out) const {
-    if (c.runtimeGeneration != runtimeGeneration_) return false;  // Reset をまたいだ押下
+    if (c.generations.runtime != runtimeGeneration_) return false;  // Reset をまたいだ押下
+    if (c.generations.pause != pauseGeneration_) return false;  // 一時停止をまたいだ・中の押下
     if (!refValidLocked(c.ref)) return false;  // 消えた・読み直した・入れ替えた
     const ui::CanvasDesc& desc = canvases_[std::size_t(c.ref.canvas)].desc;
     if (!ui::overlayShownOnCamera(desc, int(c.camera))) return false;  // 他のカメラ向け

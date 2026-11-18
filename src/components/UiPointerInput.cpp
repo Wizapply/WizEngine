@@ -31,9 +31,9 @@ bool UiPointerInput::onCommand(Scene& scene, std::size_t camIndex, const std::st
     if (cmd != "pick" && cmd != "hover") return false;
     // 世代は受け付けるかを見る前に読む（読んだ後に切り替わっても、古い世代として捨てる）。
     const std::uint64_t epoch = scene.editor().modeEpoch();
-    const std::uint64_t generation = scene.ui().runtimeGeneration();
+    const UiState::Generations generations = scene.ui().generations();
     if (scene.editor().isEditor()) return false;  // エディタ中は選んで編集する物
-    return hoverOrPick(scene, camIndex, cmd, msg, snap, viewW, viewH, epoch, generation);
+    return hoverOrPick(scene, camIndex, cmd, msg, snap, viewW, viewH, epoch, generations);
 }
 
 UiPointerInput::ButtonHit UiPointerInput::buttonAt(const UiState::Snapshot& snap,
@@ -85,12 +85,12 @@ UiState::Pointer UiPointerInput::pointerOver(const ButtonHit& hit, bool pressed)
 bool UiPointerInput::hoverOrPick(Scene& scene, std::size_t camIndex, const std::string& cmd,
                                  const nlohmann::json& msg, const UiState::Snapshot& snap,
                                  int viewW, int viewH, std::uint64_t epoch,
-                                 std::uint64_t generation) {
+                                 const UiState::Generations& generations) {
     const ButtonHit hit = buttonAt(snap, camIndex, wizengine::jsonNumber(msg, "x", 0.0),
                                    wizengine::jsonNumber(msg, "y", 0.0), viewW, viewH);
     const bool pick = cmd == "pick";
     const bool pressed = pick && hit.ref.canvas >= 0;
-    scene.ui().setPointer(camIndex, pointerOver(hit, pressed));
+    scene.ui().setPointer(camIndex, pointerOver(hit, pressed), generations.runtime);
     // hover はほかの係（ギズモのハイライト）にも渡す。ボタンに当たらない pick も流す。
     if (!pressed) return false;
     Cam& cam = cams_[camIndex];
@@ -98,7 +98,7 @@ bool UiPointerInput::hoverOrPick(Scene& scene, std::size_t camIndex, const std::
     cam.press = hit;
     cam.pressOver = true;
     cam.pressEpoch = epoch;
-    cam.pressGeneration = generation;
+    cam.pressGenerations = generations;
     // 物の掴みが同じフレームで動かないよう、カーソルを外す（ギズモと同じ）。
     scene.boxController(camIndex).clearPointer();
     return true;
@@ -111,7 +111,7 @@ void UiPointerInput::pressCommand(Scene& scene, std::size_t camIndex, const std:
     // 押した後にモードが変わった・Reset をまたいだ押下は受け止めるだけ（見た目もクリックも
     // 出さない = Reset で消えた見た目を戻さない）。
     const bool sameMode = cam.pressEpoch == scene.editor().modeEpoch();
-    const bool sameRun = cam.pressGeneration == scene.ui().runtimeGeneration();
+    const bool sameRun = cam.pressGenerations.runtime == scene.ui().generations().runtime;
     const bool live = sameMode && sameRun;
     if (cmd == "release") {
         cam.pressing = false;
@@ -123,11 +123,13 @@ void UiPointerInput::pressCommand(Scene& scene, std::size_t camIndex, const std:
             click.camera = camIndex;
             click.ref = cam.press.ref;
             click.modeEpoch = cam.pressEpoch;
-            click.runtimeGeneration = cam.pressGeneration;
+            click.generations = cam.pressGenerations;
             scene.ui().pushClick(click);
         }
-        scene.ui().setPointer(camIndex, cam.pressOver ? pointerOver(cam.press, false)
-                                                      : UiState::Pointer{});
+        // 世代は押したときの値（live を見た後に止めても、setPointer が古い世代として捨てる）。
+        scene.ui().setPointer(camIndex,
+                              cam.pressOver ? pointerOver(cam.press, false) : UiState::Pointer{},
+                              cam.pressGenerations.runtime);
         return;
     }
     if (!live) return;
@@ -139,5 +141,5 @@ void UiPointerInput::pressCommand(Scene& scene, std::size_t camIndex, const std:
     UiState::Pointer pointer;
     pointer.canvas = cam.press.ref.canvas;
     if (cam.pressOver) pointer = pointerOver(cam.press, true);
-    scene.ui().setPointer(camIndex, pointer);
+    scene.ui().setPointer(camIndex, pointer, cam.pressGenerations.runtime);
 }

@@ -381,6 +381,10 @@ public:
     // これで伸びる = 0.01 倍でも物の動きが滑らかで、追従カメラが外れない。
     void setTimeScale(double s) { timeScale_.store(s); }
     double timeScale() const { return timeScale_.load(); }
+    // 一時停止（⏸ Pause）しているか。物理ループ（main.cpp）がシミュレート中の毎パス
+    // PhysicsTuning から写す。持ち主は UiState（止まっている間のボタンのクリックを捨てる）で、
+    // Scene は渡すだけ。
+    void setPaused(bool paused) { ui_.setPaused(paused); }
 
     // Whiten strength for a grabbed object (kSelectedWhiten in SceneConfig.h).
     float selectedWhiten() const;

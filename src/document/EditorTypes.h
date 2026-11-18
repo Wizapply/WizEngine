@@ -1066,6 +1066,15 @@ struct NodeDesc {
 // トリガーが UI の文脈（押された Canvas と要素）をアクションへ渡すか。UI のトリガーを足したら
 // ここへ 1 行（実行 = Scene と、ノードエディタの「未設定」の印 = /scene の両方がこれで決まる）。
 inline bool nodePassesUiContext(NodeKind k) { return k == NodeKind::OnUiClick; }
+// UI のトリガーが受け付ける Canvas の番号（-1 = どの Canvas でも。UI の文脈を渡さない種類も
+// -1）。実行（Scene::collectUiTriggers の絞り込み）とノードエディタの「未設定」の印
+// （uiPropNodeUnset）の両方がこれで決まる。UI のトリガーを足したらここへ 1 行。
+inline int uiTriggerCanvas(const NodeDesc& trigger) {
+    switch (trigger.kind) {
+        case NodeKind::OnUiClick: return trigger.target >= 0 ? trigger.target : -1;
+        default: return -1;
+    }
+}
 
 // トリガーが渡した UI の文脈（-1 = 無し）。
 struct UiNodeContext {
@@ -1134,24 +1143,36 @@ struct EventAssetDesc {
     std::string file;
 };
 
-// グラフの上での判定（ノードエディタの「未設定」の印）: 文脈を渡すトリガー（nodePassesUiContext）
-// から線が来ていれば、押された物が文脈になる = target を書いていればその Canvas、無ければ
-// どれかの Canvas が押されたときとして uiPropTarget に渡す（実行と同じ規則）。
+// グラフの上での判定（ノードエディタの「未設定」の印）: 実行ではトリガーごとに別々に発火する
+// ので、繋いだトリガーごとにそのトリガーが渡す文脈で uiPropTarget に渡し、**どれか 1 つでも
+// 相手が決まれば設定済み**（そのトリガーの発火では動く）。全部だめなら最初のトリガーの理由。
+// 文脈を渡すトリガー（nodePassesUiContext）の「押される Canvas」は、そのトリガーが受け付ける
+// Canvas（uiTriggerCanvas）があればそれ、どれでも受けるなら、このノードの相手（target、無ければ
+// 0）が押されたときとして見る。文脈を渡さないトリガーと、線が 1 本も無いときは文脈無し。
 inline UiNodeUnset uiPropNodeUnset(const EventAssetDesc& asset, const NodeDesc& n) {
-    bool fed = false;
+    auto judge = [&n](const UiNodeContext& ctx) {
+        int canvas = -1, elementId = -1;
+        return uiPropTarget(n, ctx, canvas, elementId);
+    };
+    bool wired = false;
+    UiNodeUnset first = UiNodeUnset::None;
     for (const auto& w : asset.wires) {
         if (w.to != n.id) continue;
         for (const auto& from : asset.nodes) {
-            if (from.id == w.from && nodePassesUiContext(from.kind)) fed = true;
+            if (from.id != w.from) continue;
+            UiNodeContext ctx;
+            if (nodePassesUiContext(from.kind)) {
+                const int only = uiTriggerCanvas(from);
+                ctx.canvas = only >= 0 ? only : (n.target >= 0 ? n.target : 0);
+                ctx.element = 0;  // 押された要素
+            }
+            const UiNodeUnset got = judge(ctx);
+            if (got == UiNodeUnset::None) return got;
+            if (!wired) first = got;
+            wired = true;
         }
     }
-    UiNodeContext ctx;
-    if (fed) {
-        ctx.canvas = n.target >= 0 ? n.target : 0;  // 押された Canvas（どれでも同じ判定）
-        ctx.element = 0;                            // 押された要素
-    }
-    int canvas = -1, elementId = -1;
-    return uiPropTarget(n, ctx, canvas, elementId);
+    return wired ? first : judge(UiNodeContext{});
 }
 
 // アセット名の正規化（英数字と _ - だけ・64 文字まで）。空になったら不正な
