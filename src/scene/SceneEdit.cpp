@@ -1569,7 +1569,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                  ? std::string("XML を適用しました")
                  : "XML を適用しました（警告 " +
                        std::to_string(warnings.size()) + " 件 - コンソール参照）") +
-            terrainLoadCaveat() + terrainCombineCaveat(true));
+            takeLoadCaveat() + terrainCombineCaveat(true));
         return;
     }
 
@@ -1619,6 +1619,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         editor_.setParams({});
         editor_.setCharts({});
         editor_.setPrefabAssets({});
+        ui_.clear();  // UI（Canvas・共用 UI・フォント）もシーンの一部
         editor_.setPrefabEditObject(-1);
         editor_.clearSel();
         // edit.new は名前付きの空のシーン（保存先がその名前になる）。
@@ -1655,12 +1656,12 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             return;
         }
         for (const auto& w : warnings) LOGW("editor", "import '%s': %s", file.c_str(), w.c_str());
-        appendDocument(doc);
+        const std::string caveat = appendDocument(doc);
         editor_.setStatus("取込: " + file + "（" + std::to_string(doc.bodies.size()) +
                           " 体, " + std::to_string(doc.joints.size()) + " ジョイント" +
                           (warnings.empty() ? "" : ", 警告 " + std::to_string(warnings.size()) +
                                                        " 件") +
-                          "）");
+                          "）" + caveat);
         return;
     }
 
@@ -1708,7 +1709,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         if (!libWritten.empty()) {
             eventsWritten += (eventsWritten.empty() ? "" : " ") + libWritten;
         }
-        if (EditorState::writeText(path, ed::toXmlText(doc), reason)) {
+        if (wizengine::sharedasset::writeTextFile(path, ed::toXmlText(doc), reason)) {
             editor_.setSceneFile(name);
             editor_.setStatus("保存しました: " + name + ".xml" +
                               (terrainWritten.empty()
@@ -1742,7 +1743,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                  ? "読み込みました: " + name
                  : "読み込みました: " + name + "（警告 " +
                        std::to_string(warnCount) + " 件 - コンソール参照）") +
-            terrainLoadCaveat() + terrainCombineCaveat(true));
+            takeLoadCaveat() + terrainCombineCaveat(true));
         editor_.refreshSceneFiles();
         return;
     }

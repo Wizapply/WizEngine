@@ -22,6 +22,7 @@
 #include "scene/GameObject.h"
 #include "scene/SceneComponent.h"
 #include "scene/SceneMath.h"  // cameraRay の Basis / Vec3
+#include "scene/UiState.h"
 #include "document/SceneDocument.h"
 #include "physics/MeshCollision.h"  // CollisionTriangles
 #include "physics/PhysicsWorld.h"  // for BodyTransform
@@ -391,6 +392,9 @@ public:
 
     // ---- モードと編集 ----------------------------------------------------
     EditorState& editor() { return editor_; }
+    // UI の状態（Canvas・共用 UI・フォントの設計値。UiState が唯一の持ち主）。
+    wizengine::UiState& ui() { return ui_; }
+    const wizengine::UiState& ui() const { return ui_; }
     wizengine::editor::AppMode mode() const { return editor_.mode(); }
     // エディタ操作（モード切替・配置・ギズモ・ジョイント・保存/読込）を
     // 受け付けるカメラ。SceneSystemConfig::editorCamera（既定 0）。
@@ -536,7 +540,9 @@ private:
     void syncCables();
     // 文書の中身を今のシーンへ**足す**（URDF などの取込。loadDocument は
     // 置き換え）。ボディ・ジョイント・ケーブル・メッシュ・プレハブが対象。
-    void appendDocument(const wizengine::editor::SceneDocument& doc);
+    // 戻り値 = 取込の注意（ステータスの末尾に足す日本語。読めない共用 UI の件数など。
+    // 無ければ空）。
+    std::string appendDocument(const wizengine::editor::SceneDocument& doc);
 
     // ---- イベントグラフの実行（PHYSICS スレッド）--------------------------
     // シミュレートの 1 サブステップごとに、**付いているイベントアセット**の
@@ -624,6 +630,9 @@ private:
     // 適用）。keepSameTerrain = 文書のテレインが今のものと同じなら手元の格子を
     // 保つ（XML の適用だけ。シーンの読込はファイルから読み直す）。
     void loadDocument(const wizengine::editor::SceneDocument& doc, bool keepSameTerrain);
+    // 直前の読込で出た注意（テレイン・共通イベント・共用 UI。ステータスの末尾に
+    // 足す日本語）を返して消す。無ければ空。terrainCombineCaveat と同じ使い方。
+    std::string takeLoadCaveat();
     // ジョイントの端点に使う物理ボディ番号。-1 は地面。
     std::size_t jointBodyId(int objectIndex) const;
 
@@ -798,7 +807,7 @@ private:
     //   * ファイルが決まらない → Missing
     //   * ファイルはあるが使えない（readTerrainFile が断る）→ Unreadable
     //     （そのファイルは使わず上書きもしない）
-    // 理由（英語）は LOGW に、注意は terrainLoadCaveat_ に入れる。
+    // 理由（英語）は LOGW に、注意は loadCaveat_ に足す。
     void loadTerrainField(const wizengine::editor::TerrainDesc& doc);
     // name のファイルを読み、使えるなら desc.position に置いた格子を返して、desc の
     // data / guid / size / resolution / height を読んだ値で埋める（位置と表面は
@@ -820,7 +829,7 @@ private:
     // 旧属性にテクスチャがあり、層 0 のテクスチャが空のときだけ取り込んで
     // ファイルの dirty を立てる（次の保存で .terrain に移り XML から消える）。
     // 層 0 が既にあればファイルが勝つ（LOGI）。Missing は取り込めない（保存で
-    // 属性が落ちる。受け入れ済み）。注意の文は terrainLoadCaveat_ の後ろに足す。
+    // 属性が落ちる。受け入れ済み）。注意の文は loadCaveat_ の後ろに足す。
     void adoptLegacySurface(const wizengine::editor::TerrainLegacyDesc& legacy);
     // 文書のテレインが name を参照しているか（テレインがあり、大文字・小文字を
     // 問わず一致）。Missing（格子が無い）も含む。「参照している名前か」の唯一の判定。
@@ -835,9 +844,6 @@ private:
     // a が今のテレインと同じものか（背番号が両方にあれば背番号、無ければ名前）。
     // Missing なら false（XML の適用で読み直す）。
     bool sameTerrainIdentity(const wizengine::editor::TerrainDesc& a) const;
-    // 直前の読込で出たテレインの注意（ステータスの末尾に足す日本語 1 文）を返して
-    // 消す。無ければ空。terrainCombineCaveat と同じ使い方。
-    std::string terrainLoadCaveat();
     // desc の名前が空なら base から空いている名前（uniqueName）を、背番号が空なら
     // 新しい背番号を入れる（空でない方はそのまま）。新しいテレインの名前と背番号を
     // 決める唯一の口: 新規・旧形式の読込は両方を空にしてから呼び、保存は欠けて
@@ -1028,6 +1034,7 @@ private:
     SceneSystemConfig sys_;
     std::vector<std::unique_ptr<SceneComponent>> components_;
     EditorState editor_;
+    wizengine::UiState ui_;
     // 地面の物理ボディ。ジョイントの「ワールド側」に使う。
     std::size_t groundPhysId_ = GameObject::kInvalidId;
     // 文書のジョイント番号 → PhysicsWorld のジョイント番号（作れなかった /
@@ -1152,8 +1159,10 @@ private:
     // 系が自前の接触を扱えず張れなかった（警告済み）。この間 publish は張り直さない。
     // 張れたとき・releaseTerrainContact（外す・例外）で戻す。
     bool terrainBackendWarned_ = false;
-    // 直前の読込の注意（terrainLoadCaveat が返して消す）。物理スレッド専用。
-    std::string terrainLoadCaveat_;
+    // 直前の読込の注意（takeLoadCaveat が返して消す）。物理スレッド専用。
+    // テレインだけでなく、共通イベント・共用 UI の読めないファイルの注意も入る箱。
+    // 空にするのは loadDocument の先頭だけで、書く側は足す（+=）だけ。
+    std::string loadCaveat_;
     // 今のテレインと .terrain の関係（Keep 以外。terrainDirty() / terrainMissing()
     // で読む）。書くのは物理スレッドの publishTerrainField（と保存の成功で Saved に
     // 戻す saveTerrainData）だけ、/scene（HTTP）も読むので atomic。

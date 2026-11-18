@@ -296,6 +296,7 @@ endif()
 
 # stb_image: decodes PNG/JPEG/TGA/BMP for the ground texture.
 # stb_perlin: テレインの高さのノイズ（src/terrain/TerrainNoise.cpp）。
+# stb_truetype / stb_rect_pack: UI の字の置き場（src/ui/FontAtlas.cpp）。
 if(EXISTS "${THIRD_PARTIES_DIR}/stb/stb_image.h")
     list(APPEND WIZ_DEP_INCLUDE_DIRS "${THIRD_PARTIES_DIR}/stb")
     message(STATUS "WizEngine: stb_image -> submodule")
@@ -306,6 +307,12 @@ else()
     wiz_download_header(
         "https://raw.githubusercontent.com/nothings/stb/master/stb_perlin.h"
         "${DEPS_INC}/stb_perlin.h")
+    wiz_download_header(
+        "https://raw.githubusercontent.com/nothings/stb/master/stb_truetype.h"
+        "${DEPS_INC}/stb_truetype.h")
+    wiz_download_header(
+        "https://raw.githubusercontent.com/nothings/stb/master/stb_rect_pack.h"
+        "${DEPS_INC}/stb_rect_pack.h")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -327,11 +334,13 @@ endif()
 #   app/        起動設定（config.json）の読み込み
 #   autogen/    AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換 Text to 3D。
 #               Chrono も Filament も知らない）
+#   ui/         UI の性質・矩形・文書の形（純粋な計算。tests/ui が使う）
 set(WIZ_APP_SOURCES
     src/app/AppConfig.cpp)
 set(WIZ_CORE_SOURCES
     src/core/AssetError.cpp
     src/core/CpuAffinity.cpp
+    src/core/FileBytes.cpp
     src/core/Log.cpp
     src/core/PortScan.cpp
     src/core/Trash.cpp
@@ -376,7 +385,9 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererGround.cpp
     src/render/RendererTerrain.cpp
     src/render/RendererTerrainSurface.cpp
-    src/render/RendererTextures.cpp)
+    src/render/RendererTextures.cpp
+    src/render/RendererUiMeshes.cpp
+    src/render/RendererUiViews.cpp)
 set(WIZ_STREAMING_SOURCES
     src/streaming/HttpServer.cpp
     src/streaming/VideoStreamer.cpp
@@ -401,7 +412,10 @@ set(WIZ_SCENE_SOURCES
     src/scene/SceneTerrainScatter.cpp
     src/scene/SceneTerrainScatterBody.cpp
     src/scene/SceneTerrainSculpt.cpp
-    src/scene/SoftLattice.cpp)
+    src/scene/SharedAssetFile.cpp
+    src/scene/SoftLattice.cpp
+    src/scene/UiFiles.cpp
+    src/scene/UiState.cpp)
 set(WIZ_COMPONENT_SOURCES
     src/components/AutoGenComponent.cpp
     src/components/EditorComponent.cpp
@@ -411,6 +425,7 @@ set(WIZ_COMPONENT_SOURCES
     src/components/ScatterComponent.cpp
     src/components/ControlComponent.cpp
     src/components/TerrainComponent.cpp
+    src/components/UiRenderComponent.cpp
     src/components/VehicleComponent.cpp)
 set(WIZ_FORMULA_SOURCES
     src/formula/Formula.cpp
@@ -447,6 +462,17 @@ set(WIZ_AUTOGEN_SOURCES
     src/autogen/ScenePrompt.cpp
     src/autogen/SceneGenerator.cpp
     src/autogen/SceneLayout.cpp)
+set(WIZ_UI_SOURCES
+    src/ui/FontAtlas.cpp
+    src/ui/UiImage.cpp
+    src/ui/UiKinds.cpp
+    src/ui/UiLayout.cpp
+    src/ui/UiMesh.cpp
+    src/ui/UiProps.cpp
+    src/ui/UiSdf.cpp
+    src/ui/UiText.cpp
+    src/ui/UiValue.cpp
+    src/ui/UiXml.cpp)
 
 add_executable(wizengine
     src/main.cpp
@@ -462,7 +488,8 @@ add_executable(wizengine
     ${WIZ_FORMULA_SOURCES}
     ${WIZ_CONTROL_SOURCES}
     ${WIZ_TERRAIN_SOURCES}
-    ${WIZ_AUTOGEN_SOURCES})
+    ${WIZ_AUTOGEN_SOURCES}
+    ${WIZ_UI_SOURCES})
 # ノード式の実行エンジン（LuaJIT）。無ければ C++ の参照インタプリタに落ちる。
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/LuaJIT.cmake)
 wiz_link_luajit(wizengine)
@@ -724,13 +751,13 @@ endif()
 # configure できる（tests/vehicle/CMakeLists.txt 参照）。本体と一緒に回すなら
 #   cmake -B build -DWIZ_BUILD_TESTS=ON && cmake --build build && ctest --test-dir build
 # ---------------------------------------------------------------------------
-option(WIZ_BUILD_TESTS "Build the unit tests (vehicle, soft body, document, terrain) alongside the engine" OFF)
+option(WIZ_BUILD_TESTS "Build the unit tests (vehicle, soft body, document, terrain, ui) alongside the engine" OFF)
 if(WIZ_BUILD_TESTS)
     enable_testing()
     # テストは単独でも configure できる（tests/<名前>/CMakeLists.txt）。
     # ここでは「あるものだけ」取り込む - 片方だけ持っているクローンでも
     # -DWIZ_BUILD_TESTS=ON が configure エラーにならないように。
-    foreach(_test vehicle softbody document terrain)
+    foreach(_test vehicle softbody document terrain ui)
         if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/${_test}/CMakeLists.txt)
             add_subdirectory(tests/${_test})
         endif()

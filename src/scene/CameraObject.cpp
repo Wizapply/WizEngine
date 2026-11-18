@@ -98,4 +98,5 @@ filament::math::double3 CameraObject::eye() const {
 void CameraObject::applyTo(wizengine::Renderer& renderer,
                            std::size_t viewIndex) const {
     renderer.setCamera(viewIndex, eye(), target());
+    viewIndex_.store(int(viewIndex), std::memory_order_relaxed);
 }

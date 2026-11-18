@@ -62,6 +62,10 @@ public:
     // Computes eye/target from the current state and sets them on the given
     // renderer view (one view per camera).
     void applyTo(wizengine::Renderer& renderer, std::size_t viewIndex = 0) const;
+    // 最後に applyTo へ渡されたビュー番号（最初の applyTo までは -1）。UI の
+    // Canvas をどのビューに出すかを、カメラ番号からビュー番号へ引くのに使う
+    // （ビューは遅延生成なので、カメラ番号とビュー番号は一致するとは限らない）。
+    int viewIndex() const { return viewIndex_.load(std::memory_order_relaxed); }
 
     filament::math::double3 eye() const;
     filament::math::double3 target() const;
@@ -74,4 +78,7 @@ private:
     std::atomic<double> elev_;
     std::atomic<double> radius_;
     std::atomic<double> tx_, ty_, tz_;
+    // applyTo（const）が書く。書くのも読むのも RENDER スレッドだが、ほかの
+    // フィールドと同じく atomic にしておく（別のスレッドが読んでも壊れない）。
+    mutable std::atomic<int> viewIndex_{-1};
 };

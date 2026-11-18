@@ -114,6 +114,7 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
     loadLineMaterial();
     loadOverlayMaterial();
     loadParticleMaterial();
+    loadUiMaterial();  // UI の Canvas（RendererUiMeshes.cpp）
 
     // Direct lights are no longer created here: the scene owns them as
     // editable light descriptors (Scene::LightItem, saved in the scene
@@ -354,6 +355,8 @@ Renderer::~Renderer() {
     if (sphereIb_) engine_->destroy(sphereIb_);
     if (cylinderVb_) engine_->destroy(cylinderVb_);
     if (cylinderIb_) engine_->destroy(cylinderIb_);
+    // UI（Canvas・テクスチャ・材質・UI のビュー）。ビューより先に壊す。
+    destroyUi();
     for (auto& slot : views_) {
         engine_->destroyCameraComponent(slot.cameraEntity);
         engine_->destroy(slot.cameraEntity);
@@ -407,6 +410,7 @@ void Renderer::renderFrame(
             {0, 0, uint32_t(slot.width), uint32_t(slot.height)});
         // Same fov/near/far as addView - only the aspect follows the size.
         applyProjection(slot);
+        applyUiProjection(slot);  // UI のビュー（あれば）も同じ大きさへ
         for (auto& cap : slot.captures) {
             cap.pixels.assign(
                 std::size_t(slot.width) * std::size_t(slot.height) * 4, 0);
@@ -420,6 +424,10 @@ void Renderer::renderFrame(
 
     if (!renderer_->beginFrame(slot.swapChain)) return;
     renderer_->render(slot.view);
+    // UI を同じ描画先へ重ねる（半透明のビュー = 主の絵の上に乗る。読み戻しに入る）。
+    // 中身が空のビューは描かない。
+    const bool hasUi = slot.uiView && slot.uiScene->getRenderableCount() > 0;
+    if (hasUi) renderer_->render(slot.uiView);
 
     // Start a readback into whichever buffer is free. If both are still with
     // the GPU we skip the capture for this frame rather than blocking - the

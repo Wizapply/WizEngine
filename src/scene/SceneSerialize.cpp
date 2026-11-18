@@ -6,9 +6,44 @@
 #include "control/ControlTemplates.h"
 #include "formula/FormulaText.h"
 #include "terrain/TerrainBrush.h"
+#include "scene/UiFiles.h"
 
 using namespace chrono;
 using namespace scene_detail;
+
+namespace {
+
+// 文書の UI（<canvas> / <ui> / <font>）を UiState へ入れる（読込と取込の共通の道）。
+// 共用 UI（file あり）は中身をファイルから入れる。読めなくても参照は残す（中身は
+// 空 = 何も出ない。ファイルを戻して読み直せば元に戻る。共通イベントと同じ扱い）。
+// 戻り値 = 読めなかった共用 UI の件数（呼び手がステータスに足す）。
+std::size_t loadUiFromDocument(wizengine::UiState& ui, const ed::SceneDocument& doc,
+                               wizengine::UiState::LoadMode mode) {
+    // 書き換える（ファイルの中身を入れる）のは共用 UI だけなので、それだけを写す。
+    std::vector<wizengine::ui::UiAssetDesc> uiAssets = doc.uiAssets;
+    std::size_t missing = 0;
+    for (auto& a : uiAssets) {
+        if (a.file.empty()) continue;
+        std::string reason;
+        if (!wizengine::uifiles::readSharedUi(a, reason)) {
+            LOGW("scene", "shared ui '%s': %s - it shows nothing until the file is back",
+                 a.name.c_str(), reason.c_str());
+            ++missing;
+        }
+    }
+    ui.fromDocument(doc.canvases, uiAssets, doc.fonts, mode);
+    return missing;
+}
+
+// 読めないファイルの読込の注意（ステータスの末尾に足す日本語 1 文）。label は
+// 種類（"共通イベント" / "共用 UI"）。0 件なら空。
+std::string unreadableFilesCaveat(const char* label, std::size_t count) {
+    if (count == 0) return {};
+    return std::string("（") + label + " " + std::to_string(count) +
+           " 件のファイルが読めません - コンソール参照）";
+}
+
+}  // namespace
 
 std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     auto hex = [](const filament::math::float3& c) {
@@ -541,6 +576,11 @@ ed::SceneDocument Scene::document() {
     doc.controllers = editor_.controllers();
     doc.params = editor_.params();
     doc.charts = editor_.charts();
+    // UI（UiState のロックは末端 = objects → editor の後に取ってよい）。共用 UI は
+    // 参照だけを書く（ファイルへ書くのは後の PR）。Canvas の番号の付け替え表は、
+    // Canvas を番号で指すノード（後の PR）が使う。
+    const std::vector<int> canvasRemap = ui_.toDocument(doc);
+    (void)canvasRemap;
     return doc;
 }
 
@@ -548,7 +588,16 @@ std::string Scene::documentXml() {
     return ed::toXmlText(document());
 }
 
+std::string Scene::takeLoadCaveat() {
+    std::string out;
+    out.swap(loadCaveat_);
+    return out;
+}
+
 void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
+    // 読込の注意の箱を空にするのはここだけ（書く側 = テレイン・共通イベント・
+    // 共用 UI は足すだけ）。
+    loadCaveat_.clear();
     // いま在るものを全部畳んでから作り直す。番号は 0 から振り直されるので、
     // 掴んでいる選択も落とす。
     removeAllCables();
@@ -627,10 +676,7 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
         auto prefabs = doc.prefabs;
         std::size_t missing = 0;
         resolveLibraryAssets(formulas, prefabs, missing);
-        if (missing > 0) {
-            terrainLoadCaveat_ += "（グローバルの計算式 / プレハブ " + std::to_string(missing) +
-                                  " 件のファイルが読めません - コンソール参照）";
-        }
+        loadCaveat_ += unreadableFilesCaveat("グローバルの計算式 / プレハブ", missing);
         editor_.setFormulaAssets(std::move(formulas));
         editor_.setPrefabAssets(std::move(prefabs));
     }
@@ -677,9 +723,10 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     // イベントの節を持たない文書は既定の構成へ - ライトを 1 灯も書かない
     // 文書が初期構成で開くのと同じ扱いで、「掴んでも動かないシーン」で
     // 始めさせないため。
+    // 読めなかった共通イベントの件数（注意は下で共用 UI と並べて足す）。
+    std::size_t sharedMissing = 0;
     if (doc.hasEvents) {
         std::vector<ed::EventAssetDesc> assets;
-        std::size_t sharedMissing = 0;
         for (const auto& assetDoc : doc.eventAssets) {
             // 共通化したイベント（file あり）は中身をイベントライブラリから入れる。
             // 読めなくても参照は残す（中身は空 = 何もしない。ファイルを戻して
@@ -714,11 +761,6 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
             asset.wires = assetIn.wires;
             assets.push_back(std::move(asset));
         }
-        if (sharedMissing > 0) {
-            // ステータスの末尾に足す注意（テレインの注意と同じ口）。
-            terrainLoadCaveat_ += "（共通イベント " + std::to_string(sharedMissing) +
-                                  " 件のファイルが読めません - コンソール参照）";
-        }
         editor_.setEventAssets(std::move(assets), doc.worldEvents);
         resetGraphRuntime();
     } else {
@@ -731,6 +773,15 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     // 二度作り直さないため。XML の適用（keepSameTerrain）で同じテレインなら
     // 格子も当たり判定も作り直さない。
     setTerrainFromDocument(doc, keepSameTerrain);
+
+    // UI（Canvas・共用 UI・フォント）。節の無い文書は UI 無し。
+    const std::size_t uiMissing =
+        loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Replace);
+
+    // 読込の注意（ステータスの末尾に足す日本語）。テレインの注意
+    // （setTerrainFromDocument が足した）の後ろに、共通イベント → 共用 UI の順。
+    loadCaveat_ += unreadableFilesCaveat("共通イベント", sharedMissing);
+    loadCaveat_ += unreadableFilesCaveat("共用 UI", uiMissing);
 
     // 文書が Core 専用の機能を使っていれば系を切り替える（使わなくなって
     // いれば既定へ戻す）。setTerrainFromDocument の中で済んでいるので、ここは確認だけ。
@@ -748,7 +799,7 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
 // 後ろに追加、ジョイント・ケーブルの参照は追加ぶんの先頭番号だけずらす。
 // 設定（option / visual / ground / terrain / ライト / カメラ / イベント）は
 // 文書にあっても無視する（取り込む物の「構造」だけが欲しいので）。
-void Scene::appendDocument(const ed::SceneDocument& doc) {
+std::string Scene::appendDocument(const ed::SceneDocument& doc) {
     {
         std::lock_guard<std::mutex> lk(objectsMutex_);
         for (const auto& m : doc.meshes) {
@@ -843,6 +894,10 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
         }
         editor_.setEmitters(std::move(emitters));
     }
+    // UI は後ろへ足す（共用 UI とフォントは名前が重ならないものだけ）。読めない
+    // 共用 UI は loadUiFromDocument が LOGW に出し、件数は読込と同じ文で注意に返す。
+    const std::size_t uiMissing =
+        loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Append);
     editor_.bumpGraphVersion();
     syncBackend();
     if (editor_.mode() == ed::AppMode::Simulate) {
@@ -850,4 +905,5 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
         buildCables();
     }
     snapshot();
+    return unreadableFilesCaveat("共用 UI", uiMissing);
 }

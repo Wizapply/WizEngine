@@ -8,6 +8,7 @@
 
 #include "document/EditorTypes.h"
 #include "document/SceneXml.h"
+#include "ui/UiTypes.h"
 
 // シーン文書（保存・読込・受け渡しの単位）と、その XML 表現。
 //
@@ -58,6 +59,13 @@
 //                                        PrefabDesc）。<body> の <prefab name/> で付ける。
 //                                        collide="true" の部品（箱 / 球）は付け先の
 //                                        当たり形状に足される（階段など）
+//       <font name="jp" file="fonts/NotoSansJP-Regular.otf"/>
+//                                    ... UI の字のフォント（<text font="jp">）
+//       <ui name="hud" file="ui/hud.xml"/>
+//                                    ... UI アセット（<canvas ui="hud">）。file が
+//                                        あれば中身は共用ファイル（assets/ui/）、
+//                                        無ければ中身を子要素に書く。書式は
+//                                        ui/UiXml.h
 //     </asset>
 //     <worldbody>
 //       <environment hdr="studio.hdr" intensity="30000"/>
@@ -102,6 +110,13 @@
 //                                    ... パーティクルのエミッタ（見た目だけ。
 //                                        EditorTypes.h の EmitterDesc）。量は
 //                                        rate か、制御器の emitter:<名前>.rate
+//       <canvas name="hud" mode="overlay|camera|world" cameras="0 1" height="1080"
+//               order distance pos euler size ui="hud">
+//         <image id parent name anchor pivot pos size color file .../>
+//         <text id parent name text font fontSize align outline outlineColor .../>
+//         <anim name loop autoplay> <key element t alpha .../> </anim>
+//       </canvas>                    ... UI の台紙と部品（ui/UiXml.h。属性は
+//                                        性質の表 ui/UiProps と Canvas の属性の表）
 //     </worldbody>
 //     <equality>
 //       <joint type body1 body2 anchor axis
@@ -271,6 +286,11 @@ struct SceneDocument {
     std::vector<ParamDesc> params;
     // 制御盤のグラフ（<control> の <chart>）。
     std::vector<ChartDesc> charts;
+    // UI（ui/UiTypes.h）: フォントと UI アセット（<asset> の <font> / <ui>）、
+    // Canvas（<worldbody> の <canvas>）。節が無ければ空（既定のフォントは読込側）。
+    std::vector<ui::FontAssetDesc> fonts;
+    std::vector<ui::UiAssetDesc> uiAssets;
+    std::vector<ui::CanvasDesc> canvases;
     // 「節が無い」と「空の節」の区別。ライト / カメラ / イベントの節を持た
     // ない文書（旧 v1 の保存や手書きの最小 XML）は初期構成へ戻す意味に
     // なるので、空配列と同じにはできない。

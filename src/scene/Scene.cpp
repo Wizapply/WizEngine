@@ -4,6 +4,7 @@
 // 文書との変換は SceneSerialize.cpp。共通の下準備は SceneInternal.h。
 #include "scene/SceneInternal.h"
 #include "scene/PrefabDefaults.h"
+#include "components/UiRenderComponent.h"
 
 #include <chrono>
 
@@ -210,12 +211,14 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     sys_ = std::move(sys);
     // スロット数（config.json の "scene"."maxCameras"、exe 引数 --max-cameras で
     // 上書き）。カメラ 0（エディタカメラ）は必ず要るので 1 未満にはしない。
-    // 極端な値はページ・受け口・スレッドを無駄に増やすだけなので 16 で止める。
+    // 極端な値はページ・受け口・スレッドを無駄に増やすだけなので
+    // ed::kMaxCameraSlots で止める。
+    constexpr std::size_t kSlotsMax = std::size_t(ed::kMaxCameraSlots);
     std::size_t slots = sys_.maxCameras;
     if (slots < 1) slots = 1;
-    if (slots > 16) {
-        LOGW("scene", "max cameras %zu is excessive - clamped to 16", slots);
-        slots = 16;
+    if (slots > kSlotsMax) {
+        LOGW("scene", "max cameras %zu is excessive - clamped to %zu", slots, kSlotsMax);
+        slots = kSlotsMax;
     }
     // cameraConfigs() のぶんが最初から有効で（スロット数を超えるぶんは
     // 落とす）、残りは「カメラを追加」で有効になるまで一覧に出ない予備。
@@ -240,6 +243,14 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     addComponent(std::make_unique<GizmoComponent>());
     addComponent(std::make_unique<CameraControlComponent>());
     addComponent(std::make_unique<BoxControlComponent>());
+    // UI の描画。onRender（ロックの中）はカメラの写しだけで、組み立てと転送は
+    // ロックの外の onRenderUnlocked（オブジェクト一覧は読めない）。コマンドを
+    // 取らないので並びは入力に影響せず、overlay は他の部品の姿勢に依らないので
+    // 順番も問わない。3D の板（後の PR）で車体・プレハブの姿勢が要るなら、その
+    // 姿勢を onRender（ロックの中）で写し、組み立てはロックの外で行う（写す姿勢を
+    // 他の部品の onRender が決めるなら、その部品より後に登録する）。
+    // UI の入力（後の PR）はギズモより前に登録する。
+    addComponent(std::make_unique<UiRenderComponent>());
 }
 
 // 前方宣言の型（TerrainLibrary / TerrainUndoStack）の unique_ptr を壊すので、
@@ -464,7 +475,7 @@ void Scene::build() {
             loadDocument(doc, false);
             editor_.setSceneFile(startup);
             editor_.setStatus("読み込みました: " + startup +
-                              terrainLoadCaveat() + terrainCombineCaveat(true));
+                              takeLoadCaveat() + terrainCombineCaveat(true));
             LOGI("scene", "startup scene '%s' loaded (%zu bodies, %zu meshes)",
                  startup.c_str(), doc.bodies.size(), doc.meshes.size());
         } else {
@@ -1712,4 +1723,6 @@ void Scene::applyToRenderer() {
             }
         }
     }
+    // ロックを外した後の口（重い描画側の仕事。登録の順）。
+    for (auto& c : components_) c->onRenderUnlocked(*this);
 }

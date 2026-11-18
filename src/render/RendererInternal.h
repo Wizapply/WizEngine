@@ -14,7 +14,9 @@
 //   RendererGround.cpp    : 地面
 //   RendererTerrain.cpp   : テレインのメッシュ（チャンク分割の高さメッシュ）
 //   RendererTerrainSurface.cpp : テレインの表面（層のテクスチャ配列・スプラット・材質）
-//   RendererTextures.cpp  : テクスチャ読込（地面とテレインで共用）
+//   RendererTextures.cpp  : テクスチャ読込（地面とテレインと UI で共用）
+//   RendererUiViews.cpp   : UI（overlay）を重ねるビュー（遅延生成・直交投影・破棄）
+//   RendererUiMeshes.cpp  : UI のテクスチャ・材質インスタンス・Canvas のレンダラブル
 
 #include "render/Renderer.h"
 #include "render/ImageScale.h"
@@ -115,16 +117,28 @@ bool decodeTextureRGBA(const std::string& texturePath, const char* label,
                        TextureFallback fallback, std::vector<uint8_t>& pixels,
                        int& width, int& height);
 
+// ミップの縮め方。Bytes = バイトのまま平均（ImageScale.h の halveRGBA。地面・
+// テレインなど）、PremultipliedSrgb = 乗算済みの sRGB をリニアで平均
+// （halvePremultipliedSrgbRGBA。UI の画像だけ）。
+enum class MipFilter { Bytes, PremultipliedSrgb };
+
 // pixels（RGBA8、width × height = texture の段 0 の大きさ）を段 0 に入れ、
-// ボックスフィルタ（ImageScale.h の halveRGBA）で作った縮小をテクスチャの全段へ
+// ボックスフィルタ（filter の縮め方）で作った縮小をテクスチャの全段へ
 // 入れる（generateMipmaps は版によって usage フラグが要るため使わない）。layer は
 // 配列の層の番号（2D テクスチャは 0）。画素は各段とも記述子へ移す（写さない）。
 void uploadMipChain(filament::Engine& engine, filament::Texture* texture,
                     uint32_t layer, std::vector<uint8_t> pixels, int width,
-                    int height);
+                    int height, MipFilter filter = MipFilter::Bytes);
+
+// RGBA8 の画素（width × height）から 2D テクスチャを作る（全段のミップを
+// uploadMipChain で入れる）。srgb = 画素が sRGB（画像ファイル）か、リニア
+// （代わりの絵）か。loadTextureRGBA と UI の画像（loadUiImage）が使う。
+filament::Texture* createTextureRGBA(filament::Engine& engine, std::vector<uint8_t> pixels,
+                                     int width, int height, bool srgb,
+                                     MipFilter filter = MipFilter::Bytes);
 
 // assets/ 相対の画像を 2D テクスチャとして作る（decodeTextureRGBA →
-// uploadMipChain。読めた画像は sRGB、読めなければ市松模様 = Checker のリニア
+// createTextureRGBA。読めた画像は sRGB、読めなければ市松模様 = Checker のリニア
 // RGBA8）。戻り値は呼び出し側が engine.destroy する。
 filament::Texture* loadTextureRGBA(filament::Engine& engine,
                                    const std::string& texturePath,
@@ -160,13 +174,15 @@ filament::backend::BufferDescriptor copyToDescriptor(const T* data,
         [](void* p, size_t, void*) { delete[] static_cast<T*>(p); });
 }
 
-// RGBA8 の画素の配列をそのまま記述子へ移す（copyToPixelDescriptor と違い写さない。
-// 配列は Filament が読み終えたとき = 転送の完了コールバックで解放する）。
+// 1 成分 8 ビットの画素の配列をそのまま記述子へ移す（copyToPixelDescriptor と違い
+// 写さない。配列は Filament が読み終えたとき = 転送の完了コールバックで解放する）。
+// format は画素の並び（既定 RGBA。UI の字の置き場は R）。
 inline filament::Texture::PixelBufferDescriptor moveToPixelDescriptor(
-    std::vector<uint8_t>&& rgba) {
-    auto* owned = new std::vector<uint8_t>(std::move(rgba));
+    std::vector<uint8_t>&& pixels,
+    filament::Texture::Format format = filament::Texture::Format::RGBA) {
+    auto* owned = new std::vector<uint8_t>(std::move(pixels));
     return filament::Texture::PixelBufferDescriptor(
-        owned->data(), owned->size(), filament::Texture::Format::RGBA,
+        owned->data(), owned->size(), format,
         filament::Texture::Type::UBYTE,
         [](void*, size_t, void* user) { delete static_cast<std::vector<uint8_t>*>(user); },
         owned);
@@ -182,6 +198,17 @@ inline filament::Texture::PixelBufferDescriptor copyToPixelDescriptor(
     return filament::Texture::PixelBufferDescriptor(
         copy, bytes, filament::Texture::Format::RGBA, filament::Texture::Type::UBYTE,
         [](void* p, size_t, void*) { delete[] static_cast<uint8_t*>(p); });
+}
+
+// 三角形のインデックスの並びとして描けるか（3 の倍数・どれも頂点数の内）。
+// だめなら理由（ログ用）。オーバーレイと UI のメッシュの共通の検査。
+template <class Index>
+const char* triangleIndexProblem(const std::vector<Index>& indices, std::size_t vertexCount) {
+    if (indices.size() % 3 != 0) return "index count is not a multiple of 3";
+    for (const Index i : indices) {
+        if (std::size_t(i) >= vertexCount) return "an index is out of range";
+    }
+    return nullptr;
 }
 
 // エディタ専用レイヤに乗るレンダラブルを 1 つ作る（カリングしない・影を

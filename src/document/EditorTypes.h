@@ -13,6 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/Clamp.h"
 #include "core/Guid.h"
 #include "core/Hex.h"
 #include "core/SafeName.h"
@@ -838,6 +839,10 @@ inline RenderDesc renderPreset(const std::string& name) {
 }
 
 // ---- カメラ -----------------------------------------------------------------
+// カメラのスロット数の上限（exe 引数 --max-cameras の上限。Scene がスロット数を
+// ここで止め、UI の Canvas の「表示するカメラ」もこの番号の範囲で持つ）。
+inline constexpr int kMaxCameraSlots = 16;
+
 // 1 台ぶんの姿勢。実体（CameraObject）と同じオービット表現のまま保存する。
 // UI が見せる「位置・向き」へは Scene.cpp が変換する（eye = target + radius *
 // 軌道ベクトル、pitch/yaw ⇄ elevation/azimuth）。active=false のスロットは
@@ -2500,6 +2505,9 @@ inline LightDesc clampLight(LightDesc l) {
     return l;
 }
 
+// 置き場所の位置の上限（各軸 ±この値 m。地面・テレイン・world の UI の板）。
+inline constexpr double kPlacementMaxMeters = 10000.0;
+
 // 置き場所の角度（度）。有限でなければ 0、±360 の外は 1 周ぶん畳む
 // （地面・テレインの rotation。オイラー角の意味は変えない）。
 inline double clampAngleDegrees(double v) {
@@ -2515,8 +2523,10 @@ inline GroundDesc clampGround(GroundDesc g) {
     auto cl = [](double v, double lo, double hi) {
         return v < lo ? lo : (v > hi ? hi : v);
     };
-    // 位置は各軸 ±10000 m（テレインと同じ）。NaN は原点。
-    auto clp = [&cl](double v) { return (v == v) ? cl(v, -10000.0, 10000.0) : 0.0; };
+    // 位置は各軸 ±kPlacementMaxMeters（テレインと同じ）。NaN は原点。
+    auto clp = [&cl](double v) {
+        return (v == v) ? cl(v, -kPlacementMaxMeters, kPlacementMaxMeters) : 0.0;
+    };
     g.position = {clp(g.position.x), clp(g.position.y), clp(g.position.z)};
     g.rotation = clampAngles(g.rotation);
     g.half = cl(g.half, 1.0, 1000.0);
@@ -2532,13 +2542,7 @@ inline EnvironmentDesc clampEnvironment(EnvironmentDesc e) {
     return e;
 }
 
-// テレインの丸めの部品（clampTerrain / clampTerrainNoise が共通で使う）。
-// NaN は fallback へ戻す（XML の strtod は "nan" も読むので、比較だけの
-// 丸めでは素通りしてしまう）。
-inline double clampTerrainNumber(double v, double lo, double hi, double fallback) {
-    if (!(v == v)) return fallback;
-    return v < lo ? lo : (v > hi ? hi : v);
-}
+// テレインの丸めの部品は core/Clamp.h の clampOrFallback（NaN は既定値へ戻す）。
 
 // ノイズ生成の値の範囲: octaves は 0〜16（HeightField の安全弁と同じ）、
 // gain は 0〜1、lacunarity は 1〜4、scale は 0.1〜10000 m。
@@ -2546,9 +2550,9 @@ inline TerrainNoiseParams clampTerrainNoise(TerrainNoiseParams n) {
     const TerrainNoiseParams d;
     n.octaves = n.octaves < 0 ? 0
               : (n.octaves > kTerrainMaxOctaves ? kTerrainMaxOctaves : n.octaves);
-    n.gain = clampTerrainNumber(n.gain, 0.0, 1.0, d.gain);
-    n.lacunarity = clampTerrainNumber(n.lacunarity, 1.0, 4.0, d.lacunarity);
-    n.scale = clampTerrainNumber(n.scale, 0.1, 10000.0, d.scale);
+    n.gain = clampOrFallback(n.gain, 0.0, 1.0, d.gain);
+    n.lacunarity = clampOrFallback(n.lacunarity, 1.0, 4.0, d.lacunarity);
+    n.scale = clampOrFallback(n.scale, 0.1, 10000.0, d.scale);
     return n;
 }
 
@@ -2584,7 +2588,7 @@ inline TerrainNoiseParams terrainNoiseFromJson(const nlohmann::json& j,
 //   * resolution は 1〜1024（(1024 + 1)^2 頂点 ≒ 105 万。描画の三角形が
 //     200 万を超えると作り直しが重い）。チャンク数の上限との整合は Scene が見る。
 //   * size は 1〜4000 m（描画距離 kFarPlane 2000 m の 2 倍まで）、height は
-//     kTerrainMinHeight〜1000 m、pos は各軸 ±10000 m。
+//     kTerrainMinHeight〜1000 m、pos は各軸 ±kPlacementMaxMeters。
 //   * 表面は地面と同じ範囲（roughness kRoughnessMin〜1、metallic 0〜1）で、色は
 //     各成分 0〜1。層の値（テクスチャ・法線・マスクのパス、タイル、粗さ・金属・
 //     法線の強さ）は .terrain が持つので、Scene の sanitizeTerrainLayers が検査
@@ -2592,7 +2596,7 @@ inline TerrainNoiseParams terrainNoiseFromJson(const nlohmann::json& j,
 //     金属はここと同じ範囲）。
 inline TerrainDesc clampTerrain(TerrainDesc t) {
     const TerrainDesc d;
-    const auto cl = clampTerrainNumber;
+    const auto cl = clampOrFallback;
     auto clf = [](float v, float fallback) {
         if (!(v == v)) return fallback;
         return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
@@ -2604,9 +2608,12 @@ inline TerrainDesc clampTerrain(TerrainDesc t) {
                  : (t.resolution > kTerrainMaxResolution ? kTerrainMaxResolution
                                                          : t.resolution);
     t.height = cl(t.height, kTerrainMinHeight, 1000.0, d.height);
-    t.position.x = cl(t.position.x, -10000.0, 10000.0, d.position.x);
-    t.position.y = cl(t.position.y, -10000.0, 10000.0, d.position.y);
-    t.position.z = cl(t.position.z, -10000.0, 10000.0, d.position.z);
+    t.position.x = cl(t.position.x, -kPlacementMaxMeters, kPlacementMaxMeters,
+                      d.position.x);
+    t.position.y = cl(t.position.y, -kPlacementMaxMeters, kPlacementMaxMeters,
+                      d.position.y);
+    t.position.z = cl(t.position.z, -kPlacementMaxMeters, kPlacementMaxMeters,
+                      d.position.z);
     t.rotation = clampAngles(t.rotation);
     t.color.r = clf(t.color.r, d.color.r);
     t.color.g = clf(t.color.g, d.color.g);

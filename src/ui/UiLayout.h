@@ -1,0 +1,65 @@
+#pragma once
+
+#include <functional>
+#include <vector>
+
+#include "ui/UiProps.h"
+#include "ui/UiTypes.h"
+
+// UI の矩形の解き方と当たり判定（座標系の唯一の定義）。
+//
+// 座標は**左上が原点で y は下向き**、単位は Canvas の設計上の画素（基準の高さ
+// = CanvasDesc::height に対する値）。要素の矩形は親の矩形の中で、アンカー・
+// ピボット・位置・大きさから決まる:
+//   アンカー (minX minY maxX maxY) は親の矩形の中の 0..1 の範囲。min = max なら
+//   1 点、違えば親と一緒に伸び縮みする範囲。
+//   幅 = 親の幅 × (maxX − minX) + size.x（高さも同じ。負にはしない）。
+//   要素のピボット（自分の矩形の中の 0..1 の点）が、アンカーの範囲の中の
+//   同じ割合の点 + pos に来る。
+// 描く順は文書順で、後ろの要素ほど手前。
+namespace wizengine {
+namespace ui {
+
+struct Rect {
+    double x = 0.0, y = 0.0, w = 0.0, h = 0.0;
+    bool contains(double px, double py) const {
+        return px >= x && px < x + w && py >= y && py < y + h;
+    }
+};
+
+// Canvas 全体の矩形（設計上の画素）。高さは基準の高さ、幅は映像の縦横比に
+// 合わせる。viewWidth / viewHeight が 0 以下なら正方形。
+Rect canvasRect(double designHeight, double viewWidth, double viewHeight);
+
+// 親の矩形の中で要素の矩形を解く（性質は Anchor / Pivot / Pos / Size を使う）。
+Rect solveRect(const Rect& parent, const PropSet& props);
+
+// 解いた要素 1 個。並びは要素の並び（文書順）と同じ。
+struct LayoutNode {
+    Rect rect;
+    int parent = -1;       // 親の要素の添字（-1 = Canvas の直下）
+    bool visible = true;   // 自分と祖先が全部 visible
+};
+
+// 要素の親（id）を添字に直す。親が見つからない・自分より後ろにある（文書順で
+// 親は子より前）・自分自身なら -1（Canvas の直下として扱う）。
+std::vector<int> parentIndices(const std::vector<ElementDesc>& elements);
+
+// i 番目の要素の性質: 重ね済みの性質（resolve の結果、要素の並びと同じ順）が
+// あればそれ、無ければ（resolved が空・短い）設計値。UI の組み立てはどこも
+// これを通して読む。
+const PropSet& elementProps(const std::vector<ElementDesc>& elements,
+                            const std::vector<PropSet>& resolved, std::size_t i);
+
+// 木を文書順にたどって全要素の矩形と見えるかを解く（性質は elementProps）。
+std::vector<LayoutNode> layoutTree(const std::vector<ElementDesc>& elements,
+                                   const std::vector<PropSet>& props,
+                                   const Rect& canvas);
+
+// 点 (x, y) にある最も手前の要素の添字（無ければ -1）。見えない要素は当たらない。
+// accept を渡せば、それが true を返す要素だけを候補にする（ボタンだけ等）。
+int hitTest(const std::vector<LayoutNode>& nodes, double x, double y,
+            const std::function<bool(int)>& accept = {});
+
+}  // namespace ui
+}  // namespace wizengine
