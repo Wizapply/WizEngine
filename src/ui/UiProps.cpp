@@ -22,6 +22,11 @@ constexpr double kPathMaxBytes = 260.0;
 
 constexpr KindMask kTextual = kKindText | kKindButton;
 
+// hover / pressed を書いていないボタンの色の作り方（pointerColor の唯一の定数）: 背景の
+// color を白へ 25% 寄せる（明るく）・黒へ 25% 寄せる（暗く）。
+constexpr double kHoverLighten = 0.25;
+constexpr double kPressedDarken = 0.25;
+
 const PropInfo kProps[] = {
     {Prop::Anchor, "anchor", {PropType::Rect, numberValue(0, 0, 0, 0), 0.0, 1.0}, true, kKindAll, "アンカー"},
     {Prop::Pivot, "pivot", {PropType::Vec2, numberValue(0, 0), 0.0, 1.0}, true, kKindAll, "ピボット"},
@@ -38,9 +43,15 @@ const PropInfo kProps[] = {
     {Prop::Outline, "outline", {PropType::Number, numberValue(0), 0.0, kSdfOutlineMaxEm}, true, kTextual, "縁取り"},
     {Prop::OutlineColor, "outlineColor", {PropType::Color, numberValue(0, 0, 0, 1), 0.0, 1.0}, true, kTextual, "縁取りの色"},
     {Prop::Wrap, "wrap", {PropType::Bool, numberValue(0), 0.0, 1.0}, false, kTextual, "折り返し"},
+    // ボタンの字の色（ボタンの color は背景の色）。
+    {Prop::TextColor, "textColor", {PropType::Color, numberValue(0.05, 0.05, 0.05, 1), 0.0, 1.0}, true, kKindButton, "文字の色"},
     {Prop::File, "file", {PropType::Path, textValue(""), 0.0, kPathMaxBytes}, false, kKindImage | kKindButton, "画像"},
-    {Prop::Hover, "hover", {PropType::Color, numberValue(1, 1, 1, 1), 0.0, 1.0}, false, kKindButton, "ホバー時の色"},
-    {Prop::Pressed, "pressed", {PropType::Color, numberValue(1, 1, 1, 1), 0.0, 1.0}, false, kKindButton, "押下時の色"},
+    // ポインタが上にある間・押している間の背景の色（color を置き換える = resolve）。
+    // 書かなければ背景の color から作る（pointerColor）ので、この行の既定値（白）は使わない
+    // （defaultIsDerived: 保存は既定値と比べない・schema の既定値は null・ブラウザには要素ごとの
+    // 「既定」= 背景から作った色を送る = scene/UiJson）。値の型を決めるためだけに置いてある。
+    {Prop::Hover, "hover", {PropType::Color, numberValue(1, 1, 1, 1), 0.0, 1.0}, false, kKindButton, "ホバー時の色（既定: 背景を明るく）"},
+    {Prop::Pressed, "pressed", {PropType::Color, numberValue(1, 1, 1, 1), 0.0, 1.0}, false, kKindButton, "押下時の色（既定: 背景を暗く）"},
     {Prop::Enabled, "enabled", {PropType::Bool, numberValue(1), 0.0, 1.0}, false, kKindButton, "有効"},
 };
 static_assert(sizeof(kProps) / sizeof(kProps[0]) == kPropCount,
@@ -164,11 +175,37 @@ PropSet lerpProps(const PropSet& a, const PropSet& b, double t) {
 }
 
 PropSet resolve(const PropSet& design, const PropSet& anim, const PropSet& node,
-                const PropSet& pointer) {
+                PointerPhase pointer) {
     PropSet out = design;
     out.overlay(anim);
     out.overlay(node);
-    out.overlay(pointer);
+    if (pointer != PointerPhase::None && out.flag(Prop::Enabled)) {
+        out.set(Prop::Color, pointerColor(out, pointer));
+    }
+    return out;
+}
+
+bool defaultIsDerived(Prop p) {
+    for (const auto& c : kPointerColorProps) {
+        if (c.prop == p) return true;
+    }
+    return false;
+}
+
+PropValue pointerColor(const PropSet& props, PointerPhase phase) {
+    const PropValue& base = props.get(Prop::Color);
+    const PointerColorProp* entry = nullptr;
+    for (const auto& c : kPointerColorProps) {
+        if (c.phase == phase) entry = &c;
+    }
+    if (!entry) return base;  // None
+    if (props.has(entry->prop)) return props.get(entry->prop);
+    // 書いていなければ背景から: 明るくは白へ寄せ、暗くは黒へ寄せる（不透明度はそのまま）。
+    PropValue out = base;
+    for (std::size_t k = 0; k < 3; ++k) {
+        out.v[k] = phase == PointerPhase::Hover ? base.v[k] + (1.0 - base.v[k]) * kHoverLighten
+                                                : base.v[k] * (1.0 - kPressedDarken);
+    }
     return out;
 }
 

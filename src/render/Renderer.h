@@ -542,7 +542,8 @@ public:
     // 出すビューの一覧（ビュー番号）。まだ無いビューの番号は無視する
     // （呼び手は次のフレームにまた呼ぶ）。外れたビューの中身は壊す。
     void setUiCanvasViews(std::size_t id, const std::vector<std::size_t>& viewIndices);
-    // Canvas どうしの重なり順（大きいほど手前。同じなら番号の小さい方が奥）。
+    // Canvas どうしの重なり順（大きいほど手前）。前後の規則は呼び手が持ち（ui::canvasBehind の
+    // 順位）、Canvas ごとに違う値を渡す（同じ値が来たときだけ番号の小さい方が奥）。
     void setUiCanvasOrder(std::size_t id, int order);
     // Canvas の基準の高さ（設計上の画素。CanvasDesc::height）。
     void setUiCanvasDesignHeight(std::size_t id, float designHeight);

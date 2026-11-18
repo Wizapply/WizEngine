@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <utility>
 
+#include "core/SceneLimits.h"
+#include "ui/UiKinds.h"   // acceptsClick / catchesPointer
+#include "ui/UiLayout.h"  // parentIndices / elementVisible
+
 namespace wizengine {
 namespace {
 
@@ -165,12 +169,6 @@ void UiState::syncReadable(const std::function<bool(const std::string& name)>& r
     }
 }
 
-std::uint64_t UiState::contentsGeneration(int index) const {
-    std::lock_guard<std::mutex> lk(mutex_);
-    const CanvasItem* item = liveItemAt(canvases_, index);
-    return item ? infoOf(*item, uiAssets_).contentsGeneration : 0;
-}
-
 std::uint64_t UiState::Snapshot::contentsRevision(int index) const {
     const CanvasItem* item = liveItemAt(canvases, index);
     if (!item) return 0;
@@ -202,6 +200,29 @@ const std::vector<ui::ElementDesc>& UiState::Snapshot::elementsOf(
 
 bool UiState::Snapshot::selectionExists(int canvas, int element) const {
     return selectionIn(canvases, uiAssets, canvas, element);
+}
+
+UiState::ElementRef UiState::Snapshot::elementRef(int canvas, int element) const {
+    ElementRef ref;
+    ref.canvas = canvas;
+    ref.element = element;
+    ref.loadGeneration = loadGeneration;
+    ref.contentsGeneration = contentsInfo(canvas).contentsGeneration;
+    return ref;
+}
+
+bool UiState::refValid(const ElementRef& ref) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return refValidLocked(ref);
+}
+
+bool UiState::refValidLocked(const ElementRef& ref) const {
+    const CanvasItem* item = liveItemAt(canvases_, ref.canvas);
+    if (!item || ref.loadGeneration != loadGeneration_) return false;  // 消えた・読み直した
+    // 中身を XML で丸ごと入れ替えた・持ち主が替わった（同じ id の別の要素）。
+    if (infoOf(*item, uiAssets_).contentsGeneration != ref.contentsGeneration) return false;
+    const std::vector<ui::ElementDesc>& elements = elementsIn(item->desc, uiAssets_);
+    return ui::elementIndex(elements, ref.element) < elements.size();
 }
 
 std::vector<int> UiState::toDocument(editor::SceneDocument& doc) const {
@@ -406,6 +427,90 @@ bool UiState::moveCanvasContentsToAsset(int index, ui::UiAssetDesc asset) {
     state.desc = std::move(asset);
     uiAssets_.push_back(std::move(state));
     return true;
+}
+
+// ---- 実行時の状態 ------------------------------------------------------------------
+std::uint64_t UiState::runtimeVersion() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return runtimeVersion_;
+}
+
+std::uint64_t UiState::runtimeGeneration() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return runtimeGeneration_;
+}
+
+bool UiState::clickableOnCamera(int camera) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (const CanvasItem& c : canvases_) {
+        if (!c.alive || !ui::overlayShownOnCamera(c.desc, camera)) continue;
+        const std::vector<ui::ElementDesc>& elements = elementsIn(c.desc, uiAssets_);
+        if (std::any_of(elements.begin(), elements.end(), ui::catchesPointer)) return true;
+    }
+    return false;
+}
+
+void UiState::setPointer(std::size_t camera, const Pointer& pointer) {
+    if (camera >= std::size_t(kMaxCameraSlots)) return;
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (pointers_.size() <= camera) {
+        if (pointer == Pointer{}) return;  // 無い枠は「無し」と同じ
+        pointers_.resize(camera + 1);
+    }
+    if (pointers_[camera] == pointer) return;
+    pointers_[camera] = pointer;
+    ++runtimeVersion_;
+}
+
+bool UiState::copyPointersIfChanged(std::uint64_t& known, std::vector<Pointer>& out) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (known == runtimeVersion_) return false;
+    out = pointers_;
+    known = runtimeVersion_;
+    return true;
+}
+
+void UiState::pushClick(const PendingClick& click) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (clicks_.size() >= kMaxPendingClicks) clicks_.erase(clicks_.begin());
+    clicks_.push_back(click);
+}
+
+bool UiState::clickValidLocked(const PendingClick& c, Click& out) const {
+    if (c.runtimeGeneration != runtimeGeneration_) return false;  // Reset をまたいだ押下
+    if (!refValidLocked(c.ref)) return false;  // 消えた・読み直した・入れ替えた
+    const ui::CanvasDesc& desc = canvases_[std::size_t(c.ref.canvas)].desc;
+    if (!ui::overlayShownOnCamera(desc, int(c.camera))) return false;  // 他のカメラ向け
+    const std::vector<ui::ElementDesc>& elements = elementsIn(desc, uiAssets_);
+    const std::size_t at = ui::elementIndex(elements, c.ref.element);
+    // 見えるか（祖先も）は矩形を解かずに決める（描く側の layoutTree と同じ規則）。
+    const bool visible = ui::elementVisible(elements, {}, ui::parentIndices(elements), at);
+    if (!ui::acceptsClick(elements[at], elements[at].props, visible)) return false;
+    out.camera = c.camera;
+    out.canvas = c.ref.canvas;
+    out.element = c.ref.element;
+    out.name = elements[at].name;
+    return true;
+}
+
+std::vector<UiState::Click> UiState::takeClicks(std::uint64_t modeEpoch) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    std::vector<Click> out;
+    if (clicks_.empty()) return out;
+    for (const PendingClick& c : clicks_) {
+        Click click;
+        if (c.modeEpoch == modeEpoch && clickValidLocked(c, click)) out.push_back(std::move(click));
+    }
+    clicks_.clear();
+    return out;
+}
+
+void UiState::resetRuntime() {
+    std::lock_guard<std::mutex> lk(mutex_);
+    pointers_.clear();
+    clicks_.clear();
+    ++runtimeVersion_;
+    ++runtimeGeneration_;
 }
 
 }  // namespace wizengine

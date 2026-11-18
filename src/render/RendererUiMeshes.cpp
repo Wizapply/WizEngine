@@ -5,7 +5,8 @@
 // シーンにだけ入れる。レンダラブルは UiMeshData の run（同じテクスチャ・材質が
 // 続く範囲）ごとにプリミティブを 1 つ持つ。
 // 重なり順は深さではなく blendOrder（全体で比べる = global）で、ビューごとに
-// Canvas の order → Canvas の番号 → run の並び（= 文書順）の順に 0, 1, 2, ... を振る。
+// Canvas の order（setUiCanvasOrder の整数。前後の規則は呼び手 = ui::canvasBehind の順位で、
+// Canvas ごとに違う値を渡す）→ run の並び（= 文書順）の順に 0, 1, 2, ... を振る。
 // 頂点の形は ui/UiMeshFormat.h の UiVertex（属性の割り当ては ui.mat の先頭）。
 #include "render/RendererInternal.h"
 
@@ -438,8 +439,9 @@ void Renderer::applyUiCanvasTransform(const UiCanvas& canvas, UiCanvasPart& part
 }
 
 void Renderer::refreshUiBlendOrders(std::size_t viewIndex) {
-    // このビューに出している Canvas を order → 番号 の順に並べ、run の並び
-    // （文書順）どおりに通し番号を振る（UI のシーンはビューごとに別）。
+    // このビューに出している Canvas を order の順に並べ、run の並び（文書順）どおりに
+    // 通し番号を振る（UI のシーンはビューごとに別）。Renderer の番号は並びに使わない（呼び手が
+    // Canvas ごとに違う order を渡す。同じ値が来たときだけ番号の順のまま）。
     struct Entry {
         std::size_t canvas;
         const UiCanvasPart* part;

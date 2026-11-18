@@ -144,12 +144,14 @@ PropSet readProps(const xml::Element& e, PropMask allowed, bool keyMode,
 }
 
 // 書き出し。skipDefaults で既定値と同じ値を書かない（キーは値そのものが意味
-// なので書く）。並びは性質の表の順。
+// なので書く。既定が要素ごとに決まる性質 = defaultIsDerived は、表の既定値と同じでも
+// 書いた意味が違うので必ず書く）。並びは性質の表の順。
 void writeProps(xml::Element& e, const PropSet& props, bool skipDefaults) {
     for (std::size_t k = 0; k < kPropCount; ++k) {
         const PropInfo& info = propInfo(Prop(k));
         if (!props.has(info.id)) continue;
-        if (skipDefaults && sameValue(info.spec, props.get(info.id), info.spec.def)) continue;
+        const bool comparable = skipDefaults && !defaultIsDerived(info.id);
+        if (comparable && sameValue(info.spec, props.get(info.id), info.spec.def)) continue;
         e.set(info.name, props.format(info.id));
     }
 }

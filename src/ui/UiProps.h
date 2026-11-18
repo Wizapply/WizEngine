@@ -44,7 +44,7 @@ static_assert(sizeof(kAlignNames) / sizeof(kAlignNames[0]) - 1 ==
 // ---- 性質の表 ----------------------------------------------------------------
 enum class Prop : std::uint8_t {
     Anchor, Pivot, Pos, Size, Color, Alpha, Visible, Text, Font, FontSize,
-    Align, Outline, OutlineColor, Wrap, File, Hover, Pressed, Enabled, Count
+    Align, Outline, OutlineColor, Wrap, TextColor, File, Hover, Pressed, Enabled, Count
 };
 inline constexpr std::size_t kPropCount = static_cast<std::size_t>(Prop::Count);
 
@@ -119,10 +119,36 @@ PropSet clampProps(PropSet props);
 // a → b の補間（t は 0..1）。両方に立っている性質は lerpValue、片方だけの
 // 性質はその値のまま。
 PropSet lerpProps(const PropSet& a, const PropSet& b, double t);
+// 要素 1 個に対するポインタの様子（カメラごと。持ち主は UiState の実行時の状態）。
+enum class PointerPhase : std::uint8_t { None, Hover, Pressed };
+
+// ポインタの段ごとの背景の色を持つ性質（唯一の対応）。pointerColor・ブラウザへ送る要素ごとの
+// 「既定」（scene/UiJson）・「既定は派生」の判断（defaultIsDerived）がこの表を引く。
+struct PointerColorProp {
+    PointerPhase phase;
+    Prop prop;
+};
+inline constexpr PointerColorProp kPointerColorProps[] = {
+    {PointerPhase::Hover, Prop::Hover},
+    {PointerPhase::Pressed, Prop::Pressed},
+};
+// 書いていないときの値が要素ごとに決まる（表の既定値を使わない）性質か: kPointerColorProps の
+// 性質（背景の color から作る = pointerColor）。保存は既定値と比べずに、立っていれば必ず書く
+// （白を書いても消えない）。ブラウザの schema の既定値も送らない（null）。
+bool defaultIsDerived(Prop p);
+
 // 重ね順の唯一の定義: 設計値 → アニメ → ノード → ポインタ（hover / pressed）。
-// 後の段ほど強い。
+// 後の段ほど強い。ポインタの段は pointer が Hover / Pressed のとき、ノードの段まで重ねた
+// 性質が enabled なら Color を pointerColor で上書きする（enabled でない要素は見た目を
+// 変えない = この判断はここだけ）。
 PropSet resolve(const PropSet& design, const PropSet& anim, const PropSet& node,
-                const PropSet& pointer);
+                PointerPhase pointer = PointerPhase::None);
+
+// ポインタが上にある間（Hover）・押している間（Pressed）の背景の色（唯一の定義）: hover /
+// pressed を書いてあればその色、無ければ背景の color を少し明るく / 暗くした色
+// （kHoverLighten / kPressedDarken）。None は color のまま。描く側（resolve）と、ブラウザに
+// 送る「既定」の値（scene/UiJson）が使う。
+PropValue pointerColor(const PropSet& props, PointerPhase phase);
 
 }  // namespace ui
 }  // namespace wizengine

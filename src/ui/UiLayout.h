@@ -79,6 +79,13 @@ std::vector<int> parentIndices(const std::vector<ElementDesc>& elements);
 const PropSet& elementProps(const std::vector<ElementDesc>& elements,
                             const std::vector<PropSet>& resolved, std::size_t i);
 
+// i 番目の要素が見えるか（唯一の規則）: 自分と祖先が全部 visible（性質は elementProps）。
+// parents = parentIndices(elements) の結果。矩形は解かない（クリックの確かめのように、
+// 見えるかだけが要るときの口。layoutTree もこれで決める）。
+bool elementVisible(const std::vector<ElementDesc>& elements,
+                    const std::vector<PropSet>& resolved, const std::vector<int>& parents,
+                    std::size_t i);
+
 // 木を文書順にたどって全要素の矩形と見えるかを解く（性質は elementProps）。
 std::vector<LayoutNode> layoutTree(const std::vector<ElementDesc>& elements,
                                    const std::vector<PropSet>& props,

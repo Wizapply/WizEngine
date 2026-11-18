@@ -6,8 +6,8 @@ namespace wizengine {
 namespace ui {
 namespace {
 
-// 種類の表（並び = 「もしかして」の候補の順）。PR3 で kButtonKind を足す。
-const ElementKindInfo* const kKinds[] = {&kTextKind, &kImageKind};
+// 種類の表（並び = 「もしかして」の候補の順）。
+const ElementKindInfo* const kKinds[] = {&kTextKind, &kImageKind, &kButtonKind};
 constexpr std::size_t kKindCount = sizeof(kKinds) / sizeof(kKinds[0]);
 
 }  // namespace
@@ -34,6 +34,15 @@ void elementColor(const ResolvedElement& e, Prop colorProp, float out[4]) {
     out[1] = float(c.v[1]);
     out[2] = float(c.v[2]);
     out[3] = float(c.v[3] * e.alpha);
+}
+
+bool catchesPointer(const ElementDesc& e) {
+    const ElementKindInfo* kind = kindInfo(e.kind);
+    return kind && kind->interaction == Interaction::Click;
+}
+
+bool acceptsClick(const ElementDesc& e, const PropSet& props, bool visible) {
+    return visible && catchesPointer(e) && props.flag(Prop::Enabled);
 }
 
 }  // namespace ui

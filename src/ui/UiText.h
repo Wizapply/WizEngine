@@ -8,7 +8,8 @@
 #include "ui/UiProps.h"
 
 // 字の並べ方（字送り・カーニング・折り返し・揃え・改行）。種類 text の組み立て
-// もここ（kTextKind）。座標は要素の左上が原点の設計上の画素（y 下向き）。
+// もここ（kTextKind と、button も使う addTextQuads）。座標は要素の左上が原点の
+// 設計上の画素（y 下向き）。
 namespace wizengine {
 namespace ui {
 
@@ -43,6 +44,15 @@ struct TextLayout {
 // 1 語が幅に収まらなければ字の境で切る。行末の空白は幅にも揃えにも数えず、
 // 折り返した行の頭の空白は捨てる。"\n" で改行、"\r" は無視。
 TextLayout layoutText(const std::string& utf8, const TextStyle& style, FontProvider& fonts);
+
+struct ResolvedElement;
+class MeshSink;
+
+// 要素の字を並べて sink へ足す（種類 text の見た目。button の字も同じ物を使う）。
+// 字の色は colorProp（× 不透明度）、並べ方は性質（textStyleOf）、縁取りは Outline /
+// OutlineColor。centerVertically = 行の塊を要素の矩形の高さの中央に置く（false = 上端から）。
+void addTextQuads(const ResolvedElement& e, Prop colorProp, bool centerVertically,
+                  FontProvider& fonts, MeshSink& sink);
 
 }  // namespace ui
 }  // namespace wizengine

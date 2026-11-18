@@ -430,6 +430,7 @@ set(WIZ_COMPONENT_SOURCES
     src/components/ControlComponent.cpp
     src/components/TerrainComponent.cpp
     src/components/UiInputComponent.cpp
+    src/components/UiPointerInput.cpp
     src/components/UiRenderComponent.cpp
     src/components/VehicleComponent.cpp)
 set(WIZ_FORMULA_SOURCES
@@ -469,6 +470,7 @@ set(WIZ_AUTOGEN_SOURCES
     src/autogen/SceneLayout.cpp)
 set(WIZ_UI_SOURCES
     src/ui/FontAtlas.cpp
+    src/ui/UiButton.cpp
     src/ui/UiImage.cpp
     src/ui/UiKinds.cpp
     src/ui/UiLayout.cpp

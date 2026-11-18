@@ -259,6 +259,20 @@ inline bool canvasShownOnCamera(const CanvasDesc& c, int camera) {
     return false;
 }
 
+// 映像に重ねる overlay で、そのカメラに出ている Canvas か（唯一の定義）。映像の位置を
+// そのまま Canvas の画素に写せるのはこの Canvas だけ（camera / world は板の上の座標）なので、
+// 映像の上の選択枠・ドラッグ、ボタンの当たり・クリックの確かめが使う。
+inline bool overlayShownOnCamera(const CanvasDesc& c, int camera) {
+    return c.mode == CanvasMode::Overlay && canvasShownOnCamera(c, camera);
+}
+
+// Canvas どうしの前後（唯一の定義）: a（order, 番号）が b より奥か。order の小さい方が奥、
+// 同じ order なら UiState の番号の小さい方が奥（後に足した物が手前）。描く順（Renderer へ
+// 渡す順位）とボタンの当たり（手前から）が同じこの規則を使う。
+inline bool canvasBehind(int orderA, int indexA, int orderB, int indexB) {
+    return orderA != orderB ? orderA < orderB : indexA < indexB;
+}
+
 // エディタの部分更新（Inspector の欄）で書き換えてよい属性か（唯一の定義。編集の操作と
 // ブラウザの schema が引く）。ui は付け替えると Canvas の中身の持ち主が変わる（自分の
 // 要素は書き出されなくなり保存で消える）ので、共用にする / やめる操作だけが書き換える。

@@ -638,6 +638,8 @@ void Scene::resetGraphRuntime() {
         cameraRigs_.clear();
         ++rigGeneration_;
     }
+    // UI の実行時の状態（ボタンの上・押下と、まだ取り出していないクリック）も捨てる。
+    ui_.resetRuntime();
 
     // SetFixed が触ったオブジェクトだけ設計値の固定状態へ戻す。
     for (const std::size_t i : graphRt_.fixedTouched) {

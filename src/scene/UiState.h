@@ -17,13 +17,19 @@
 // 選択が別の物を指さない）。保存（toDocument）で生きている物だけを詰める。
 // エディタの編集（Canvas 1 枚の追加・削除・置き換え）の口は持つが、ブラウザの
 // 操作の読み方（JSON・部分更新・丸め）は UiOps が持つ。
-// 実行時の上書き（ノード・アニメ・ポインタ）とクリックの受け渡しは後の PR で
-// ここへ足す（設計値の版 version と別の版を持つ予定）。
+// 実行時の状態（シミュレート中だけの物。設計値は書き換えない）: カメラごとのポインタ
+// （ボタンの上にいる / 押している = 描く側が重ね順の最後の段に使う）と、押して離した
+// クリックの受け渡し（INPUT が積み、PHYSICS が確かめて取り出す）。版は設計値の version と
+// 別の runtimeVersion。シミュレートの開始・停止・Reset で消える（resetRuntime）。
+// ノード・アニメの上書きは後の PR でここへ足す。
 //
 // ファイル・JSON・XML は知らない（共用 UI のファイルは UiFiles、XML は ui/UiXml）。
-// スレッド: 書くのは PHYSICS（読込・編集の Op）。RENDER / INPUT / HTTP は版を見て
-// 変わったときだけ写す（copyIfChanged）。mutex_ は末端のロック（中で他のロックを
-// 取らない）なので、objects → editor → poses のどこからでも取ってよい。
+// スレッド: 設計値を書くのは PHYSICS（読込・編集の Op）。RENDER / INPUT / HTTP は版を見て
+// 変わったときだけ写す（copyIfChanged）。実行時の状態のうちポインタとクリックの積み込みは
+// INPUT が書く（映像の上の押下・ホバーそのものなので、物理の 1 パスを待たずに見た目へ
+// 届ける。ロックの下で書くので PHYSICS の取り出し・resetRuntime とは競らない）。mutex_ は
+// 末端のロック（中で他のロックを取らない）なので、objects → editor → poses のどこからでも
+// 取ってよい。
 namespace wizengine {
 
 class UiState {
@@ -74,6 +80,14 @@ public:
         // 中身の持ち主（自分か使っている UI）の contentsGeneration（宣言の無い UI は 0）。
         std::uint64_t contentsGeneration = 0;
     };
+    // 前に取った要素への参照（Canvas の番号・要素の id と、取ったときの世代）。後で「今も同じ
+    // 要素か」を確かめる（refValid が唯一の確かめ）: 映像の上のドラッグとボタンのクリックが
+    // 使う。世代は取ったときの写しの値（Snapshot::elementRef）。
+    struct ElementRef {
+        int canvas = -1, element = -1;
+        std::uint64_t loadGeneration = 0;      // loadGeneration()
+        std::uint64_t contentsGeneration = 0;  // その Canvas の中身の持ち主の世代
+    };
     // 設計値の写し（描画・入力・ブラウザ API が版ごとに 1 回だけ取る）。
     struct Snapshot {
         std::uint64_t version = 0;
@@ -101,6 +115,9 @@ public:
         // エディタの選択（Canvas の番号、要素の id。-1 = Canvas そのもの）が今もある物を
         // 指すか（選ぶときと、/scene が選択を返すときの確かめの唯一の定義）。
         bool selectionExists(int canvas, int element) const;
+        // この写しの世代で (canvas, element) への参照を作る（Canvas が消えていれば中身の
+        // 世代は 0 = refValid で必ず外れる）。
+        ElementRef elementRef(int canvas, int element) const;
     };
 
     enum class LoadMode { Replace, Append };
@@ -136,6 +153,10 @@ public:
     // 写さずにロックの下で答える口（PHYSICS の編集の確かめ。規則は Snapshot の同じ名前の
     // 関数と同じ）。
     bool selectionExists(int canvas, int element) const;
+    // 参照が今も同じ要素を指すか（唯一の確かめ）: 読込の世代が今と同じ・Canvas が生きていて
+    // 中身の持ち主の世代が同じ（中身を XML で丸ごと入れ替えた・持ち主が替わったら外れる）・
+    // その id の要素が今もある。
+    bool refValid(const ElementRef& ref) const;
     // 生きている Canvas に同じ名前があるか（except の番号は数えない。-1 = 全部）。
     bool canvasNameTaken(const std::string& name, int except) const;
     // 名前 name の UI の宣言があれば true と、その file。
@@ -157,8 +178,6 @@ public:
     // 書き手。readable は変更の目印に記録があるか = uifiles::syncReadable）。ローカルの UI は
     // 読めている。変わったときだけ版を進める。
     void syncReadable(const std::function<bool(const std::string& name)>& readable);
-    // Canvas index の中身の持ち主の contentsGeneration（消えた物は 0。写さずに答える）。
-    std::uint64_t contentsGeneration(int index) const;
     // 全部消す（シーンの全消し）。
     void clear();
 
@@ -200,15 +219,86 @@ public:
     // 名前の宣言があるなら false（何もしない）。
     bool moveCanvasContentsToAsset(int index, ui::UiAssetDesc asset);
 
+    // ---- 実行時の状態（シミュレート中）-----------------------------------------------
+    // カメラ 1 台のポインタ: どの Canvas の、どのボタン（要素の id）の上にいるか・押して
+    // いるか（-1 = 無し。押したまま外へ出たら pressed も hover も -1 で、離すまで押下は
+    // 続く）。受け付けない（enabled = false の）ボタンも入る（見た目を変えないのは描く側の
+    // ui::resolve の判断）。
+    struct Pointer {
+        int canvas = -1;
+        int hover = -1;
+        int pressed = -1;
+        bool operator==(const Pointer& o) const {
+            return canvas == o.canvas && hover == o.hover && pressed == o.pressed;
+        }
+        bool operator!=(const Pointer& o) const { return !(*this == o); }
+        // Canvas index の要素 id へのポインタの様子（描く側が要素ごとに引く）。
+        ui::PointerPhase phaseOf(int index, int element) const {
+            if (canvas != index || element < 0) return ui::PointerPhase::None;
+            if (pressed == element) return ui::PointerPhase::Pressed;
+            return hover == element ? ui::PointerPhase::Hover : ui::PointerPhase::None;
+        }
+    };
+    // 押して離した 1 回（INPUT が積む）。世代は押したときの値（PHYSICS が今と比べる）。
+    struct PendingClick {
+        std::size_t camera = 0;
+        ElementRef ref;                        // 押したボタン（押したときの写しの世代）
+        std::uint64_t modeEpoch = 0;           // EditorState::modeEpoch
+        std::uint64_t runtimeGeneration = 0;   // runtimeGeneration()（Reset で進む）
+    };
+    // 確かめたクリック 1 回（takeClicks の結果 = ノードの OnUiClick が受ける形）。
+    struct Click {
+        std::size_t camera = 0;
+        int canvas = -1;    // Canvas の番号（UiState の番号）
+        int element = -1;   // 要素の id
+        std::string name;   // 要素の名前（ノードは名前で絞る。空可）
+    };
+    // 積んだまま取り出されないクリックの上限（エディタ中は取り出さないので、溢れた古い物は
+    // 捨てる = どのみち世代が違って捨てられる物）。
+    static constexpr std::size_t kMaxPendingClicks = 64;
+
+    // 実行時の状態の版（ポインタが変わるたびに進む。クリックの出し入れでは進まない = 描く側が
+    // 写し直すのはポインタの見た目が変わったときだけ）。
+    std::uint64_t runtimeVersion() const;
+    // 実行時の状態の世代（resetRuntime = シミュレートの開始・停止・Reset で進む）。押下と
+    // クリックに添え、Reset をまたいだ押下を捨てる（Reset ではモードの世代が進まないため）。
+    std::uint64_t runtimeGeneration() const;
+    // このカメラのページに押せる UI があるか（そのカメラに出ている overlay の Canvas に、
+    // 押下を受け止める要素がある。ブラウザがホバーを送るかの判断 = /scene の uiClickable）。
+    bool clickableOnCamera(int camera) const;
+    // カメラ camera のポインタを置く（INPUT。変わったときだけ版を進める）。スロットの範囲
+    // （kMaxCameraSlots）の外は捨てる。
+    void setPointer(std::size_t camera, const Pointer& pointer);
+    // runtimeVersion と known が違えばポインタの一覧を out へ写して known を進め、true。
+    bool copyPointersIfChanged(std::uint64_t& known, std::vector<Pointer>& out) const;
+    // 押して離した 1 回を積む（INPUT）。
+    void pushClick(const PendingClick& click);
+    // 積まれたクリックを全部取り出し、今も有効な物だけを返す（PHYSICS。唯一の確かめ）:
+    // 押したときのモードの世代が modeEpoch と同じ・実行時の世代が今と同じ・参照が今も同じ
+    // 要素（refValid）・そのカメラの映像に重なる Canvas（ui::overlayShownOnCamera）・クリックを
+    // 受け付ける（ui::acceptsClick。性質は設計値）。
+    std::vector<Click> takeClicks(std::uint64_t modeEpoch);
+    // 実行時の状態を全部捨てる（シミュレートの開始・停止・Reset。Scene::resetGraphRuntime）。
+    void resetRuntime();
+
 private:
     // 版を進めて新しい版を返す（変えた枠・宣言の revision に入れる）。
     std::uint64_t bumpLocked() { return ++version_; }
+    // 押して離したクリック 1 回の確かめ（mutex_ を持って呼ぶ。takeClicks の中身）。
+    bool clickValidLocked(const PendingClick& c, Click& out) const;
+    // refValid の中身（mutex_ を持って呼ぶ）。
+    bool refValidLocked(const ElementRef& ref) const;
     // 中身の世代の新しい値（contentsGeneration。mutex_ を持って呼ぶ）。
     std::uint64_t nextGenerationLocked() { return ++generations_; }
     // 全 Canvas を生きていない枠にする（番号は残し、中身は空に）。mutex_ を持って呼ぶ。
     void retireAllCanvasesLocked(std::uint64_t revision);
 
     mutable std::mutex mutex_;
+    // 実行時の状態（runtimeVersion_ が版）。
+    std::vector<Pointer> pointers_;         // カメラのスロット番号 → ポインタ
+    std::vector<PendingClick> clicks_;      // 積まれて、まだ取り出していないクリック
+    std::uint64_t runtimeVersion_ = 1;
+    std::uint64_t runtimeGeneration_ = 1;
     std::vector<CanvasItem> canvases_;
     std::vector<UiAssetState> uiAssets_;
     std::vector<ui::FontAssetDesc> fonts_;

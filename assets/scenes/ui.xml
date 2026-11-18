@@ -7,6 +7,9 @@
        * 共用 UI（<canvas ui="hud"> = assets/ui/hud.xml）
        * cameras="1" の Canvas が Camera 1 のページにだけ出るか
        * 後処理（ブルーム・ビネット）が UI に掛からないか
+       * ボタン（下の中央）: シミュレート中に上に乗せると hover の色、押している間は
+         pressed の色になり、ボタンの上で離すとコンソールに "button click" が出るか。
+         エディタ中は押せず、Text / Image と同じく選んで動かせるか
      番号の正しくない cameras（どこにも出ない + 警告 1 件）は ui_cameras_error.xml。
      字は同梱の Noto Sans JP（assets/fonts/、<font> を書かなければこれ）。 -->
 <wizengine model="ui" version="4">
@@ -65,6 +68,13 @@
              color="0.6 0.1 0.1 0.7"/>
       <text id="2" parent="1" name="label" anchor="0 0 1 1" pivot="0.5 0.5" size="0 0"
             pos="0 10" text="Camera 1 だけに表示" fontSize="34" align="center"/>
+    </canvas>
+
+    <!-- 下の中央: ボタン（字は縦横とも中央。色は背景、textColor が字） -->
+    <canvas name="buttons" order="4">
+      <button id="1" name="start" anchor="0.5 1 0.5 1" pivot="0.5 1" pos="0 -40" size="280 72"
+              text="押してみる" fontSize="30" align="center" color="0.18 0.42 0.85 1"
+              hover="0.3 0.55 0.95 1" pressed="0.1 0.28 0.6 1" textColor="1 1 1 1"/>
     </canvas>
   </worldbody>
 </wizengine>

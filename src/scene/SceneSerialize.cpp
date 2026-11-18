@@ -117,6 +117,9 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     // このページから UI を選べる・編集できるか（判定の唯一の定義 editsUiFrom をそのまま送る。
     // カメラごとに違うので "ui" の写しの外に置く。ブラウザは理由の出し分けにだけ使う）。
     j["editsUi"] = editsUiFrom(cameraIndex);
+    // このページに押せる UI（ボタン）があるか（同じくカメラごと = "ui" の写しの外。ブラウザは
+    // シミュレート中にこれが立っている間だけホバーを送る）。
+    j["uiClickable"] = ui_.clickableOnCamera(int(cameraIndex));
 
     // エディタ選択（種類・番号・UI の要素）は続けて読む（別々の atomic なので、間を
     // 空けるほど食い違いやすい。読む側は対象が今もあるかを必ず確かめる）。

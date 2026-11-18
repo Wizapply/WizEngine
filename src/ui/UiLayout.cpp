@@ -65,6 +65,16 @@ const PropSet& elementProps(const std::vector<ElementDesc>& elements,
     return i < resolved.size() ? resolved[i] : elements[i].props;
 }
 
+bool elementVisible(const std::vector<ElementDesc>& elements,
+                    const std::vector<PropSet>& resolved, const std::vector<int>& parents,
+                    std::size_t i) {
+    // 親は必ず前にある（parentIndices）ので、たどれば必ず根で止まる。
+    for (int k = int(i); k >= 0; k = parents[std::size_t(k)]) {
+        if (!elementProps(elements, resolved, std::size_t(k)).flag(Prop::Visible)) return false;
+    }
+    return true;
+}
+
 std::vector<LayoutNode> layoutTree(const std::vector<ElementDesc>& elements,
                                    const std::vector<PropSet>& props,
                                    const Rect& canvas) {
@@ -77,9 +87,8 @@ std::vector<LayoutNode> layoutTree(const std::vector<ElementDesc>& elements,
         // 親は必ず前にあるので、もう解けている。
         const bool hasParent = n.parent >= 0;
         const Rect& parentRect = hasParent ? out[std::size_t(n.parent)].rect : canvas;
-        const bool parentVisible = hasParent ? out[std::size_t(n.parent)].visible : true;
         n.rect = solveRect(parentRect, p);
-        n.visible = parentVisible && p.flag(Prop::Visible);
+        n.visible = elementVisible(elements, props, parents, i);
     }
     return out;
 }

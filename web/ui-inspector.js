@@ -207,12 +207,14 @@
       .map((el) => (el.type === 'checkbox' ? el.checked : el.value)));
   }
   // 選択の今の値（唯一の定義）: Canvas なら属性、要素なら書いてあればその値・無ければ
-  // schema の既定値。名前の欄（'#name'）は名前。
+  // 既定値（要素ごとに決まる既定 = サーバーの defaults、例: ボタンの hover は背景から作る色。
+  // 無ければ schema の既定値）。名前の欄（'#name'）は名前。
   function uiSelectedValue(sel, spec) {
     if (spec.name === '#name') return sel.name || '';
     if (sel.element < 0) return (sel.attrs || {})[spec.name];
-    const props = sel.props || {};
-    return Object.prototype.hasOwnProperty.call(props, spec.name) ? props[spec.name] : spec.def;
+    const own = (obj) => Object.prototype.hasOwnProperty.call(obj || {}, spec.name);
+    if (own(sel.props)) return sel.props[spec.name];
+    return own(sel.defaults) ? sel.defaults[spec.name] : spec.def;
   }
   // この行に、自分が送った操作の戻りを入れ直すか（フォーカス中でも 1 回だけ）。入れ直すのは
   // 戻った値が送る前の値とも送った値とも違うとき = サーバーが丸めた・正規化したとき

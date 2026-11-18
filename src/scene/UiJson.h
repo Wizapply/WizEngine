@@ -27,9 +27,9 @@
 namespace wizengine {
 namespace uijson {
 
-// Inspector の欄の形: 性質の表（props）・種類の表（kinds = 種類ごとの一覧のアイコンと持つ
-// 性質の名前）・Canvas の属性の表（canvas）。表は実行中に変わらないので 1 回だけ組む（どの
-// スレッドから呼んでもよい）。
+// Inspector の欄の形: 性質の表（props。既定が要素ごとに決まる性質の def は null）・種類の表
+// （kinds = 種類ごとの一覧のアイコンと持つ性質の名前）・Canvas の属性の表（canvas）。表は実行中に
+// 変わらないので 1 回だけ組む（どのスレッドから呼んでもよい）。
 const nlohmann::json& schema();
 
 // Canvas 1 枚の属性（{属性の名前: 値}。kCanvasAttrs の全行）。

@@ -72,10 +72,9 @@ struct UiInputComponent::Cam {
     // 今 pos / size を書いている状態か（開始時に書いていなかった性質は、開始時の値へ
     // 戻したら書かない形へ戻す = 文書に pos="0 0" を増やさない）。
     bool wrotePos = false, wroteSize = false;
-    int dragCanvas = -1, dragElement = -1, dragParent = -1;
+    wizengine::UiState::ElementRef dragRef;  // 掴んだ要素（開始時の世代。refValid で確かめる）
+    int dragParent = -1;
     double dragHeight = 0.0;             // 開始時の Canvas の基準の高さ
-    std::uint64_t dragLoadGeneration = 0;  // 開始時の読込の世代
-    std::uint64_t dragContentsGeneration = 0;  // 開始時の中身の世代（ui.xml の適用で変わる）
     std::uint64_t dragEpoch = 0;           // 掴んだときのモードの世代
     ui::FrameHandle dragHandle = ui::FrameHandle::None;
     double startX0 = 0.0, startY0 = 0.0;  // 押した位置（NDC。開始時に読んだ値）
@@ -87,14 +86,14 @@ struct UiInputComponent::Cam {
 
 // 掴んだときに INPUT が置いた欄（PHYSICS が readGrab で 1 回だけ写す）。
 struct UiInputComponent::Grab {
-    int canvas = -1, element = -1;
+    wizengine::UiState::ElementRef ref;  // 掴んだ要素（INPUT の写しの世代）
     ui::FrameHandle handle = ui::FrameHandle::None;
     double startX = 0.0, startY = 0.0;
     int viewW = 0, viewH = 0;
-    std::uint64_t epoch = 0, loadGeneration = 0, contentsGeneration = 0;
+    std::uint64_t epoch = 0;
 };
 
-UiInputComponent::UiInputComponent(std::size_t cameraCount) {
+UiInputComponent::UiInputComponent(std::size_t cameraCount) : pointer_(cameraCount) {
     for (std::size_t i = 0; i < cameraCount; ++i) {
         cams_.push_back(std::make_unique<Cam>());
     }
@@ -113,6 +112,18 @@ bool UiInputComponent::onCommand(Scene& scene, std::size_t camIndex,
     if (cmd.rfind(kEditPrefix, 0) == 0) return pushEdit(scene, camIndex, cmd, msg);
     if (cmd.rfind(kLibPrefix, 0) == 0) return pushLibrary(scene, camIndex, cmd, msg);
     if (cmd == "select.ui") return select(scene, camIndex, msg);
+    // シミュレート中のボタン（エディタ中は下の選択・ドラッグ）。
+    const bool pointerCmd = cmd == "pick" || cmd == "drag" || cmd == "release" || cmd == "hover";
+    if (pointerCmd && camIndex < cams_.size()) {
+        Cam& cam = *cams_[camIndex];
+        // エディタの押下の印は、ボタンが pick を取る経路でも下ろす（取ると pick() へ届かない）。
+        if (cmd == "pick") lowerHeld(cam);
+        int viewW = 0, viewH = 0;
+        unpackSize(cam.view.load(), viewW, viewH);
+        if (pointer_.onCommand(scene, camIndex, cmd, msg, snapshot(scene), viewW, viewH)) {
+            return true;
+        }
+    }
     if (cmd == "pick") return pick(scene, camIndex, msg);
     if (cmd != "drag" && cmd != "release") return false;  // not ours
     // 掴んでいる間の drag / release は全部ここで受ける（ギズモ・物の掴みへ渡さない）。
@@ -209,9 +220,7 @@ bool UiInputComponent::pushLibrary(Scene& scene, std::size_t camIndex, const std
 bool UiInputComponent::pick(Scene& scene, std::size_t camIndex, const nlohmann::json& msg) {
     if (camIndex >= cams_.size()) return false;
     Cam& cam = *cams_[camIndex];
-    // 前の押下の印が残っていれば下ろす（release が届かなかった）。残すと、この押下が UI に
-    // 当たらなくても後の drag / release を食べ続け、ギズモが動かない。前のドラッグも止める。
-    if (cam.held.exchange(false)) cam.released.store(cam.serial.load());
+    lowerHeld(cam);
     // 世代は受け付けるかを見る前に読む（読んだ後に切り替わっても、PHYSICS が古い世代と
     // して捨てる）。
     const std::uint64_t epoch = scene.editor().modeEpoch();
@@ -225,7 +234,7 @@ bool UiInputComponent::pick(Scene& scene, std::size_t camIndex, const nlohmann::
 
     const wizengine::UiState::Snapshot& snap = snapshot(scene);
     const ui::CanvasDesc* desc = snap.liveCanvas(canvasIndex);
-    if (!desc || !ui::frameShownOnCamera(*desc, int(camIndex))) return false;
+    if (!desc || !ui::overlayShownOnCamera(*desc, int(camIndex))) return false;
     int viewW = 0, viewH = 0;
     unpackSize(cam.view.load(), viewW, viewH);
     if (viewW <= 0 || viewH <= 0) return false;  // まだビューが無い
@@ -260,13 +269,25 @@ bool UiInputComponent::pick(Scene& scene, std::size_t camIndex, const nlohmann::
     cam.y.store(y);
     cam.startView.store(packSize(viewW, viewH));
     cam.epoch.store(epoch);
-    cam.loadGeneration.store(snap.loadGeneration);
-    cam.contentsGeneration.store(info.contentsGeneration);
+    // 掴んだ要素の参照の世代（PHYSICS が UiState::refValid で確かめる）。
+    const wizengine::UiState::ElementRef ref = snap.elementRef(canvasIndex, elementId);
+    cam.loadGeneration.store(ref.loadGeneration);
+    cam.contentsGeneration.store(ref.contentsGeneration);
     cam.held.store(true);
     cam.serial.fetch_add(1);  // 最後に進めて偶数に（PHYSICS はこれで開始を知る）
     // 物の掴み（自由移動）が同じフレームで動かないよう、カーソルを外す（ギズモと同じ）。
     scene.boxController(camIndex).clearPointer();
     return true;
+}
+
+void UiInputComponent::lowerHeld(Cam& cam) {
+    // 残すと、この押下が UI に当たらなくても後の drag / release を食べ続け、ギズモが動かない。
+    if (cam.held.exchange(false)) cam.released.store(cam.serial.load());
+}
+
+void UiInputComponent::onPhysicsStep(Scene& scene, double dt) {
+    (void)dt;
+    pointer_.onPhysicsStep(scene);
 }
 
 void UiInputComponent::onEditorStep(Scene& scene, double dt) {
@@ -297,43 +318,37 @@ void UiInputComponent::onEditorStep(Scene& scene, double dt) {
 }
 
 bool UiInputComponent::readGrab(const Cam& cam, std::uint64_t serial, Grab& out) {
-    out.canvas = cam.canvas.load();
-    out.element = cam.element.load();
+    out.ref.canvas = cam.canvas.load();
+    out.ref.element = cam.element.load();
     out.handle = ui::FrameHandle(cam.handle.load());
     out.startX = cam.startX.load();
     out.startY = cam.startY.load();
     unpackSize(cam.startView.load(), out.viewW, out.viewH);
     out.epoch = cam.epoch.load();
-    out.loadGeneration = cam.loadGeneration.load();
-    out.contentsGeneration = cam.contentsGeneration.load();
+    out.ref.loadGeneration = cam.loadGeneration.load();
+    out.ref.contentsGeneration = cam.contentsGeneration.load();
     return cam.serial.load() == serial;
 }
 
 bool UiInputComponent::beginDrag(Scene& scene, std::size_t camIndex, Cam& cam,
                                  const Grab& grab) {
-    // 掴んだ時点から変わっていないか（INPUT の写しは 1 フレーム古いことがある）。
-    const std::uint64_t loadGeneration = scene.ui().loadGeneration();
+    // 掴んだ時点から変わっていないか（INPUT の写しは 1 フレーム古いことがある）: モードと、
+    // 掴んだ要素の参照（読み直した・中身を XML で入れ替えた・持ち主が替わった・消えたら外れる
+    // = UiState::refValid。共用にしたときは世代を引き継ぐので続く）。書くのはこのスレッドだけ
+    // なので、確かめてから写すまでの間に変わらない。
     const bool sameMode = grab.epoch == scene.editor().modeEpoch();
-    const bool sameLoad = grab.loadGeneration == loadGeneration;
-    if (!sameMode || !sameLoad || !scene.editsUiFrom(camIndex)) return false;
+    if (!sameMode || !scene.editsUiFrom(camIndex) || !scene.ui().refValid(grab.ref)) return false;
     ui::CanvasDesc desc;  // 要素は中身の持ち主（自分か、使っている UI）から
     wizengine::UiState::ContentsInfo info;
-    if (!scene.ui().copyCanvasContents(grab.canvas, desc, info)) return false;  // 消えた
-    // 掴んだ後（物理の次のパスまでの間）に中身を XML で入れ替えた・持ち主が替わった =
-    // 同じ id でも別の要素（世代は作ったとき・入れ替えたときに新しい値になるので、別の UI に
-    // 差し替えても違う値になる。共用にしたときだけは引き継ぐ = 同じ中身のまま）。
-    if (info.contentsGeneration != grab.contentsGeneration) return false;
+    if (!scene.ui().copyCanvasContents(grab.ref.canvas, desc, info)) return false;
     const bool editable = wizengine::uiops::elementsEditable(info);
-    if (!editable || !ui::frameShownOnCamera(desc, int(camIndex))) return false;
-    const std::size_t at = ui::elementIndex(desc.elements, grab.element);
-    if (at == desc.elements.size()) return false;  // 消えた
-    cam.dragCanvas = grab.canvas;
-    cam.dragElement = grab.element;
+    if (!editable || !ui::overlayShownOnCamera(desc, int(camIndex))) return false;
+    const std::size_t at = ui::elementIndex(desc.elements, grab.ref.element);
+    if (at == desc.elements.size()) return false;  // refValid の後なので起きない（念のため）
+    cam.dragRef = grab.ref;
     cam.dragHandle = grab.handle;
     cam.dragParent = desc.elements[at].parent;
     cam.dragHeight = desc.height;
-    cam.dragLoadGeneration = loadGeneration;
-    cam.dragContentsGeneration = info.contentsGeneration;
     cam.dragEpoch = grab.epoch;
     cam.startX0 = grab.startX;
     cam.startY0 = grab.startY;
@@ -353,10 +368,9 @@ bool UiInputComponent::beginDrag(Scene& scene, std::size_t camIndex, Cam& cam,
 
 bool UiInputComponent::applyDrag(Scene& scene, std::size_t camIndex, Cam& cam,
                                  std::uint64_t serial) {
-    // 読込・全消し・シーンの XML の適用が入った（新しいシーンの同じ番号・id の要素に書かない）。
-    if (scene.ui().loadGeneration() != cam.dragLoadGeneration) return false;
-    // この中身を XML で丸ごと入れ替えた（同じ id の別の要素に書かない。ほかの Canvas は続く）。
-    if (scene.ui().contentsGeneration(cam.dragCanvas) != cam.dragContentsGeneration) return false;
+    // 読込・全消し・シーンの XML の適用・この中身の XML の適用が入った・消えた（同じ番号・id の
+    // 別の要素に書かない。ほかの Canvas のドラッグは続く）。
+    if (!scene.ui().refValid(cam.dragRef)) return false;
     const double curX = cam.x.load();
     const double curY = cam.y.load();
     // 読んでいる間に次の押下が来た（今の位置が新しい押下のもの）= このパスは当てない
@@ -394,7 +408,7 @@ bool UiInputComponent::applyDrag(Scene& scene, std::size_t camIndex, Cam& cam,
     if (writeSize) incoming.setNumber(ui::Prop::Size, next.size[0], next.size[1]);
     bool basisChanged = false;
     const wizengine::uiops::ElementWrite w = wizengine::uiops::editElement(
-        scene.ui(), cam.dragCanvas, cam.dragElement,
+        scene.ui(), cam.dragRef.canvas, cam.dragRef.element,
         [&](ui::CanvasDesc& desc, std::size_t at) {
             ui::ElementDesc& e = desc.elements[at];
             // 開始時の値で計算した pos / size が、今の要素でも同じ場所を意味するか。
@@ -402,7 +416,7 @@ bool UiInputComponent::applyDrag(Scene& scene, std::size_t camIndex, Cam& cam,
             const bool pivotKept = sameProp(e.props, cam.start, ui::Prop::Pivot);
             const bool parentKept = e.parent == cam.dragParent;
             const bool canvasKept = desc.height == cam.dragHeight &&
-                                    ui::frameShownOnCamera(desc, int(camIndex));
+                                    ui::overlayShownOnCamera(desc, int(camIndex));
             if (!anchorKept || !pivotKept || !parentKept || !canvasKept) {
                 basisChanged = true;
                 return false;
