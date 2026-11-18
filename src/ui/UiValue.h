@@ -24,7 +24,7 @@ enum class PropType : std::uint8_t {
     Int,        // v[0]（core/Clamp.h の roundToInt で整数に丸める）
     Vec2,       // v[0..1]
     Vec3,       // v[0..2]
-    Euler,      // v[0..2]（度。丸めは editor::clampAngleDegrees = ±360 の外は畳む）
+    Euler,      // v[0..2]（度。丸めは core/Clamp.h の clampAngleDegrees = ±360 の外は畳む）
     Rect,       // v[0..3]（minX minY maxX maxY）
     Color,      // v[0..3]（r g b a、リニア値）
     Bool,       // v[0] が 0 / 1
@@ -113,7 +113,7 @@ std::size_t componentCount(PropType type);
 
 // ---- 表記と丸め --------------------------------------------------------------
 // XML の属性文字列 → 値。型に合わなければ false で out は変えない。色は
-// editor::parseColorText（"r g b [a]" と "#rrggbb"）。IndexList は失敗しない
+// core/ColorText.h の parseColorText（"r g b [a]" と "#rrggbb"）。IndexList は失敗しない
 // （正しくない並びも値。上の firstInvalidIndex の規則。JSON も同じ規則）。
 bool parseValue(const ValueSpec& spec, const std::string& text, PropValue& out);
 // 値 → XML の属性文字列（parseValue で読み戻せる形）。
@@ -124,7 +124,7 @@ std::string formatValue(const ValueSpec& spec, const PropValue& value);
 nlohmann::json valueToJson(const ValueSpec& spec, const PropValue& value);
 bool valueFromJson(const ValueSpec& spec, const nlohmann::json& obj,
                    const char* key, PropValue& out);
-// 範囲へ丸める（NaN は既定値、名前は正規化、許されないパスは既定値）。
+// 範囲へ丸める（有限でない値（NaN と ±∞）は既定値、名前は正規化、許されないパスは既定値）。
 PropValue clampValue(const ValueSpec& spec, PropValue value);
 // 補間。数値系は成分ごとに線形、それ以外（文字列・Bool・Enum・IndexList）は
 // 段（t < 1 の間は a、1 で b）。

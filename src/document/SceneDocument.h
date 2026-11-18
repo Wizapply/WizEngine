@@ -6,8 +6,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/Xml.h"
 #include "document/EditorTypes.h"
-#include "document/SceneXml.h"
 #include "ui/UiTypes.h"
 
 // シーン文書（保存・読込・受け渡しの単位）と、その XML 表現。

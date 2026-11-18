@@ -3,7 +3,8 @@
 #include <string>
 #include <vector>
 
-#include "document/SceneXml.h"
+#include "core/Xml.h"
+#include "core/XmlWarnings.h"
 #include "formula/Formula.h"
 
 // ノード式の XML（シーン文書の <asset> の <formula>）:
@@ -21,10 +22,13 @@
 //   </formula>
 //
 // 読み取りは失敗しない（無い属性は既定値）。おかしな内容は warnings に文で。
+// シーン文書の中から読むときは、文書全体で上限が 1 つになるよう親の xml::Warn
+// （から作った子の Warn）を渡す口を使う。
 namespace wizengine {
 namespace formula {
 
 xml::Element formulaElement(const FormulaGraphDesc& graph);
+FormulaGraphDesc formulaFromXml(const xml::Element& e, xml::Warn& warn);
 FormulaGraphDesc formulaFromXml(const xml::Element& e,
                                 std::vector<std::string>* warnings = nullptr);
 

@@ -16,7 +16,7 @@ namespace wizengine {
 namespace ui {
 namespace {
 
-using editor::Warn;
+using xml::Warn;
 
 // 要素を識別する属性（性質ではない）。
 constexpr const char* kIdAttr = "id";
@@ -182,7 +182,7 @@ AnimDesc readAnim(const xml::Element& e, const std::vector<ElementDesc>& els,
                   const std::string& where, Warn& warn) {
     const std::string label = elementLabel(where, e);
     warnUnknownAttrs(e, {kNameAttr, kLoopAttr, kAutoplayAttr}, label, warn);
-    editor::warnUnknownChildren(e, {kKeyTag}, label.c_str(), warn);
+    xml::warnUnknownChildren(e, {kKeyTag}, label.c_str(), warn);
     AnimDesc a;
     a.name = readName(e, label, warn);
     a.loop = e.boolean(kLoopAttr, a.loop);

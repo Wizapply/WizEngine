@@ -1,11 +1,12 @@
 #include "ui/UiValue.h"
 
+#include "core/AssetFileRule.h"
 #include "core/Clamp.h"
+#include "core/ColorText.h"
+#include "core/Json.h"
 #include "core/SafeName.h"
 #include "core/Utf8.h"
-#include "document/EditorTypes.h"
-#include "document/SceneXml.h"
-#include "document/XmlValues.h"
+#include "core/Xml.h"
 
 #include <charconv>
 #include <limits>
@@ -16,7 +17,7 @@ namespace ui {
 namespace {
 
 // ---- 文字列の読み書きの下請け -----------------------------------------------
-// 数値の並び・真偽値の表記はシーン文書と同じ規則（document/SceneXml の
+// 数値の並び・真偽値の表記はシーン文書と同じ規則（core/Xml の
 // parseNumbers / parseBool / formatNumbers / formatBool / formatInt）で読み書きする。
 bool isNumeric(PropType t) {
     switch (t) {
@@ -208,7 +209,7 @@ bool parseValue(const ValueSpec& spec, const std::string& text, PropValue& out) 
             break;
         }
         case PropType::Color:
-            if (!editor::parseColorText(text, v.v)) return false;
+            if (!parseColorText(text, v.v)) return false;
             break;
         case PropType::Bool: {
             bool b = false;
@@ -247,7 +248,7 @@ std::string formatValue(const ValueSpec& spec, const PropValue& value) {
         case PropType::Rect:
             return xml::formatNumbers(value.v, componentCount(spec.type));
         case PropType::Color:
-            return xml::formatNumbers(value.v, 4, editor::kColorPrecision);
+            return xml::formatNumbers(value.v, 4, kColorPrecision);
         case PropType::Int:
             return xml::formatInt(roundToInt(value.v[0], defaultInt(spec)));
         case PropType::Bool:
@@ -321,11 +322,11 @@ bool valueFromJson(const ValueSpec& spec, const nlohmann::json& obj, const char*
     switch (spec.type) {
         case PropType::Number:
             if (!j.is_number()) return false;
-            v.v[0] = editor::jsonNumber(obj, key, 0.0);
+            v.v[0] = jsonNumber(obj, key, 0.0);
             break;
         case PropType::Int:
             if (!j.is_number()) return false;
-            v.v[0] = roundToInt(editor::jsonNumber(obj, key, 0.0), defaultInt(spec));
+            v.v[0] = roundToInt(jsonNumber(obj, key, 0.0), defaultInt(spec));
             break;
         case PropType::Vec2:
         case PropType::Vec3:
@@ -338,7 +339,7 @@ bool valueFromJson(const ValueSpec& spec, const nlohmann::json& obj, const char*
         case PropType::Color:
             if (j.is_string()) {
                 // ブラウザの <input type="color"> の "#rrggbb"（不透明）など。
-                if (!editor::parseColorText(editor::jsonString(obj, key, ""), v.v)) return false;
+                if (!parseColorText(jsonString(obj, key, ""), v.v)) return false;
                 break;
             }
             v.v[3] = 1.0;
@@ -350,12 +351,12 @@ bool valueFromJson(const ValueSpec& spec, const nlohmann::json& obj, const char*
             break;
         case PropType::Enum:
             if (!j.is_string()) return false;
-            return parseValue(spec, editor::jsonString(obj, key, ""), out);
+            return parseValue(spec, jsonString(obj, key, ""), out);
         case PropType::Text:
         case PropType::Name:
         case PropType::Path:
             if (!j.is_string()) return false;
-            v.s = editor::jsonString(obj, key, "");
+            v.s = jsonString(obj, key, "");
             break;
         case PropType::IndexList: {
             // 数の配列だけを受ける（型違いは false）。中身の規則は XML と同じ
@@ -394,7 +395,7 @@ PropValue clampValue(const ValueSpec& spec, PropValue value) {
             }
             break;
         case PropType::Euler:
-            for (std::size_t k = 0; k < 3; ++k) value.v[k] = editor::clampAngleDegrees(value.v[k]);
+            for (std::size_t k = 0; k < 3; ++k) value.v[k] = clampAngleDegrees(value.v[k]);
             break;
         case PropType::Int:
             value.v[0] = roundToInt(
@@ -402,8 +403,8 @@ PropValue clampValue(const ValueSpec& spec, PropValue value) {
                 defaultInt(spec));
             break;
         case PropType::Bool:
-            // NaN は既定値（ヘッダの約束）。それ以外は 0 でなければ真。
-            if (!(value.v[0] == value.v[0])) value.v[0] = spec.def.v[0];
+            // 有限でない値（NaN と ±∞）は既定値（ヘッダの約束）。それ以外は 0 でなければ真。
+            if (!std::isfinite(value.v[0])) value.v[0] = spec.def.v[0];
             value.v[0] = value.v[0] != 0.0 ? 1.0 : 0.0;
             break;
         case PropType::Enum:
@@ -418,7 +419,7 @@ PropValue clampValue(const ValueSpec& spec, PropValue value) {
             break;
         case PropType::Path: {
             const bool tooLong = value.s.size() > std::size_t(spec.hi);
-            const bool allowed = value.s.empty() || editor::assetFileAllowed(value.s);
+            const bool allowed = value.s.empty() || assetFileAllowed(value.s);
             if (tooLong || !allowed) value.s = spec.def.s;
             break;
         }

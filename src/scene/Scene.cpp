@@ -474,8 +474,8 @@ void Scene::build() {
         if (readSceneDocument(startup, doc, reason)) {
             loadDocument(doc, false);
             editor_.setSceneFile(startup);
-            editor_.setStatus("読み込みました: " + startup +
-                              takeLoadCaveat() + terrainCombineCaveat(true));
+            // 起動時の読込は今も警告の件数を出していないので 0。
+            editor_.setStatus("読み込みました: " + startup + loadStatusSuffix(0));
             LOGI("scene", "startup scene '%s' loaded (%zu bodies, %zu meshes)",
                  startup.c_str(), doc.bodies.size(), doc.meshes.size());
         } else {

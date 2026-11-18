@@ -3,7 +3,8 @@
 #include <string>
 #include <vector>
 
-#include "document/SceneXml.h"
+#include "core/Xml.h"
+#include "core/XmlWarnings.h"
 #include "vehicle/VehicleTypes.h"
 
 // シーン文書の <body> の中の <vehicle> 節 ⇔ VehicleDesc。
@@ -30,11 +31,13 @@
 //   </vehicle>
 //
 // 読み取りは失敗しない（無い属性・節は既定値）。怪しい内容は warnings に
-// 文で入る（SceneDocument と同じ約束）。
+// 文で入る（SceneDocument と同じ約束）。シーン文書の中から読むときは、文書全体で
+// 上限が 1 つになるよう親の xml::Warn（から作った子の Warn）を渡す口を使う。
 namespace wizengine {
 namespace vehicle {
 
 xml::Element vehicleElement(const VehicleDesc& desc);
+VehicleDesc vehicleFromXml(const xml::Element& e, xml::Warn& warn);
 VehicleDesc vehicleFromXml(const xml::Element& e,
                            std::vector<std::string>* warnings = nullptr);
 

@@ -11,6 +11,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/SceneLimits.h"
+
 namespace wizengine {
 
 namespace {
@@ -242,8 +244,8 @@ bool parseAppConfig(const std::string& text, AppConfig& cfg,
     auto& sc = cfg.scene;
     int maxCameras = int(sc.maxCameras);
     int editorCamera = int(sc.editorCamera);
-    r.integer("scene.maxCameras", maxCameras, 1, 16);
-    r.integer("scene.editorCamera", editorCamera, 0, 15);
+    r.integer("scene.maxCameras", maxCameras, 1, kMaxCameraSlots);
+    r.integer("scene.editorCamera", editorCamera, 0, kMaxCameraSlots - 1);
     if (editorCamera >= maxCameras) {
         warnings.push_back("scene.editorCamera: " + std::to_string(editorCamera) +
                            " is not below scene.maxCameras (" +

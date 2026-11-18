@@ -3,8 +3,8 @@
 #include <string>
 #include <vector>
 
-#include "document/SceneXml.h"
-#include "document/XmlValues.h"
+#include "core/Xml.h"
+#include "core/XmlWarnings.h"
 #include "ui/UiTypes.h"
 
 // UI の文書の読み書き（シーン文書の <font> / <ui> / <canvas> と、共用の UI の
@@ -61,11 +61,11 @@ xml::Element canvasElement(const CanvasDesc& canvas);
 // ---- 読み込み ----------------------------------------------------------------
 // <asset> の <font> と <ui> を全部（フォントを先に読む = UI の中の font の参照を確かめる）。
 void readUiAssets(const xml::Element& asset, std::vector<FontAssetDesc>& fonts,
-                  std::vector<UiAssetDesc>& uiAssets, editor::Warn& warn);
+                  std::vector<UiAssetDesc>& uiAssets, xml::Warn& warn);
 // <worldbody> の <canvas> を全部。fonts / uiAssets は宣言の確かめに使う。
 void readCanvases(const xml::Element& world, const std::vector<FontAssetDesc>& fonts,
                   const std::vector<UiAssetDesc>& uiAssets, std::vector<CanvasDesc>& out,
-                  editor::Warn& warn);
+                  xml::Warn& warn);
 
 // ---- 共用の UI のファイル（assets/ui/<名前>.xml）----------------------------
 // 中身はシーンの <asset> の <ui> と同じ書式で、ルートが <ui name="..."> になった

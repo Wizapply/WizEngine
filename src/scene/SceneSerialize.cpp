@@ -588,15 +588,17 @@ std::string Scene::documentXml() {
     return ed::toXmlText(document());
 }
 
-std::string Scene::takeLoadCaveat() {
-    std::string out;
-    out.swap(loadCaveat_);
+std::string Scene::loadStatusSuffix(std::size_t warnCount) {
+    std::string out = warningCountCaveat("警告", warnCount);
+    out += loadCaveat_;
+    loadCaveat_.clear();
+    out += terrainCombineCaveat(true);
     return out;
 }
 
 void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
-    // 読込の注意の箱を空にするのはここだけ（書く側 = テレイン・共通イベント・
-    // 共用 UI は足すだけ）。
+    // 読込の注意の箱を空にするのはここだけ（書く側 = 計算式 / プレハブ・テレイン・
+    // 共通イベント・共用 UI は足すだけ）。
     loadCaveat_.clear();
     // いま在るものを全部畳んでから作り直す。番号は 0 から振り直されるので、
     // 掴んでいる選択も落とす。
@@ -778,8 +780,9 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     const std::size_t uiMissing =
         loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Replace);
 
-    // 読込の注意（ステータスの末尾に足す日本語）。テレインの注意
-    // （setTerrainFromDocument が足した）の後ろに、共通イベント → 共用 UI の順。
+    // 読込の注意（ステータスの末尾に足す日本語）。並びは計算式 / プレハブ（上の
+    // resolveLibraryAssets の後で足した）→ テレイン（setTerrainFromDocument が
+    // 足した）→ 共通イベント → 共用 UI の順。
     loadCaveat_ += unreadableFilesCaveat("共通イベント", sharedMissing);
     loadCaveat_ += unreadableFilesCaveat("共用 UI", uiMissing);
 
