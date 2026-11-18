@@ -8,6 +8,7 @@
 
 #include "document/EditorTypes.h"
 #include "document/SceneXml.h"
+#include "ui/UiTypes.h"
 
 // シーン文書（保存・読込・受け渡しの単位）と、その XML 表現。
 //
@@ -47,9 +48,10 @@
 //                                        file（assets/ 相対）が持ち、ここは参照だけ。
 //                                        子要素を書いても無視（警告）。下の
 //                                        parseEventAssetXml / eventAssetToXmlText
-//       <formula name="tire_mf"> <node .../> <wire .../> </formula>
-//                                    ... 計算式アセット（vehicle/FormulaXml.h）。
-//                                        <tire formula="tire_mf"> が参照する
+//       <formula name="arm_pid"> <source line/> <node .../> <wire .../> </formula>
+//                                    ... 計算式アセット（formula/FormulaXml.h）。
+//                                        <control> の <controller formula> が参照する。
+//                                        <source> は数式エディタで書いた元のテキスト
 //       <prefab name="sedan"> <part name type pos euler size rgba socket collide/> </prefab>
 //                                    ... <geom> を書かない <body mass> は「部品だけの
 //                                        フレーム」（ShapeKind::None。階段など）
@@ -57,6 +59,13 @@
 //                                        PrefabDesc）。<body> の <prefab name/> で付ける。
 //                                        collide="true" の部品（箱 / 球）は付け先の
 //                                        当たり形状に足される（階段など）
+//       <font name="jp" file="fonts/NotoSansJP-Regular.otf"/>
+//                                    ... UI の字のフォント（<text font="jp">）
+//       <ui name="hud" file="ui/hud.xml"/>
+//                                    ... UI アセット（<canvas ui="hud">）。file が
+//                                        あれば中身は共用ファイル（assets/ui/）、
+//                                        無ければ中身を子要素に書く。書式は
+//                                        ui/UiXml.h
 //     </asset>
 //     <worldbody>
 //       <environment hdr="studio.hdr" intensity="30000"/>
@@ -94,6 +103,20 @@
 //                                        none（自由端）。Core バックエンド専用
 //                                        （Multicore は FEA を扱えない = 自動で
 //                                        Core に切り替わる）
+//       <emitter name="flame1" body="piston1" pos="0 0.05 0" radius="0.03"
+//                height="0.01" rate="0" life="0.05" size="0.01" grow="3"
+//                speed="0.3" inherit="1" rgba="1 0.85 0.5 1" rgba2="0.9 0.18 0.03 1"
+//                intensity="4" light="0" lightrange="0.3" max="256"/>
+//                                    ... パーティクルのエミッタ（見た目だけ。
+//                                        EditorTypes.h の EmitterDesc）。量は
+//                                        rate か、制御器の emitter:<名前>.rate
+//       <canvas name="hud" mode="overlay|camera|world" cameras="0 1" height="1080"
+//               order distance pos euler size ui="hud">
+//         <image id parent name anchor pivot pos size color file .../>
+//         <text id parent name text font fontSize align outline outlineColor .../>
+//         <anim name loop autoplay> <key element t alpha .../> </anim>
+//       </canvas>                    ... UI の台紙と部品（ui/UiXml.h。属性は
+//                                        性質の表 ui/UiProps と Canvas の属性の表）
 //     </worldbody>
 //     <equality>
 //       <joint type body1 body2 anchor axis
@@ -108,6 +131,25 @@
 //                gear / screw / spring / bushing（Chrono の ChLink* / ChLoad*）
 //     </equality>
 //     <events>  <event name="pickup"/>  </events>   ... ワールドに付ける
+//     <control>
+//       <controller formula="arm_pid" period="0.01" enabled="true"/>
+//                                    ... 制御器（Simulink のブロック線図に相当）。
+//                                        <asset> の <formula> を名前で参照し、
+//                                        シミュレート中に period 秒ごと（0 = 毎
+//                                        ステップ）に回す。式の in / out の name が
+//                                        センサ / アクチュエータ
+//                                        （control/ControlSignals.h）
+//       <param name="throttle" value="1" min="0" max="1"/>
+//                                    ... パラメータ。式からはセンサ param:<name>
+//                                        で読み、ブラウザのスライダーでシミュレート
+//                                        中に変えられる（value は min..max に丸める）。
+//                                        label = 表示名、step = 刻み（0 = 自動。
+//                                        0..1 で step 1 はスイッチ。options="A|B|C"
+//                                        なら選択肢 = 値は項目の番号）
+//       <chart title="トルク" signals="dyno/scope:torque_Nm dyno/scope:rpm" span="10"/>
+//                                    ... 制御盤のグラフ。signals は「計算式/入出力の
+//                                        名前」の並び、span は表示幅 (s、0 = 全部)
+//     </control>
 //   </wizengine>
 //
 //   * 角度は全部「度」。<body euler> と <light euler> はエディタが持つ
@@ -225,15 +267,30 @@ struct SceneDocument {
     // ケーブル（<worldbody> の <cable>）。端の bodyA / bodyB はオブジェクト
     // 番号（-1 = 地面、-2 = 自由端）。
     std::vector<CableDesc> cables;
+    // パーティクルのエミッタ（<worldbody> の <emitter>）。body はオブジェクト
+    // 番号（-1 = ワールド）。物理には関わらない見た目だけの物。
+    std::vector<EmitterDesc> emitters;
     // イベントアセット（<asset> の <event>）と、ワールドに付いているぶん
     // （ルートの <events>）。オブジェクトに付いているぶんは BodyDesc::events。
     std::vector<EventAssetDesc> eventAssets;
     std::vector<std::string> worldEvents;
     // 計算式アセット（<asset> の <formula>）。車両のタイヤが名前で参照する。
-    std::vector<wizengine::vehicle::FormulaGraphDesc> formulas;
+    std::vector<wizengine::formula::FormulaGraphDesc> formulas;
     // プレハブ（<asset> の <prefab>）。<body> の <prefab name/> が名前で参照する。
     // 部品の size は BodyDesc と同じ「全長」（geom の半寸法とは違う）。
     std::vector<PrefabDesc> prefabs;
+    // 制御器（ルートの <control> の <controller>）。計算式アセットを名前で
+    // 参照し、シミュレート中に回す（control/ControlSignals.h の信号名）。
+    std::vector<ControllerDesc> controllers;
+    // 制御器のパラメータ（<control> の <param>）。式からは param:<名前>。
+    std::vector<ParamDesc> params;
+    // 制御盤のグラフ（<control> の <chart>）。
+    std::vector<ChartDesc> charts;
+    // UI（ui/UiTypes.h）: フォントと UI アセット（<asset> の <font> / <ui>）、
+    // Canvas（<worldbody> の <canvas>）。節が無ければ空（既定のフォントは読込側）。
+    std::vector<ui::FontAssetDesc> fonts;
+    std::vector<ui::UiAssetDesc> uiAssets;
+    std::vector<ui::CanvasDesc> canvases;
     // 「節が無い」と「空の節」の区別。ライト / カメラ / イベントの節を持た
     // ない文書（旧 v1 の保存や手書きの最小 XML）は初期構成へ戻す意味に
     // なるので、空配列と同じにはできない。
@@ -278,6 +335,22 @@ std::string eventAssetToXmlText(const EventAssetDesc& asset);
 // file は空で返す。XML として壊れている場合だけ false。
 bool parseEventAssetXml(const std::string& text, EventAssetDesc& out, std::string& error,
                         std::vector<std::string>* warnings = nullptr);
+
+// ---- 計算式・プレハブのライブラリのファイル ------------------------------------
+// グローバル（全シーンで使える）の計算式は assets/formulas/<名前>.xml、プレハブは
+// assets/prefabs/<名前>.xml。中身はシーンの <asset> の <formula> / <prefab> と
+// 同じ書式で、ルートがその要素になっただけ。シーンの XML は file 属性の参照だけを
+// 書く（イベントライブラリと同じ流儀）。プレハブのファイルには、メッシュの部品が
+// 使う <mesh name file scale/> の宣言も入れる（どのシーンで読んでも同じ見た目。
+// 読む側のシーンに同じ名前の宣言が無ければ足す）。
+std::string formulaToLibraryXmlText(const formula::FormulaGraphDesc& graph);
+bool parseFormulaLibraryXml(const std::string& text, formula::FormulaGraphDesc& out,
+                            std::string& error, std::vector<std::string>* warnings = nullptr);
+std::string prefabToLibraryXmlText(const PrefabDesc& prefab,
+                                   const std::vector<MeshAssetDesc>& sceneMeshes);
+bool parsePrefabLibraryXml(const std::string& text, PrefabDesc& out,
+                           std::vector<MeshAssetDesc>& meshes, std::string& error,
+                           std::vector<std::string>* warnings = nullptr);
 
 // ---- 旧 JSON 文書（version 1〜3）--------------------------------------------
 // 既に保存してある assets/scenes/*.json を読むための取り込み口。書き出しは

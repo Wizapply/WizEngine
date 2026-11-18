@@ -2,8 +2,6 @@
 
 #include <cstddef>
 
-#include "vehicle/FormulaXml.h"
-
 namespace wizengine {
 namespace vehicle {
 
@@ -44,7 +42,6 @@ xml::Element tireElement(const TireDesc& t) {
     e.setNumber("relax", t.relaxation);
     e.setNumber("rolling", t.rollingResistance);
     e.setInt("rays", t.rays);
-    if (!t.formula.empty()) e.set("formula", t.formula);
     // ソフトタイヤの一群は有効なときだけ書く（無効な軸に毎回並べない）。
     if (t.soft) {
         e.setBool("soft", true);
@@ -54,7 +51,6 @@ xml::Element tireElement(const TireDesc& t) {
         e.setInt("rows", t.rows);
         e.setInt("iterations", t.iterations);
         e.setNumber("pressure", t.pressure);
-        if (!t.pressureFormula.empty()) e.set("pressureFormula", t.pressureFormula);
     }
     return e;
 }
@@ -73,7 +69,6 @@ TireDesc tireFromXml(const xml::Element& e, const TireDesc& base) {
     t.relaxation = e.number("relax", t.relaxation);
     t.rollingResistance = e.number("rolling", t.rollingResistance);
     t.rays = e.integer("rays", t.rays);
-    if (e.has("formula")) t.formula = e.attr("formula");
     t.soft = e.boolean("soft", t.soft);
     t.stiffness = e.number("stiffness", t.stiffness);
     t.damping = e.number("damping", t.damping);
@@ -81,7 +76,6 @@ TireDesc tireFromXml(const xml::Element& e, const TireDesc& base) {
     t.rows = e.integer("rows", t.rows);
     t.iterations = e.integer("iterations", t.iterations);
     t.pressure = e.number("pressure", t.pressure);
-    if (e.has("pressureFormula")) t.pressureFormula = e.attr("pressureFormula");
     return t;
 }
 
@@ -182,8 +176,6 @@ xml::Element vehicleElement(const VehicleDesc& d) {
     setDiff(center, "type", d.center, /*withBias*/ true);
     v.append(std::move(center));
 
-    for (const FormulaGraphDesc& f : d.formulas) v.append(formulaElement(f));
-
     for (const AxleDesc& a : d.axles) {
         xml::Element ax("axle");
         ax.setNumber("z", a.z);
@@ -209,18 +201,24 @@ VehicleDesc vehicleFromXml(const xml::Element& e,
                     "formula"},
                 "<vehicle>", warnings);
 
-    for (const xml::Element* f : e.all("formula")) {
-        FormulaGraphDesc g = formulaFromXml(*f, warnings);
-        bool dup = false;
-        for (const FormulaGraphDesc& prev : d.formulas) {
-            if (prev.name == g.name) dup = true;
+    // タイヤ / 空気圧をノード式で差し替える仕組みは廃止した（タイヤは組み込みの
+    // Magic Formula、空気圧は等温変化）。古い文書の参照は警告して読み飛ばす。
+    if (e.first("formula") != nullptr) {
+        warnTo(warnings, "<vehicle>: <formula> (node formulas for tires) is no longer "
+                         "supported - ignored (move it to <asset> to keep it as a formula)");
+    }
+    auto warnRemovedTireAttrs = [&](const xml::Element& t) {
+        for (const char* key : {"formula", "pressureFormula"}) {
+            if (t.has(key)) {
+                warnTo(warnings, std::string("<tire ") + key + "=\"" + t.attr(key) +
+                                     "\">: tire formulas were removed - the built-in "
+                                     "model is used");
+            }
         }
-        if (g.name.empty() || dup) {
-            warnTo(warnings, "<vehicle>: <formula name=\"" + g.name +
-                                 "\"> is empty or duplicated - ignored");
-            continue;
-        }
-        d.formulas.push_back(std::move(g));
+    };
+    if (const xml::Element* t = e.first("tire")) warnRemovedTireAttrs(*t);
+    for (const xml::Element* ax : e.all("axle")) {
+        if (const xml::Element* t = ax->first("tire")) warnRemovedTireAttrs(*t);
     }
 
     d.ticks = e.integer("ticks", d.ticks);

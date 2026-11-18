@@ -13,9 +13,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/Clamp.h"
 #include "core/Guid.h"
 #include "core/Hex.h"
 #include "core/SafeName.h"
+#include "formula/Formula.h"
 #include "vehicle/VehicleTypes.h"
 
 // エディタモードが編集する「シーン文書」の型。
@@ -195,6 +197,10 @@ struct GizmoSettings {
     // Y=0 の格子グリッド（エディタ中の置き場の目印）。
     bool grid = true;
     double gridStep = 1.0;    // 格子の間隔 (m)
+    // ジョイントの線（A → アンカー → B）。機構の多いシーン（V6 など）では
+    // 線が部品に重なって見づらいので消せるようにする。描くのはサーバー
+    // （全ビュー共通）なので、エディタ / シミュレートとも同じ設定に従う。
+    bool jointLines = true;
 };
 
 struct Vec3d {
@@ -316,6 +322,10 @@ struct PartDesc {
 struct PrefabDesc {
     std::string name;
     std::vector<PartDesc> parts;
+    // グローバル（ライブラリ）のプレハブなら assets/ 相対のファイル名
+    // （"prefabs/<名前>.xml"）。シーンの XML は <prefab name file/> の参照だけ。
+    // 空 = このシーン専用。
+    std::string file;
 };
 
 // "wheel:<軸>:<L|R>" を読む。違う書式なら false。
@@ -829,10 +839,14 @@ inline RenderDesc renderPreset(const std::string& name) {
 }
 
 // ---- カメラ -----------------------------------------------------------------
+// カメラのスロット数の上限（exe 引数 --max-cameras の上限。Scene がスロット数を
+// ここで止め、UI の Canvas の「表示するカメラ」もこの番号の範囲で持つ）。
+inline constexpr int kMaxCameraSlots = 16;
+
 // 1 台ぶんの姿勢。実体（CameraObject）と同じオービット表現のまま保存する。
 // UI が見せる「位置・向き」へは Scene.cpp が変換する（eye = target + radius *
 // 軌道ベクトル、pitch/yaw ⇄ elevation/azimuth）。active=false のスロットは
-// 「削除された」カメラ: エンドポイントは起動時に kMaxCameras ぶん作られるので、
+// 「削除された」カメラ: エンドポイントは起動時にカメラのスロット数（config.json の maxCameras）ぶん作られるので、
 // 実行中の追加・削除はこのフラグの上げ下げになる。
 struct CameraPose {
     double azimuth = 0.66;    // ラジアン（Y 軸まわり）
@@ -1180,6 +1194,56 @@ inline CableDesc clampCable(CableDesc c) {
     return c;
 }
 
+// ---- パーティクルのエミッタ（見た目だけの粒子を出す口）---------------------
+// 物理には何も返さない飾り（炎・火花・煙）。粒子は付け先（body、-1 = ワールド）の
+// ローカルの範囲で生まれ、その瞬間の付け先の速度（inherit 倍）にばらつき
+// （speed）を足した速度で飛び、life 秒かけて size → size × grow に広がりながら
+// color → color2 へ変わって消える。出す量は rate（粒子 / 秒）で、制御器の
+// アクチュエータ emitter:<名前>.rate が書けばそのステップはその値が勝つ
+// （燃焼の式が「燃えている間だけ」出す、など）。描画は加算合成（光って見える）。
+// 範囲はローカル +Y を軸にした円柱（pos を底面の中心に、半径 radius・高さ
+// height）、height = 0 なら半径 radius の球。light > 0 なら範囲の中心に点光源を
+// 置き、明るさを「生きている粒子の量」に合わせて揺らす（周りの部品を照らす）。
+// 文書では <worldbody> の <emitter>。
+struct EmitterDesc {
+    std::string name;
+    int body = -1;                      // 付け先のオブジェクト番号（-1 = ワールド）
+    Vec3d position{0.0, 0.0, 0.0};      // 付け先のローカル
+    Vec3d rotation{0.0, 0.0, 0.0};      // オイラー角（度）
+    double radius = 0.02;               // m
+    double height = 0.0;                // m（0 = 球）
+    double rate = 0.0;                  // 粒子 / 秒（制御器が書けばそちらが勝つ）
+    double life = 0.05;                 // 寿命 (s、シミュレーションの時間)
+    double size = 0.01;                 // 生まれたときの大きさ（直径 m）
+    double grow = 3.0;                  // 消えるときの大きさの倍率
+    double speed = 0.3;                 // ばらつきの速さ (m/s)
+    double inherit = 1.0;               // 付け先の速度を受け継ぐ割合
+    Color3 color{1.0f, 0.85f, 0.5f};    // 生まれたとき（リニア）
+    Color3 color2{0.9f, 0.18f, 0.03f};  // 消えるとき
+    double intensity = 4.0;             // 色の倍率（1 を超えると光って見える）
+    double light = 0.0;                 // 点光源の最大の明るさ (lm、0 = 無し)
+    double lightRange = 0.3;            // 点光源の届く距離 (m)
+    int max = 256;                      // 同時に生きている粒子の上限
+};
+inline EmitterDesc clampEmitter(EmitterDesc e) {
+    auto cl = [](double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); };
+    e.radius = cl(e.radius, 0.0, 10.0);
+    e.height = cl(e.height, 0.0, 10.0);
+    e.rate = cl(e.rate, 0.0, 1.0e6);
+    e.life = cl(e.life, 0.001, 30.0);
+    e.size = cl(e.size, 0.0001, 10.0);
+    e.grow = cl(e.grow, 0.0, 100.0);
+    e.speed = cl(e.speed, 0.0, 1000.0);
+    e.inherit = cl(e.inherit, 0.0, 1.0);
+    e.intensity = cl(e.intensity, 0.0, 1000.0);
+    e.light = cl(e.light, 0.0, 1.0e7);
+    e.lightRange = cl(e.lightRange, 0.01, 100.0);
+    if (e.max < 1) e.max = 1;
+    if (e.max > 4096) e.max = 4096;
+    if (e.body < -1) e.body = -1;
+    return e;
+}
+
 // ---- JSON 変換 ------------------------------------------------------------
 // nlohmann の ADL 版（to_json/from_json）ではなく明示的な関数にしてある。
 // 「どのキーが出るか」がそのまま保存フォーマットとブラウザ API になるので、
@@ -1505,6 +1569,28 @@ inline nlohmann::json toJson(const CableDesc& c) {
     j["color"] = colorToHex(c.color);
     return j;
 }
+inline nlohmann::json toJson(const EmitterDesc& e) {
+    nlohmann::json j;
+    j["name"] = e.name;
+    j["body"] = e.body;
+    j["pos"] = toJson(e.position);
+    j["rot"] = toJson(e.rotation);
+    j["radius"] = e.radius;
+    j["height"] = e.height;
+    j["rate"] = e.rate;
+    j["life"] = e.life;
+    j["size"] = e.size;
+    j["grow"] = e.grow;
+    j["speed"] = e.speed;
+    j["inherit"] = e.inherit;
+    j["color"] = colorToHex(e.color);
+    j["color2"] = colorToHex(e.color2);
+    j["intensity"] = e.intensity;
+    j["light"] = e.light;
+    j["lightRange"] = e.lightRange;
+    j["max"] = e.max;
+    return j;
+}
 inline CableDesc cableFromJson(const nlohmann::json& j, const CableDesc& base) {
     CableDesc c = base;
     if (!j.is_object()) return c;
@@ -1720,7 +1806,7 @@ inline nlohmann::json toJson(const PrefabDesc& d) {
 }
 
 // ---- ノード式（計算式アセット）の JSON --------------------------------------
-// 型は vehicle/Formula.h（Chrono も JSON も知らない側）。ここはブラウザ API
+// 型は formula/Formula.h（Chrono も JSON も知らない側）。ここはブラウザ API
 // との変換だけ。ノードの params は数値の配列で、"1 2 3" の文字列でも受ける
 // （折れ線の点列を打ちやすいように）。
 inline std::vector<double> numberList(const nlohmann::json& j) {
@@ -1749,18 +1835,21 @@ inline std::vector<double> numberList(const nlohmann::json& j) {
     if (out.size() > 128) out.resize(128);
     return out;
 }
-// ポート名（in / out の name）: 英数字と _ だけ、32 文字まで。
+// ポート名（in / out の name）: 英数字と _ に加えて、制御器の信号名
+// （"joint:arm.angle" のような - control/ControlSignals.h）に使う : . - も
+// 通す。96 文字まで。
 inline std::string sanitizePortName(const std::string& name) {
     std::string out;
     for (const char c : name) {
         const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9') || c == '_';
+                        (c >= '0' && c <= '9') || c == '_' || c == ':' || c == '.' ||
+                        c == '-';
         if (ok) out.push_back(c);
-        if (out.size() >= 32) break;
+        if (out.size() >= 96) break;
     }
     return out;
 }
-inline nlohmann::json toJson(const wizengine::vehicle::FormulaNodeDesc& n) {
+inline nlohmann::json toJson(const wizengine::formula::FormulaNodeDesc& n) {
     nlohmann::json j;
     j["id"] = n.id;
     j["type"] = n.kind;
@@ -1770,9 +1859,9 @@ inline nlohmann::json toJson(const wizengine::vehicle::FormulaNodeDesc& n) {
     j["y"] = n.y;
     return j;
 }
-inline wizengine::vehicle::FormulaNodeDesc formulaNodeFromJson(
-    const nlohmann::json& j, const wizengine::vehicle::FormulaNodeDesc& base) {
-    wizengine::vehicle::FormulaNodeDesc n = base;
+inline wizengine::formula::FormulaNodeDesc formulaNodeFromJson(
+    const nlohmann::json& j, const wizengine::formula::FormulaNodeDesc& base) {
+    wizengine::formula::FormulaNodeDesc n = base;
     if (!j.is_object()) return n;
     n.id = jsonInt(j, "id", n.id);
     if (j.contains("type") && j["type"].is_string()) n.kind = j["type"];
@@ -1787,8 +1876,8 @@ inline wizengine::vehicle::FormulaNodeDesc formulaNodeFromJson(
     n.y = jsonNumber(j, "y", n.y);
     return n;
 }
-inline wizengine::vehicle::FormulaNodeDesc clampFormulaNode(
-    wizengine::vehicle::FormulaNodeDesc n) {
+inline wizengine::formula::FormulaNodeDesc clampFormulaNode(
+    wizengine::formula::FormulaNodeDesc n) {
     auto cl = [](double v, double lo, double hi) {
         return v < lo ? lo : (v > hi ? hi : v);
     };
@@ -1802,7 +1891,7 @@ inline wizengine::vehicle::FormulaNodeDesc clampFormulaNode(
     n.name = sanitizePortName(n.name);
     return n;
 }
-inline nlohmann::json toJson(const wizengine::vehicle::FormulaWireDesc& w) {
+inline nlohmann::json toJson(const wizengine::formula::FormulaWireDesc& w) {
     nlohmann::json j;
     j["from"] = w.from;
     j["fromPort"] = w.fromPort;
@@ -1810,15 +1899,15 @@ inline nlohmann::json toJson(const wizengine::vehicle::FormulaWireDesc& w) {
     j["port"] = w.port;
     return j;
 }
-inline wizengine::vehicle::FormulaWireDesc formulaWireFromJson(const nlohmann::json& j) {
-    wizengine::vehicle::FormulaWireDesc w;
+inline wizengine::formula::FormulaWireDesc formulaWireFromJson(const nlohmann::json& j) {
+    wizengine::formula::FormulaWireDesc w;
     w.from = jsonInt(j, "from", -1);
     w.fromPort = jsonInt(j, "fromPort", 0);
     w.to = jsonInt(j, "to", -1);
     w.port = jsonInt(j, "port", 0);
     return w;
 }
-inline nlohmann::json toJson(const wizengine::vehicle::FormulaGraphDesc& g) {
+inline nlohmann::json toJson(const wizengine::formula::FormulaGraphDesc& g) {
     nlohmann::json j;
     j["name"] = g.name;
     j["nodes"] = nlohmann::json::array();
@@ -1826,6 +1915,194 @@ inline nlohmann::json toJson(const wizengine::vehicle::FormulaGraphDesc& g) {
     j["wires"] = nlohmann::json::array();
     for (const auto& w : g.wires) j["wires"].push_back(toJson(w));
     return j;
+}
+
+// ---- 制御器（ノード式をブロック線図として回す。control/ControlSignals.h）--
+// 計算式アセットを名前で参照し、シミュレート中に物理スレッドで回す。式の
+// in / out ノードの name がセンサ / アクチュエータ（"joint:arm.angle" など）。
+// 文書ではルートの <control> の <controller formula period enabled/>。
+struct ControllerDesc {
+    std::string formula;   // 計算式アセットの名前
+    double period = 0.0;   // 実行周期 (s)。0 = 物理の毎ステップ。出力は次の実行まで保持
+    bool enabled = true;
+};
+inline ControllerDesc clampController(ControllerDesc c) {
+    c.formula = sanitizeEventName(c.formula);
+    if (!(c.period == c.period) || c.period < 0.0) c.period = 0.0;
+    if (c.period > 10.0) c.period = 10.0;
+    return c;
+}
+inline nlohmann::json toJson(const ControllerDesc& c) {
+    nlohmann::json j;
+    j["formula"] = c.formula;
+    j["period"] = c.period;
+    j["enabled"] = c.enabled;
+    return j;
+}
+// 送られてきたキーだけ上書き（部分更新）。
+inline ControllerDesc controllerFromJson(const nlohmann::json& j, ControllerDesc base) {
+    if (!j.is_object()) return base;
+    if (j.contains("formula") && j["formula"].is_string()) base.formula = j["formula"];
+    base.period = jsonNumber(j, "period", base.period);
+    if (j.contains("enabled") && j["enabled"].is_boolean()) base.enabled = j["enabled"];
+    return clampController(base);
+}
+
+// 制御器のパラメータ（文書の <control><param name value min max/>）。式からは
+// センサ param:<名前> で読み、ブラウザのスライダーで**シミュレート中に**変えられる
+// （次の物理ステップから効く。式を作り直さないので PID の積分などは消えない）。
+// アクセル開度・目標値・ゲインのように、走らせながら触りたい値の置き場。
+struct ParamDesc {
+    std::string name;
+    double value = 0.0;
+    double min = 0.0;   // スライダーの範囲（value もこの範囲に丸める）
+    double max = 1.0;
+    // 表示（制御盤・World タブ）。label は空 = name を出す。step は 0 = 自動
+    // （範囲の約 1/200）、> 0 ならその刻みに丸める。min 0・max 1・step 1 の
+    // パラメータはスイッチ（オン / オフ）として出す。
+    std::string label;
+    double step = 0.0;
+    // 選択肢（"ダイナモ|フリーラン|車両" のように | 区切り）。空でなければ値は
+    // 項目の番号（0 始まり）で、min 0・max = 項目数 - 1・step 1 に揃える。
+    // 制御盤は切り替えボタン、World タブはプルダウンで出す。
+    std::string options;
+};
+// 選択肢の文字列を項目に分ける（空の項目は落とさない = 番号がずれない）。
+inline std::vector<std::string> paramOptionList(const std::string& options) {
+    std::vector<std::string> out;
+    if (options.empty()) return out;
+    std::string cur;
+    for (const char c : options) {
+        if (c == '|') { out.push_back(cur); cur.clear(); }
+        else cur.push_back(c);
+    }
+    out.push_back(cur);
+    return out;
+}
+// 表示用の自由な文字列（日本語可）: 制御文字を落として長さを抑える（UTF-8 の
+// 途中で切らないよう、先頭バイトの位置で切る）。
+inline std::string sanitizeLabel(const std::string& in, std::size_t maxBytes = 120) {
+    std::string out;
+    for (const char c : in) {
+        if (static_cast<unsigned char>(c) < 0x20) continue;
+        out.push_back(c);
+    }
+    if (out.size() > maxBytes) {
+        std::size_t cut = maxBytes;
+        while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) --cut;
+        out.resize(cut);
+    }
+    return out;
+}
+inline ParamDesc clampParam(ParamDesc p) {
+    p.name = sanitizeEventName(p.name);
+    p.label = sanitizeLabel(p.label, 80);
+    p.options = sanitizeLabel(p.options, 400);
+    {
+        std::vector<std::string> opts = paramOptionList(p.options);
+        if (opts.size() > 16) opts.resize(16);
+        if (opts.size() < 2) {
+            p.options.clear();  // 1 個だけの選択肢は意味が無い
+        } else {
+            std::string joined;
+            for (std::size_t i = 0; i < opts.size(); ++i) joined += (i ? "|" : "") + opts[i];
+            p.options = joined;
+            p.min = 0.0;
+            p.max = double(opts.size() - 1);
+            p.step = 1.0;
+        }
+    }
+    auto finite = [](double v, double d) { return (v == v && v < 1e300 && v > -1e300) ? v : d; };
+    p.min = finite(p.min, 0.0);
+    p.max = finite(p.max, 1.0);
+    if (p.max < p.min) std::swap(p.min, p.max);
+    if (p.max == p.min) p.max = p.min + 1.0;
+    p.step = finite(p.step, 0.0);
+    if (p.step < 0.0) p.step = 0.0;
+    if (p.step > p.max - p.min) p.step = p.max - p.min;
+    p.value = finite(p.value, p.min);
+    if (p.value < p.min) p.value = p.min;
+    if (p.value > p.max) p.value = p.max;
+    if (!p.options.empty()) p.value = double(long(p.value + 0.5));  // 項目の番号
+    return p;
+}
+inline nlohmann::json toJson(const ParamDesc& p) {
+    nlohmann::json j;
+    j["name"] = p.name;
+    j["value"] = p.value;
+    j["min"] = p.min;
+    j["max"] = p.max;
+    j["label"] = p.label;
+    j["step"] = p.step;
+    j["options"] = p.options;
+    return j;
+}
+// 送られてきたキーだけ上書き（部分更新）。
+inline ParamDesc paramFromJson(const nlohmann::json& j, ParamDesc base) {
+    if (!j.is_object()) return base;
+    if (j.contains("name") && j["name"].is_string()) base.name = j["name"];
+    base.value = jsonNumber(j, "value", base.value);
+    base.min = jsonNumber(j, "min", base.min);
+    base.max = jsonNumber(j, "max", base.max);
+    if (j.contains("label") && j["label"].is_string()) base.label = j["label"];
+    base.step = jsonNumber(j, "step", base.step);
+    if (j.contains("options") && j["options"].is_string()) {
+        base.options = j["options"];
+        // 選択肢を外したら刻みは自動に戻す（step 1 のままだと別の物に見える）。
+        if (base.options.empty() && !j.contains("step")) base.step = 0.0;
+    }
+    return clampParam(base);
+}
+
+// 制御盤のグラフ（文書の <control><chart title signals span/>）。signals は
+// "計算式の名前/入出力の名前"（例 "dyno/scope:torque_Nm"）の並びで、制御器の
+// 記録（/control）の列を指す。span は表示する時間幅 (s)、0 = 記録の全部。
+struct ChartDesc {
+    std::string title;
+    std::vector<std::string> signals;
+    double span = 10.0;
+};
+inline std::string sanitizeChartSignal(const std::string& s) {
+    const std::size_t slash = s.find('/');
+    if (slash == std::string::npos) return "";
+    const std::string f = sanitizeEventName(s.substr(0, slash));
+    const std::string port = sanitizePortName(s.substr(slash + 1));
+    if (f.empty() || port.empty()) return "";
+    return f + "/" + port;
+}
+inline ChartDesc clampChart(ChartDesc c) {
+    c.title = sanitizeLabel(c.title, 80);
+    std::vector<std::string> sig;
+    for (const auto& s : c.signals) {
+        const std::string t = sanitizeChartSignal(s);
+        if (t.empty() || std::find(sig.begin(), sig.end(), t) != sig.end()) continue;
+        sig.push_back(t);
+        if (sig.size() >= 12) break;
+    }
+    c.signals = std::move(sig);
+    if (!(c.span == c.span) || c.span < 0.0) c.span = 0.0;
+    if (c.span > 3600.0) c.span = 3600.0;
+    return c;
+}
+inline nlohmann::json toJson(const ChartDesc& c) {
+    nlohmann::json j;
+    j["title"] = c.title;
+    j["signals"] = c.signals;
+    j["span"] = c.span;
+    return j;
+}
+// 送られてきたキーだけ上書き（部分更新）。
+inline ChartDesc chartFromJson(const nlohmann::json& j, ChartDesc base) {
+    if (!j.is_object()) return base;
+    if (j.contains("title") && j["title"].is_string()) base.title = j["title"];
+    if (j.contains("signals") && j["signals"].is_array()) {
+        base.signals.clear();
+        for (const auto& v : j["signals"]) {
+            if (v.is_string()) base.signals.push_back(v.get<std::string>());
+        }
+    }
+    base.span = jsonNumber(j, "span", base.span);
+    return clampChart(base);
 }
 
 inline nlohmann::json toJson(const GroundDesc& g) {
@@ -2090,6 +2367,7 @@ inline nlohmann::json toJson(const GizmoSettings& g) {
     j["scaleStep"] = g.scaleStep;
     j["grid"] = g.grid;
     j["gridStep"] = g.gridStep;
+    j["jointLines"] = g.jointLines;
     return j;
 }
 
@@ -2109,6 +2387,9 @@ inline GizmoSettings gizmoFromJson(const nlohmann::json& j,
     g.scaleStep = j.value("scaleStep", g.scaleStep);
     g.grid = j.value("grid", g.grid);
     g.gridStep = j.value("gridStep", g.gridStep);
+    if (j.contains("jointLines") && j["jointLines"].is_boolean()) {
+        g.jointLines = j["jointLines"].get<bool>();
+    }
     // 刻みが 0 だとスナップの割り算が壊れる。
     if (g.moveStep < 1e-4) g.moveStep = 0.25;
     if (g.rotateStep < 1e-4) g.rotateStep = 15.0;
@@ -2128,7 +2409,9 @@ inline SimSettings clampSim(SimSettings s) {
     s.gravityX = cl(s.gravityX, -100.0, 100.0);
     s.gravityZ = cl(s.gravityZ, -100.0, 100.0);
     s.hz = cl(s.hz, 10, 240);
-    s.substeps = cl(s.substeps, 1, 8);
+    // 上限 32: エンジンのように 1 周期が数 ms の機構は 240 Hz × 16〜32 で回す
+    // （v6_engine.xml）。重さは substeps × iterations にほぼ比例する。
+    s.substeps = cl(s.substeps, 1, 32);
     s.iterations = cl(s.iterations, 1, 2000);
     s.envelope = cl(s.envelope, 1e-4, 0.2);
     s.recovery = cl(s.recovery, 0.0, 10.0);
@@ -2222,6 +2505,9 @@ inline LightDesc clampLight(LightDesc l) {
     return l;
 }
 
+// 置き場所の位置の上限（各軸 ±この値 m。地面・テレイン・world の UI の板）。
+inline constexpr double kPlacementMaxMeters = 10000.0;
+
 // 置き場所の角度（度）。有限でなければ 0、±360 の外は 1 周ぶん畳む
 // （地面・テレインの rotation。オイラー角の意味は変えない）。
 inline double clampAngleDegrees(double v) {
@@ -2237,8 +2523,10 @@ inline GroundDesc clampGround(GroundDesc g) {
     auto cl = [](double v, double lo, double hi) {
         return v < lo ? lo : (v > hi ? hi : v);
     };
-    // 位置は各軸 ±10000 m（テレインと同じ）。NaN は原点。
-    auto clp = [&cl](double v) { return (v == v) ? cl(v, -10000.0, 10000.0) : 0.0; };
+    // 位置は各軸 ±kPlacementMaxMeters（テレインと同じ）。NaN は原点。
+    auto clp = [&cl](double v) {
+        return (v == v) ? cl(v, -kPlacementMaxMeters, kPlacementMaxMeters) : 0.0;
+    };
     g.position = {clp(g.position.x), clp(g.position.y), clp(g.position.z)};
     g.rotation = clampAngles(g.rotation);
     g.half = cl(g.half, 1.0, 1000.0);
@@ -2254,13 +2542,7 @@ inline EnvironmentDesc clampEnvironment(EnvironmentDesc e) {
     return e;
 }
 
-// テレインの丸めの部品（clampTerrain / clampTerrainNoise が共通で使う）。
-// NaN は fallback へ戻す（XML の strtod は "nan" も読むので、比較だけの
-// 丸めでは素通りしてしまう）。
-inline double clampTerrainNumber(double v, double lo, double hi, double fallback) {
-    if (!(v == v)) return fallback;
-    return v < lo ? lo : (v > hi ? hi : v);
-}
+// テレインの丸めの部品は core/Clamp.h の clampOrFallback（NaN は既定値へ戻す）。
 
 // ノイズ生成の値の範囲: octaves は 0〜16（HeightField の安全弁と同じ）、
 // gain は 0〜1、lacunarity は 1〜4、scale は 0.1〜10000 m。
@@ -2268,9 +2550,9 @@ inline TerrainNoiseParams clampTerrainNoise(TerrainNoiseParams n) {
     const TerrainNoiseParams d;
     n.octaves = n.octaves < 0 ? 0
               : (n.octaves > kTerrainMaxOctaves ? kTerrainMaxOctaves : n.octaves);
-    n.gain = clampTerrainNumber(n.gain, 0.0, 1.0, d.gain);
-    n.lacunarity = clampTerrainNumber(n.lacunarity, 1.0, 4.0, d.lacunarity);
-    n.scale = clampTerrainNumber(n.scale, 0.1, 10000.0, d.scale);
+    n.gain = clampOrFallback(n.gain, 0.0, 1.0, d.gain);
+    n.lacunarity = clampOrFallback(n.lacunarity, 1.0, 4.0, d.lacunarity);
+    n.scale = clampOrFallback(n.scale, 0.1, 10000.0, d.scale);
     return n;
 }
 
@@ -2306,7 +2588,7 @@ inline TerrainNoiseParams terrainNoiseFromJson(const nlohmann::json& j,
 //   * resolution は 1〜1024（(1024 + 1)^2 頂点 ≒ 105 万。描画の三角形が
 //     200 万を超えると作り直しが重い）。チャンク数の上限との整合は Scene が見る。
 //   * size は 1〜4000 m（描画距離 kFarPlane 2000 m の 2 倍まで）、height は
-//     kTerrainMinHeight〜1000 m、pos は各軸 ±10000 m。
+//     kTerrainMinHeight〜1000 m、pos は各軸 ±kPlacementMaxMeters。
 //   * 表面は地面と同じ範囲（roughness kRoughnessMin〜1、metallic 0〜1）で、色は
 //     各成分 0〜1。層の値（テクスチャ・法線・マスクのパス、タイル、粗さ・金属・
 //     法線の強さ）は .terrain が持つので、Scene の sanitizeTerrainLayers が検査
@@ -2314,7 +2596,7 @@ inline TerrainNoiseParams terrainNoiseFromJson(const nlohmann::json& j,
 //     金属はここと同じ範囲）。
 inline TerrainDesc clampTerrain(TerrainDesc t) {
     const TerrainDesc d;
-    const auto cl = clampTerrainNumber;
+    const auto cl = clampOrFallback;
     auto clf = [](float v, float fallback) {
         if (!(v == v)) return fallback;
         return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
@@ -2326,9 +2608,12 @@ inline TerrainDesc clampTerrain(TerrainDesc t) {
                  : (t.resolution > kTerrainMaxResolution ? kTerrainMaxResolution
                                                          : t.resolution);
     t.height = cl(t.height, kTerrainMinHeight, 1000.0, d.height);
-    t.position.x = cl(t.position.x, -10000.0, 10000.0, d.position.x);
-    t.position.y = cl(t.position.y, -10000.0, 10000.0, d.position.y);
-    t.position.z = cl(t.position.z, -10000.0, 10000.0, d.position.z);
+    t.position.x = cl(t.position.x, -kPlacementMaxMeters, kPlacementMaxMeters,
+                      d.position.x);
+    t.position.y = cl(t.position.y, -kPlacementMaxMeters, kPlacementMaxMeters,
+                      d.position.y);
+    t.position.z = cl(t.position.z, -kPlacementMaxMeters, kPlacementMaxMeters,
+                      d.position.z);
     t.rotation = clampAngles(t.rotation);
     t.color.r = clf(t.color.r, d.color.r);
     t.color.g = clf(t.color.g, d.color.g);

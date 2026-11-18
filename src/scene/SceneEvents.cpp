@@ -2,7 +2,7 @@
 // すべて PHYSICS スレッド。グラフ本体は EditorState、ここは実行するだけ。
 #include "scene/SceneInternal.h"
 
-#include "core/Trash.h"
+#include "scene/SharedAssetFile.h"
 
 #include <chrono>
 #include <filesystem>
@@ -720,12 +720,8 @@ void Scene::pruneGraphForRemoved(ed::NodeTargetKind kind, int index) {
 bool Scene::readSharedEvent(ed::EventAssetDesc& asset, std::string& reason) {
     asset.nodes.clear();
     asset.wires.clear();
-    if (asset.file.empty() || !ed::assetFileAllowed(asset.file)) {
-        reason = "'" + asset.file + "' is not an assets-relative path";
-        return false;
-    }
     std::string text;
-    if (!EditorState::readText(wizengine::assetPath(asset.file), text, reason)) return false;
+    if (!wizengine::sharedasset::readAssetText(asset.file, text, reason)) return false;
     ed::EventAssetDesc got;
     std::string error;
     std::vector<std::string> warnings;
@@ -745,12 +741,8 @@ bool Scene::readSharedEvent(ed::EventAssetDesc& asset, std::string& reason) {
 }
 
 bool Scene::writeSharedEvent(const ed::EventAssetDesc& asset, std::string& reason) {
-    if (asset.file.empty() || !ed::assetFileAllowed(asset.file)) {
-        reason = "'" + asset.file + "' is not an assets-relative path";
-        return false;
-    }
-    return EditorState::writeText(wizengine::assetPath(asset.file),
-                                  ed::eventAssetToXmlText(asset), reason);
+    return wizengine::sharedasset::writeAssetText(asset.file, ed::eventAssetToXmlText(asset),
+                                                  reason);
 }
 
 bool Scene::saveSharedEvents(const ed::SceneDocument& doc, std::string& written,
@@ -809,7 +801,7 @@ bool Scene::applySharedEventOp(const EditorState::Op& op) {
     };
 
     if (op.kind == "event.refresh") {
-        editor_.refreshEventLibrary();  // ブラウザのタブに戻ったとき。ステータスは変えない
+        editor_.refreshLibraries();  // ブラウザのタブに戻ったとき。ステータスは変えない
         return true;
     }
 
@@ -896,7 +888,7 @@ bool Scene::applySharedEventOp(const EditorState::Op& op) {
             }
         }
         std::string reason;
-        if (!wizengine::moveToTrash(std::filesystem::path(wizengine::assetPath(file)), reason)) {
+        if (!wizengine::sharedasset::trashLibraryFile(file, reason)) {
             LOGW("scene", "event library delete '%s': %s", name.c_str(), reason.c_str());
             editor_.setStatus("イベント " + name + " をごみ箱へ移せません（コンソール参照）");
         } else {

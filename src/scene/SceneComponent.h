@@ -20,6 +20,7 @@ class Scene;
 //                   so it lines up with the pose frames the renderer
 //                   interpolates between (Scene::renderAlpha).
 //   onRender      : RENDER thread, once per frame, before poses are drawn.
+//   onRenderUnlocked : （宣言の説明を参照）
 //   onCommand     : INPUT thread, for each browser JSON command.
 // A component that keeps state shared between hooks must make that state
 // thread-safe itself (atomics, like CameraObject/BoxController do).
@@ -46,6 +47,13 @@ public:
     virtual void onPhysicsPassEnd(Scene& scene) { (void)scene; }
 
     virtual void onRender(Scene& scene) { (void)scene; }
+
+    // RENDER スレッド、毎フレーム 1 回。applyToRenderer がオブジェクトのロックを
+    // 外した後（描画設定・環境光を当てるのと同じ区切り）に、登録の順に呼ぶ。
+    // 重い描画側の仕事（ファイルの読み込み・デコード・メッシュの組み立て）はここ。
+    // Renderer は使ってよい（RENDER スレッド）。Scene のオブジェクト一覧は読まない
+    // （要るものは onRender = ロックの中で写しておく。onRender は短く保つ）。
+    virtual void onRenderUnlocked(Scene& scene) { (void)scene; }
 
     // camIndex identifies which camera's browser page sent the command.
     // Return true when the command was consumed (stops the search).

@@ -5,7 +5,6 @@
 #include <memory>
 #include <vector>
 
-#include "vehicle/Formula.h"
 #include "vehicle/VehicleMath.h"
 #include "vehicle/VehicleTypes.h"
 
@@ -59,20 +58,14 @@ public:
     void reset();
     // 物理 1 ステップ。center / rot は車輪の姿勢（ワールド、X = 車軸）、
     // grounded なら groundPoint / groundNormal の平面より上にトレッドを保つ。
-    // load / deflection は空気圧の式へ渡す文脈（荷重 N、物理側の潰れ m）。
     void step(const Vec3& center, const Quat& rot, bool grounded,
-              const Vec3& groundPoint, const Vec3& groundNormal, double load,
-              double deflection, double dt);
+              const Vec3& groundPoint, const Vec3& groundNormal, double dt);
 
     // ---- 空気圧 -----------------------------------------------------------
     // 閉じたメッシュが囲む体積から圧力（静止からの増分）を出し、径方向の
     // 陰解法ばね（剛性 = 圧力の一様モードの線形化、自然長 = 静止半径 +
-    // 圧力ぶんの膨らみ）としてトレッドへ掛ける。式は TireFormula.h の約束
-    // （pressureFormulaInputs / Outputs）で差し替えられる（nullptr = 組み込みの
-    // 等温変化）。式が失敗（NaN・実行時エラー）したステップは組み込みで代用
-    // し、回数を formulaFailures() に数える。<tire pressure> が 0 なら項ごと切る。
-    void setPressureFormula(std::unique_ptr<FormulaInstance> formula);
-    int formulaFailures() const { return formulaFailures_; }
+    // 圧力ぶんの膨らみ）としてトレッドへ掛ける。圧力は等温変化
+    // p = p0 (V0/V − 1)。<tire pressure> が 0 なら項ごと切る。
     double volumeRatio() const { return ratio_; }   // V / V0（直近の step）
     double pressure() const { return pressure_; }   // 直近の step の増分 Pa
 
@@ -111,11 +104,9 @@ private:
     // 静止半径 + pressureOffset_（SoftTire.cpp の computePressure 参照）。
     double pressureK_ = 0.0;
     double pressureOffset_ = 0.0;
-    std::unique_ptr<FormulaInstance> pressureFormula_;
-    int formulaFailures_ = 0;
     double volumeOf(const std::vector<Vec3>& p) const;
     void areaVectorsOf(const std::vector<Vec3>& p, std::vector<Vec3>& out) const;
-    void computePressure(double load, double deflection, double dt);
+    void computePressure();
 };
 
 }  // namespace vehicle

@@ -2,10 +2,48 @@
 // 保存は document()、読込は loadDocument()、/scene は hierarchyJson()。
 #include "scene/SceneInternal.h"
 
+#include "control/ControlSignals.h"
+#include "control/ControlTemplates.h"
+#include "formula/FormulaText.h"
 #include "terrain/TerrainBrush.h"
+#include "scene/UiFiles.h"
 
 using namespace chrono;
 using namespace scene_detail;
+
+namespace {
+
+// 文書の UI（<canvas> / <ui> / <font>）を UiState へ入れる（読込と取込の共通の道）。
+// 共用 UI（file あり）は中身をファイルから入れる。読めなくても参照は残す（中身は
+// 空 = 何も出ない。ファイルを戻して読み直せば元に戻る。共通イベントと同じ扱い）。
+// 戻り値 = 読めなかった共用 UI の件数（呼び手がステータスに足す）。
+std::size_t loadUiFromDocument(wizengine::UiState& ui, const ed::SceneDocument& doc,
+                               wizengine::UiState::LoadMode mode) {
+    // 書き換える（ファイルの中身を入れる）のは共用 UI だけなので、それだけを写す。
+    std::vector<wizengine::ui::UiAssetDesc> uiAssets = doc.uiAssets;
+    std::size_t missing = 0;
+    for (auto& a : uiAssets) {
+        if (a.file.empty()) continue;
+        std::string reason;
+        if (!wizengine::uifiles::readSharedUi(a, reason)) {
+            LOGW("scene", "shared ui '%s': %s - it shows nothing until the file is back",
+                 a.name.c_str(), reason.c_str());
+            ++missing;
+        }
+    }
+    ui.fromDocument(doc.canvases, uiAssets, doc.fonts, mode);
+    return missing;
+}
+
+// 読めないファイルの読込の注意（ステータスの末尾に足す日本語 1 文）。label は
+// 種類（"共通イベント" / "共用 UI"）。0 件なら空。
+std::string unreadableFilesCaveat(const char* label, std::size_t count) {
+    if (count == 0) return {};
+    return std::string("（") + label + " " + std::to_string(count) +
+           " 件のファイルが読めません - コンソール参照）";
+}
+
+}  // namespace
 
 std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     auto hex = [](const filament::math::float3& c) {
@@ -186,6 +224,17 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         }
     }
 
+    // パーティクルのエミッタ（見た目だけ。制御器の emitter:<名前>.rate の候補）。
+    j["emitters"] = nlohmann::json::array();
+    {
+        const auto emitters = editor_.emitters();
+        for (std::size_t i = 0; i < emitters.size(); ++i) {
+            nlohmann::json e = ed::toJson(emitters[i]);
+            e["index"] = int(i);
+            j["emitters"].push_back(e);
+        }
+    }
+
     // イベントアセット（ASSETS パネルのタイル・Inspector の付け外し・
     // ノードエディタが描く）。発火回数付き: シミュレート中にどのノードが
     // 動いたかが見える（Node-RED のデバッグバッジに相当）。
@@ -209,6 +258,11 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         // イベントライブラリ（assets/events/*.xml の名前）。アセットパネルが
         // 今のシーンに無いものを「読み込める」タイルとして出す。
         ev["library"] = editor_.eventLibrary();
+        // グローバル（ライブラリ）の一覧をまとめて（アセットパネルの「グローバル」）。
+        j["library"] = {{"events", editor_.eventLibrary()},
+                        {"formulas", editor_.formulaLibrary()},
+                        {"prefabs", editor_.prefabLibrary()},
+                        {"meshes", editor_.meshLibrary()}};
         j["events"] = ev;
     }
     // プレハブ（ASSETS パネルの 🧩 タイル）と、プレハブ編集モードの中身
@@ -220,6 +274,7 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             nlohmann::json e;
             e["name"] = d.name;
             e["parts"] = int(d.parts.size());
+            e["file"] = d.file;  // 空 = ローカル、あり = グローバル（ライブラリ）
             pf["assets"].push_back(e);
         }
         j["prefabs"] = pf;
@@ -238,19 +293,55 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             j["prefabEdit"] = e;
         }
     }
-    // 計算式アセット（ASSETS パネルの 🧮 タイル・ノードエディタ・Inspector
-    // の車両節が使う）。タイヤ式の入出力の名前も一緒に渡す（in / out ノード
-    // の選択肢）。
+    // 計算式アセット（ASSETS パネルの 🧮 タイル・ノードエディタ・式エディタが
+    // 使う）。text は同じグラフを数式のテキストに起こしたもの（FormulaText.h。
+    // 📝 式エディタの初期値）。
     {
         nlohmann::json f;
         f["assets"] = nlohmann::json::array();
-        for (const auto& g : editor_.formulaAssets()) f["assets"].push_back(ed::toJson(g));
-        f["tireInputs"] = wizengine::vehicle::tireFormulaInputs();
-        f["tireOutputs"] = wizengine::vehicle::tireFormulaOutputs();
-        // 空気圧式（体積比 → 圧力）の入出力名。ノードエディタの in / out の
-        // 選択肢に、タイヤ式のぶんと並べて出す。
-        f["pressureInputs"] = wizengine::vehicle::pressureFormulaInputs();
-        f["pressureOutputs"] = wizengine::vehicle::pressureFormulaOutputs();
+        for (const auto& g : editor_.formulaAssets()) {
+            nlohmann::json e = ed::toJson(g);
+            // 式エディタで書いたものなら元のテキスト（コメント・名前付き定数つき）、
+            // ノードで組んだ / 編集したものはグラフから起こし直したもの。
+            e["text"] = g.source.empty() ? wizengine::formula::formulaToText(g) : g.source;
+            e["fromText"] = !g.source.empty();
+            e["file"] = g.file;  // 空 = ローカル、あり = グローバル（ライブラリ）
+            f["assets"].push_back(std::move(e));
+        }
+        // 新規作成の雛形（名前・説明）。中身はサーバー（ControlTemplates.cpp）
+        // だけが持つ = UI は名前を送るだけ。
+        f["templates"] = nlohmann::json::array();
+        for (const auto& t : wizengine::control::formulaTemplates()) {
+            // text の {joint} / {body} はそのまま（相手はブラウザが選んで置き換える）。
+            f["templates"].push_back(
+                {{"id", t.id},
+                 {"label", t.label},
+                 {"hint", t.hint},
+                 {"needs", t.needs},
+                 {"text", wizengine::control::templateText(
+                              t.id, t.needs == "joint" ? "{joint}" : "{body}")}});
+        }
+        // 制御器（計算式をブロック線図として回すもの）と、in / out の名前の
+        // 候補を組むための量の一覧（"body:<名前>." の後ろに付く）。
+        f["controllers"] = nlohmann::json::array();
+        for (const auto& c : editor_.controllers()) f["controllers"].push_back(ed::toJson(c));
+        f["params"] = nlohmann::json::array();
+        for (const auto& p : editor_.params()) f["params"].push_back(ed::toJson(p));
+        f["charts"] = nlohmann::json::array();
+        for (const auto& c : editor_.charts()) f["charts"].push_back(ed::toJson(c));
+        {
+            namespace ctl = wizengine::control;
+            nlohmann::json q;
+            q["body"] = ctl::sensorQuantities(ctl::Source::Body);
+            q["joint"] = ctl::sensorQuantities(ctl::Source::Joint);
+            q["vehicle"] = ctl::sensorQuantities(ctl::Source::Vehicle);
+            f["sensors"] = q;
+            q["body"] = ctl::actuatorQuantities(ctl::Source::Body);
+            q["joint"] = ctl::actuatorQuantities(ctl::Source::Joint);
+            q["vehicle"] = ctl::actuatorQuantities(ctl::Source::Vehicle);
+            q["emitter"] = ctl::actuatorQuantities(ctl::Source::Emitter);
+            f["actuators"] = q;
+        }
         j["formulas"] = f;
     }
 
@@ -289,18 +380,16 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     if (sel < boxes_.size() && boxes_[sel].alive) {
         nlohmann::json d = ed::toJson(boxes_[sel].desc);
         d["index"] = int(sel);
-        // 車両なら軸ごとの要点（Inspector の車両節: タイヤ式の付け先）。
+        // 車両なら軸ごとの要点（Inspector の車両節: ソフトタイヤと空気圧）。
         if (boxes_[sel].desc.hasVehicle) {
             nlohmann::json axles = nlohmann::json::array();
             for (const auto& a : boxes_[sel].desc.vehicle.axles) {
                 axles.push_back({{"z", a.z},
                                  {"steer", a.steerDeg},
                                  {"driven", a.driven},
-                                 {"formula", a.tire.formula},
                                  {"soft", a.tire.soft},
                                  {"stiffness", a.tire.stiffness},
-                                 {"pressure", a.tire.pressure},
-                                 {"pressureFormula", a.tire.pressureFormula}});
+                                 {"pressure", a.tire.pressure}});
             }
             d["vehicleAxles"] = axles;
         }
@@ -411,6 +500,16 @@ ed::SceneDocument Scene::document() {
         fix(c.bodyB);
         doc.cables.push_back(c);
     }
+    // パーティクルのエミッタ。付け先が消えていたらワールド（-1）に付け替える。
+    for (const auto& mIn : editor_.emitters()) {
+        ed::EmitterDesc m = mIn;
+        if (m.body >= 0) {
+            m.body = (std::size_t(m.body) < remap.size() && remap[std::size_t(m.body)] >= 0)
+                         ? remap[std::size_t(m.body)]
+                         : -1;
+        }
+        doc.emitters.push_back(m);
+    }
 
     // ---- イベントアセット --------------------------------------------------
     // 中身（ノード）はそのまま。ノードの対象番号だけ詰めた番号へ付け替える
@@ -474,6 +573,14 @@ ed::SceneDocument Scene::document() {
     }
     doc.formulas = editor_.formulaAssets();
     doc.prefabs = editor_.prefabAssets();
+    doc.controllers = editor_.controllers();
+    doc.params = editor_.params();
+    doc.charts = editor_.charts();
+    // UI（UiState のロックは末端 = objects → editor の後に取ってよい）。共用 UI は
+    // 参照だけを書く（ファイルへ書くのは後の PR）。Canvas の番号の付け替え表は、
+    // Canvas を番号で指すノード（後の PR）が使う。
+    const std::vector<int> canvasRemap = ui_.toDocument(doc);
+    (void)canvasRemap;
     return doc;
 }
 
@@ -481,13 +588,23 @@ std::string Scene::documentXml() {
     return ed::toXmlText(document());
 }
 
+std::string Scene::takeLoadCaveat() {
+    std::string out;
+    out.swap(loadCaveat_);
+    return out;
+}
+
 void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
+    // 読込の注意の箱を空にするのはここだけ（書く側 = テレイン・共通イベント・
+    // 共用 UI は足すだけ）。
+    loadCaveat_.clear();
     // いま在るものを全部畳んでから作り直す。番号は 0 から振り直されるので、
     // 掴んでいる選択も落とす。
     removeAllCables();
     physics_.removeAllJoints();
     editor_.setJoints({});
     editor_.setCables({});
+    editor_.setEmitters({});
     for (std::size_t i = 0; i < boxes_.size(); ++i) destroyObject(i);
     for (auto& c : controllers_) c->setSelected(BoxController::kNone);
     editor_.clearSel();
@@ -551,32 +668,24 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     }
 
     const std::size_t base = boxes_.size();  // 追加ぶんの先頭番号
-    // 計算式アセット。<vehicle> の中に書かれた古い置き場（<formula>）は
-    // シーンのアセットへ移す（同じ名前があればそちらを優先）。次に保存
-    // したときは <asset> に出る。
     {
-        std::vector<wizengine::vehicle::FormulaGraphDesc> formulas = doc.formulas;
-        auto has = [&formulas](const std::string& name) {
-            for (const auto& f : formulas) {
-                if (f.name == name) return true;
-            }
-            return false;
-        };
-        for (const auto& b : doc.bodies) {
-            if (!b.hasVehicle) continue;
-            for (const auto& f : b.vehicle.formulas) {
-                if (!f.name.empty() && !has(f.name)) formulas.push_back(f);
-            }
-        }
+        // グローバル（ライブラリ）の計算式・プレハブは中身をファイルから入れる
+        // （読めなければ空のまま参照を残す。イベントの共通化と同じ扱い）。
+        libBaseline_.clear();
+        auto formulas = doc.formulas;
+        auto prefabs = doc.prefabs;
+        std::size_t missing = 0;
+        resolveLibraryAssets(formulas, prefabs, missing);
+        loadCaveat_ += unreadableFilesCaveat("グローバルの計算式 / プレハブ", missing);
         editor_.setFormulaAssets(std::move(formulas));
+        editor_.setPrefabAssets(std::move(prefabs));
     }
-    editor_.setPrefabAssets(doc.prefabs);
+    editor_.setControllers(doc.controllers);
+    editor_.setParams(doc.params);
+    editor_.setCharts(doc.charts);
     editor_.setPrefabEditObject(-1);
-    for (const auto& bIn : doc.bodies) {
-        ed::BodyDesc b = ed::clampBody(bIn);
-        b.vehicle.formulas.clear();  // 置き場はシーンのアセットに統一
-        createObject(b);
-    }
+    for (const auto& bIn : doc.bodies) createObject(ed::clampBody(bIn));
+    editor_.bumpVehicleVersion();  // 走っている車両モデルは作り直す
 
     std::vector<ed::JointDesc> joints;
     for (const auto& jIn : doc.joints) {
@@ -597,6 +706,15 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
         }
         editor_.setCables(std::move(cables));
     }
+    {
+        std::vector<ed::EmitterDesc> emitters;
+        for (const auto& mIn : doc.emitters) {
+            ed::EmitterDesc m = mIn;
+            if (m.body >= 0) m.body += int(base);
+            emitters.push_back(m);
+        }
+        editor_.setEmitters(std::move(emitters));
+    }
 
     // イベントアセット。中身のノードの対象番号は、ジョイントと同じく今回
     // 足されたぶんの先頭（base / lightBase）だけずらす（カメラはスロット
@@ -605,9 +723,10 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     // イベントの節を持たない文書は既定の構成へ - ライトを 1 灯も書かない
     // 文書が初期構成で開くのと同じ扱いで、「掴んでも動かないシーン」で
     // 始めさせないため。
+    // 読めなかった共通イベントの件数（注意は下で共用 UI と並べて足す）。
+    std::size_t sharedMissing = 0;
     if (doc.hasEvents) {
         std::vector<ed::EventAssetDesc> assets;
-        std::size_t sharedMissing = 0;
         for (const auto& assetDoc : doc.eventAssets) {
             // 共通化したイベント（file あり）は中身をイベントライブラリから入れる。
             // 読めなくても参照は残す（中身は空 = 何もしない。ファイルを戻して
@@ -642,11 +761,6 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
             asset.wires = assetIn.wires;
             assets.push_back(std::move(asset));
         }
-        if (sharedMissing > 0) {
-            // ステータスの末尾に足す注意（テレインの注意と同じ口）。
-            terrainLoadCaveat_ += "（共通イベント " + std::to_string(sharedMissing) +
-                                  " 件のファイルが読めません - コンソール参照）";
-        }
         editor_.setEventAssets(std::move(assets), doc.worldEvents);
         resetGraphRuntime();
     } else {
@@ -659,6 +773,15 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     // 二度作り直さないため。XML の適用（keepSameTerrain）で同じテレインなら
     // 格子も当たり判定も作り直さない。
     setTerrainFromDocument(doc, keepSameTerrain);
+
+    // UI（Canvas・共用 UI・フォント）。節の無い文書は UI 無し。
+    const std::size_t uiMissing =
+        loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Replace);
+
+    // 読込の注意（ステータスの末尾に足す日本語）。テレインの注意
+    // （setTerrainFromDocument が足した）の後ろに、共通イベント → 共用 UI の順。
+    loadCaveat_ += unreadableFilesCaveat("共通イベント", sharedMissing);
+    loadCaveat_ += unreadableFilesCaveat("共用 UI", uiMissing);
 
     // 文書が Core 専用の機能を使っていれば系を切り替える（使わなくなって
     // いれば既定へ戻す）。setTerrainFromDocument の中で済んでいるので、ここは確認だけ。
@@ -676,7 +799,7 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
 // 後ろに追加、ジョイント・ケーブルの参照は追加ぶんの先頭番号だけずらす。
 // 設定（option / visual / ground / terrain / ライト / カメラ / イベント）は
 // 文書にあっても無視する（取り込む物の「構造」だけが欲しいので）。
-void Scene::appendDocument(const ed::SceneDocument& doc) {
+std::string Scene::appendDocument(const ed::SceneDocument& doc) {
     {
         std::lock_guard<std::mutex> lk(objectsMutex_);
         for (const auto& m : doc.meshes) {
@@ -688,21 +811,60 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
             meshes_.push_back(std::move(a));
         }
     }
+    // 足す側の文書がグローバルの計算式・プレハブを参照していれば中身を入れる。
+    auto docFormulas = doc.formulas;
+    auto docPrefabs = doc.prefabs;
+    {
+        std::size_t missing = 0;
+        resolveLibraryAssets(docFormulas, docPrefabs, missing);
+    }
     {
         auto prefabs = editor_.prefabAssets();
-        for (const auto& p : doc.prefabs) {
+        for (const auto& p : docPrefabs) {
             bool dup = false;
             for (const auto& have : prefabs) dup = dup || have.name == p.name;
             if (!dup) prefabs.push_back(p);
         }
         editor_.setPrefabAssets(std::move(prefabs));
     }
-    const std::size_t base = boxes_.size();
-    for (const auto& bIn : doc.bodies) {
-        ed::BodyDesc b = ed::clampBody(bIn);
-        b.vehicle.formulas.clear();
-        createObject(b);
+    // 計算式と制御器。どちらも名前で付くので、同じ名前が既にあれば今の
+    // ものを残す。
+    {
+        auto formulas = editor_.formulaAssets();
+        bool added = false;
+        for (const auto& f : docFormulas) {
+            bool dup = false;
+            for (const auto& have : formulas) dup = dup || have.name == f.name;
+            if (!dup && !f.name.empty()) {
+                formulas.push_back(f);
+                added = true;
+            }
+        }
+        if (added) editor_.setFormulaAssets(std::move(formulas));
     }
+    {
+        auto ctl = editor_.controllers();
+        for (const auto& c : doc.controllers) {
+            bool dup = false;
+            for (const auto& have : ctl) dup = dup || have.formula == c.formula;
+            if (!dup) ctl.push_back(c);
+        }
+        editor_.setControllers(std::move(ctl));
+        // パラメータも足す（同名は今のシーンの値を残す）。
+        auto params = editor_.params();
+        for (const auto& p : doc.params) {
+            bool dup = false;
+            for (const auto& have : params) dup = dup || have.name == p.name;
+            if (!dup) params.push_back(p);
+        }
+        editor_.setParams(std::move(params));
+        auto charts = editor_.charts();
+        charts.insert(charts.end(), doc.charts.begin(), doc.charts.end());
+        editor_.setCharts(std::move(charts));
+    }
+    const std::size_t base = boxes_.size();
+    for (const auto& bIn : doc.bodies) createObject(ed::clampBody(bIn));
+    editor_.bumpVehicleVersion();
     {
         auto joints = editor_.joints();
         for (const auto& jIn : doc.joints) {
@@ -723,6 +885,19 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
         }
         editor_.setCables(std::move(cables));
     }
+    {
+        auto emitters = editor_.emitters();
+        for (const auto& mIn : doc.emitters) {
+            ed::EmitterDesc m = mIn;
+            if (m.body >= 0) m.body += int(base);
+            emitters.push_back(m);
+        }
+        editor_.setEmitters(std::move(emitters));
+    }
+    // UI は後ろへ足す（共用 UI とフォントは名前が重ならないものだけ）。読めない
+    // 共用 UI は loadUiFromDocument が LOGW に出し、件数は読込と同じ文で注意に返す。
+    const std::size_t uiMissing =
+        loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Append);
     editor_.bumpGraphVersion();
     syncBackend();
     if (editor_.mode() == ed::AppMode::Simulate) {
@@ -730,4 +905,5 @@ void Scene::appendDocument(const ed::SceneDocument& doc) {
         buildCables();
     }
     snapshot();
+    return unreadableFilesCaveat("共用 UI", uiMissing);
 }

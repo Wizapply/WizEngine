@@ -10,8 +10,9 @@
 #include "scene/PrefabDefaults.h"
 #include "scene/Scene.h"
 #include "document/SceneDocument.h"
+#include "formula/FormulaText.h"
 #include "scene/SceneMath.h"
-#include "vehicle/Formula.h"
+#include "formula/Formula.h"
 
 namespace ed = wizengine::editor;
 
@@ -136,7 +137,10 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
     // シミュレート設定（edit.sim）だけは全カメラから変えられる。Physics タブ
     // は全ページにあり、隣に並ぶ Solver や Rate は誰でも触れるのに、これだけ
     // 効かないのは分かりにくいため。シーンの中身を書き換える操作ではない。
-    if (what != "sim" && !isEditorCam) return true;
+    // パラメータの値（edit.param.set）も同じ: 走らせながらアクセル開度や
+    // 目標値を変えるのは観察用のカメラからでも普通の使い方（追加・削除は
+    // シーンの書き換えなのでエディタカメラだけ）。
+    if (what != "sim" && what != "param.set" && !isEditorCam) return true;
     // ライトとカメラの編集は**エディタモード専用**。オブジェクトの edit.set
     // などはシミュレート中の物性いじりに使えるが、照明と視点の設計は
     // エディタの仕事、という整理（ユーザー指定）。
@@ -453,6 +457,43 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         return true;
     }
 
+    // グローバル（ライブラリ）のアセット: kind = event / formula / prefab。
+    // share = グローバルにする、unshare = このシーン専用（ローカル）に戻す、
+    // import = グローバルのものをこのシーンで使う、delete = ライブラリのファイルを
+    // ごみ箱へ、refresh = 一覧の取り直し。実体は Scene::applyLibraryOp。
+    if (what == "lib.share" || what == "lib.unshare" || what == "lib.import" ||
+        what == "lib.delete" || what == "lib.refresh") {
+        EditorState::Op op;
+        op.kind = what;
+        if (what != "lib.refresh") {
+            const std::string kind = ed::jsonString(msg, "kind", "");
+            if (kind != "event" && kind != "formula" && kind != "prefab") return true;
+            const std::string name = ed::sanitizeEventName(ed::jsonString(msg, "name", ""));
+            if (name.empty()) return true;
+            op.args["kind"] = kind;
+            op.args["name"] = name;
+        }
+        if (msg.contains("overwrite") && msg["overwrite"].is_boolean()) {
+            op.args["overwrite"] = msg["overwrite"].get<bool>();
+        }
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+    // assets/ のメッシュファイルをこのシーンに宣言する（グローバルのメッシュを置く前）。
+    if (what == "mesh.add") {
+        const std::string file = ed::jsonString(msg, "file", "");
+        if (!ed::assetFileAllowed(file)) return true;
+        EditorState::Op op;
+        op.kind = "mesh.add";
+        op.args["file"] = file;
+        op.args["name"] = ed::sanitizeEventName(ed::jsonString(msg, "name", ""));
+        op.args["scale"] = ed::jsonNumber(msg, "scale", 1.0);
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
     // イベントライブラリ（共通化したイベント。assets/events/<名前>.xml）:
     // share = 今のシーンのイベントを共通化、unshare = このシーン専用に戻す、
     // import = ライブラリから読み込む、libdelete = ライブラリのファイルを
@@ -614,7 +655,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
 
     // ---- 計算式アセット（ノード式）------------------------------------------
     // イベントと同じ流儀。名前の規則も同じ（英数字と _ -）。ノードの種類は
-    // 語彙表（vehicle/Formula.h）に無ければ積まない。
+    // 語彙表（formula/Formula.h）に無ければ積まない。
     if (what == "formula.add" || what == "formula.remove") {
         const std::string name = ed::sanitizeEventName(
             (msg.contains("name") && msg["name"].is_string())
@@ -627,10 +668,45 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         EditorState::Op op;
         op.kind = what;
         op.args = {{"name", name}};
-        // template = "tire": 既定のタイヤ式（Magic Formula）から始める。
+        // template: 雛形の id（control/ControlTemplates.h。省略 = 空の式）。
+        // target: 雛形が指すジョイント / オブジェクトの名前。
         if (msg.contains("template") && msg["template"].is_string()) {
             op.args["template"] = msg["template"].get<std::string>();
         }
+        if (msg.contains("target") && msg["target"].is_string()) {
+            op.args["target"] = ed::sanitizePortName(msg["target"].get<std::string>());
+        }
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // 数式のテキストで計算式を作る / 置き換える。壊れた式はキューに積まず、
+    // 理由（行番号付き）をステータスへ（📄 XML の適用と同じ流儀）。
+    if (what == "formula.text") {
+        const std::string name = ed::sanitizeEventName(
+            (msg.contains("name") && msg["name"].is_string()) ? msg["name"].get<std::string>()
+                                                              : std::string());
+        const std::string text = (msg.contains("text") && msg["text"].is_string())
+                                     ? msg["text"].get<std::string>()
+                                     : std::string();
+        if (name.empty()) {
+            state.setStatus("計算式の名前は英数字と _ - だけです");
+            return true;
+        }
+        if (text.size() > 256 * 1024) {
+            state.setStatus("式が大きすぎます（256 KB まで）");
+            return true;
+        }
+        wizengine::formula::FormulaGraphDesc check;
+        std::string err;
+        if (!wizengine::formula::formulaFromText(text, name, check, err)) {
+            state.setStatus("式のエラー: " + err);
+            return true;
+        }
+        EditorState::Op op;
+        op.kind = what;
+        op.args = {{"name", name}, {"text", text}};
         op.camera = camIndex;
         state.push(std::move(op));
         return true;
@@ -645,7 +721,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
                 (msg.contains("type") && msg["type"].is_string())
                     ? msg["type"].get<std::string>()
                     : std::string();
-            if (!wizengine::vehicle::formulaKind(type)) {
+            if (!wizengine::formula::formulaKind(type)) {
                 state.setStatus("知らないノードの種類です: " + type);
                 return true;
             }
@@ -670,6 +746,83 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
                    {"fromPort", ed::jsonInt(msg, "fromPort", 0)},
                    {"to", ed::jsonInt(msg, "to", -1)},
                    {"port", ed::jsonInt(msg, "port", 0)}};
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- 制御器のパラメータ（式からは param:<name>）-------------------------
+    // add {name, value, min, max}、remove {name}、set {name, value|min|max}。
+    if (what == "param.add" || what == "param.remove" || what == "param.set") {
+        const std::string raw = (msg.contains("name") && msg["name"].is_string())
+                                    ? msg["name"].get<std::string>()
+                                    : std::string();
+        const std::string name = ed::sanitizeEventName(raw);
+        if (name.empty() || name != raw) {
+            state.setStatus("パラメータの名前は英数字と _ - で付けてください");
+            return true;
+        }
+        EditorState::Op op;
+        op.kind = what;
+        op.args = {{"name", name}};
+        for (const char* key : {"value", "min", "max", "step"}) {
+            if (msg.contains(key) && msg[key].is_number()) op.args[key] = msg[key];
+        }
+        if (msg.contains("label") && msg["label"].is_string()) {
+            op.args["label"] = ed::sanitizeLabel(msg["label"].get<std::string>(), 80);
+        }
+        if (msg.contains("options") && msg["options"].is_string()) {
+            op.args["options"] = ed::sanitizeLabel(msg["options"].get<std::string>(), 400);
+        }
+        if (msg.contains("move") && msg["move"].is_number_integer()) op.args["move"] = msg["move"];
+        // エディタカメラ以外のページから来た set は値だけ（範囲・表示名・並びは
+        // 制御盤の設計 = シーンの書き換えなので、他の edit.* と同じくエディタ
+        // カメラのページだけ）。
+        if (!isEditorCam) {
+            const nlohmann::json value = op.args.value("value", nlohmann::json());
+            op.args = {{"name", name}};
+            if (value.is_number()) op.args["value"] = value;
+            else return true;
+        }
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- 制御盤のグラフ -------------------------------------------------------
+    // add {title, signals, span}、remove {index}、set {index, title|signals|span|move}。
+    // 中身の検査は chartFromJson（clampChart）が持つので、ここは鍵を選んで運ぶだけ。
+    if (what == "chart.add" || what == "chart.remove" || what == "chart.set") {
+        EditorState::Op op;
+        op.kind = what;
+        op.args = nlohmann::json::object();
+        op.args["index"] = ed::jsonInt(msg, "index", -1);
+        if (msg.contains("title") && msg["title"].is_string()) op.args["title"] = msg["title"];
+        if (msg.contains("signals") && msg["signals"].is_array()) op.args["signals"] = msg["signals"];
+        if (msg.contains("span") && msg["span"].is_number()) op.args["span"] = msg["span"];
+        if (msg.contains("move") && msg["move"].is_number_integer()) op.args["move"] = msg["move"];
+        op.camera = camIndex;
+        state.push(std::move(op));
+        return true;
+    }
+
+    // ---- 制御器（計算式をブロック線図として回す）----------------------------
+    // add {formula, period}、remove {formula}、set {formula, period, enabled}。
+    if (what == "control.add" || what == "control.remove" || what == "control.set") {
+        const std::string formula = ed::sanitizeEventName(
+            (msg.contains("formula") && msg["formula"].is_string())
+                ? msg["formula"].get<std::string>()
+                : std::string());
+        if (formula.empty()) {
+            state.setStatus("制御器にする計算式を選んでください");
+            return true;
+        }
+        EditorState::Op op;
+        op.kind = what;
+        op.args = {{"formula", formula}};
+        for (const char* key : {"period", "enabled"}) {
+            if (msg.contains(key)) op.args[key] = msg[key];
+        }
         op.camera = camIndex;
         state.push(std::move(op));
         return true;
@@ -752,10 +905,6 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         } else {
             // 送られてきたキーだけ積む（Scene 側も同じ約束で部分更新）。
             op.args["axle"] = ed::jsonInt(msg, "axle", -1);
-            if (msg.contains("formula") && msg["formula"].is_string()) {
-                op.args["formula"] =
-                    ed::sanitizeEventName(msg["formula"].get<std::string>());
-            }
             if (msg.contains("soft") && msg["soft"].is_boolean()) {
                 op.args["soft"] = msg["soft"].get<bool>();
             }
@@ -764,10 +913,6 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
             }
             if (msg.contains("pressure") && msg["pressure"].is_number()) {
                 op.args["pressure"] = msg["pressure"].get<double>();
-            }
-            if (msg.contains("pressureFormula") && msg["pressureFormula"].is_string()) {
-                op.args["pressureFormula"] =
-                    ed::sanitizeEventName(msg["pressureFormula"].get<std::string>());
             }
         }
         op.camera = camIndex;
@@ -948,9 +1093,20 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         return true;
     }
 
-    if (what == "clear") {
+    // clear = 空のシーンへ。new = 空のシーンへして名前を付ける（アセットパネルの
+    // 「新規シーン」。ファイルはまだ書かない - 💾 保存でその名前に書く）。
+    if (what == "clear" || what == "new") {
         EditorState::Op op;
         op.kind = "clear";
+        if (what == "new") {
+            const std::string name =
+                EditorState::sanitizeSceneName(msg.value("name", std::string()));
+            if (name.empty()) {
+                state.setStatus("新規シーン: 名前は英数字と _ - で付けてください");
+                return true;
+            }
+            op.args = {{"name", name}};
+        }
         op.camera = camIndex;
         state.push(std::move(op));
         return true;

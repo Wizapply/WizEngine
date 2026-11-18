@@ -14,6 +14,7 @@
 
 #include <math/vec3.h>
 
+#include "scene/SceneSystemConfig.h"
 #include "scene/BoxController.h"
 #include "scene/CameraObject.h"
 #include "scene/EditorState.h"
@@ -21,6 +22,7 @@
 #include "scene/GameObject.h"
 #include "scene/SceneComponent.h"
 #include "scene/SceneMath.h"  // cameraRay の Basis / Vec3
+#include "scene/UiState.h"
 #include "document/SceneDocument.h"
 #include "physics/MeshCollision.h"  // CollisionTriangles
 #include "physics/PhysicsWorld.h"  // for BodyTransform
@@ -70,17 +72,13 @@ struct BrushStamp;
 // boxes_ の「構造」を触るときだけ objectsMutex_ を取る。物理スレッドは唯一の
 // 書き手なので読むときは取らなくてよいが、他のスレッドは必ず lockObjects()。
 
-// Which physics backend the scene wants (SceneConfig.h の kBackend。CMake が
-// Multicore 無しなら Core に落ちる); main constructs the PhysicsWorld from it.
-PhysicsBackend scenePhysicsBackend();
-
 class Scene {
 public:
-    // maxCameras はカメラスロットの数（0 = SceneConfig.h の kMaxCameras）。
-    // exe 引数 --max-cameras から来る。ページ・受け口はこの数だけ用意され、
-    // エディタの「カメラを追加」もこの数まで（1〜16 に丸める）。
+    // sys は実行環境の設定（config.json の "scene" / "physics"。
+    // scene/SceneSystemConfig.h）。カメラのスロット数（1〜16 に丸める）・
+    // エディタカメラ・起動時のシーンとモード・休止・バックエンドの選び方。
     Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
-          std::size_t maxCameras = 0);
+          SceneSystemConfig sys = {});
     // .cpp で定義する（テレインの窓口と Undo を前方宣言の型の unique_ptr で
     // 持つため。完全な型が見える所で壊す）。
     ~Scene();
@@ -88,7 +86,7 @@ public:
     // The scene's cameras. Each one has its own Filament view and its own
     // browser endpoint; index 0 is the default camera. Input events are routed
     // to one of these (input thread); the render loop draws each in turn.
-    // スロットは kMaxCameras 個の固定プールで、エディタの追加・削除は
+    // スロットは SceneSystemConfig::maxCameras 個の固定プールで、エディタの追加・削除は
     // cameraActive の上げ下げ（エンドポイントは起動時に全部できている）。
     CameraObject& camera(std::size_t index = 0) { return *cameras_[index]; }
     std::size_t cameraCount() const { return cameras_.size(); }
@@ -177,13 +175,26 @@ public:
         bool broken = false;  // breakForce を超えて外れた
     };
     std::vector<JointStat> jointStats();
+    // 文書のジョイント番号 → 物理のジョイント番号（シミュレートしていない・
+    // 作れなかったものは PhysicsWorld::kInvalidJoint）。PHYSICS スレッド専用
+    // （制御器のアクチュエータが setJointMotorTarget に使う）。
+    std::size_t jointPhysId(std::size_t index) const {
+        return index < jointPhysIds_.size() ? jointPhysIds_[index]
+                                            : PhysicsWorld::kInvalidJoint;
+    }
+    // シミュレートの「やり直し」の回数（開始・停止・Reset で進む）。
+    // 実行状態を持つ係（制御器）が、これが変わったら状態を捨てる。
+    std::uint64_t runGeneration() {
+        std::lock_guard<std::mutex> lk(poseMutex_);
+        return rigGeneration_;
+    }
 
     // ---- バックエンドの自動切替（B）------------------------------------------
-    // 既定は SceneConfig.h の kBackend（Core）。Multicore が扱えない機能
+    // 既定は SceneSystemConfig::backend（config.json、Core）。Multicore が扱えない機能
     // （FEA のケーブル・ChLoad のブッシュ / 定常荷重・直接法と MINRES・
     // HHT / Newmark・モーダル解析）を文書が使っていたら Core、無くて
-    // ソフトボディがあるかボディが多ければ Multicore（kMulticoreForSoftBodies /
-    // kMulticoreMinBodies）、どちらでもなければ既定。接触の解き方（nsc /
+    // ソフトボディがあるかボディが多ければ Multicore（multicoreForSoftBodies /
+    // multicoreMinBodies）、どちらでもなければ既定。接触の解き方（nsc /
     // smc）も系の種類なので同じ口。
     // 判定と切替はシミュレート開始・設定変更・読込のたび（syncBackend）。
     // いま何で動いていて、なぜかは backendNote（/scene と /stats に出す）。
@@ -350,6 +361,20 @@ public:
     // 物理とは別に描画用の値を持つ部品（VehicleComponent の車輪）が、車体と
     // 同じ割合で補間するために読む。
     double renderAlpha() const { return renderAlpha_; }
+    // このフレームが描くシミュレーション時刻（RENDER スレッド専用。補間した
+    // 姿勢と同じ時刻 = 前回と今回の物理フレームの間を renderAlpha で分けた値。
+    // 補間していないときは最新のフレームの時刻）。見た目だけの粒子の年齢を
+    // 物理の時計で数えるため（EffectsComponent）。
+    double renderSimTime() const { return renderSimTime_; }
+    // 物理スレッドが進めているシミュレーション時刻（PHYSICS スレッド専用。
+    // 呼ばれたステップの始まりの時刻）。
+    double physicsSimTime() const { return simClock_; }
+    // 時間の速さ = 実時間 1 秒に進めるシミュレーション時間（0.01〜1。スロー
+    // モーション）。物理ループ（main.cpp）が毎パス PhysicsTuning から写す。
+    // 描画の補間（1 パスを何秒の実時間で描くか）とカメラの注文の保持時間が
+    // これで伸びる = 0.01 倍でも物の動きが滑らかで、追従カメラが外れない。
+    void setTimeScale(double s) { timeScale_.store(s); }
+    double timeScale() const { return timeScale_.load(); }
 
     // Whiten strength for a grabbed object (kSelectedWhiten in SceneConfig.h).
     float selectedWhiten() const;
@@ -367,9 +392,12 @@ public:
 
     // ---- モードと編集 ----------------------------------------------------
     EditorState& editor() { return editor_; }
+    // UI の状態（Canvas・共用 UI・フォントの設計値。UiState が唯一の持ち主）。
+    wizengine::UiState& ui() { return ui_; }
+    const wizengine::UiState& ui() const { return ui_; }
     wizengine::editor::AppMode mode() const { return editor_.mode(); }
     // エディタ操作（モード切替・配置・ギズモ・ジョイント・保存/読込）を
-    // 受け付けるカメラ。SceneConfig.h の kEditorCamera（既定 0）。
+    // 受け付けるカメラ。SceneSystemConfig::editorCamera（既定 0）。
     std::size_t editorCamera() const;
 
     // PHYSICS thread: エディタモードの1パス（積分しない）。
@@ -512,7 +540,9 @@ private:
     void syncCables();
     // 文書の中身を今のシーンへ**足す**（URDF などの取込。loadDocument は
     // 置き換え）。ボディ・ジョイント・ケーブル・メッシュ・プレハブが対象。
-    void appendDocument(const wizengine::editor::SceneDocument& doc);
+    // 戻り値 = 取込の注意（ステータスの末尾に足す日本語。読めない共用 UI の件数など。
+    // 無ければ空）。
+    std::string appendDocument(const wizengine::editor::SceneDocument& doc);
 
     // ---- イベントグラフの実行（PHYSICS スレッド）--------------------------
     // シミュレートの 1 サブステップごとに、**付いているイベントアセット**の
@@ -561,6 +591,28 @@ private:
     // edit.event.share / unshare / import / libdelete / refresh と、
     // event.add の shared。扱ったら true。
     bool applySharedEventOp(const EditorState::Op& op);
+    // ---- グローバル（ライブラリ）の計算式・プレハブ・メッシュ（SceneLibrary.cpp）
+    // 計算式は assets/formulas/<名前>.xml、プレハブは assets/prefabs/<名前>.xml が
+    // 中身を持ち、シーンの XML は file 属性の参照だけ。すべて PHYSICS thread。
+    // g.file / d.file の中身を読んで入れる（名前と file はそのまま）。読めれば
+    // そのときの中身を変更の目印（libBaseline_）に覚える。プレハブは部品が使う
+    // メッシュの宣言を、このシーンに無ければ足す。
+    bool readLibraryFormula(wizengine::formula::FormulaGraphDesc& g, std::string& reason);
+    bool readLibraryPrefab(wizengine::editor::PrefabDesc& d, std::string& reason);
+    // 読込: file のあるものの中身をライブラリから入れる（読めなければ空のまま
+    // 参照を残し、missing を数える）。
+    void resolveLibraryAssets(std::vector<wizengine::formula::FormulaGraphDesc>& formulas,
+                              std::vector<wizengine::editor::PrefabDesc>& prefabs,
+                              std::size_t& missing);
+    // 保存: グローバルの計算式・プレハブのうち、読んだとき / 書いたときから
+    // 中身が変わったものだけをファイルへ書く。written に書いた名前。
+    bool saveLibraryAssets(const wizengine::editor::SceneDocument& doc, std::string& written,
+                           std::string& reason);
+    // edit.lib.share / unshare / import / delete / refresh（kind = event / formula /
+    // prefab）と edit.mesh.add。扱ったら true。
+    bool applyLibraryOp(const EditorState::Op& op);
+    void addMeshDeclaration(const nlohmann::json& args);
+    std::vector<wizengine::editor::MeshAssetDesc> meshDescs();
     // 実行状態（タイマー・接触の記憶・発火カウント）と、アクションが加えた
     // 実行時の上書き（色・ライト・固定）を捨てて設計値へ戻す。
     // シミュレートの開始・停止・Reset で呼ぶ。
@@ -578,6 +630,9 @@ private:
     // 適用）。keepSameTerrain = 文書のテレインが今のものと同じなら手元の格子を
     // 保つ（XML の適用だけ。シーンの読込はファイルから読み直す）。
     void loadDocument(const wizengine::editor::SceneDocument& doc, bool keepSameTerrain);
+    // 直前の読込で出た注意（テレイン・共通イベント・共用 UI。ステータスの末尾に
+    // 足す日本語）を返して消す。無ければ空。terrainCombineCaveat と同じ使い方。
+    std::string takeLoadCaveat();
     // ジョイントの端点に使う物理ボディ番号。-1 は地面。
     std::size_t jointBodyId(int objectIndex) const;
 
@@ -752,7 +807,7 @@ private:
     //   * ファイルが決まらない → Missing
     //   * ファイルはあるが使えない（readTerrainFile が断る）→ Unreadable
     //     （そのファイルは使わず上書きもしない）
-    // 理由（英語）は LOGW に、注意は terrainLoadCaveat_ に入れる。
+    // 理由（英語）は LOGW に、注意は loadCaveat_ に足す。
     void loadTerrainField(const wizengine::editor::TerrainDesc& doc);
     // name のファイルを読み、使えるなら desc.position に置いた格子を返して、desc の
     // data / guid / size / resolution / height を読んだ値で埋める（位置と表面は
@@ -774,7 +829,7 @@ private:
     // 旧属性にテクスチャがあり、層 0 のテクスチャが空のときだけ取り込んで
     // ファイルの dirty を立てる（次の保存で .terrain に移り XML から消える）。
     // 層 0 が既にあればファイルが勝つ（LOGI）。Missing は取り込めない（保存で
-    // 属性が落ちる。受け入れ済み）。注意の文は terrainLoadCaveat_ の後ろに足す。
+    // 属性が落ちる。受け入れ済み）。注意の文は loadCaveat_ の後ろに足す。
     void adoptLegacySurface(const wizengine::editor::TerrainLegacyDesc& legacy);
     // 文書のテレインが name を参照しているか（テレインがあり、大文字・小文字を
     // 問わず一致）。Missing（格子が無い）も含む。「参照している名前か」の唯一の判定。
@@ -789,9 +844,6 @@ private:
     // a が今のテレインと同じものか（背番号が両方にあれば背番号、無ければ名前）。
     // Missing なら false（XML の適用で読み直す）。
     bool sameTerrainIdentity(const wizengine::editor::TerrainDesc& a) const;
-    // 直前の読込で出たテレインの注意（ステータスの末尾に足す日本語 1 文）を返して
-    // 消す。無ければ空。terrainCombineCaveat と同じ使い方。
-    std::string terrainLoadCaveat();
     // desc の名前が空なら base から空いている名前（uniqueName）を、背番号が空なら
     // 新しい背番号を入れる（空でない方はそのまま）。新しいテレインの名前と背番号を
     // 決める唯一の口: 新規・旧形式の読込は両方を空にしてから呼び、保存は欠けて
@@ -978,8 +1030,11 @@ private:
     std::vector<LightItem> lights_;    // 同上
 
     std::vector<GameObject> boxes_;
+    // 実行環境の設定（コンストラクタで受けて以後は読むだけ）。
+    SceneSystemConfig sys_;
     std::vector<std::unique_ptr<SceneComponent>> components_;
     EditorState editor_;
+    wizengine::UiState ui_;
     // 地面の物理ボディ。ジョイントの「ワールド側」に使う。
     std::size_t groundPhysId_ = GameObject::kInvalidId;
     // 文書のジョイント番号 → PhysicsWorld のジョイント番号（作れなかった /
@@ -1104,8 +1159,10 @@ private:
     // 系が自前の接触を扱えず張れなかった（警告済み）。この間 publish は張り直さない。
     // 張れたとき・releaseTerrainContact（外す・例外）で戻す。
     bool terrainBackendWarned_ = false;
-    // 直前の読込の注意（terrainLoadCaveat が返して消す）。物理スレッド専用。
-    std::string terrainLoadCaveat_;
+    // 直前の読込の注意（takeLoadCaveat が返して消す）。物理スレッド専用。
+    // テレインだけでなく、共通イベント・共用 UI の読めないファイルの注意も入る箱。
+    // 空にするのは loadDocument の先頭だけで、書く側は足す（+=）だけ。
+    std::string loadCaveat_;
     // 今のテレインと .terrain の関係（Keep 以外。terrainDirty() / terrainMissing()
     // で読む）。書くのは物理スレッドの publishTerrainField（と保存の成功で Saved に
     // 戻す saveTerrainData）だけ、/scene（HTTP）も読むので atomic。
@@ -1130,6 +1187,9 @@ private:
     std::unique_ptr<wizengine::terrain::TerrainLibrary> terrainLibrary_;
     std::unique_ptr<wizengine::terrain::TerrainUndoStack> terrainUndo_;
     std::mutex objectsMutex_;  // boxes_ の構造を変えるときだけ取る
+    // グローバルの計算式・プレハブの「読んだ / 書いたときの中身」（"formula:名前" /
+    // "prefab:名前" → 正規化した XML）。保存で比べて変わったものだけ書く。PHYSICS。
+    std::map<std::string, std::string> libBaseline_;
     std::mutex poseMutex_;
     std::vector<BodyTransform> latestPoses_;  // one per box, in box order
     // ソフトボディの粒子位置（3 個で 1 粒子、オブジェクト番号ごと。剛体は
@@ -1150,6 +1210,7 @@ private:
         std::vector<std::vector<float>> cables;  // latestCables_ と同じ並び
         double simTime = 0.0;   // このフレームのシミュレーション時刻 (s)
         double wallTime = 0.0;  // 公開した実時間（steady_clock の秒）
+        double timeScale = 1.0; // 公開したときの時間の速さ（補間の進み方）
         std::uint64_t cut = 0;  // 作ったときの poseCut_
         bool valid = false;
     };
@@ -1158,11 +1219,13 @@ private:
     // 置き直しなどがあった = 補間しない。poseMutex_ の下。
     std::uint64_t poseCut_ = 0;
     double simClock_ = 0.0;  // PHYSICS: stepPhysics が進めるシミュレーション時刻
+    std::atomic<double> timeScale_{1.0};  // setTimeScale（どのスレッドからも読む）
     // RENDER スレッド専用: このフレームに描く姿勢（buildRenderFrame が作る）。
     std::vector<BodyTransform> renderPoses_;
     std::vector<std::vector<float>> renderSoft_;
     std::vector<std::vector<float>> renderCables_;
     double renderAlpha_ = -1.0;
+    double renderSimTime_ = 0.0;
 
     // ---- カメラのアクション（CameraLookAt / Behind / Orbit）---------------
     // イベントの「そのステップのカメラへの注文」。物理スレッドがノードの発火で

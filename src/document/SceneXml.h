@@ -51,6 +51,9 @@ public:
     void setBool(const char* key, bool value);
     void setNumbers(const char* key, const double* values, std::size_t count,
                     int precision = 10);
+    // 属性を消す（無ければ何もしない）。消したら true。文書を書き換える側
+    // （AI のシーン生成が独自の属性 generate / height を取り除く）が使う。
+    bool erase(const char* key);
 
     // ---- 子要素 -----------------------------------------------------------
     void append(Element child) { children_.push_back(std::move(child)); }
@@ -60,6 +63,9 @@ public:
     Element& add(std::string name);
 
     const std::vector<Element>& children() const { return children_; }
+    // 書き換え用の子の一覧（読み込んだ文書を整えてから書き出す側が使う）。
+    // 要素を足し引きすると、取っておいた参照は無効になる（vector と同じ）。
+    std::vector<Element>& children() { return children_; }
     const Element* first(const char* name) const;
     std::vector<const Element*> all(const char* name) const;
 
@@ -72,6 +78,20 @@ private:
     std::vector<std::pair<std::string, std::string>> attributes_;
     std::vector<Element> children_;
 };
+
+// ---- 値の表記（属性の文字列 ⇄ 値。Element の読み書きもこれを使う）----------
+// 空白区切りの数値列を最大 count 個読む（読めた個数を返し、読めた分だけ out を
+// 上書きする）。
+std::size_t parseNumbers(const std::string& text, double* out, std::size_t count);
+// 真偽値の表記（true / 1 / yes / on と false / 0 / no / off）。読めなければ false。
+bool parseBool(const std::string& text, bool& out);
+// 数値・真偽値の書き方（setNumber / setBool と同じ）。precision は %g の有効桁。
+std::string formatNumber(double value, int precision = 10);
+std::string formatBool(bool value);
+// 整数の書き方（setInt と同じ）。
+std::string formatInt(long long value);
+// 数値列（空白区切り。setNumbers と同じ）。
+std::string formatNumbers(const double* values, std::size_t count, int precision = 10);
 
 // 整形して 1 本の文字列に。declaration = true で <?xml ...?> 行を先頭に付ける。
 std::string write(const Element& root, bool declaration = true);

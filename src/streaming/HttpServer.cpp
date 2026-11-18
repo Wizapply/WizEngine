@@ -235,6 +235,57 @@ void HttpServer::registerRoutes(httplib::Server& srv,
         res.set_content(provider(), "text/xml; charset=utf-8");
     });
 
+    // 制御器の記録（スコープ）。since より後の行だけ返す = ブラウザは差分を
+    // 積むだけで済む。
+    srv.Get(prefix + "/control", [this](const httplib::Request& req,
+                                        httplib::Response& res) {
+        std::function<std::string(std::uint64_t)> provider;
+        {
+            std::lock_guard<std::mutex> lock(offerMutex_);
+            provider = controlProvider_;
+        }
+        if (!provider) {
+            res.status = 503;
+            return;
+        }
+        std::uint64_t since = 0;
+        if (req.has_param("since")) {
+            // 数字以外は 0（/input と同じく、届く値を信じない）。
+            const std::string v = req.get_param_value("since");
+            for (const char c : v) {
+                if (c < '0' || c > '9') break;
+                since = since * 10 + std::uint64_t(c - '0');
+                if (since > (std::uint64_t(1) << 60)) break;
+            }
+        }
+        res.set_header("Cache-Control", "no-store");
+        res.set_content(provider(since), "application/json");
+    });
+    srv.Get(prefix + "/control.csv", [this](const httplib::Request& req,
+                                            httplib::Response& res) {
+        std::function<std::string(const std::string&)> provider;
+        {
+            std::lock_guard<std::mutex> lock(offerMutex_);
+            provider = controlCsvProvider_;
+        }
+        if (!provider) {
+            res.status = 503;
+            return;
+        }
+        const std::string formula =
+            req.has_param("formula") ? req.get_param_value("formula") : std::string();
+        const std::string csv = provider(formula);
+        if (csv.empty()) {
+            res.status = 404;
+            return;
+        }
+        res.set_header("Cache-Control", "no-store");
+        res.set_header("Content-Disposition",
+                       "attachment; filename=\"" +
+                           (formula.empty() ? std::string("control") : formula) + ".csv\"");
+        res.set_content(csv, "text/csv; charset=utf-8");
+    });
+
     // Performance counters for the browser overlay.
     srv.Get(prefix + "/stats", [this](const httplib::Request&, httplib::Response& res) {
         std::function<std::string()> provider;
@@ -314,6 +365,14 @@ void HttpServer::setSceneProvider(std::function<std::string()> provider) {
 void HttpServer::setSceneXmlProvider(std::function<std::string()> provider) {
     std::lock_guard<std::mutex> lock(offerMutex_);
     sceneXmlProvider_ = std::move(provider);
+}
+
+void HttpServer::setControlProviders(
+    std::function<std::string(std::uint64_t)> samples,
+    std::function<std::string(const std::string&)> csv) {
+    std::lock_guard<std::mutex> lock(offerMutex_);
+    controlProvider_ = std::move(samples);
+    controlCsvProvider_ = std::move(csv);
 }
 
 std::vector<std::string> HttpServer::drainCommands() {

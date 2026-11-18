@@ -78,6 +78,37 @@
     // taller glyph metrics and made the button grow on "Pause".
     b.textContent = paused ? '\u25b6\ufe0e Play' : '\u23f8\ufe0e Pause';
   }
+  // ---- 時間の速さ（スローモーション）-------------------------------------
+  // サーバーは 0.01〜1 の任意の値を受ける（timescale {scale}）が、選択肢は
+  // この刻みだけ。物理の刻み（dt）は変えないので、結果は速さによらず同じ。
+  const TIME_SCALES = [1, 0.5, 0.25, 0.1, 0.05, 0.02, 0.01];
+  function timeScaleLabel(v) { return (v >= 0.1 ? +v.toFixed(2) : +v.toFixed(3)) + 'x'; }
+  (function buildTimeScaleSelect() {
+    const sel = document.getElementById('speedSel');
+    sel.innerHTML = TIME_SCALES.map((v) =>
+      '<option value="' + v + '">' + timeScaleLabel(v) + '</option>').join('');
+    sel.value = '1';
+  })();
+  function showTimeScale(v) {
+    const sel = document.getElementById('speedSel');
+    document.getElementById('speedRow').classList.toggle('slow', v < 0.999);
+    if (document.activeElement === sel) return;  // 選んでいる最中は触らない
+    let opt = Array.from(sel.options).find((o) => Math.abs(+o.value - v) < 1e-6);
+    if (!opt) {  // 選択肢に無い値（手で /input を叩いた等）もそのまま見せる
+      sel.querySelectorAll('option.custom').forEach((o) => o.remove());
+      opt = document.createElement('option');
+      opt.className = 'custom';
+      opt.value = String(v);
+      opt.textContent = timeScaleLabel(v);
+      sel.appendChild(opt);
+    }
+    sel.value = opt.value;
+  }
+  function setTimeScale(v) {
+    const scale = Math.min(1, Math.max(0.01, +v || 1));
+    send('timescale', { scale: scale });
+    showTimeScale(scale);
+  }
   function togglePause() {
     send('pause');
     setPlayLabel(document.getElementById('btnPlay')
@@ -362,6 +393,17 @@
     }
     if (!owner || !sceneData || sceneData.mode !== 'editor') return;
     if (!isEditorCam()) return;  // ギズモが出ないページで切り替えても意味がない
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      // モーダル（ノードエディタ等）が開いている間は、裏のシーンを消さない。
+      const modal = ['nodeEd', 'xmlEd', 'fxEd', 'aiGen'].some((id) => {
+        const el = document.getElementById(id);
+        return el && !el.hidden;
+      });
+      if (modal) return;
+      e.preventDefault();
+      deleteSelection();
+      return;
+    }
     if (brushToolActive()) return;  // 筆の間はギズモを掴めない
     const key = e.key.toLowerCase();
     if (key === 'w') { e.preventDefault(); setGizmoMode('translate'); }
@@ -819,6 +861,7 @@
       }
       curIter = s.iterations;
       if (s.paused !== undefined) setPlayLabel(s.paused);
+      if (s.timeScale !== undefined) showTimeScale(s.timeScale);
       if (s.versions && !versionsShown) {
         versionsShown = true;
         const v = s.versions;
@@ -875,7 +918,9 @@
       document.getElementById('recVal').textContent = fmt(s.recovery, 2);
       // エディタ中は物理を回していないので、遅い扱いにしない。
       const editing = s.mode === 'editor';
-      const slowPhysics = !editing && s.realtime < 0.95;
+      // 遅れの判定は時間の速さに対して（0.1x で回しているのは遅れではない）。
+      const scale = s.timeScale !== undefined ? s.timeScale : 1;
+      const slowPhysics = !editing && s.realtime < 0.95 * scale;
       const slowRender = s.renderFps < s.targetFps * 0.9;
       document.getElementById('perf').innerHTML =
         '<span>mode <b>' + (editing ? '✎ editor' : '▶ simulate') + '</b></span>' +
@@ -884,7 +929,8 @@
           fmt(s.physicsHz) + ' Hz</b> (' + fmt(s.physicsMs, 2) + ' ms, x' +
           s.substeps + ' substeps)</span>' +
         '<span class="' + (slowPhysics ? 'warn' : '') + '">speed <b>' +
-          fmt(s.realtime, 2) + 'x</b></span>' +
+          fmt(s.realtime, s.realtime < 0.095 ? 3 : 2) + 'x</b>' +
+          (scale < 0.999 ? ' / ' + timeScaleLabel(scale) : '') + '</span>' +
         '<span class="' + (slowRender ? 'warn' : '') + '">render <b>' +
           fmt(s.renderFps) + ' fps</b> (' + fmt(s.renderMs, 2) + ' ms)</span>' +
         '<span>solver <b>' + fmt(s.solverMs, 2) + ' ms</b></span>' +
@@ -1184,6 +1230,7 @@
       const row = document.createElement('div');
       const edSel = eSel.kind === 'camera' && eSel.index === c.index;
       row.className = 'item' + (isMe ? ' sel' : '') + (edSel ? ' edsel' : '');
+      row.dataset.cam = c.index;  // 右クリックのメニューが引く
       row.innerHTML =
         '<span class="dot" style="background:' + c.color + '"></span>' +
         '<span>' + cameraName(c.index) + (isMe ? ' (this)' : '') + '</span>' +
@@ -1195,7 +1242,8 @@
       //     移動はダブルクリック、映像の確認は目アイコン（別ウィンドウ）。
       //   * それ以外（シミュレート中・他のカメラのページ）… 従来どおり
       //     そのカメラのページへ移動。
-      // 数値での編集・削除・追加は Inspector のカメラ節。
+      // 数値での編集は Inspector のカメラ節、削除は右クリックか Inspector、
+      // 追加は見出しの ＋。
       if (!isMe) {
         const canEditHere =
           owner && sceneData.mode === 'editor' && isEditorCam();
@@ -1224,7 +1272,7 @@
       el.appendChild(row);
     }
     // 見出し横の ＋（追加）。エディタモード×Editor Camera のページでだけ
-    // 出す。削除は選択して Inspector の「選択カメラ」節から。
+    // 出す。削除は行の右クリックか、選択して Inspector の「選択カメラ」節から。
     const hdr = document.getElementById('camAddDel');
     const editing = owner && sceneData.mode === 'editor' && isEditorCam();
     hdr.hidden = !editing;
@@ -1324,7 +1372,26 @@
       { sep: true },
       { label: o.index === myCameraSelection() ? '選択を解除' : '選択',
         onClick: () => selectObject(index) },
+      { label: '⧉ 複製', onClick: () => send('edit.duplicate', { index: index }) },
+      { sep: true },
+      { label: '🗑 削除', hint: 'Delete', danger: true,
+        onClick: () => send('edit.remove', { index: index }) },
     ];
+  }
+  // Delete / Backspace キー: 選んでいるものを消す（Unity のシーンビューと同じ）。
+  // 対象は選択の種類で決める - プレハブ編集中は部品、ライト / カメラ / 地面 /
+  // テレインを選んでいればそれ、無ければオブジェクト。地面・テレイン・カメラは
+  // 右クリックの削除と同じく確認を挟む（関数側が confirm する）。
+  // 呼び手（keydown）がエディタモード × エディタカメラのページに絞ってある。
+  function deleteSelection() {
+    if (prefabEdit()) { removeSelectedPart(); return; }
+    const s = myEditorSel();
+    if (s.kind === 'light') { removeLight(); return; }
+    if (s.kind === 'camera') { removeCamera(); return; }
+    if (s.kind === 'ground') { removeGround(); return; }
+    if (s.kind === 'terrain') { removeTerrainFromScene(); return; }
+    const index = myCameraSelection();
+    if (index >= 0) send('edit.remove', { index: index });
   }
   let prefabListKey = '';
   function renderPrefabEditor() {
@@ -1334,7 +1401,7 @@
     document.getElementById('secPrefab').hidden = !on;
     const banner = document.getElementById('vhPrefab');
     banner.hidden = !on;
-    // World 節と描画節は World/Physics タブにあるので、ここでは触らない
+    // World 節と描画節は World タブにあるので、ここでは触らない
     // （secObj / secJoint は renderEditor が毎回決め直す）。
     if (!on) {
       prefabListKey = '';
@@ -1462,7 +1529,7 @@
         const unit = l.kind === 'sun' ? 'lx' : 'lm';
         html += '<div class="item' + (edSel ? ' edsel' : '') + '"' +
                 (canPick
-                  ? ' onclick="selectLight(' + l.index + ')"' +
+                  ? ' data-pick="light" data-light="' + l.index + '"' +
                     ' title="クリックで選択（位置・向き・色を編集）"'
                   : ' style="cursor:default"') +
                 '><span class="dot" style="background:' + l.color + '"></span>' +
@@ -1479,13 +1546,18 @@
     if (!objFilter) {
       const canPick = owner && sceneData.mode === 'editor' && isEditorCam();
       const eSel = myEditorSel();
+      // 選んでいる間は丸をこのページのカメラの色にする（オブジェクトの行が
+      // 選択中に掴んだカメラの色になるのと同じ見え方）。
+      const myColor = colorOf(sceneData.camera);
       const row = (kind, icon, label, sub, title) =>
         '<div class="item' + (eSel.kind === kind ? ' edsel' : '') +
         '" data-scene-item="' + kind + '"' +
         (canPick
-          ? ' onclick="selectSceneItem(\'' + kind + '\', true)" title="' + title + '"'
+          ? ' data-pick="' + kind + '" title="' + title + '"'
           : ' style="cursor:default"') +
-        '><span class="dot"></span><span>' + icon + ' ' + label + '</span>' +
+        '><span class="dot"' +
+        (eSel.kind === kind ? ' style="background:' + myColor + '"' : '') +
+        '></span><span>' + icon + ' ' + label + '</span>' +
         '<span class="sub">' + sub + '</span></div>';
       const g = sceneData.ground;
       if (g && g.enabled !== false) {
@@ -1516,7 +1588,7 @@
         (o.soft ? '<span class="tag" title="ソフトボディ">🫧</span>' : '') +
         (o.prefab ? '<span class="tag" title="プレハブ: ' + o.prefab + '">🧩</span>' : '');
       html += '<div class="item' + (isMine ? ' sel' : '') + '" data-index="' + o.index +
-              '" onclick="selectObject(' + o.index + ')">' + dot +
+              '" data-pick="object">' + dot +
               '<span>' + labelOf(o) + (o.fixed ? ' ⚓' : '') + tag + '</span>' + ev +
               '<span class="sub">' + o.y.toFixed(2) + 'm</span></div>';
     }
@@ -1524,8 +1596,73 @@
       html += '<div class="item" style="cursor:default;opacity:.5">… ' +
               (rows.length - shown.length) + ' more (use the filter)</div>';
     }
-    document.getElementById('objList').innerHTML = html;
+    // 中身が前回と同じなら DOM を触らない。毎回 innerHTML で作り直すと、
+    // 押してから離すまでの間に行が差し替わったクリックが消え（「選択
+    // されない」）、ホバーの表示もちらつく。エディタ中は中身がほぼ変わら
+    // ないので、ほとんどのポーリングで何もしない。
+    if (html !== objListHtml) {
+      objListHtml = html;
+      document.getElementById('objList').innerHTML = html;
+    }
   }
+  let objListHtml = null;  // 前回 #objList に入れた HTML（null = 次で必ず書く）
+
+  // 階層一覧の行の選択（ライト / 地面 / テレイン / オブジェクト）。行ごとの
+  // onclick ではなく一覧で 1 つ受ける: マウスとペンは**押した瞬間**に選ぶ
+  // （押してから離すまでの間に行が作り直されても取りこぼさない）。タッチは
+  // 押しただけではスクロールの始まりか分からないので、タップ（click）で選ぶ。
+  // 選んだ行はすぐ光らせ、送信が済んだら 500ms を待たずに /scene を取り直す。
+  let objPickByDown = false;
+  function pickHierarchyRow(row) {
+    const kind = row.dataset.pick;
+    const list = document.getElementById('objList');
+    let on = true;  // false = もう一度押して解除
+    if (kind === 'object') {
+      const index = parseInt(row.dataset.index, 10);
+      on = myCameraSelection() !== index;
+      selectObject(index);
+    } else if (kind === 'light') {
+      const index = parseInt(row.dataset.light, 10);
+      const s = myEditorSel();
+      on = !(s.kind === 'light' && s.index === index);
+      selectLight(index);
+    } else {
+      on = myEditorSel().kind !== kind;
+      selectSceneItem(kind, true);
+    }
+    // 先に見た目だけ変える（オブジェクト選択とエディタ選択は排他なので
+    // 両方の印を消す）。サーバーの答えは次のポーリングで上書きされる -
+    // キャッシュを捨てて、同じ HTML でも必ず書き直させる。
+    for (const el of list.querySelectorAll('.item.sel, .item.edsel')) {
+      el.classList.remove('sel', 'edsel');
+    }
+    for (const dot of list.querySelectorAll('[data-scene-item] .dot')) {
+      dot.style.background = '';
+    }
+    if (on) {
+      row.classList.add(kind === 'object' ? 'sel' : 'edsel');
+      const dot = row.querySelector('.dot');
+      if (dot && (kind === 'ground' || kind === 'terrain')) {
+        const me = sceneData && sceneData.cameras && sceneData.cameras[sceneData.camera];
+        dot.style.background = me ? me.color : '';
+      }
+    }
+    objListHtml = null;
+    setTimeout(pollScene, 120);
+  }
+  document.getElementById('objList').addEventListener('pointerdown', (e) => {
+    objPickByDown = false;
+    if (e.button !== 0 || e.pointerType === 'touch') return;
+    const row = e.target.closest ? e.target.closest('[data-pick]') : null;
+    if (!row) return;
+    objPickByDown = true;
+    pickHierarchyRow(row);
+  });
+  document.getElementById('objList').addEventListener('click', (e) => {
+    if (objPickByDown) { objPickByDown = false; return; }  // 押したときに選び済み
+    const row = e.target.closest ? e.target.closest('[data-pick]') : null;
+    if (row) pickHierarchyRow(row);
+  });
 
   // 選択中のオブジェクトの設計値。サーバが選択ぶんだけ丸ごと送ってくれる
   // （objects[] は番号が飛ぶことがあるので、配列の位置では引けない）。
@@ -1659,7 +1796,8 @@
       rotateStep: num('gzRotStep', 15),
       scaleStep: num('gzScaleStep', 0.1),
       grid: document.getElementById('gzGrid').checked,
-      gridStep: num('gzGridStep', 1)
+      gridStep: num('gzGridStep', 1),
+      jointLines: document.getElementById('gzJointLines').checked
     }, patch || {}));
   }
   function setGizmoMode(mode) { applyGizmo({ mode: mode }); }
@@ -1715,13 +1853,10 @@
     const m = ((sceneData && sceneData.meshes) || [])[i];
     if (m) addObject('model', m.name);
   }
+  // 大きさ・色は送らない = サーバーの既定（edit.add: 0.5 m、BodyDesc の色）で
+  // 置き、置いた後に Inspector で決める。
   function addObject(shape, mesh, soft) {
-    const msg = {
-      shape: shape,
-      size: num('edNewSize', 0.5),
-      color: document.getElementById('edNewColor').value,
-      mass: 1.0
-    };
+    const msg = { shape: shape, mass: 1.0 };
     // glTF モデルの配置（アセットパネルの mesh タイル）。size は当たり判定の
     // 大きさで、見た目の大きさは文書の <mesh scale> が決める。
     if (mesh) msg.mesh = mesh;
@@ -1889,9 +2024,10 @@
     applyLightEdit({ spotInnerDeg: num('ltInner', 25),
                      spotOuterDeg: num('ltOuter', 35) });
   }
-  function removeLight() {
+  function removeLightAt(index) { send('edit.light.remove', { index: index }); }
+  function removeLight() {  // Inspector の 🗑・Delete キー（選択中のライト）
     const l = sceneData && sceneData.selectedLight;
-    if (l) send('edit.light.remove', { index: l.index });
+    if (l) removeLightAt(l.index);
   }
 
   function addCamera() { send('edit.camera.add'); }
@@ -2226,7 +2362,7 @@
     send('edit.import', { file: f.trim() });
   }
 
-  // シミュレート設定（World/Physics タブ）。物理レートはここでは送らない - Rate
+  // シミュレート設定（World タブ）。物理レートはここでは送らない - Rate
   // セクション（rate コマンド）が受け持ち、サーバー側で保存値にも映る。
   function applySim() {
     send('edit.sim', {
@@ -2323,10 +2459,43 @@
   // プリセットは名前だけ送る（中身の定義はサーバーが持つ = UI とずれない）。
   function applyRenderPreset(name) { send('edit.render', { preset: name }); }
 
+  // 保存は今のシーンの名前（新規シーン・読込で決まる）へ。無題ならここで聞く。
+  function cleanSceneName(s) {
+    return String(s || '').trim().replace(/[^A-Za-z0-9_-]/g, '');
+  }
   function saveScene() {
-    const name = document.getElementById('edSceneName').value.trim();
-    if (!name) return;
+    let name = (sceneData && sceneData.sceneFile) || '';
+    if (!name) {
+      const raw = prompt('シーンの名前（英数字と _ -）', 'my_scene');
+      if (raw === null) return;
+      name = cleanSceneName(raw);
+      if (!name) return;
+      if (sceneFileExists(name) &&
+          !confirm('シーン「' + name + '」は既にあります。上書きしますか？')) {
+        return;
+      }
+    }
     send('edit.save', { name: name });
+  }
+  function sceneFileExists(name) {
+    return ((sceneData && sceneData.files) || []).includes(name);
+  }
+  // 新規シーン: 名前を決めて空のシーンから始める（ファイルは 💾 保存で書く）。
+  function newScene() {
+    const raw = prompt('新しいシーンの名前（英数字と _ -）。今のシーンは閉じます' +
+                       '（保存していない変更は失われます）。', 'new_scene');
+    if (raw === null) return;
+    const name = cleanSceneName(raw);
+    if (!name) {
+      alert('名前は英数字と _ - で付けてください。');
+      return;
+    }
+    if (sceneFileExists(name) &&
+        !confirm('シーン「' + name + '」は既にあります。このまま保存すると上書きします。続けますか？')) {
+      return;
+    }
+    discardTerrain();
+    send('edit.new', { name: name });
   }
   // 読込はアセットパネルのタイルのダブルクリック（assetLoad）が受け持つ。
   // シーンの中身は MuJoCo 風の XML が正（assets/scenes/<名前>.xml）。保存
@@ -2359,11 +2528,6 @@
     discardTerrain();
     send('edit.xml', { text: document.getElementById('xmText').value });
     document.getElementById('xmStatus').textContent = '適用中...';
-  }
-  function clearScene() {
-    if (!confirm('シーンのオブジェクトとジョイントを全部消します。よろしいですか？')) return;
-    discardTerrain();
-    send('edit.clear');
   }
 
   const JOINT_LABEL = {
@@ -2408,7 +2572,7 @@
     if (!editorHere && !document.getElementById('paneEditor').hidden) {
       showTab('scene');  // 隠したタブを開いたままにしない
     }
-    // シーン全体の設定（World・描画）は World/Physics タブにあるが、送るのは
+    // シーン全体の設定（World・描画）は World タブにあるが、送るのは
     // edit.environment / edit.render / edit.event.* = エディタカメラの
     // ページ専用の操作（サーバーが他のページからのぶんを弾く）。押しても
     // 効かない欄は出さない - Inspector にあった頃と同じ見え方。
@@ -2423,6 +2587,7 @@
     vEdit.classList.toggle('active', editing);
     vSim.classList.toggle('active', !editing);
     vEdit.disabled = vSim.disabled = !owner;
+    document.getElementById('speedSel').disabled = !owner;
     let editTitle = '物理を止めて配置・設計する';
     if (!editorHere) {
       const eCamIdx =
@@ -2433,13 +2598,17 @@
     vEdit.title = editTitle;
 
     // ヘッダーのシーンタイトル。保存名がまだ無いシーンは「(無題)」。
-    document.getElementById('vhTitle').textContent =
-      sceneData.sceneFile || '(無題のシーン)';
+    // ブラウザのタイトル（タブ）にも同じ名前を出す: 「シーン名 - Charon」。
+    const sceneTitle = sceneData.sceneFile || '(無題のシーン)';
+    document.getElementById('vhTitle').textContent = sceneTitle;
+    const docTitle = sceneTitle + ' - Charon';
+    if (document.title !== docTitle) document.title = docTitle;
 
     // エディタ中は時間が進まないので、Play / Reset ボタンとタイムスタンプは
     // 使わない。無効化ではなく行ごと非表示にする。
     document.querySelector('.playRow').style.display = editing ? 'none' : '';
     document.getElementById('simTime').style.display = editing ? 'none' : '';
+    document.getElementById('speedRow').hidden = editing;
     document.getElementById('btnPlay').disabled = editing || !owner;
 
     // ギズモ。モード切替は映像左上のツールバー（Unity のシーンビューと同じ
@@ -2475,6 +2644,7 @@
       setField('gzScaleStep', gz.scaleStep);
       setField('gzGrid', gz.grid);
       setField('gzGridStep', gz.gridStep);
+      setField('gzJointLines', gz.jointLines !== false);
     }
     // 地面（secGround 節）と環境光（World 節）。入力欄は「フォーカス中は
     // 触らない」の既定どおり setField 経由で。
@@ -2652,7 +2822,7 @@
     // シミュレートへ戻したら、編集のための窓（カメラのプレビュー）は閉じる。
     if (!editing) closeCamPopups();
 
-    // イベント節（Inspector と World/Physics タブの World 節）。オブジェクトと
+    // イベント節（Inspector と World タブの World 節）。オブジェクトと
     // World は「付いているアセット」、ライト / カメラはそれを対象にしている
     // ノードの一覧（付け先になれない）。
     renderEventAttachments('edWorldEvents', 'edWorldEventPick', worldEvents(), -1);
@@ -2726,7 +2896,7 @@
         }).join('')
       : '<div class="edHint">このオブジェクトのケーブルはまだありません。</div>';
 
-    // シミュレート設定（World/Physics タブへ移設済み。全カメラで見える・変えられる）。
+    // シミュレート設定（World タブへ移設済み。全カメラで見える・変えられる）。
     const s = sceneData.sim;
     if (s) {
       setField('edGravity', round2(s.gravity));
@@ -2770,12 +2940,14 @@
       setField('hzCustom', s.hz);
     }
 
-    // シーン名の欄（アセットパネルの操作列）は、空のときだけ今の
-    // ファイル名を入れる。保存済みの一覧はアセットパネルのタイルが
-    // 受け持つ（ダブルクリックで読込）。
-    if (sceneData.sceneFile &&
-        !document.getElementById('edSceneName').value) {
-      setField('edSceneName', sceneData.sceneFile);
+    // 💾 保存の行き先を見出しに（無題なら押したときに名前を聞く）。
+    {
+      const b = document.getElementById('asSave');
+      if (b) {
+        b.title = sceneData.sceneFile
+          ? 'assets/scenes/' + sceneData.sceneFile + '.xml へ保存（上書き）'
+          : '名前を付けて assets/scenes/ へ保存';
+      }
     }
   }
 
@@ -2801,140 +2973,146 @@
     const events = eventAssets();
     const formulas = formulaAssets();
     const prefabs = (sceneData.prefabs && sceneData.prefabs.assets) || [];
+    const lib = sceneData.library || {};
+    const libFormulas = lib.formulas || [], libPrefabs = lib.prefabs || [];
+    const libMeshes = lib.meshes || [];
     currentAsset();  // ndAsset を今ある一覧に合わせる（タイルの選択表示用）
     currentFormula();
     const key = files.join('|') + '@' + (sceneData.sceneFile || '') + '#' +
-      meshes.map((m) => m.name).join('|') + '%' +
+      meshes.map((m) => m.name + '=' + m.file).join('|') + '%' +
       events.map((e) => e.name + ':' + (e.nodes || []).length + ':' + (e.file || '') +
                         (e.dirty ? '*' : '')).join('|') + '!' + eventLibrary().join('|') +
       '&' + ndAsset + '$' +
-      formulas.map((f) => f.name + ':' + (f.nodes || []).length).join('|') +
+      formulas.map((f) => f.name + ':' + (f.nodes || []).length + ':' + (f.file || '')).join('|') +
       '&' + ndFormula + ndKind + '^' +
-      prefabs.map((p) => p.name + ':' + p.parts).join('|') + '~' +
+      prefabs.map((p) => p.name + ':' + p.parts + ':' + (p.file || '')).join('|') + '~' +
+      libFormulas.join('|') + '~' + libPrefabs.join('|') + '~' + libMeshes.join('|') + '~' +
       terrainTilesKey();
     if (key === assetListKey) return;  // 変化が無ければ DOM を組み直さない
     assetListKey = key;
 
-    // シーン名はサーバー側で英数字と _ - に正規化済みなので、そのまま
-    // 属性へ埋め込んで安全。
-    let html =
-      '<div class="asItem" title="クリックでカメラ正面に配置" ' +
-      'onclick="addObject(\'box\')"><span class="ico">📦</span>' +
-      '<span class="name">Box</span><span class="kind">primitive</span></div>' +
-      '<div class="asItem" title="クリックでカメラ正面に配置" ' +
-      'onclick="addObject(\'sphere\')"><span class="ico">⚪</span>' +
-      '<span class="name">Sphere</span><span class="kind">primitive</span></div>' +
+    // 3 つの区分に分けて並べる:
+    //   🧱 作成       … 組み込み（プリミティブ・ライト・地面など。クリックで置く）
+    //   📍 ローカル    … このシーンだけの物（中身がシーンの XML に入る）
+    //   🌐 グローバル  … 全シーン共通の物（中身が assets/ のファイル。このシーンで
+    //                    使っている物は濃く、まだ使っていない物は薄く出す）
+    // 名前はサーバー側で英数字と _ - に正規化済み（シーン・イベント・計算式・
+    // プレハブ）なので属性へ埋めてよい。メッシュとテレインは XML 由来なので
+    // エスケープし、onclick へは配列番号か data 属性で渡す。
+    const BADGE = '<span class="asBadge">🌐</span>';
+    const tile = (attrs, title, ico, name, kind, cls) =>
+      '<div class="asItem' + (cls ? ' ' + cls : '') + '" ' + attrs + ' title="' +
+      ndEsc(title) + '"><span class="ico">' + ico + '</span><span class="name">' +
+      name + '</span><span class="kind">' + kind + '</span></div>';
+
+    // ---- 🧱 作成（組み込み）------------------------------------------------
+    let create =
+      tile('onclick="addObject(\'box\')"', 'クリックでカメラ正面に配置', '📦', 'Box', 'primitive') +
+      tile('onclick="addObject(\'sphere\')"', 'クリックでカメラ正面に配置', '⚪', 'Sphere', 'primitive') +
       // ソフトボディ（質点ばね）。箱 / 球の格子で、置いた直後から柔らかい。
-      '<div class="asItem" title="柔らかい箱を配置（粒子の格子 + ばね）" ' +
-      'onclick="addObject(\'box\', null, true)"><span class="ico">🫧</span>' +
-      '<span class="name">Soft Box</span><span class="kind">soft body</span></div>' +
-      '<div class="asItem" title="柔らかい球を配置（粒子の格子 + ばね）" ' +
-      'onclick="addObject(\'sphere\', null, true)"><span class="ico">🫧</span>' +
-      '<span class="name">Soft Ball</span><span class="kind">soft body</span></div>' +
-      // 階段: 専用のオブジェクトではなく「1 段目の固定の箱 + 2 段目以降を
-      // 当たり判定付きの箱で並べたプレハブ stairs」。プレハブ編集で段を動かせる。
-      '<div class="asItem" title="階段を配置（1 段目の固定の箱にプレハブ stairs を付ける。' +
-      '6 段、カメラの正面から奥へ上る。段は「プレハブを編集」で動かせる）" ' +
-      'onclick="addObject(\'stairs\')"><span class="ico">🪜</span>' +
-      '<span class="name">Stairs</span><span class="kind">prefab</span></div>' +
-      // ライト。クリックでカメラ正面（Sun は原点上空）に追加され、そのまま
-      // 選択されるので、置いた直後にギズモ / Inspector で調整できる。
-      '<div class="asItem" title="点光源を追加（全方向に光る）" ' +
-      'onclick="addLight(\'point\')"><span class="ico">💡</span>' +
-      '<span class="name">Point Light</span><span class="kind">light</span></div>' +
-      '<div class="asItem" title="スポットライトを追加（円錐に光る）" ' +
-      'onclick="addLight(\'spot\')"><span class="ico">🔦</span>' +
-      '<span class="name">Spot Light</span><span class="kind">light</span></div>' +
-      '<div class="asItem" title="平行光を追加（太陽。位置は光に影響しない）" ' +
-      'onclick="addLight(\'sun\')"><span class="ico">☀&#xFE0E;</span>' +
-      '<span class="name">Sun</span><span class="kind">light</span></div>' +
-      // 地面とテレイン（シーンに 1 つずつのオブジェクト）。Ground は削除して
-      // いれば戻し、あれば選ぶ。Terrain は新しい平らなテレインを作る（今の
-      // テレインがあれば取り替える。既存のファイルは下の ⛰ タイルから開く）。
-      '<div class="asItem" title="地面（y = 0 の床）。削除していれば戻し、あれば選択" ' +
-      'onclick="addGround()"><span class="ico">▭</span>' +
-      '<span class="name">Ground</span><span class="kind">ground</span></div>' +
-      '<div class="asItem" title="新しいテレイン（平ら・既定の大きさ）を作ってシーンに置く。' +
-      '名前を聞きます" onclick="newTerrain()"><span class="ico">⛰&#xFE0E;</span>' +
-      '<span class="name">Terrain</span><span class="kind">new terrain</span></div>';
-    // シーン文書の <asset><mesh/>。クリックでそのモデルのオブジェクトを
-    // カメラ正面に配置する。名前は XML 由来（手で書ける）なので HTML には
-    // エスケープして出し、onclick へは配列番号だけを埋め込む（名前を JS
-    // 文字列に埋め込むと引用符入りの名前で壊れる）。
+      tile('onclick="addObject(\'box\', null, true)"', '柔らかい箱を配置（粒子の格子 + ばね）',
+           '🫧', 'Soft Box', 'soft body') +
+      tile('onclick="addObject(\'sphere\', null, true)"', '柔らかい球を配置（粒子の格子 + ばね）',
+           '🫧', 'Soft Ball', 'soft body') +
+      // 階段: プレハブ stairs（当たり判定付きの箱の部品）を付けた固定の物。
+      tile('onclick="addObject(\'stairs\')"', '階段を配置（プレハブ stairs。段は「プレハブを編集」で動かせる）',
+           '🪜', 'Stairs', 'prefab') +
+      // ライト。追加するとそのまま選択されるので、ギズモ / Inspector で調整できる。
+      tile('onclick="addLight(\'point\')"', '点光源を追加（全方向に光る）', '💡', 'Point Light', 'light') +
+      tile('onclick="addLight(\'spot\')"', 'スポットライトを追加（円錐に光る）', '🔦', 'Spot Light', 'light') +
+      tile('onclick="addLight(\'sun\')"', '平行光を追加（太陽。位置は光に影響しない）',
+           '☀&#xFE0E;', 'Sun', 'light') +
+      // 地面とテレイン（シーンに 1 つずつのオブジェクト）。
+      tile('onclick="addGround()"', '地面（y = 0 の床）。削除していれば戻し、あれば選択',
+           '▭', 'Ground', 'ground') +
+      tile('onclick="newTerrain()"', '新しいテレイン（平ら・既定の大きさ）を作ってシーンに置く。名前を聞きます',
+           '⛰&#xFE0E;', 'Terrain', 'new terrain');
+
+    // ---- 📍 ローカル（このシーンだけ）----------------------------------------
+    let local = '';
+    // シーンが宣言しているメッシュ（<asset><mesh/>）。クリックで配置。
     meshes.forEach((m, i) => {
-      html += '<div class="asItem" title="クリックでカメラ正面に配置（' +
-        ndEsc(m.file) + '）" onclick="addMeshAsset(' + i + ')">' +
-        '<span class="ico">🧊</span><span class="name">' + ndEsc(m.name) +
-        '</span><span class="kind">mesh</span></div>';
+      local += tile('onclick="addMeshAsset(' + i + ')"',
+                    'クリックでカメラ正面に配置（' + m.file + '）', '🧊', ndEsc(m.name), 'mesh');
     });
-    // イベントアセット（ノードで組むスクリプト）。クリックでノードエディタが
-    // そのアセットに切り替わり、**右クリックで作成・削除・付ける**
-    // （data-event がその対象。名前はサーバー側で英数字と _ - に正規化済み
-    // なので、そのまま属性へ埋めてよい）。
-    // 共通化したもの（file あり = イベントライブラリのファイル）は 🔗 と
-    // "shared"、ファイルへ書いていない変更があれば名前に *（シーンの保存で書く）。
-    for (const e of events) {
+    // イベントアセット（ノードで組むスクリプト）。クリックでノードエディタ、
+    // 右クリックで付ける・グローバルにする・削除。
+    const eventTile = (e) => {
       const cur = e.name === ndAsset;
-      const shared = !!e.file;
-      html += '<div class="asItem' + (cur ? ' sel' : '') +
-        '" data-event="' + e.name +
-        '" title="クリック: ノードエディタで開く（' + (e.nodes || []).length +
-        ' ノード）' + (shared ? '\n共通（' + ndEsc(e.file) + '）' +
-                         (e.dirty ? '・未保存（シーンの保存で書きます）' : '') : '') +
-        ' ／ 右クリック: メニュー" onclick="openEventAsset(\'' +
-        e.name + '\')">' +
-        '<span class="ico">⚡&#xFE0E;' + (shared ? '<span class="asBadge">🔗</span>' : '') +
-        '</span><span class="name">' + ndEsc(e.name) + (e.dirty ? ' *' : '') +
-        '</span><span class="kind">' + (shared ? 'shared event' : 'event') + '</span></div>';
-    }
-    // イベントライブラリにあって、このシーンにはまだ無いもの（薄く出す）。
-    // クリックでシーンに読み込む（共通のまま = 参照）。
-    const inScene = new Set(events.map((e) => e.name));
-    for (const n of eventLibrary()) {
-      if (inScene.has(n)) continue;
-      html += '<div class="asItem lib" data-evlib="' + ndEsc(n) +
-        '" title="共通イベント（assets/events/' + ndEsc(n) + '.xml）\nクリック: ' +
-        'このシーンに読み込む ／ 右クリック: メニュー" ' +
-        'onclick="importEventAsset(this.dataset.evlib)">' +
-        '<span class="ico">⚡&#xFE0E;<span class="asBadge">🔗</span></span>' +
-        '<span class="name">' + ndEsc(n) + '</span><span class="kind">library</span></div>';
-    }
-    // 計算式アセット（🧮）。クリックでノードエディタが開き、右クリックで
-    // 作成・削除・選択中の車両に付ける。
-    for (const f of formulas) {
+      const global = !!e.file;
+      return tile('data-event="' + e.name + '" onclick="openEventAsset(\'' + e.name + '\')"',
+        'クリック: ノードエディタで開く（' + (e.nodes || []).length + ' ノード）' +
+        (global ? '\nグローバル（' + e.file + '）' +
+                  (e.dirty ? '・未保存（シーンの保存で書きます）' : '') : '') +
+        ' ／ 右クリック: メニュー',
+        '⚡&#xFE0E;' + (global ? BADGE : ''), ndEsc(e.name) + (e.dirty ? ' *' : ''),
+        'event', cur ? 'sel' : '');
+    };
+    const formulaTile = (f) => {
       const cur = ndKind === 'formula' && f.name === ndFormula;
-      html += '<div class="asItem' + (cur ? ' sel' : '') +
-        '" data-formula="' + f.name +
-        '" title="クリック: ノードエディタで開く（' + (f.nodes || []).length +
-        ' ノード） ／ 右クリック: メニュー" onclick="openFormulaAsset(\'' +
-        f.name + '\')">' +
-        '<span class="ico">🧮</span><span class="name">' + ndEsc(f.name) +
-        '</span><span class="kind">formula</span></div>';
-    }
-    // プレハブ（🧩）。右クリックで選択オブジェクトに付ける / 削除。中身の
-    // 編集はオブジェクトの右クリック「プレハブを編集」から。
-    for (const p of prefabs) {
-      html += '<div class="asItem" data-prefab="' + p.name +
-        '" title="' + p.parts + ' 部品 ／ 右クリック: メニュー（選択オブジェクトに付ける）">' +
-        '<span class="ico">🧩</span><span class="name">' + ndEsc(p.name) +
-        '</span><span class="kind">prefab</span></div>';
-    }
-    html += renderTerrainTiles();  // ⛰ assets/terrains/*.terrain（terrain-files.js）
+      const global = !!f.file;
+      return tile('data-formula="' + f.name + '" onclick="openFormulaAsset(\'' + f.name + '\')"',
+        'クリック: ノードエディタで開く（' + (f.nodes || []).length + ' ノード）' +
+        (global ? '\nグローバル（' + f.file + '。編集はシーンの保存でファイルに書きます）' : '') +
+        ' ／ 右クリック: メニュー',
+        '🧮' + (global ? BADGE : ''), ndEsc(f.name),
+        typeof isControllerFormula === 'function' && isControllerFormula(f.name)
+          ? 'control' : 'formula', cur ? 'sel' : '');
+    };
+    const prefabTile = (p) => {
+      const global = !!p.file;
+      return tile('data-prefab="' + p.name + '"',
+        p.parts + ' 部品' + (global ? '\nグローバル（' + p.file + '）' : '') +
+        ' ／ 右クリック: メニュー（選択オブジェクトに付ける）',
+        '🧩' + (global ? BADGE : ''), ndEsc(p.name), 'prefab');
+    };
+    for (const e of events) if (!e.file) local += eventTile(e);
+    for (const f of formulas) if (!f.file) local += formulaTile(f);
+    for (const p of prefabs) if (!p.file) local += prefabTile(p);
+
+    // ---- 🌐 グローバル（全シーン共通）----------------------------------------
+    let global = '';
+    // このシーンで使っているもの（参照）は濃く、使っていないものは薄く。
+    const libTile = (attr, name, ico, kind, what) =>
+      tile(attr + '="' + ndEsc(name) + '" onclick="importLibraryAsset(\'' + what +
+           '\', this.getAttribute(\'' + attr + '\'))"',
+           'グローバル（assets/' + what + 's/' + name + '.xml）。このシーンではまだ使っていません\n' +
+           'クリック: このシーンで使う ／ 右クリック: メニュー',
+           ico + BADGE, ndEsc(name), kind, 'lib');
+    const usedEvents = new Set(events.map((e) => e.name));
+    for (const e of events) if (e.file) global += eventTile(e);
+    for (const n of eventLibrary()) if (!usedEvents.has(n)) global += libTile('data-evlib', n, '⚡&#xFE0E;', 'event', 'event');
+    const usedFormulas = new Set(formulas.map((f) => f.name));
+    for (const f of formulas) if (f.file) global += formulaTile(f);
+    for (const n of libFormulas) if (!usedFormulas.has(n)) global += libTile('data-flib', n, '🧮', 'formula', 'formula');
+    const usedPrefabs = new Set(prefabs.map((p) => p.name));
+    for (const p of prefabs) if (p.file) global += prefabTile(p);
+    for (const n of libPrefabs) if (!usedPrefabs.has(n)) global += libTile('data-plib', n, '🧩', 'prefab', 'prefab');
+    // assets/ のモデル（.glb / .gltf）でこのシーンがまだ宣言していないもの。
+    // クリックでこのシーンに宣言して置く（以後はローカルのメッシュに並ぶ）。
+    const declared = new Set(meshes.map((m) => m.file));
+    libMeshes.forEach((f, i) => {
+      if (declared.has(f)) return;
+      const base = f.split('/').pop().replace(/\.(glb|gltf)$/i, '');
+      global += tile('data-mlib="' + ndEsc(f) + '" onclick="placeLibraryMesh(this.dataset.mlib)"',
+                     'assets/' + f + '\nクリック: このシーンに宣言してカメラ正面に配置',
+                     '🧊' + BADGE, ndEsc(base), 'model');
+    });
+    global += renderTerrainTiles();  // ⛰ assets/terrains/*.terrain（terrain-files.js）
     for (const f of files) {
-      const cur = f === sceneData.sceneFile;
-      html += '<div class="asItem' + (cur ? ' sel' : '') +
-        '" title="ダブルクリックで読込" onclick="assetPick(\'' + f + '\')"' +
-        ' ondblclick="assetLoad(\'' + f + '\')">' +
-        '<span class="ico">🗂&#xFE0E;</span><span class="name">' + f +
-        '</span><span class="kind">scene</span></div>';
+      global += tile('ondblclick="assetLoad(\'' + f + '\')"', 'ダブルクリックで読込',
+                     '🗂&#xFE0E;', f, 'scene', f === sceneData.sceneFile ? 'sel' : '');
     }
+
+    const sec = (cls, label, hint) =>
+      '<div class="asSec ' + cls + '"><b>' + label + '</b><span>' + hint + '</span></div>';
+    let html =
+      sec('create', '🧱 作成', 'クリックで置く・追加する') + create +
+      sec('local', '📍 ローカル', 'このシーンだけ（中身はシーンの XML に入る）。右クリック →「🌐 グローバルにする」で全シーン共通に') +
+      (local || '<div class="asEmpty">このシーンだけのアセットはありません</div>') +
+      sec('global', '🌐 グローバル', '全シーン共通（中身は assets/ のファイル）。薄いものはこのシーンで未使用 = クリックで使う') +
+      (global || '<div class="asEmpty">グローバルのアセットはありません</div>');
     document.getElementById('assetList').innerHTML = html;
-  }
-  function assetPick(name) {
-    // シングルクリックは選択だけ: パネル上部のシーン名に入れておく
-    // （そのまま 💾 保存すれば上書き、ダブルクリックで読込）。
-    const box = document.getElementById('edSceneName');
-    if (box) box.value = name;
   }
   function assetLoad(name) {
     if (!confirm('シーン「' + name +
@@ -2955,17 +3133,32 @@
     const ftile = e.target.closest ? e.target.closest('[data-formula]') : null;
     const ptile = e.target.closest ? e.target.closest('[data-prefab]') : null;
     const ttile = e.target.closest ? e.target.closest('[data-terrain]') : null;
-    const ltile = e.target.closest ? e.target.closest('[data-evlib]') : null;
+    const ltile = e.target.closest ? e.target.closest('[data-evlib], [data-flib], [data-plib]') : null;
+    const mtile = e.target.closest ? e.target.closest('[data-mlib]') : null;
     const sel = mySelectedDesc();
     if (ltile) {
-      const lname = ltile.dataset.evlib;
+      const kind = ltile.dataset.evlib !== undefined ? 'event'
+                 : ltile.dataset.flib !== undefined ? 'formula' : 'prefab';
+      const lname = ltile.dataset.evlib || ltile.dataset.flib || ltile.dataset.plib;
       showContextMenu(e, [
-        { head: '🔗 ' + lname + '（共通イベント）' },
-        { label: 'このシーンに読み込む', onClick: () => importEventAsset(lname) },
+        { head: '🌐 ' + lname + '（グローバルの' + LIB_LABEL[kind] + '）' },
+        { label: 'このシーンで使う', hint: '参照として読み込む',
+          onClick: () => importLibraryAsset(kind, lname) },
         { sep: true },
-        { label: '🗑 ライブラリから削除', danger: true,
+        { label: '🗑 グローバルから削除', danger: true,
           hint: 'ごみ箱へ（使っている他のシーンでは読めなくなります）',
-          onClick: () => deleteLibraryEvent(lname) },
+          onClick: () => deleteLibraryAsset(kind, lname) },
+      ]);
+      return;
+    }
+    if (mtile) {
+      const file = mtile.dataset.mlib;
+      showContextMenu(e, [
+        { head: '🌐 ' + file },
+        { label: 'カメラ正面に配置', hint: 'このシーンに宣言して置く',
+          onClick: () => placeLibraryMesh(file) },
+        { label: 'このシーンに宣言だけする', hint: 'ローカルのメッシュに並ぶ',
+          onClick: () => send('edit.mesh.add', { file: file }) },
       ]);
       return;
     }
@@ -2975,8 +3168,12 @@
     }
     if (ptile) {
       const pname = ptile.dataset.prefab;
+      const pa = ((sceneData.prefabs && sceneData.prefabs.assets) || []).find((x) => x.name === pname);
+      const pfile = (pa && pa.file) || '';
       showContextMenu(e, [
-        { head: '🧩 ' + pname },
+        { head: (pfile ? '🌐 ' : '🧩 ') + pname + (pfile ? '（グローバル）' : '') },
+        ...libraryMenuItems('prefab', pname, pfile),
+        { sep: true },
         { label: '＋ 選択オブジェクトに付ける', hint: sel ? ('#' + sel.index) : '未選択',
           disabled: !sel,
           onClick: () => send('edit.prefab.attach', { index: sel.index, name: pname }) },
@@ -2985,38 +3182,42 @@
                            setTimeout(() => openPrefabEdit(sel.index), 150); } },
         { sep: true },
         { label: '🧩 新しい（空の）プレハブ…', onClick: newPrefabAsset },
-        { label: '🗑 このプレハブを削除', danger: true,
-          onClick: () => { if (confirm('プレハブ「' + pname + '」を削除します。付けてある物は元の見た目に戻ります。')) {
+        { label: pfile ? '🗑 このシーンから外す' : '🗑 このプレハブを削除', danger: true,
+          hint: pfile ? 'グローバルのファイルは残ります' : '',
+          onClick: () => { if (confirm('プレハブ「' + pname + '」を' + (pfile ? 'このシーンから外します' : '削除します') +
+                                       '。付けてある物は元の見た目に戻ります。')) {
                              send('edit.prefab.remove', { name: pname }); } } },
       ]);
       return;
     }
     if (ftile) {
       const fname = ftile.dataset.formula;
+      const fa = formulaAssets().find((x) => x.name === fname);
+      const ffile = (fa && fa.file) || '';
       showContextMenu(e, [
-        { head: '🧮 ' + fname },
+        { head: (ffile ? '🌐 ' : '🧮 ') + fname + (ffile ? '（グローバル）' : '') },
         { label: 'ノードエディタで開く', onClick: () => openFormulaAsset(fname) },
+        { label: '📝 数式で編集', hint: 'テキストで書き換える',
+          onClick: () => openFormulaText(fname) },
         { sep: true },
-        { label: '＋ 選択中の車両のタイヤに付ける（全軸）',
-          hint: sel ? (sel.vehicle ? '#' + sel.index : '車両ではない') : '未選択',
-          disabled: !sel || !sel.vehicle,
-          onClick: () => attachFormulaToVehicle(fname) },
-        { label: '＋ 選択中の車両の空気圧式に付ける（全軸）',
-          hint: sel ? (sel.vehicle ? 'ソフトタイヤの体積比 → 圧力' : '車両ではない') : '未選択',
-          disabled: !sel || !sel.vehicle,
-          onClick: () => attachPressureFormulaToVehicle(fname) },
+        // 制御器（control.js）: シミュレート中に物理スレッドで回す。
+        ...(typeof controlMenuItems === 'function' ? controlMenuItems(fname) : []),
+        { sep: true },
+        ...libraryMenuItems('formula', fname, ffile),
         { sep: true },
         { label: '🧮 新しい計算式…', onClick: newFormulaAsset },
-        { label: '🗑 この計算式を削除', danger: true,
+        { label: ffile ? '🗑 このシーンから外す' : '🗑 この計算式を削除', danger: true,
+          hint: ffile ? 'グローバルのファイルは残ります' : '',
           onClick: () => removeFormulaAsset(fname) },
       ]);
       return;
     }
     if (!tile) {
       showContextMenu(e, [
-        { label: '✨ 新しい共通イベント…', hint: 'ライブラリ（全シーンで使える）',
+        { label: '✨ 新しいイベント（ローカル）…', hint: 'このシーン専用',
+          onClick: () => newEventAsset(false) },
+        { label: '✨ 新しいイベント（グローバル）…', hint: '全シーン共通',
           onClick: () => newEventAsset(true) },
-        { label: '✨ 新しいイベント（このシーン専用）…', onClick: () => newEventAsset(false) },
         { label: '🧮 新しい計算式…', onClick: newFormulaAsset },
         { label: '🧩 新しい（空の）プレハブ…', onClick: newPrefabAsset },
         { label: '⛰ 新しいテレイン…', onClick: newTerrain },
@@ -3027,12 +3228,12 @@
     const ea = eventAssets().find((x) => x.name === name);
     const shared = !!(ea && ea.file);
     showContextMenu(e, [
-      { head: (shared ? '🔗 ' : '⚡ ') + name + (shared ? '（共通）' : '') },
+      { head: (shared ? '🌐 ' : '⚡ ') + name + (shared ? '（グローバル）' : '') },
       { label: 'ノードエディタで開く', onClick: () => openEventAsset(name) },
       shared
-        ? { label: 'このシーン専用にする', hint: 'ライブラリのファイルは残ります',
+        ? { label: '📍 ローカルにする（このシーン専用）', hint: 'グローバルのファイルは残ります',
             onClick: () => send('edit.event.unshare', { name: name }) }
-        : { label: '🔗 共通化（ライブラリへ）', hint: '他のシーンでも使えるように',
+        : { label: '🌐 グローバルにする（全シーン共通）', hint: 'assets/events/' + name + '.xml',
             onClick: () => shareEventAsset(name) },
       { sep: true },
       { label: '＋ シーン全体に付ける', hint: 'World',
@@ -3041,14 +3242,15 @@
         hint: sel ? ('#' + sel.index) : '未選択', disabled: !sel,
         onClick: () => attachEvent(name, 'sel') },
       { sep: true },
-      { label: '✨ 新しい共通イベント…', onClick: () => newEventAsset(true) },
+      { label: '✨ 新しいグローバルのイベント…', onClick: () => newEventAsset(true) },
       { label: '🗑 このシーンから削除', danger: true,
-        hint: shared ? 'ライブラリのファイルは残ります' : '',
+        hint: shared ? 'グローバルのファイルは残ります' : '',
         onClick: () => removeEventAsset(name) },
     ]);
   });
 
-  // 階層一覧のオブジェクト行の右クリック: プレハブを編集 / 外す / 選択。
+  // 階層一覧の行の右クリック: オブジェクト（プレハブを編集 / 外す / 選択 /
+  // 削除）・ライト・地面 / テレイン。
   document.getElementById('objList').addEventListener('contextmenu', (e) => {
     if (!owner || !sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
     const item = e.target.closest ? e.target.closest('[data-scene-item]') : null;
@@ -3056,10 +3258,55 @@
       showContextMenu(e, sceneItemMenuItems(item.dataset.sceneItem));
       return;
     }
+    const lrow = e.target.closest ? e.target.closest('[data-light]') : null;
+    if (lrow) {
+      showContextMenu(e, lightMenuItems(parseInt(lrow.dataset.light, 10)));
+      return;
+    }
     const row = e.target.closest ? e.target.closest('[data-index]') : null;
     if (!row) return;
     showContextMenu(e, objectMenuItems(parseInt(row.dataset.index, 10)));
   });
+  // カメラ一覧の行の右クリック: 選択 / ページへ移動 / 映像 / 削除。
+  // エディタモード×Editor Camera のページだけ（削除はシーンの書き換えなので
+  // サーバーも他のページからのぶんを弾く）。エディタカメラ自身は消せない。
+  document.getElementById('camList').addEventListener('contextmenu', (e) => {
+    if (!owner || !sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
+    const row = e.target.closest ? e.target.closest('[data-cam]') : null;
+    if (!row) return;
+    const index = parseInt(row.dataset.cam, 10);
+    const isEditor = index === sceneData.camera;  // このページ = エディタカメラ
+    const eSel = myEditorSel();
+    const selected = eSel.kind === 'camera' && eSel.index === index;
+    showContextMenu(e, [
+      { head: '🎥 ' + cameraName(index) },
+      isEditor ? null : { label: selected ? '選択を解除' : '選択',
+                          onClick: () => selectCamera(index) },
+      isEditor ? null : { label: 'このカメラのページへ',
+                          onClick: () => { location.href = camPath(index); } },
+      isEditor ? null : { label: '映像を別ウィンドウで表示',
+                          onClick: () => openCamPopup(index) },
+      { sep: true },
+      { label: '🗑 削除', danger: true, disabled: isEditor,
+        hint: isEditor ? 'エディタカメラは削除できません' : '',
+        onClick: () => removeCameraAt(index) },
+    ]);
+  });
+  // ライトの行の右クリック: 選択 / 削除（オブジェクトの行と同じく確認は
+  // 挟まない = Inspector の 🗑 と Delete キーと同じ）。
+  function lightMenuItems(index) {
+    const l = (sceneData.lights || []).find((x) => x.index === index);
+    const eSel = myEditorSel();
+    const selected = eSel.kind === 'light' && eSel.index === index;
+    return [
+      { head: '💡 ' + (l && l.name ? l.name : 'Light ' + index) },
+      { label: selected ? '選択を解除' : '選択',
+        onClick: () => selectLight(index) },
+      { sep: true },
+      { label: '🗑 削除', hint: 'Delete', danger: true,
+        onClick: () => removeLightAt(index) },
+    ];
+  }
   // 地面 / テレインの行の右クリック: 選択 / 削除。
   function sceneItemMenuItems(kind) {
     const selected = myEditorSel().kind === kind;
@@ -3084,7 +3331,7 @@
     ];
   }
 
-  // Inspector の「イベント」一覧と、World/Physics タブの World 節（シーン全体の
+  // Inspector の「イベント」一覧と、World タブの World 節（シーン全体の
   // イベント）の右クリック（開く / 外す）。行は renderEventAttachments が
   // data-event / data-owner を付けて出す。
   const onEventRowMenu = (e) => {
@@ -3151,25 +3398,16 @@
     return (sceneData && sceneData.events && sceneData.events.world) || [];
   }
   // ---- 計算式アセット（🧮）-------------------------------------------------
-  // ノード式（タイヤの「スリップ → 力」と、ソフトタイヤの空気圧「体積比 →
-  // 圧力」）。イベントと同じくサーバーが持ち、/scene の formulas =
-  // {assets:[{name,nodes,wires}], tireInputs, tireOutputs, pressureInputs,
-  // pressureOutputs}。ノードエディタは 1 つで、ndKind が「いまどちらを見て
-  // いるか」。in / out ノードの名前の選択肢は 2 つの約束を並べたもの（式が
-  // どちらに付くかは付け先で決まるので、ここでは区別しない）。
+  // ノード式（汎用の計算式。いまの使い手は制御器 = control.js）。イベントと
+  // 同じくサーバーが持ち、/scene の formulas = {assets:[{name,nodes,wires,
+  // text,fromText}], templates:[{id,label,hint,needs}], controllers, sensors,
+  // actuators}。ノードエディタは ⚡ と共用で、ndKind が「いまどちらを見て
+  // いるか」。数式のテキストでの編集は control.js の式エディタ（#fxEd）。
   function formulaAssets() {
     return (sceneData && sceneData.formulas && sceneData.formulas.assets) || [];
   }
-  function formulaNames(key) {
-    return (sceneData && sceneData.formulas && sceneData.formulas[key]) || [];
-  }
-  function tireInputs() {
-    return formulaNames('tireInputs').concat(
-      formulaNames('pressureInputs').filter((n) => !formulaNames('tireInputs').includes(n)));
-  }
-  function tireOutputs() {
-    return formulaNames('tireOutputs').concat(
-      formulaNames('pressureOutputs').filter((n) => !formulaNames('tireOutputs').includes(n)));
+  function formulaTemplates() {
+    return (sceneData && sceneData.formulas && sceneData.formulas.templates) || [];
   }
   let ndKind = 'event';   // 'event' | 'formula'
   let ndFormula = '';     // いま編集している計算式の名前
@@ -3195,28 +3433,38 @@
     ndGraphKey = '';
     openNodeEditor();
   }
-  function newFormulaAsset() {
-    const name = prompt('新しい計算式の名前（英数字と _ -）', 'tire');
+  // 新しい計算式: 雛形（サーバーの control/ControlTemplates.cpp）を番号で
+  // 選ぶ。雛形が指す相手（ジョイント / 物）は選択中・既定のものから決める。
+  // host = ダイアログを出す窓（制御盤の窓から呼ぶとき。省略 = このページ）。
+  function newFormulaAsset(host) {
+    const W = host && typeof host.prompt === 'function' ? host : window;
+    const tpls = formulaTemplates();
+    const name = W.prompt('新しい計算式の名前（英数字と _ -）', 'formula');
     if (name === null) return;
     const clean = cleanAssetName(name);
     if (!clean) return;
-    const pick = prompt('最初の中身を選んでください:\n' +
-                        '  1 = タイヤ式（Magic Formula + 摩擦楕円 + 緩和長）\n' +
-                        '  2 = 空気圧式（体積比 → 圧力、等温変化）\n' +
-                        '  空欄 = 空の式', '1');
+    let list = '最初の中身を選んでください（雛形は制御器として付き、シミュレート中に回ります）:\n';
+    tpls.forEach((t, i) => { list += '  ' + i + ' = ' + t.label + '（' + t.hint + '）\n'; });
+    list += '  t = 数式のテキストで書く';
+    const pick = W.prompt(list, '0');
     if (pick === null) return;
-    const tpl = String(pick).trim() === '1' ? 'tire'
-              : String(pick).trim() === '2' ? 'pressure' : '';
+    if (String(pick).trim().toLowerCase() === 't') {
+      if (typeof openFormulaText === 'function') openFormulaText(clean, true);
+      return;
+    }
+    const t = tpls[parseInt(pick, 10)] || tpls[0];
+    const msg = { name: clean, template: t ? t.id : 'empty' };
+    if (t && t.needs && typeof templateTarget === 'function') msg.target = templateTarget(t.needs);
     ndKind = 'formula';
     ndFormula = clean;
     ndGraphKey = '';
-    send('edit.formula.add', { name: clean, template: tpl });
+    send('edit.formula.add', msg);
   }
   function removeFormulaAsset(name) {
     const target = name || ndFormula;
     if (!target) return;
     if (!confirm('計算式「' + target + '」を削除します。' +
-                 'これを使っているタイヤは組み込みの式に戻ります。')) {
+                 '制御器として付いていれば外れます。')) {
       return;
     }
     send('edit.formula.remove', { name: target });
@@ -3230,27 +3478,11 @@
     if (!clean) return;
     send('edit.prefab.add', { name: clean });
   }
-  // 選択中の車両の全軸に付ける（Assets タイルの右クリック）。
-  function attachFormulaToVehicle(name) {
-    const sel = mySelectedDesc();
-    if (!sel) return;
-    send('edit.vehicle.tire', { index: sel.index, axle: -1, formula: name });
-  }
-  function attachPressureFormulaToVehicle(name) {
-    const sel = mySelectedDesc();
-    if (!sel) return;
-    send('edit.vehicle.tire', { index: sel.index, axle: -1, pressureFormula: name });
-  }
   // Inspector の「車両」節。
   function applyVehicleEnable(on) {
     const sel = mySelectedDesc();
     if (!sel) return;
     send('edit.vehicle.enable', { index: sel.index, on: !!on });
-  }
-  function applyVehicleTire(axle, name) {
-    const sel = mySelectedDesc();
-    if (!sel) return;
-    send('edit.vehicle.tire', { index: sel.index, axle: axle, formula: name || '' });
   }
   // ---- ソフトボディ（Inspector の節）----------------------------------------
   // 設定は edit.set の "soft" キー 1 個にまとめて送る（部分更新なので、触った
@@ -3303,12 +3535,9 @@
     setField('edVehicleOn', !!sel.vehicle);
     hint.hidden = !sel.vehicle;
     const axles = sel.vehicleAxles || [];
-    const names = formulaAssets().map((f) => f.name);
     const key = sel.index + '|' + (sel.vehicle ? 1 : 0) + '|' +
-      axles.map((a) => a.z + ':' + a.steer + ':' + a.driven + ':' + a.formula +
-                       ':' + (a.soft ? 1 : 0) + ':' + a.stiffness + ':' + a.pressure +
-                       ':' + a.pressureFormula).join(',') +
-      '|' + names.join(',');
+      axles.map((a) => a.z + ':' + a.steer + ':' + a.driven +
+                       ':' + (a.soft ? 1 : 0) + ':' + a.stiffness + ':' + a.pressure).join(',');
     if (key === vehicleSecKey) return;
     if (axlesEl.contains(document.activeElement) &&
         document.activeElement !== document.body) return;  // 選んでいる最中
@@ -3317,27 +3546,11 @@
     axlesEl.innerHTML = axles.map((a, i) => {
       const what = (a.z >= 0 ? '前' : '後') + (a.steer > 0 ? '・操舵' : '') +
                    (a.driven ? '・駆動' : '');
-      const options = (cur, builtin) => {
-        let o = '<option value=""' + (!cur ? ' selected' : '') + '>' + builtin + '</option>';
-        let found = !cur;
-        for (const n of names) {
-          if (n === cur) found = true;
-          o += '<option value="' + ndEsc(n) + '"' + (n === cur ? ' selected' : '') +
-               '>🧮 ' + ndEsc(n) + '</option>';
-        }
-        if (!found) o += '<option value="' + ndEsc(cur) + '" selected>? ' + ndEsc(cur) + '</option>';
-        return o;
-      };
-      const opts = options(a.formula, '(組み込み)');
-      const popts = options(a.pressureFormula, '(組み込み・等温変化)');
       const pressure = (a.pressure !== undefined) ? Math.round(a.pressure) : 320000;
       // ソフトタイヤ: 見た目が質点ばねの変形メッシュになり、物理では径方向
       // ばね（サスと直列）が効く。剛性は潰れ = 荷重 / 剛性。
       const stiff = (a.stiffness !== undefined) ? Math.round(a.stiffness) : 150000;
-      return '<div class="edRow"><span>軸 ' + i + '（' + what + '）タイヤ式</span>' +
-        '<select class="strSel" title="この軸のタイヤの計算式（🧮 アセット）" ' +
-        'onchange="applyVehicleTire(' + i + ', this.value)">' + opts + '</select></div>' +
-        '<div class="edRow"><span>軸 ' + i + ' ソフトタイヤ</span>' +
+      return '<div class="edRow"><span>軸 ' + i + '（' + what + '）ソフトタイヤ</span>' +
         '<input type="checkbox"' + (a.soft ? ' checked' : '') +
         ' title="タイヤを質点ばねの変形メッシュで描き、径方向ばねをサスと直列に効かせる"' +
         ' onchange="applyVehicleSoft(' + i + ', this.checked)"></div>' +
@@ -3348,13 +3561,10 @@
             ' onchange="applyVehicleTireStiffness(' + i + ', this.value)"></div>' +
             // 空気圧: 閉じたメッシュの体積が減ると圧力が上がり、トレッドを
             // 張り戻す（ゴムのように戻る）。0 で項ごと切る。
-            '<div class="edRow" title="基準の空気圧 (Pa、絶対圧)。潰れて体積が減ると式の圧力が上がる。0 = 空気圧なし">' +
+            '<div class="edRow" title="基準の空気圧 (Pa、絶対圧)。潰れて体積が減ると圧力が上がる（等温変化）。0 = 空気圧なし">' +
             '<span>軸 ' + i + ' 空気圧 (Pa)</span>' +
             '<input class="num" type="number" step="10000" min="0" max="1000000" value="' + pressure + '"' +
-            ' onchange="applyVehiclePressure(' + i + ', this.value)"></div>' +
-            '<div class="edRow"><span>軸 ' + i + ' 空気圧式</span>' +
-            '<select class="strSel" title="体積比 → 圧力 の計算式（🧮 アセット）。空 = 組み込みの等温変化" ' +
-            'onchange="applyVehiclePressureFormula(' + i + ', this.value)">' + popts + '</select></div>'
+            ' onchange="applyVehiclePressure(' + i + ', this.value)"></div>'
           : '');
     }).join('');
   }
@@ -3374,11 +3584,6 @@
     const v = parseFloat(value);
     if (!sel || !Number.isFinite(v)) return;
     send('edit.vehicle.tire', { index: sel.index, axle: axle, pressure: v });
-  }
-  function applyVehiclePressureFormula(axle, name) {
-    const sel = mySelectedDesc();
-    if (!sel) return;
-    send('edit.vehicle.tire', { index: sel.index, axle: axle, pressureFormula: name || '' });
   }
   function currentAsset() {
     const list = eventAssets();
@@ -3427,6 +3632,7 @@
     sel.innerHTML = h || '<option value="">(アセットがありません)</option>';
     document.getElementById('ndTitle').textContent =
       ndKind === 'formula' ? '🧮 計算式' : '⚡ イベント設計';
+    document.getElementById('ndTextBtn').hidden = ndKind !== 'formula' || !ndFormula;
     document.getElementById('ndHintEvent').hidden = ndKind === 'formula';
     document.getElementById('ndHintFormula').hidden = ndKind !== 'formula';
   }
@@ -3478,6 +3684,67 @@
     ndAsset = name;   // 読み込まれたら次のポーリングでこれが選ばれる
     ndGraphKey = '';
     send('edit.event.import', { name: name });
+  }
+  // ---- グローバル（ライブラリ）の計算式・プレハブ・メッシュ ------------------
+  // サーバーは edit.lib.share / unshare / import / delete（kind = event / formula /
+  // prefab）と edit.mesh.add。イベントは従来の edit.event.* でも同じ。
+  const LIB_LABEL = { event: 'イベント', formula: '計算式', prefab: 'プレハブ' };
+  function libraryList(kind) {
+    const lib = (sceneData && sceneData.library) || {};
+    return kind === 'event' ? eventLibrary() : (lib[kind + 's'] || []);
+  }
+  function importLibraryAsset(kind, name) {
+    if (!name) return;
+    if (kind === 'event') { importEventAsset(name); return; }
+    if (kind === 'formula') { ndKind = 'formula'; ndFormula = name; ndGraphKey = ''; }
+    send('edit.lib.import', { kind: kind, name: name });
+  }
+  function shareLibraryAsset(kind, name) {
+    if (kind === 'event') { shareEventAsset(name); return; }
+    const msg = { kind: kind, name: name };
+    if (libraryList(kind).includes(name)) {
+      if (!confirm('グローバルに同じ名前の' + LIB_LABEL[kind] + '「' + name + '」があります。\n' +
+                   'このシーンの中身で上書きしますか？（それを使っている他のシーンも変わります）')) {
+        return;
+      }
+      msg.overwrite = true;
+    }
+    send('edit.lib.share', msg);
+  }
+  function unshareLibraryAsset(kind, name) {
+    send('edit.lib.unshare', { kind: kind, name: name });
+  }
+  function deleteLibraryAsset(kind, name) {
+    if (kind === 'event') { deleteLibraryEvent(name); return; }
+    if (!confirm('グローバルの' + LIB_LABEL[kind] + '「' + name + '」をごみ箱へ移しますか？\n' +
+                 'これを使っているシーンは、開くとこの' + LIB_LABEL[kind] + 'が空になります' +
+                 '（ファイルを戻せば元に戻ります）')) {
+      return;
+    }
+    send('edit.lib.delete', { kind: kind, name: name });
+  }
+  // グローバルのメッシュ（assets/ の .glb）を置く: このシーンに宣言してから
+  // （同じファイルの宣言があればそれを使う）、その名前で配置する。名前の決め方は
+  // サーバーの Scene::addMeshDeclaration と同じ（ファイル名、重なれば _2, _3 …）。
+  function placeLibraryMesh(file) {
+    const meshes = (sceneData && sceneData.meshes) || [];
+    const have = meshes.find((m) => m.file === file);
+    if (have) { addObject('model', have.name); return; }
+    let base = file.split('/').pop().replace(/\.(glb|gltf)$/i, '').replace(/[^A-Za-z0-9_-]/g, '');
+    if (!base) base = 'mesh';
+    let name = base;
+    for (let n = 2; meshes.some((m) => m.name === name); ++n) name = base + '_' + n;
+    // 宣言が先に届くよう、送り終えてから置く（fetch は並行に飛ぶので、続けて
+    // 送るとサーバーに逆順で着くことがある = 宣言の無い名前で置かれて球になる）。
+    send('edit.mesh.add', { file: file, name: name }).then(() => addObject('model', name));
+  }
+  // 計算式・プレハブのタイルの右クリックに足す「グローバル / ローカル」の項目。
+  function libraryMenuItems(kind, name, file) {
+    return file
+      ? [{ label: '📍 ローカルにする（このシーン専用）', hint: 'グローバルのファイルは残ります',
+           onClick: () => unshareLibraryAsset(kind, name) }]
+      : [{ label: '🌐 グローバルにする（全シーン共通）', hint: 'assets/' + kind + 's/' + name + '.xml',
+           onClick: () => shareLibraryAsset(kind, name) }];
   }
   function deleteLibraryEvent(name) {
     if (!confirm('共通イベント「' + name + '」をごみ箱へ移しますか？\n' +
@@ -3694,28 +3961,79 @@
     curve:     { label: '折れ線', ins: ['x'],             outs: ['y'],     group: '制御', param: 'curve' },
     lag:       { label: '一次遅れ', ins: ['x', 'tau'],    outs: ['y'],     group: '状態' },
     integrate: { label: '積分',   ins: ['x'],             outs: ['∫x dt'], group: '状態', param: 'range' },
-    magic:     { label: 'Magic Formula', ins: ['s', 'B', 'C', 'E'], outs: ['値'], group: '車両' },
-    ellipse:   { label: '摩擦楕円', ins: ['fx', 'fy', 'peak'], outs: ['fx', 'fy'], group: '車両' },
+    // 制御ブロック（Simulink の基本ブロック相当。係数は params = 空白区切り、
+    // 省略した値はサーバーの既定 = vehicle/Formula.h の「制御ブロック」）
+    time:       { label: '時刻 t',   ins: [],    outs: ['t'],   group: '制御ブロック' },
+    gain:       { label: 'ゲイン k·x', ins: ['x'], outs: ['y'],  group: '制御ブロック',
+                  param: 'list', plabel: 'k', ph: '1' },
+    saturate:   { label: '飽和',      ins: ['x'], outs: ['y'],  group: '制御ブロック',
+                  param: 'list', plabel: 'lo hi', ph: '-1 1' },
+    deadzone:   { label: '不感帯',    ins: ['x'], outs: ['y'],  group: '制御ブロック',
+                  param: 'list', plabel: 'lo hi', ph: '-0.1 0.1' },
+    delay:      { label: '単位遅延 z⁻¹', ins: ['x'], outs: ['前回'], group: '制御ブロック',
+                  param: 'list', plabel: '初期値', ph: '0' },
+    derivative: { label: '微分 dx/dt', ins: ['x'], outs: ['dx/dt'], group: '制御ブロック' },
+    ratelimit:  { label: '変化率制限', ins: ['x'], outs: ['y'], group: '制御ブロック',
+                  param: 'list', plabel: '上昇 下降 /s', ph: '1 1' },
+    pid:        { label: 'PID',       ins: ['e'], outs: ['u'],  group: '制御ブロック',
+                  param: 'list', plabel: 'kp ki kd lo hi tf', ph: '1 0 0 0 0 0' },
   };
-  const FNODE_GROUPS = ['入出力', '算術', '関数', '制御', '状態', '車両'];
+  const FNODE_GROUPS = ['入出力', '算術', '関数', '制御', '状態', '制御ブロック'];
   const FPORT_Y0 = 40;   // 1 行目のポート中心（ノード上端から）
   const FPORT_DY = 18;   // ポート行の間隔（style.css の .ndPortRow の高さ）
   function fArgs(extra) { return Object.assign({ asset: ndFormula }, extra || {}); }
   function fPatch(id, patch) {
     send('edit.fnode.set', fArgs(Object.assign({ id: id }, patch)));
   }
-  function fAddNodeAt(type, x, y) {
+  function fAddNodeAt(type, x, y, name) {
     if (!currentFormula()) { newFormulaAsset(); return; }
     const extra = { type: type, x: Math.max(0, Math.round(x)), y: Math.max(0, Math.round(y)) };
     // 入出力ノードは最初の名前を入れておく（空のままだと 0 を出す）。
-    if (type === 'in' && tireInputs().length) extra.name = tireInputs()[0];
-    if (type === 'out' && tireOutputs().length) extra.name = tireOutputs()[0];
+    if (type === 'in') extra.name = name || 'time';
+    if (type === 'out') extra.name = name || 'scope:y';
     if (type === 'const') extra.params = [1];
     if (type === 'curve') extra.params = [0, 0, 1, 1];
     send('edit.fnode.add', fArgs(extra));
   }
   function fRemoveWire(from, fromPort, to, port) {
     send('edit.fwire.remove', fArgs({ from: from, fromPort: fromPort, to: to, port: port }));
+  }
+  // 変数（var:<名前>）のノード。中身は in / out ノード（名前が var:…）で、制御器の
+  // 間で共有する値を読む / 書く（サーバーの control/ControlSignals.h の「変数」）。
+  // 既にある変数の名前を既定に出す（同じ名前を打ち間違えないように）。
+  function fVarNames() {
+    const set = new Set();
+    for (const f of formulaAssets()) {
+      for (const n of f.nodes || []) {
+        if ((n.type === 'in' || n.type === 'out') && (n.name || '').startsWith('var:')) {
+          set.add(n.name.slice(4));
+        }
+      }
+    }
+    const live = sceneData && sceneData.control && sceneData.control.vars;
+    if (live) Object.keys(live).forEach((k) => set.add(k));
+    return Array.from(set).filter((s) => s).sort();
+  }
+  function fAddVarNode(write, x, y) {
+    const have = fVarNames();
+    const name = prompt((write ? '書く' : '読む') + '変数の名前（英数字と _ -。どの計算式からも同じ名前で読み書きできる）' +
+                        (have.length ? '\n今ある変数: ' + have.join(', ') : ''),
+                        have[0] || 'x');
+    if (name === null) return;
+    const clean = String(name).trim().replace(/[^A-Za-z0-9_-]/g, '');
+    if (!clean) return;
+    fAddNodeAt(write ? 'out' : 'in', x, y, 'var:' + clean);
+  }
+  function fAddParamWriteNode(x, y) {
+    const params = typeof controlParams === 'function' ? controlParams() : [];
+    if (!params.length) {
+      alert('パラメータがありません。制御盤の「✎ 編集」でパラメータを足してから使ってください。');
+      return;
+    }
+    const name = prompt('書き換えるパラメータの名前（' + params.map((p) => p.name).join(', ') + '）',
+                        params[0].name);
+    if (name === null || !params.some((p) => p.name === name.trim())) return;
+    fAddNodeAt('out', x, y, 'param:' + name.trim());
   }
   function fNodeMenuItems(x, y) {
     const items = [];
@@ -3727,26 +4045,50 @@
         items.push({ label: def.label, hint: k,
                      onClick: () => fAddNodeAt(k, x, y) });
       }
+      if (g === '入出力') {
+        items.push({ label: '📦 変数を読む', hint: 'var:名前',
+                     onClick: () => fAddVarNode(false, x, y) });
+        items.push({ label: '📦 変数に書く', hint: 'var:名前',
+                     onClick: () => fAddVarNode(true, x, y) });
+        items.push({ label: '🎛 パラメータを書き換える', hint: 'param:名前',
+                     onClick: () => fAddParamWriteNode(x, y) });
+      }
     }
     return items;
   }
-  // 名前の選択肢（in / out）。今の値が一覧に無ければダミーで残す。
-  function fNameSelect(id, cur, names) {
-    let found = false;
-    let h = '<select class="strSel" onchange="fPatch(' + id + ',{name:this.value})">';
-    for (const n of names) {
-      if (n === cur) found = true;
-      h += '<option value="' + ndEsc(n) + '"' + (n === cur ? ' selected' : '') + '>' +
-           ndEsc(n) + '</option>';
+  // in / out の名前: 自由入力 + 候補（<datalist>）。候補は制御器の信号名
+  // （シーンのオブジェクト / ジョイントの名前から組む）。
+  function fNameInput(id, cur, isIn) {
+    const listId = isIn ? 'fNamesIn' : 'fNamesOut';
+    let dl = document.getElementById(listId);
+    if (!dl) {
+      dl = document.createElement('datalist');
+      dl.id = listId;
+      document.body.appendChild(dl);
     }
-    if (!found) h += '<option value="' + ndEsc(cur) + '" selected>? ' + ndEsc(cur) + '</option>';
-    return h + '</select>';
+    const names =
+      typeof controlSignalSuggestions === 'function' ? controlSignalSuggestions(isIn) : [];
+    const html = names.map((n) => '<option value="' + ndEsc(n) + '">').join('');
+    if (dl.innerHTML !== html) dl.innerHTML = html;
+    return '<input class="txt fName" type="text" list="' + listId + '" value="' + ndEsc(cur) +
+           '" placeholder="' + (isIn ? 'joint:arm.angle' : 'joint:arm.target') + '" ' +
+           'title="' + (isIn ? 'センサ: time / body:名前.量 / joint:名前.量 / vehicle:名前.量 / param:名前 / var:変数'
+                             : 'アクチュエータ: joint:名前.target / body:名前.fx… / vehicle:名前.throttle… / param:名前 / var:変数 / scope:ラベル') +
+           '" spellcheck="false" ' +
+           'onchange="fPatch(' + id + ',{name:this.value})">';
   }
   function fNodeHtml(n, def) {
     const rows = Math.max(def.ins.length, def.outs.length);
     const io = n.type === 'in' || n.type === 'out';
-    const title = io ? (n.type === 'in' ? '入力 ' : '出力 ') + (n.name || '?') : def.label;
-    let h = '<div class="ndNode fml' + (io ? ' io' : '') + '" data-id="' + n.id +
+    // var: の入出力は「変数」として見せる（中身は同じ in / out ノード）。
+    const isVar = io && (n.name || '').startsWith('var:');
+    const isParamWrite = n.type === 'out' && (n.name || '').startsWith('param:');
+    const title = isVar
+      ? '📦 変数 ' + n.name.slice(4) + (n.type === 'in' ? ' を読む' : ' に書く')
+      : isParamWrite ? '🎛 パラメータ ' + n.name.slice(6) + ' に書く'
+      : io ? (n.type === 'in' ? '入力 ' : '出力 ') + (n.name || '?') : def.label;
+    let h = '<div class="ndNode fml' + (io ? ' io' : '') + (isVar ? ' var' : '') +
+            '" data-id="' + n.id +
             '" style="left:' + n.x + 'px;top:' + n.y + 'px">';
     h += '<div class="ndTitleRow" data-drag="' + n.id + '" title="ドラッグで移動（' +
          n.type + ' #' + n.id + '）">' +
@@ -3761,8 +4103,15 @@
     h += '</div>';
     const p = n.params || [];
     if (def.param === 'in' || def.param === 'out') {
-      h += '<div class="ndBody">' + ndRow('名前', fNameSelect(n.id, n.name || '',
-        def.param === 'in' ? tireInputs() : tireOutputs())) + '</div>';
+      // 名前は自由入力 + 候補（制御器のセンサ /
+      // アクチュエータ = control.js の controlSignalSuggestions）。
+      h += '<div class="ndBody">' + ndRow('名前', fNameInput(n.id, n.name || '',
+        def.param === 'in')) + '</div>';
+    } else if (def.param === 'list') {
+      h += '<div class="ndBody">' + ndRow(def.plabel, '<input class="txt" type="text" value="' +
+           ndEsc(p.join(' ')) + '" placeholder="' + ndEsc(def.ph || '') + '" ' +
+           'title="空白区切り。省略した値は既定（' + ndEsc(def.ph || '') + '）" ' +
+           'onchange="fPatch(' + n.id + ',{params:this.value})">') + '</div>';
     } else if (def.param === 'value') {
       h += '<div class="ndBody">' + ndRow('値', '<input class="num" type="number" step="any" value="' +
            (p.length ? p[0] : 0) + '" onchange="fPatch(' + n.id +
@@ -3788,6 +4137,32 @@
            'title="出力 ' + ndEsc(def.outs[i]) + ' - ここから入力へドラッグで接続"></span>';
     });
     return h + '</div>';
+  }
+  // キャンバス（#ndNodes と線の #ndWires）の広さをノードの範囲に合わせる。CSS の
+  // 2000 x 1400 は最小。それより外に置いたノードは、線の SVG がはみ出しを切るので
+  // 線が描かれなかった（数式から起こした大きな計算式で起きた）。
+  const ND_MIN_W = 2000, ND_MIN_H = 1400;
+  function ndFitCanvas(nodes) {
+    let w = ND_MIN_W, h = ND_MIN_H;
+    for (const n of nodes || []) {
+      w = Math.max(w, (n.x || 0) + NODE_W + 400);
+      h = Math.max(h, (n.y || 0) + 600);
+    }
+    ndSetCanvasSize(w, h);
+  }
+  function ndSetCanvasSize(w, h) {
+    for (const id of ['ndNodes', 'ndWires']) {
+      const el = document.getElementById(id);
+      el.style.width = Math.ceil(w) + 'px';
+      el.style.height = Math.ceil(h) + 'px';
+    }
+  }
+  // ドラッグで端へ寄せたら広げる（縮めるのは次の組み直しのとき）。
+  function ndGrowCanvas(x, y) {
+    const el = document.getElementById('ndNodes');
+    const w = Math.max(el.offsetWidth, x + NODE_W + 400);
+    const h = Math.max(el.offsetHeight, y + 600);
+    if (w > el.offsetWidth || h > el.offsetHeight) ndSetCanvasSize(w, h);
   }
   function fDrawWires(posOverride) {
     const g = currentFormulaGraph();
@@ -3817,7 +4192,9 @@
   }
   function renderFormulaEditor(force) {
     const g = currentFormulaGraph();
-    const key = 'f@' + JSON.stringify(g) + '@' + tireInputs().join(',') + '@' +
+    const key = 'f@' + JSON.stringify(g) + '@' +
+      (sceneData.objects || []).map((o) => o.name || '').join(',') + '@' +
+      (sceneData.joints || []).map((j) => j.name || '').join(',') + '@' +
       eventAssets().map((a) => a.name).join(',') + '@' +
       formulaAssets().map((a) => a.name).join(',');
     if (!force && key === ndGraphKey) return;
@@ -3840,6 +4217,7 @@
         ? 'この計算式にはノードがありません。キャンバスを右クリックして追加してください。'
         : '計算式がありません。右クリックの「新しい計算式…」で作るか、Assets パネルの 🧮 タイルから選んでください。') +
       '</div>';
+    ndFitCanvas(g.nodes);
     fDrawWires();
   }
   // vec の 1 成分だけを変える（カメラの距離と仰角は別々の行）。
@@ -4126,6 +4504,7 @@
         ? 'このイベントにはノードがありません。上のパレットから追加してください。'
         : 'イベントアセットがありません。「＋新規」で作るか、Assets パネルの ⚡ タイルから選んでください。') +
       '</div>';
+    ndFitCanvas(g.nodes);
     ndDrawWires();
   }
 
@@ -4188,6 +4567,7 @@
         ndDrag.y = Math.max(0, Math.round(p.y - ndDrag.offY));
         ndDrag.el.style.left = ndDrag.x + 'px';
         ndDrag.el.style.top = ndDrag.y + 'px';
+        ndGrowCanvas(ndDrag.x, ndDrag.y);
         ndRedrawLocal();
         return;
       }

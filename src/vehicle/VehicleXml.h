@@ -18,14 +18,12 @@
 //              efficiency="0.92" up="5800" down="2300" time="0.25"
 //              automatic="true"/>
 //     <center type="open" bias="0.5" stiffness="20" lock="300"/>
-//     <formula name="tire_mf"> <node .../> <wire .../> </formula>   ... FormulaXml.h
 //     <tire .../> <suspension .../>        ... 全軸の既定値（省略可）
 //     <axle z="1.3" y="-0.15" track="1.6" steer="32" ackermann="1"
 //           driven="false" brake="1" handbrake="0"
 //           diff="open" stiffness="20" lock="300">
 //       <tire radius="0.32" width="0.22" inertia="1.2" mu="1" bx="10" cx="1.65" ex="0.97"
-//             by="12" cy="1.4" ey="-1" relax="0.15" rolling="0.015"
-//             formula="tire_mf"/>            ... 省略 = 組み込みのタイヤ
+//             by="12" cy="1.4" ey="-1" relax="0.15" rolling="0.015"/>
 //       <suspension rest="0.35" travel="0.25" stiffness="35000"
 //                   bump="3500" rebound="4500" antiroll="6000"/>
 //     </axle>

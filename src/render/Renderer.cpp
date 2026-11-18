@@ -7,6 +7,8 @@
 
 #include "render/GltfLoader.h"
 
+#include <cmath>
+
 using namespace filament;
 using namespace filament::math;
 using utils::Entity;
@@ -111,6 +113,8 @@ Renderer::Renderer(int width, int height, const std::string& materialPath)
     // 欠けていれば、エディタで初めて線を出したときではなく起動時に止まる。
     loadLineMaterial();
     loadOverlayMaterial();
+    loadParticleMaterial();
+    loadUiMaterial();  // UI の Canvas（RendererUiMeshes.cpp）
 
     // Direct lights are no longer created here: the scene owns them as
     // editable light descriptors (Scene::LightItem, saved in the scene
@@ -167,7 +171,7 @@ float Renderer::verticalFovDegrees() const {
 
 void Renderer::applyProjection(ViewSlot& slot) {
     const double aspect = double(slot.width) / double(slot.height);
-    slot.camera->setProjection(kFovDegrees, aspect, kNearPlane, kFarPlane,
+    slot.camera->setProjection(kFovDegrees, aspect, slot.nearPlane, kFarPlane,
                                Camera::Fov::VERTICAL);
 }
 
@@ -233,7 +237,18 @@ void Renderer::setCamera(std::size_t viewIndex,
                          const filament::math::double3& eye,
                          const filament::math::double3& target) {
     if (viewIndex >= views_.size()) return;
-    views_[viewIndex].camera->lookAt(eye, target, {0.0, 1.0, 0.0});
+    ViewSlot& slot = views_[viewIndex];
+    slot.camera->lookAt(eye, target, {0.0, 1.0, 0.0});
+    // near は注視点までの距離の 1/10（上限 kNearPlane、下限 kMinNearPlane）。
+    // 1 割以上変わったときだけ投影を入れ直す。
+    const double d = length(target - eye);
+    double nearPlane = d * kNearPerDistance;
+    if (nearPlane > kNearPlane) nearPlane = kNearPlane;
+    if (nearPlane < kMinNearPlane) nearPlane = kMinNearPlane;
+    if (std::abs(nearPlane - slot.nearPlane) > 0.1 * slot.nearPlane) {
+        slot.nearPlane = nearPlane;
+        if (slot.width > 0 && slot.height > 0) applyProjection(slot);
+    }
 }
 
 Renderer::~Renderer() {
@@ -317,6 +332,13 @@ Renderer::~Renderer() {
     }
     overlayMeshes_.clear();
     if (overlayMaterial_) engine_->destroy(overlayMaterial_);
+    for (auto& mesh : particleMeshes_) {
+        bool inScene = true;
+        destroyRenderable(*engine_, *scene_, mesh.entity, mesh.vb, mesh.ib, inScene);
+        if (mesh.mi) engine_->destroy(mesh.mi);
+    }
+    particleMeshes_.clear();
+    if (particleMaterial_) engine_->destroy(particleMaterial_);
     if (lineMaterial_) engine_->destroy(lineMaterial_);
     for (auto* mi : highlightInstances_) engine_->destroy(mi);
     engine_->destroy(material_);
@@ -333,6 +355,8 @@ Renderer::~Renderer() {
     if (sphereIb_) engine_->destroy(sphereIb_);
     if (cylinderVb_) engine_->destroy(cylinderVb_);
     if (cylinderIb_) engine_->destroy(cylinderIb_);
+    // UI（Canvas・テクスチャ・材質・UI のビュー）。ビューより先に壊す。
+    destroyUi();
     for (auto& slot : views_) {
         engine_->destroyCameraComponent(slot.cameraEntity);
         engine_->destroy(slot.cameraEntity);
@@ -386,6 +410,7 @@ void Renderer::renderFrame(
             {0, 0, uint32_t(slot.width), uint32_t(slot.height)});
         // Same fov/near/far as addView - only the aspect follows the size.
         applyProjection(slot);
+        applyUiProjection(slot);  // UI のビュー（あれば）も同じ大きさへ
         for (auto& cap : slot.captures) {
             cap.pixels.assign(
                 std::size_t(slot.width) * std::size_t(slot.height) * 4, 0);
@@ -399,6 +424,10 @@ void Renderer::renderFrame(
 
     if (!renderer_->beginFrame(slot.swapChain)) return;
     renderer_->render(slot.view);
+    // UI を同じ描画先へ重ねる（半透明のビュー = 主の絵の上に乗る。読み戻しに入る）。
+    // 中身が空のビューは描かない。
+    const bool hasUi = slot.uiView && slot.uiScene->getRenderableCount() > 0;
+    if (hasUi) renderer_->render(slot.uiView);
 
     // Start a readback into whichever buffer is free. If both are still with
     // the GPU we skip the capture for this frame rather than blocking - the

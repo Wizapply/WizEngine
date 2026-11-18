@@ -564,6 +564,8 @@ void WebRtcStreamer::buildPipeline(int payloadType,
     GstCaps* c = gst_caps_from_string(caps.c_str());
     g_object_set(appsrc_, "caps", c, nullptr);
     gst_caps_unref(c);
+    sessionWidth_ = width_;
+    sessionHeight_ = height_;
 
     // Surface encoder/negotiation problems instead of failing silently to a
     // black picture.
@@ -640,9 +642,11 @@ void WebRtcStreamer::setStreamFormat(int width, int height, int fps,
 void WebRtcStreamer::pushFrame(const uint8_t* rgba, std::size_t size) {
     std::lock_guard<std::mutex> lk(pipelineMutex_);
     if (!appsrc_) return;  // no active session yet
-    // While a resize is settling, frames of the previous size can still
-    // arrive - a mismatched buffer confuses the caps-fixed appsrc, so drop.
-    if (size != std::size_t(width_) * std::size_t(height_) * 4) return;
+    // 大きさが今の回線（caps）と合わない絵は捨てる: 大きさを変えている途中は前の
+    // 大きさの絵が、解像度を変えて再接続を頼んだ後は読み込み直しまで新しい大きさの
+    // 絵が届く。合わない絵を caps の決まった appsrc へ入れると、足りない部分が
+    // でたらめな値になり砂嵐に見える。
+    if (size != std::size_t(sessionWidth_) * std::size_t(sessionHeight_) * 4) return;
     GstBuffer* buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
     gst_buffer_fill(buffer, 0, rgba, size);
     gst_app_src_push_buffer(GST_APP_SRC(appsrc_), buffer);

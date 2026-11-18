@@ -158,7 +158,7 @@ void Scene::publishTerrainField(const ed::TerrainDesc& desc,
         placeScatterBody(pose);
     }
 
-    // テレインの有無は系の種類を変えうる（kTerrainForcesCore）。作り直したら
+    // テレインの有無は系の種類を変えうる（SceneSystemConfig::terrainForcesCore）。作り直したら
     // テレインの当たり判定と幹もそこで組み直し済みなので、二重に張らない。
     // 省くのは筆の 1 パス（brushPass）だけ: 同じ形の格子の中身を書き換えるだけで
     // テレインの有無は変わらず、1 パスごとにここを通る。それ以外は必ず判定する
@@ -430,7 +430,7 @@ void Scene::rebuildTerrainBodyUnguarded() {
         physics_.setTerrainFrame(chronoPos(pose), toChrono(pose));
     }
     if (id == PhysicsWorld::kInvalidId) {
-        // Multicore（kTerrainForcesCore = false のとき）など。前の格子で
+        // Multicore（terrainForcesCore = false のとき）など。前の格子で
         // 当たり続けないように外しておく。
         if (physics_.hasTerrain()) physics_.clearTerrain();
         // 張り直しのたびに来る（スライダーで連発する）ので 1 回だけ

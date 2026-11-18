@@ -1,6 +1,7 @@
 #include "scene/EditorState.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -8,6 +9,7 @@
 #include "core/AssetError.h"
 #include "core/Log.h"
 #include "core/SafeName.h"
+#include "scene/SharedAssetFile.h"
 
 // 保存名に使ってよい文字だけ残す。".." や "/" を弾くのが目的（保存先は
 // assets/scenes に固定したい）。
@@ -88,6 +90,19 @@ bool EditorState::removeCable(int index) {
 std::size_t EditorState::cableCount() const {
     std::lock_guard<std::mutex> lk(mutex_);
     return cables_.size();
+}
+
+std::vector<wizengine::editor::EmitterDesc> EditorState::emitters() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return emitters_;
+}
+
+void EditorState::setEmitters(std::vector<wizengine::editor::EmitterDesc> emitters) {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        emitters_ = std::move(emitters);
+    }
+    emitterVersion_.fetch_add(1);
 }
 
 // ---- イベントアセット -------------------------------------------------------
@@ -345,9 +360,9 @@ T* findFormula(std::vector<T>& list, const std::string& name) {
 }
 }  // namespace
 
-std::vector<wizengine::vehicle::FormulaGraphDesc> EditorState::formulaAssets() const {
+std::vector<wizengine::formula::FormulaGraphDesc> EditorState::formulaAssets() const {
     std::lock_guard<std::mutex> lk(mutex_);
-    std::vector<wizengine::vehicle::FormulaGraphDesc> out;
+    std::vector<wizengine::formula::FormulaGraphDesc> out;
     out.reserve(formulas_.size());
     for (const auto& a : formulas_) out.push_back(a.desc);
     return out;
@@ -362,7 +377,7 @@ bool EditorState::hasFormulaAsset(const std::string& name) const {
 }
 
 void EditorState::setFormulaAssets(
-    std::vector<wizengine::vehicle::FormulaGraphDesc> assets) {
+    std::vector<wizengine::formula::FormulaGraphDesc> assets) {
     std::lock_guard<std::mutex> lk(mutex_);
     formulas_.clear();
     for (auto& d : assets) {
@@ -376,7 +391,7 @@ void EditorState::setFormulaAssets(
     formulaVersion_.fetch_add(1);
 }
 
-bool EditorState::addFormulaAsset(wizengine::vehicle::FormulaGraphDesc graph) {
+bool EditorState::addFormulaAsset(wizengine::formula::FormulaGraphDesc graph) {
     std::lock_guard<std::mutex> lk(mutex_);
     if (graph.name.empty() || findFormula(formulas_, graph.name) != nullptr) return false;
     FormulaAssetState st;
@@ -385,6 +400,24 @@ bool EditorState::addFormulaAsset(wizengine::vehicle::FormulaGraphDesc graph) {
     }
     st.desc = std::move(graph);
     formulas_.push_back(std::move(st));
+    formulaVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::replaceFormulaAsset(wizengine::formula::FormulaGraphDesc graph) {
+    if (graph.name.empty()) return false;
+    std::lock_guard<std::mutex> lk(mutex_);
+    FormulaAssetState st;
+    for (const auto& n : graph.nodes) {
+        if (n.id >= st.nextNodeId) st.nextNodeId = n.id + 1;
+    }
+    st.desc = std::move(graph);
+    FormulaAssetState* have = findFormula(formulas_, st.desc.name);
+    // 中身を差し替えてもグローバル（ライブラリ）の印は残す（数式で書き直した
+    // グローバルの計算式が、黙ってローカルへ落ちないように）。
+    if (have && st.desc.file.empty()) st.desc.file = have->desc.file;
+    if (have) *have = std::move(st);
+    else formulas_.push_back(std::move(st));
     formulaVersion_.fetch_add(1);
     return true;
 }
@@ -403,13 +436,14 @@ bool EditorState::removeFormulaAsset(const std::string& name) {
 }
 
 int EditorState::addFormulaNode(const std::string& asset,
-                                wizengine::vehicle::FormulaNodeDesc node) {
+                                wizengine::formula::FormulaNodeDesc node) {
     std::lock_guard<std::mutex> lk(mutex_);
     FormulaAssetState* a = findFormula(formulas_, asset);
-    if (a == nullptr || !wizengine::vehicle::formulaKind(node.kind)) return -1;
+    if (a == nullptr || !wizengine::formula::formulaKind(node.kind)) return -1;
     node.id = a->nextNodeId++;
     const int id = node.id;
     a->desc.nodes.push_back(std::move(node));
+    a->desc.source.clear();  // グラフを直接変えたら元のテキストはもう合わない
     formulaVersion_.fetch_add(1);
     return id;
 }
@@ -421,10 +455,12 @@ bool EditorState::updateFormulaNode(const std::string& asset, int id,
     if (a == nullptr) return false;
     for (auto& n : a->desc.nodes) {
         if (n.id != id) continue;
-        wizengine::vehicle::FormulaNodeDesc next = wizengine::editor::clampFormulaNode(
+        wizengine::formula::FormulaNodeDesc next = wizengine::editor::clampFormulaNode(
             wizengine::editor::formulaNodeFromJson(patch, n));
         next.id = n.id;
         next.kind = n.kind;  // 種類はポート数を決めるので変えさせない
+        // 位置だけの移動なら元のテキストを保つ（中身は変わらない）。
+        if (next.name != n.name || next.params != n.params) a->desc.source.clear();
         n = next;
         formulaVersion_.fetch_add(1);
         return true;
@@ -439,41 +475,50 @@ bool EditorState::removeFormulaNode(const std::string& asset, int id) {
     auto& nodes = a->desc.nodes;
     const std::size_t before = nodes.size();
     nodes.erase(std::remove_if(nodes.begin(), nodes.end(),
-                               [id](const wizengine::vehicle::FormulaNodeDesc& n) {
+                               [id](const wizengine::formula::FormulaNodeDesc& n) {
                                    return n.id == id;
                                }),
                 nodes.end());
     if (nodes.size() == before) return false;
     auto& wires = a->desc.wires;
     wires.erase(std::remove_if(wires.begin(), wires.end(),
-                               [id](const wizengine::vehicle::FormulaWireDesc& w) {
+                               [id](const wizengine::formula::FormulaWireDesc& w) {
                                    return w.from == id || w.to == id;
                                }),
                 wires.end());
+    a->desc.source.clear();
     formulaVersion_.fetch_add(1);
     return true;
 }
 
 bool EditorState::addFormulaWire(const std::string& asset,
-                                 const wizengine::vehicle::FormulaWireDesc& w) {
+                                 const wizengine::formula::FormulaWireDesc& w) {
     std::lock_guard<std::mutex> lk(mutex_);
     FormulaAssetState* st = findFormula(formulas_, asset);
     if (st == nullptr || w.from == w.to) return false;
-    const wizengine::vehicle::FormulaNodeDesc* a = nullptr;
-    const wizengine::vehicle::FormulaNodeDesc* b = nullptr;
+    const wizengine::formula::FormulaNodeDesc* a = nullptr;
+    const wizengine::formula::FormulaNodeDesc* b = nullptr;
     for (const auto& n : st->desc.nodes) {
         if (n.id == w.from) a = &n;
         if (n.id == w.to) b = &n;
     }
     if (!a || !b) return false;
-    const auto* ak = wizengine::vehicle::formulaKind(a->kind);
-    const auto* bk = wizengine::vehicle::formulaKind(b->kind);
+    const auto* ak = wizengine::formula::formulaKind(a->kind);
+    const auto* bk = wizengine::formula::formulaKind(b->kind);
     if (!ak || !bk) return false;
     if (w.fromPort < 0 || w.fromPort >= ak->outputs || w.port < 0 || w.port >= bk->inputs) {
         return false;
     }
     // 循環の検査: to から from へ辿り着けるなら、この線で輪になる。
-    {
+    // delay（単位遅延）へ入る線は同じティックの依存ではないので辿らない
+    // = delay を挟んだフィードバックは組める（Formula の整列と同じ規則）。
+    auto breaks = [&st](int id) {
+        for (const auto& n : st->desc.nodes) {
+            if (n.id == id) return wizengine::formula::formulaBreaksFeedback(n.kind);
+        }
+        return false;
+    };
+    if (!wizengine::formula::formulaBreaksFeedback(b->kind)) {
         std::vector<int> stack{w.to};
         std::vector<int> seen;
         while (!stack.empty()) {
@@ -483,37 +528,217 @@ bool EditorState::addFormulaWire(const std::string& asset,
             if (std::find(seen.begin(), seen.end(), cur) != seen.end()) continue;
             seen.push_back(cur);
             for (const auto& e : st->desc.wires) {
-                if (e.from == cur) stack.push_back(e.to);
+                if (e.from == cur && !breaks(e.to)) stack.push_back(e.to);
             }
         }
     }
     auto& wires = st->desc.wires;
     // 同じ入力ポートは 1 本だけ: 古い線は張り替える。
     wires.erase(std::remove_if(wires.begin(), wires.end(),
-                               [&w](const wizengine::vehicle::FormulaWireDesc& e) {
+                               [&w](const wizengine::formula::FormulaWireDesc& e) {
                                    return e.to == w.to && e.port == w.port;
                                }),
                 wires.end());
     wires.push_back(w);
+    st->desc.source.clear();
     formulaVersion_.fetch_add(1);
     return true;
 }
 
 bool EditorState::removeFormulaWire(const std::string& asset,
-                                    const wizengine::vehicle::FormulaWireDesc& w) {
+                                    const wizengine::formula::FormulaWireDesc& w) {
     std::lock_guard<std::mutex> lk(mutex_);
     FormulaAssetState* st = findFormula(formulas_, asset);
     if (st == nullptr) return false;
     auto& wires = st->desc.wires;
     const std::size_t before = wires.size();
     wires.erase(std::remove_if(wires.begin(), wires.end(),
-                               [&w](const wizengine::vehicle::FormulaWireDesc& e) {
+                               [&w](const wizengine::formula::FormulaWireDesc& e) {
                                    return e.from == w.from && e.fromPort == w.fromPort &&
                                           e.to == w.to && e.port == w.port;
                                }),
                 wires.end());
     if (wires.size() == before) return false;
+    st->desc.source.clear();
     formulaVersion_.fetch_add(1);
+    return true;
+}
+
+// ---- 制御器 -------------------------------------------------------------------
+std::vector<wizengine::editor::ControllerDesc> EditorState::controllers() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return controllers_;
+}
+
+void EditorState::setControllers(std::vector<wizengine::editor::ControllerDesc> list) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    controllers_.clear();
+    for (auto& c : list) {
+        c = wizengine::editor::clampController(c);
+        bool dup = false;
+        for (const auto& have : controllers_) dup = dup || have.formula == c.formula;
+        if (!dup && !c.formula.empty()) controllers_.push_back(std::move(c));
+    }
+    controlVersion_.fetch_add(1);
+}
+
+bool EditorState::addController(const wizengine::editor::ControllerDesc& in) {
+    const wizengine::editor::ControllerDesc c = wizengine::editor::clampController(in);
+    if (c.formula.empty()) return false;
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (const auto& have : controllers_) {
+        if (have.formula == c.formula) return false;
+    }
+    controllers_.push_back(c);
+    controlVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::removeController(const std::string& formula) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const std::size_t before = controllers_.size();
+    controllers_.erase(std::remove_if(controllers_.begin(), controllers_.end(),
+                                      [&](const wizengine::editor::ControllerDesc& c) {
+                                          return c.formula == formula;
+                                      }),
+                       controllers_.end());
+    if (controllers_.size() == before) return false;
+    controlVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::updateController(const std::string& formula, const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (auto& c : controllers_) {
+        if (c.formula != formula) continue;
+        nlohmann::json p = patch;
+        p.erase("formula");  // 付け替えは remove + add
+        c = wizengine::editor::controllerFromJson(p, c);
+        controlVersion_.fetch_add(1);
+        return true;
+    }
+    return false;
+}
+
+// ---- 制御器のパラメータ -------------------------------------------------------
+std::vector<wizengine::editor::ParamDesc> EditorState::params() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return params_;
+}
+
+void EditorState::setParams(std::vector<wizengine::editor::ParamDesc> list) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    params_.clear();
+    for (auto& p : list) {
+        p = wizengine::editor::clampParam(p);
+        bool dup = false;
+        for (const auto& have : params_) dup = dup || have.name == p.name;
+        if (!dup && !p.name.empty()) params_.push_back(std::move(p));
+    }
+    paramVersion_.fetch_add(1);
+}
+
+bool EditorState::addParam(const wizengine::editor::ParamDesc& in) {
+    const wizengine::editor::ParamDesc p = wizengine::editor::clampParam(in);
+    if (p.name.empty()) return false;
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (const auto& have : params_) {
+        if (have.name == p.name) return false;
+    }
+    params_.push_back(p);
+    paramVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::removeParam(const std::string& name) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const std::size_t before = params_.size();
+    params_.erase(std::remove_if(params_.begin(), params_.end(),
+                                 [&](const wizengine::editor::ParamDesc& p) {
+                                     return p.name == name;
+                                 }),
+                  params_.end());
+    if (params_.size() == before) return false;
+    paramVersion_.fetch_add(1);
+    return true;
+}
+
+bool EditorState::updateParam(const std::string& name, const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (auto& p : params_) {
+        if (p.name != name) continue;
+        nlohmann::json q = patch;
+        q.erase("name");  // 改名は remove + add
+        p = wizengine::editor::paramFromJson(q, p);
+        // 並び替え（move = -1 で前へ、+1 で後ろへ。制御盤のカードの順）。
+        if (patch.contains("move") && patch["move"].is_number_integer()) {
+            const std::size_t i = std::size_t(&p - params_.data());
+            const long to = long(i) + (patch["move"].get<int>() < 0 ? -1 : 1);
+            if (to >= 0 && std::size_t(to) < params_.size()) {
+                std::swap(params_[i], params_[std::size_t(to)]);
+            }
+        }
+        paramVersion_.fetch_add(1);
+        return true;
+    }
+    return false;
+}
+
+void EditorState::setParamValues(const std::map<std::string, double>& values) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    bool changed = false;
+    for (auto& p : params_) {
+        const auto it = values.find(p.name);
+        if (it == values.end()) continue;
+        wizengine::editor::ParamDesc q = p;
+        q.value = it->second;
+        q = wizengine::editor::clampParam(q);
+        if (q.value != p.value) {
+            p.value = q.value;
+            changed = true;
+        }
+    }
+    if (changed) paramVersion_.fetch_add(1);
+}
+
+// ---- 制御盤のグラフ -------------------------------------------------------------
+std::vector<wizengine::editor::ChartDesc> EditorState::charts() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return charts_;
+}
+
+void EditorState::setCharts(std::vector<wizengine::editor::ChartDesc> list) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    charts_.clear();
+    for (auto& c : list) charts_.push_back(wizengine::editor::clampChart(c));
+    if (charts_.size() > 32) charts_.resize(32);
+}
+
+void EditorState::addChart(const wizengine::editor::ChartDesc& c) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (charts_.size() >= 32) return;
+    charts_.push_back(wizengine::editor::clampChart(c));
+}
+
+bool EditorState::removeChart(int index) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (index < 0 || std::size_t(index) >= charts_.size()) return false;
+    charts_.erase(charts_.begin() + index);
+    return true;
+}
+
+bool EditorState::updateChart(int index, const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (index < 0 || std::size_t(index) >= charts_.size()) return false;
+    charts_[std::size_t(index)] =
+        wizengine::editor::chartFromJson(patch, charts_[std::size_t(index)]);
+    // 並び替え（move = -1 で前へ、+1 で後ろへ）。
+    if (patch.contains("move") && patch["move"].is_number_integer()) {
+        const int to = index + (patch["move"].get<int>() < 0 ? -1 : 1);
+        if (to >= 0 && std::size_t(to) < charts_.size()) {
+            std::swap(charts_[std::size_t(index)], charts_[std::size_t(to)]);
+        }
+    }
     return true;
 }
 
@@ -729,34 +954,108 @@ std::vector<std::string> EditorState::eventLibrary() const {
 }
 
 void EditorState::refreshEventLibrary() {
+    // 名前に使えない文字のファイル（手で置いた物）は一覧に出さない（規則は
+    // scene/SharedAssetFile の listLibrary）。
+    std::vector<std::string> found =
+        wizengine::sharedasset::listLibrary(kEventLibraryDir, kEventLibraryExt);
+    std::lock_guard<std::mutex> lk(mutex_);
+    eventLibrary_.swap(found);
+}
+
+namespace {
+// assets/<dir>/*.xml の語幹（名前に使えない文字のファイルは出さない）。
+std::vector<std::string> listXmlStems(const std::string& dir) {
     std::vector<std::string> found;
     std::error_code ec;
-    const std::filesystem::path dir(eventsDir());
-    if (std::filesystem::exists(dir, ec)) {
-        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+    const std::filesystem::path p(wizengine::assetPath(dir));
+    if (std::filesystem::exists(p, ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(p, ec)) {
             if (ec) break;
             if (!entry.is_regular_file(ec)) continue;
             if (entry.path().extension().string() != ".xml") continue;
-            // 名前に使えない文字のファイル（手で置いた物）は一覧に出さない
-            // （参照名 = ファイル名の語幹、の約束が崩れるため）。
             const std::string stem = entry.path().stem().string();
             if (wizengine::editor::sanitizeEventName(stem) != stem) continue;
             found.push_back(stem);
         }
     }
     std::sort(found.begin(), found.end());
+    return found;
+}
+// assets/ 以下の .glb / .gltf（assets/ 相対、/ 区切り）。実行時のファイル置き場
+// （web など）は見ない。多すぎる環境で一覧が膨れないよう 2000 件で打ち切る。
+std::vector<std::string> listMeshFiles() {
+    std::vector<std::string> found;
+    std::error_code ec;
+    const std::filesystem::path root(wizengine::kAssetRoot);
+    if (!std::filesystem::exists(root, ec)) return found;
+    static const char* kSkip[] = {"web", "scenes", "events", "formulas", "prefabs",
+                                  "terrains", "materials"};
+    std::filesystem::recursive_directory_iterator it(
+        root, std::filesystem::directory_options::skip_permission_denied, ec);
+    for (; !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        const auto& entry = *it;
+        if (it.depth() == 0 && entry.is_directory(ec)) {
+            const std::string top = entry.path().filename().string();
+            bool skip = false;
+            for (const char* s : kSkip) skip = skip || top == s;
+            if (skip) {
+                it.disable_recursion_pending();
+                continue;
+            }
+        }
+        if (!entry.is_regular_file(ec)) continue;
+        std::string ext = entry.path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return char(std::tolower(c)); });
+        if (ext != ".glb" && ext != ".gltf") continue;
+        std::string rel = std::filesystem::relative(entry.path(), root, ec).generic_string();
+        if (ec || rel.empty() || !wizengine::editor::assetFileAllowed(rel)) continue;
+        found.push_back(rel);
+        if (found.size() >= 2000) break;
+    }
+    std::sort(found.begin(), found.end());
+    return found;
+}
+}  // namespace
+
+std::vector<std::string> EditorState::formulaLibrary() const {
     std::lock_guard<std::mutex> lk(mutex_);
-    eventLibrary_.swap(found);
+    return formulaLibrary_;
+}
+std::vector<std::string> EditorState::prefabLibrary() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return prefabLibrary_;
+}
+std::vector<std::string> EditorState::meshLibrary() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return meshLibrary_;
 }
 
-std::string EditorState::eventsDir() {
-    return wizengine::assetPath("events");
+void EditorState::refreshLibraries() {
+    refreshEventLibrary();
+    std::vector<std::string> f = listXmlStems("formulas");
+    std::vector<std::string> p = listXmlStems("prefabs");
+    std::vector<std::string> m = listMeshFiles();
+    std::lock_guard<std::mutex> lk(mutex_);
+    formulaLibrary_.swap(f);
+    prefabLibrary_.swap(p);
+    meshLibrary_.swap(m);
+}
+
+std::string EditorState::formulaLibraryFile(const std::string& name) {
+    const std::string safe = wizengine::editor::sanitizeEventName(name);
+    if (safe.empty()) return {};
+    return "formulas/" + safe + ".xml";
+}
+
+std::string EditorState::prefabLibraryFile(const std::string& name) {
+    const std::string safe = wizengine::editor::sanitizeEventName(name);
+    if (safe.empty()) return {};
+    return "prefabs/" + safe + ".xml";
 }
 
 std::string EditorState::eventLibraryFile(const std::string& name) {
-    const std::string safe = wizengine::editor::sanitizeEventName(name);
-    if (safe.empty()) return {};
-    return "events/" + safe + ".xml";
+    return wizengine::sharedasset::libraryFile(kEventLibraryDir, name, kEventLibraryExt);
 }
 
 std::string EditorState::scenesDir() {
@@ -776,46 +1075,10 @@ std::string EditorState::legacyScenePath(const std::string& name) {
     return scenesDir() + "/" + safe + ".json";
 }
 
-bool EditorState::writeText(const std::string& path, const std::string& text,
-                            std::string& reason) {
-    std::error_code ec;
-    std::filesystem::create_directories(
-        std::filesystem::path(path).parent_path(), ec);
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (!f) {
-        reason = "cannot write: " + path;
-        return false;
-    }
-    f << text;
-    if (!f) {
-        reason = "write error: " + path;
-        return false;
-    }
-    LOGI("editor", "saved %s", path.c_str());
-    return true;
-}
-
-bool EditorState::readText(const std::string& path, std::string& text,
-                           std::string& reason) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) {
-        reason = "not found: " + path;
-        return false;
-    }
-    text.assign(std::istreambuf_iterator<char>(f),
-                std::istreambuf_iterator<char>());
-    if (f.bad()) {
-        reason = "read error: " + path;
-        return false;
-    }
-    LOGI("editor", "loaded %s", path.c_str());
-    return true;
-}
-
 bool EditorState::readJson(const std::string& path, nlohmann::json& doc,
                            std::string& reason) {
     std::string text;
-    if (!readText(path, text, reason)) return false;
+    if (!wizengine::sharedasset::readTextFile(path, text, reason)) return false;
     doc = nlohmann::json::parse(text, nullptr, false);
     if (doc.is_discarded() || !doc.is_object()) {
         reason = "not readable as JSON: " + path;

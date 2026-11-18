@@ -4,6 +4,7 @@
 // 文書との変換は SceneSerialize.cpp。共通の下準備は SceneInternal.h。
 #include "scene/SceneInternal.h"
 #include "scene/PrefabDefaults.h"
+#include "components/UiRenderComponent.h"
 
 #include <chrono>
 
@@ -201,21 +202,23 @@ bool Scene::dispatchCommand(std::size_t camIndex, const nlohmann::json& msg) {
 }
 
 Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
-             std::size_t maxCameras)
+             SceneSystemConfig sys)
     : physics_(physics),
       renderer_(renderer),
       terrainLibrary_(std::make_unique<wizengine::terrain::TerrainLibrary>(
           std::filesystem::u8path(wizengine::assetPath("terrains")))),
       terrainUndo_(std::make_unique<wizengine::terrain::TerrainUndoStack>()) {
-    // スロット数: exe 引数（--max-cameras、0 = 未指定）が優先、無ければ
-    // SceneConfig.h の kMaxCameras。カメラ 0（エディタカメラ）は必ず要るので
-    // 1 未満にはしない。極端な値はページ・受け口・スレッドを無駄に増やす
-    // だけなので 16 で止める。
-    std::size_t slots = maxCameras > 0 ? maxCameras : kMaxCameras;
+    sys_ = std::move(sys);
+    // スロット数（config.json の "scene"."maxCameras"、exe 引数 --max-cameras で
+    // 上書き）。カメラ 0（エディタカメラ）は必ず要るので 1 未満にはしない。
+    // 極端な値はページ・受け口・スレッドを無駄に増やすだけなので
+    // ed::kMaxCameraSlots で止める。
+    constexpr std::size_t kSlotsMax = std::size_t(ed::kMaxCameraSlots);
+    std::size_t slots = sys_.maxCameras;
     if (slots < 1) slots = 1;
-    if (slots > 16) {
-        LOGW("scene", "max cameras %zu is excessive - clamped to 16", slots);
-        slots = 16;
+    if (slots > kSlotsMax) {
+        LOGW("scene", "max cameras %zu is excessive - clamped to %zu", slots, kSlotsMax);
+        slots = kSlotsMax;
     }
     // cameraConfigs() のぶんが最初から有効で（スロット数を超えるぶんは
     // 落とす）、残りは「カメラを追加」で有効になるまで一覧に出ない予備。
@@ -240,11 +243,23 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     addComponent(std::make_unique<GizmoComponent>());
     addComponent(std::make_unique<CameraControlComponent>());
     addComponent(std::make_unique<BoxControlComponent>());
+    // UI の描画。onRender（ロックの中）はカメラの写しだけで、組み立てと転送は
+    // ロックの外の onRenderUnlocked（オブジェクト一覧は読めない）。コマンドを
+    // 取らないので並びは入力に影響せず、overlay は他の部品の姿勢に依らないので
+    // 順番も問わない。3D の板（後の PR）で車体・プレハブの姿勢が要るなら、その
+    // 姿勢を onRender（ロックの中）で写し、組み立てはロックの外で行う（写す姿勢を
+    // 他の部品の onRender が決めるなら、その部品より後に登録する）。
+    // UI の入力（後の PR）はギズモより前に登録する。
+    addComponent(std::make_unique<UiRenderComponent>());
 }
 
 // 前方宣言の型（TerrainLibrary / TerrainUndoStack）の unique_ptr を壊すので、
 // 完全な型が見えるここで定義する。
-Scene::~Scene() = default;
+// 係（コンポーネント）を**メンバより先に**壊す。メンバは宣言の逆順で
+// 壊れるので、既定のままだと editor_（components_ の後ろに宣言）が先に
+// 消え、その間に別スレッドを持つ係（AutoGenComponent の生成スレッドが
+// 結果を EditorState へ積む）が消えたものを触りうる。
+Scene::~Scene() { components_.clear(); }
 
 bool Scene::cameraRay(std::size_t cameraIndex, double ndcX, double ndcY,
                       scenemath::Basis& basis, scenemath::Vec3& dir) const {
@@ -352,12 +367,8 @@ std::size_t Scene::pickBoxAt(double ndcX, double ndcY,
     return best;
 }
 
-PhysicsBackend scenePhysicsBackend() {
-    return kBackend;
-}
-
 std::size_t Scene::editorCamera() const {
-    return kEditorCamera < cameras_.size() ? kEditorCamera : 0;
+    return sys_.editorCamera < cameras_.size() ? sys_.editorCamera : 0;
 }
 
 // 実行時に変わりうる値は EditorState の設定が正。SceneConfig.h の定数は
@@ -384,7 +395,7 @@ double Scene::contactRecovery() const {
 }
 
 bool Scene::idleWhenUnwatched() const {
-    return kIdleWhenUnwatched;
+    return sys_.idleWhenUnwatched;
 }
 
 void Scene::build() {
@@ -406,9 +417,9 @@ void Scene::build() {
         s.sleeping = kSleepingEnabled;
         editor_.setSim(s);
     }
-    editor_.setMode(kStartMode);
+    editor_.setMode(sys_.startMode);
     editor_.refreshSceneFiles();
-    editor_.refreshEventLibrary();
+    editor_.refreshLibraries();  // イベント・計算式・プレハブ・メッシュの一覧
     // テレインの一覧（アセットパネルのタイル）。起動シーンが読めなかった・
     // テレインを持たないときも一覧は要るので、読込とは別に 1 回取る。
     refreshTerrainFiles();
@@ -453,22 +464,23 @@ void Scene::build() {
     // ---- シーンの中身は文書（XML）から ------------------------------------
     // 以前ここにあった格子の自動生成は廃止した。オブジェクトの配置・glTF
     // モデルの割り当てはすべて assets/scenes/*.xml が持ち、コード側は
-    // kStartupScene（既定 "default"）を読むだけ。読めなければ警告を出して
+    // config.json の "scene"."startupScene"（既定 "default"）を読むだけ。読めなければ警告を出して
     // 空のシーン（地面のみ）で起動する - ブラウザから別のシーンを読み込めば
     // よいので、起動は止めない。
-    if (kStartupScene[0] != '\0') {
+    const std::string& startup = sys_.startupScene;
+    if (!startup.empty()) {
         ed::SceneDocument doc;
         std::string reason;
-        if (readSceneDocument(kStartupScene, doc, reason)) {
+        if (readSceneDocument(startup, doc, reason)) {
             loadDocument(doc, false);
-            editor_.setSceneFile(kStartupScene);
-            editor_.setStatus(std::string("読み込みました: ") + kStartupScene +
-                              terrainLoadCaveat() + terrainCombineCaveat(true));
+            editor_.setSceneFile(startup);
+            editor_.setStatus("読み込みました: " + startup +
+                              takeLoadCaveat() + terrainCombineCaveat(true));
             LOGI("scene", "startup scene '%s' loaded (%zu bodies, %zu meshes)",
-                 kStartupScene, doc.bodies.size(), doc.meshes.size());
+                 startup.c_str(), doc.bodies.size(), doc.meshes.size());
         } else {
             LOGW("scene", "startup scene '%s' not loaded: %s (starting empty)",
-                 kStartupScene, reason.c_str());
+                 startup.c_str(), reason.c_str());
         }
     }
     // 起動シーンが Core 専用の機能（ケーブルなど）を使っていれば、ここで
@@ -519,6 +531,7 @@ void Scene::endPhysicsPass() {
         frameCur_.cables = latestCables_;
         frameCur_.simTime = simClock_;
         frameCur_.wallTime = wall;
+        frameCur_.timeScale = timeScale_.load();
         frameCur_.cut = poseCut_;
         frameCur_.valid = true;
     }
@@ -922,15 +935,19 @@ void Scene::buildRenderFrame() {
         renderSoft_ = latestSoft_;
         renderCables_ = latestCables_;
         renderAlpha_ = -1.0;
+        renderSimTime_ = frameCur_.valid ? frameCur_.simTime : 0.0;
         return;
     }
     // 1 パスぶん遅れて描く: 今回のフレームを公開した瞬間は前回の姿勢
     // （α = 0）、そこから 1 パスぶんの時間をかけて今回の姿勢（α = 1）へ。
     // 先読み（外挿）はしない - 次のパスが遅れたら今回の姿勢で待つ。
-    double alpha = (now - frameCur_.wallTime) / span;
+    // スローモーション（時間の速さ < 1）では 1 パスのシミュレーション時間を
+    // 速さで割った実時間をかけて描く = 0.01 倍でもコマ送りにならない。
+    double alpha = (now - frameCur_.wallTime) * frameCur_.timeScale / span;
     if (alpha < 0.0) alpha = 0.0;
     if (alpha > 1.0) alpha = 1.0;
     renderAlpha_ = alpha;
+    renderSimTime_ = framePrev_.simTime + alpha * span;
 
     const std::vector<BodyTransform>& a = framePrev_.poses;
     const std::vector<BodyTransform>& b = frameCur_.poses;
@@ -1001,9 +1018,9 @@ std::vector<double> Scene::modalFrequencies() {
 // ---- バックエンドの自動切替（B）---------------------------------------------
 // 1. Multicore が扱えない機能を文書が使っていれば Core。
 // 2. なければ、ソフトボディがある・ボディが多い（SceneConfig.h の
-//    kMulticoreForSoftBodies / kMulticoreMinBodies）なら Multicore（ビルドに
+//    multicoreForSoftBodies / multicoreMinBodies）なら Multicore（ビルドに
 //    あれば）。
-// 3. どちらでもなければ既定（kBackend）。
+// 3. どちらでもなければ既定（SceneSystemConfig::backend）。
 // 接触の解き方（nsc / smc）も系の種類なので一緒に見る。呼ぶのは物理スレッド
 // （シミュレート開始・設定変更・読込・ジョイント / ケーブルの編集）。
 // オブジェクトの増減では呼ばない: シミュレート中に系を作り直すと全部が設計値
@@ -1032,9 +1049,9 @@ PhysicsBackend Scene::requiredBackend(ContactMethod& contact, std::string& reaso
     if (ed::solverNeedsCore(s.solver)) why.push_back("solver '" + s.solver + "'");
     if (ed::integratorNeedsCore(s.integrator)) why.push_back("integrator '" + s.integrator + "'");
     if (s.modal > 0) why.push_back("modal analysis");
-    // テレイン。SceneConfig.h の kTerrainForcesCore。当たり判定は自前の接触
+    // テレイン。SceneSystemConfig::terrainForcesCore。当たり判定は自前の接触
     // （CustomCollisionCallback。Multicore では PhysicsWorld が張らない）。
-    if (kTerrainForcesCore && terrainLoaded()) {
+    if (sys_.terrainForcesCore && terrainLoaded()) {
         why.push_back("terrain (custom contact; Multicore untested)");
     }
     if (!why.empty()) {
@@ -1063,19 +1080,21 @@ PhysicsBackend Scene::requiredBackend(ContactMethod& contact, std::string& reaso
             rigid += obj.childPhysIds.size();  // 固定の持ち主の collide 部品
         }
         const std::size_t total = rigid + particles;
-        if (kMulticoreForSoftBodies && softs > 0) {
+        if (sys_.multicoreForSoftBodies && softs > 0) {
             reason = std::to_string(softs) + " soft " + (softs == 1 ? "body" : "bodies") + ", " +
                      std::to_string(particles) + " particles";
             return PhysicsBackend::Multicore;
         }
-        if (kMulticoreMinBodies > 0 && total >= std::size_t(kMulticoreMinBodies)) {
-            reason = std::to_string(total) + " bodies (>= " + std::to_string(kMulticoreMinBodies) + ")";
+        if (sys_.multicoreMinBodies > 0 &&
+            total >= std::size_t(sys_.multicoreMinBodies)) {
+            reason = std::to_string(total) + " bodies (>= " +
+                     std::to_string(sys_.multicoreMinBodies) + ")";
             return PhysicsBackend::Multicore;
         }
     }
 
     // 3. 既定
-    PhysicsBackend want = scenePhysicsBackend();
+    PhysicsBackend want = sys_.backend;
     if (want == PhysicsBackend::Multicore && !multicoreAvailable()) {
         want = PhysicsBackend::Core;  // ビルドに無い（PhysicsWorld も Core に落とす）
     }
@@ -1403,8 +1422,11 @@ void Scene::updateCameraRigs(const std::vector<BodyTransform>& poses,
         out = &poses[std::size_t(index)];
         return true;
     };
-    auto fresh = [now](double stamp) {
-        return stamp >= 0.0 && now - stamp <= ed::kCameraHoldSeconds;
+    // 注文の保持時間は実時間で数えるので、スローモーションでは速さで割って
+    // 伸ばす（0.01 倍の 30 Hz では注文が 3.3 秒に 1 回しか来ない）。
+    const double hold = ed::kCameraHoldSeconds / std::max(0.01, timeScale());
+    auto fresh = [now, hold](double stamp) {
+        return stamp >= 0.0 && now - stamp <= hold;
     };
 
     for (std::size_t i = 0; i < cameras_.size(); ++i) {
@@ -1569,6 +1591,7 @@ void Scene::applyToRenderer() {
     // シミュレート中は A→B の 1 本（拘束が今どこを結んでいるかが見える）。
     const auto joints = editor_.joints();
     const bool editing = editor_.isEditor();
+    const bool showJointLines = editor_.gizmo().jointLines;  // ⚙ の「ジョイント線」
     renderer_.setJointLineCount(joints.size() * 2);
     auto endpoint = [&](int body, const ed::Vec3d& anchor,
                         filament::math::float3& out) {
@@ -1594,7 +1617,7 @@ void Scene::applyToRenderer() {
                                             float(j.anchor.z)};
         // 破断した拘束は線を消す（外れたことが見える）。
         const bool broken = i < jstats.size() && jstats[i].broken;
-        if (!ok || broken) {
+        if (!ok || broken || !showJointLines) {
             renderer_.setJointLine(i * 2, pa, pb, col, false);
             renderer_.setJointLine(i * 2 + 1, pa, pb, col, false);
             continue;
@@ -1700,4 +1723,6 @@ void Scene::applyToRenderer() {
             }
         }
     }
+    // ロックを外した後の口（重い描画側の仕事。登録の順）。
+    for (auto& c : components_) c->onRenderUnlocked(*this);
 }

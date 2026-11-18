@@ -1,0 +1,3267 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 3.0L V 型 6 気筒ツインターボ（日産 VR30DDTT 相当）のエンジンダイナモ試験。
+     諸元: 60° V6、2997 cc、ボア × ストローク 86.0 × 86.0 mm、圧縮比 10.3、点火順
+     1-2-3-4-5-6（120° 等間隔）、最高出力 405 PS / 6400 rpm、最大トルク 475 Nm /
+     1600-5200 rpm（フェアレディ Z の公表値。出典: greeco engine / Motor-Fan の記事）。
+     コンロッド長 144 mm・往復部の質量・クランクとフライホイールの慣性・摩擦は公表値が
+     無いので仮定（下の値）。
+
+     機構（Chrono の剛体とジョイント）:
+       * crank   … ジオメトリの無いボディ（見た目はプレハブ）。ワールドへ hinge（Z 軸）
+                   で留め、トルクモータ（motor="force"）= ダイナモの吸収トルク。
+                   形の無いボディの慣性は「1 辺 0.5 m の箱」= m / 24 なので、mass は
+                   回転慣性 0.12 kg m^2（クランク + フライホイール）から逆算した値。
+       * rodN    … コンロッド。クランクピンへ hinge（Z 軸）。
+       * pistonN … ピストン。シリンダ軸へ slide、コンロッドの小端とは pointline（Z 軸の
+                   線上）= ピストンピン。ジョイントの拘束がちょうど 1 自由度になる組み方
+                   （hinge + hinge + ball + slide だと冗長になる）。
+       * クランクピンは 2 本ずつ 60° ずらした分割ピン（60° V で等間隔点火にするため）。
+       * エンジンの部品どうしは衝突レイヤ 1 で当たり判定を切ってある
+         （ジョイントでつないだ物どうしも接触するため）。
+       * camRi / camRe / camLi / camLe … カムシャフト（DOHC、右 / 左バンクの吸気 / 排気）。
+                   ワールドへ hinge の速度モータ。ローブの向きは各気筒のタイミング。
+       * valve_inN / valve_exN … 1 気筒の吸気 2 本・排気 2 本を 1 体ずつ。バルブ軸に
+                   沿った slide の位置モータ（目標 = リフト量 m）。バルブは挟み角 32°
+                   （シリンダ軸から 16°）で傾け、カム軸はその延長上（カム軸間 約 100 mm）。
+     見た目（assets/models/v6/*.glb）: 実寸の部品を CSG で作ったメッシュ
+     （samples/v6_engine/ の meshes.py・statics.py が生成）。I 断面のコンロッド・リング溝と
+     バルブリセスのあるピストン・カウンターウェイト付きのクランクとリングギヤ・リフト式
+     どおりの形のカムローブ・バルブばね / バケット・ペントルーフの燃焼室・ポート・
+     ウォータージャケットのあるブロックとヘッド・チェーンとガイド・サージタンク・左バンクの
+     排気とターボ・架台とダイナモ。右バンク（1・3・5 番）の外側半分はカットモデル
+     （断面が赤）で、ピストン・コンロッド・クランク・バルブが外から見える。
+     環境光は assets/env/engine_studio.hdr（手続きで作ったスタジオの映り込み）。
+     制御器（制御盤の「制御器」の段。📈 でスコープ）:
+       * valvetrain … カムをクランクの半分の速さで位相ロックして回し、吸気側は電動 VTC
+                      で位相を変える（全開は低中速で 30° 進角 = オーバーラップで掃気、
+                      高速で 0。部分負荷は 40° 遅角 = ミラーサイクル）。バルブのリフトは
+                      カムの**計測角**から余弦形で求める（作用角 240°、10 / 9.5 mm、仮定）。
+       * combustion … 筒内圧のモデル。IVC（吸気が閉じる角）と EVO（排気が開く角）を
+                      カムの計測角から求め、IVC からポリトロープで圧縮、Wiebe で燃焼、
+                      EVO で排気圧へ。オーバーラップが大きく吸気圧が排気圧より高いと
+                      掃気で充填が増える。ツインターボは物理モデル（タービン軸の回転数を
+                      状態に持ち、排気のエネルギーで回ってコンプレッサーの仕事で減速。
+                      電子ウェイストゲートが目標過給圧で頭打ち）。吸気温度（圧縮で上がり
+                      インタークーラーで冷える）と空燃比が燃焼の強さに効く。目標過給圧の
+                      マップはカタログのトルク曲線に合わせて較正。
+                      これを無効にするとモータリング（燃焼なし）。
+       * dyno       … エンジンに掛ける負荷（パラメータ mode）。ダイナモ = 回転数の PI 制御で
+                      保って吸収トルクを測る（1000 → 6800 rpm を 40 秒で掃引、catalog_Nm は
+                      カタログの曲線）/ フリーラン = 回転数の 2 乗に比例する負荷 / 車両 = 9 速 AT
+                      の車（車重・タイヤ・ギア比・路面抵抗・空気抵抗。トルコンは粘性結合）。
+                      車両はエンジンと強く結ぶので毎ステップ回す（period 0）。
+       * パラメータ（制御盤のスライダー・切り替え。走らせながら変えられる）:
+           mode     … 負荷のかけ方（ダイナモ / フリーラン / 車両）
+           throttle … アクセル開度 0..1（valvetrain と combustion が param:throttle で読む）
+           brake    … ブレーキ 0..1（車両）
+           gear     … ギア N・1〜9（車両。走りながら変えるとトルコンが滑って回転が合う）
+           dyno_rpm … ダイナモ: 0 = 自動の掃引、0 より大きい = その回転数に保つ
+           boost / turbo_inertia / intercooler / afr / ambient … ターボと吸気（combustion）
+           flame    … 炎のパーティクル（燃焼室の中で光る粒。見た目だけ）の表示
+       * 制御盤（Scene タブの「🎛 制御盤（コントローラ）」）に上のパラメータとグラフ（<chart>）が出る。
+     物理は 240 Hz × 16 サブステップ = 3840 Hz（6800 rpm で 1 ステップ 10.6°）。
+     recovery="10" が要る: Chrono はジョイントのずれを直す速さを recovery で頭打ちに
+     するので、既定の 0.2 m/s だと約 2000 rpm でずれが直しきれずに機構が発散する
+     （クランクが急に止まる）。接触の無いシーンなので大きくしても副作用は無い。
+     substeps を 8 に下げると 6800 rpm では recovery の上限（10）でも足りない。
+     実時間より遅く回るときは（オーバーレイの speed）、制御器の時刻は物理の時刻なので
+     結果は同じ。 -->
+<wizengine model="v6_engine" version="4">
+  <option gravity="0 -9.81 0" rate="240" substeps="16" iterations="50" envelope="0.002"
+          recovery="10" friction="0.6" restitution="0" lineardamping="0"
+          angulardamping="0" sleeping="false"/>
+  <visual>
+    <quality shadowMap="2048" cascades="3" shadow="pcf" contactShadows="false" msaa="4"
+             taa="false" fxaa="true"/>
+    <postprocess enabled="true" ssao="true" ssaoIntensity="1" bloom="0.03" ssr="false" dof="0"
+                 dofBlur="1" vignette="0.2"/>
+  </visual>
+  <asset>
+    <formula name="valvetrain">
+      <source line="# 動弁系: DOHC 4 バルブ。カムシャフト 4 本はクランクの半分の速さで回し（速度モータを"/>
+      <source line="# 位相ロック）、吸気側は電動 VTC で位相を変える。バルブ（1 気筒の吸気 2 本 / 排気 2 本"/>
+      <source line="# を 1 体ずつ）は**カムの計測角**から余弦形のリフトを求めて位置モータで動かす。"/>
+      <source line="# 作用角 240 度、リフト 吸気 10 mm / 排気 9.5 mm（仮定）。"/>
+      <source line="throttle = clamp(param:throttle, 0, 1)   # アクセル開度（combustion と同じパラメータ）"/>
+      <source line="K = 300                           # カム位相ロックのゲイン (1/s)"/>
+      <source line="q = 1.0471976                    # 作用角の 1/4（カム角, rad）"/>
+      <source line="Li = 0.01; Le = 0.0095"/>
+      <source line="th = joint:crank.angle"/>
+      <source line="w = joint:crank.rate"/>
+      <source line="rpm = abs(w) * 30 / pi"/>
+      <source line="# 吸気 VTC（クランク角, rad。負 = 進角）: 全開は低中速で進角（オーバーラップ = 掃気）、"/>
+      <source line="# 高速で 0。部分負荷は遅角（ミラーサイクル = 実圧縮を減らしてポンプ損失を減らす）。"/>
+      <source line="vtc_map = curve(rpm, 0, -0.17453, 1500, -0.5236, 3500, -0.5236, 5000, 0, 7000, 0)"/>
+      <source line="vtc = ratelimit(lerp(0.698132, vtc_map, throttle), 5, 5)   # 電動 VTC は速い（5 rad/s）"/>
+      <source line="cRi = joint:camRi.angle"/>
+      <source line="cRe = joint:camRe.angle"/>
+      <source line="joint:camRi.target = w / 2 + K * (th / 2 + vtc / 2 - cRi)"/>
+      <source line="joint:camRe.target = w / 2 + K * (th / 2 - cRe)"/>
+      <source line="cLi = joint:camLi.angle"/>
+      <source line="cLe = joint:camLe.angle"/>
+      <source line="joint:camLi.target = w / 2 + K * (th / 2 + vtc / 2 - cLi)"/>
+      <source line="joint:camLe.target = w / 2 + K * (th / 2 - cLe)"/>
+      <source line=""/>
+      <source line="e1i = cRi + 2.1816616     # カム角 - ローブの中心"/>
+      <source line="d1i = atan2(sin(e1i), cos(e1i))"/>
+      <source line="joint:in1.target = Li * 0.5 * (1 + cos(pi * d1i / q)) * (abs(d1i) &lt; q)"/>
+      <source line="e1e = cRe - 2.1816616     # カム角 - ローブの中心"/>
+      <source line="d1e = atan2(sin(e1e), cos(e1e))"/>
+      <source line="joint:ex1.target = Le * 0.5 * (1 + cos(pi * d1e / q)) * (abs(d1e) &lt; q)"/>
+      <source line="e2i = cLi + 1.1344640     # カム角 - ローブの中心"/>
+      <source line="d2i = atan2(sin(e2i), cos(e2i))"/>
+      <source line="joint:in2.target = Li * 0.5 * (1 + cos(pi * d2i / q)) * (abs(d2i) &lt; q)"/>
+      <source line="e2e = cLe + 3.0543262     # カム角 - ローブの中心"/>
+      <source line="d2e = atan2(sin(e2e), cos(e2e))"/>
+      <source line="joint:ex2.target = Le * 0.5 * (1 + cos(pi * d2e / q)) * (abs(d2e) &lt; q)"/>
+      <source line="e3i = cRi + 0.0872665     # カム角 - ローブの中心"/>
+      <source line="d3i = atan2(sin(e3i), cos(e3i))"/>
+      <source line="joint:in3.target = Li * 0.5 * (1 + cos(pi * d3i / q)) * (abs(d3i) &lt; q)"/>
+      <source line="e3e = cRe + 2.0071286     # カム角 - ローブの中心"/>
+      <source line="d3e = atan2(sin(e3e), cos(e3e))"/>
+      <source line="joint:ex3.target = Le * 0.5 * (1 + cos(pi * d3e / q)) * (abs(d3e) &lt; q)"/>
+      <source line="e4i = cLi - 0.9599311     # カム角 - ローブの中心"/>
+      <source line="d4i = atan2(sin(e4i), cos(e4i))"/>
+      <source line="joint:in4.target = Li * 0.5 * (1 + cos(pi * d4i / q)) * (abs(d4i) &lt; q)"/>
+      <source line="e4e = cLe + 0.9599311     # カム角 - ローブの中心"/>
+      <source line="d4e = atan2(sin(e4e), cos(e4e))"/>
+      <source line="joint:ex4.target = Le * 0.5 * (1 + cos(pi * d4e / q)) * (abs(d4e) &lt; q)"/>
+      <source line="e5i = cRi - 2.0071286     # カム角 - ローブの中心"/>
+      <source line="d5i = atan2(sin(e5i), cos(e5i))"/>
+      <source line="joint:in5.target = Li * 0.5 * (1 + cos(pi * d5i / q)) * (abs(d5i) &lt; q)"/>
+      <source line="e5e = cRe - 0.0872665     # カム角 - ローブの中心"/>
+      <source line="d5e = atan2(sin(e5e), cos(e5e))"/>
+      <source line="joint:ex5.target = Le * 0.5 * (1 + cos(pi * d5e / q)) * (abs(d5e) &lt; q)"/>
+      <source line="e6i = cLi - 3.0543262     # カム角 - ローブの中心"/>
+      <source line="d6i = atan2(sin(e6i), cos(e6i))"/>
+      <source line="joint:in6.target = Li * 0.5 * (1 + cos(pi * d6i / q)) * (abs(d6i) &lt; q)"/>
+      <source line="e6e = cLe - 1.1344640     # カム角 - ローブの中心"/>
+      <source line="d6e = atan2(sin(e6e), cos(e6e))"/>
+      <source line="joint:ex6.target = Le * 0.5 * (1 + cos(pi * d6e / q)) * (abs(d6e) &lt; q)"/>
+      <source line=""/>
+      <source line="scope:vtc_deg = vtc * 180 / pi"/>
+      <source line="scope:lift_in1_mm = joint:in1.pos * 1000"/>
+      <source line="scope:lift_ex1_mm = joint:ex1.pos * 1000"/>
+      <node id="1" type="clamp" pos="270 158"/>
+      <node id="2" type="in" name="param:throttle" pos="40 158"/>
+      <node id="3" type="const" params="0" pos="40 276"/>
+      <node id="4" type="const" params="1" pos="40 1352"/>
+      <node id="5" type="in" name="joint:crank.angle" pos="40 771"/>
+      <node id="6" type="in" name="joint:crank.rate" pos="40 1044"/>
+      <node id="7" type="div" pos="730 263"/>
+      <node id="8" type="mul" pos="500 391"/>
+      <node id="9" type="abs" pos="270 512"/>
+      <node id="10" type="const" params="30" pos="270 391"/>
+      <node id="11" type="const" params="3.141592654" pos="500 1368"/>
+      <node id="12" type="curve" params="0 -0.17453 1500 -0.5236 3500 -0.5236 5000 0 7000 0"
+            pos="960 315"/>
+      <node id="13" type="ratelimit" params="5 5" pos="1420 197"/>
+      <node id="14" type="lerp" pos="1190 197"/>
+      <node id="15" type="const" params="0.698132" pos="960 197"/>
+      <node id="16" type="in" name="joint:camRi.angle" pos="40 1470"/>
+      <node id="17" type="in" name="joint:camRe.angle" pos="40 1706"/>
+      <node id="18" type="add" pos="2570 760"/>
+      <node id="19" type="div" pos="270 1006"/>
+      <node id="20" type="const" params="2" pos="40 926"/>
+      <node id="21" type="mul" pos="2340 514"/>
+      <node id="22" type="const" params="300" pos="500 572"/>
+      <node id="23" type="sub" pos="2110 776"/>
+      <node id="24" type="add" pos="1880 922"/>
+      <node id="25" type="div" pos="270 630"/>
+      <node id="26" type="div" pos="1650 746"/>
+      <node id="27" type="out" name="joint:camRi.target" pos="2800 760"/>
+      <node id="28" type="add" pos="960 871"/>
+      <node id="29" type="div" pos="270 1100"/>
+      <node id="30" type="mul" pos="730 494"/>
+      <node id="31" type="sub" pos="500 736"/>
+      <node id="32" type="div" pos="270 724"/>
+      <node id="33" type="out" name="joint:camRe.target" pos="2800 996"/>
+      <node id="34" type="in" name="joint:camLi.angle" pos="40 1942"/>
+      <node id="35" type="in" name="joint:camLe.angle" pos="40 2296"/>
+      <node id="36" type="add" pos="2570 922"/>
+      <node id="37" type="div" pos="270 1194"/>
+      <node id="38" type="mul" pos="2340 650"/>
+      <node id="39" type="sub" pos="2110 1047"/>
+      <node id="40" type="add" pos="1880 1110"/>
+      <node id="41" type="div" pos="270 818"/>
+      <node id="42" type="div" pos="1650 840"/>
+      <node id="43" type="out" name="joint:camLi.target" pos="2800 1114"/>
+      <node id="44" type="add" pos="960 1153"/>
+      <node id="45" type="div" pos="270 1288"/>
+      <node id="46" type="mul" pos="730 630"/>
+      <node id="47" type="sub" pos="500 1007"/>
+      <node id="48" type="div" pos="270 912"/>
+      <node id="49" type="out" name="joint:camLe.target" pos="2800 1350"/>
+      <node id="50" type="add" pos="270 1382"/>
+      <node id="51" type="const" params="2.1816616" pos="40 1588"/>
+      <node id="52" type="atan2" pos="730 1420"/>
+      <node id="53" type="sin" pos="500 1486"/>
+      <node id="54" type="cos" pos="500 1562"/>
+      <node id="55" type="mul" pos="2110 953"/>
+      <node id="56" type="mul" pos="1880 393"/>
+      <node id="57" type="const" params="0.005" pos="1650 934"/>
+      <node id="58" type="add" pos="1650 558"/>
+      <node id="59" type="cos" pos="1420 668"/>
+      <node id="60" type="div" pos="1190 668"/>
+      <node id="61" type="mul" pos="960 777"/>
+      <node id="62" type="const" params="1.0471976" pos="960 1811"/>
+      <node id="63" type="lt" pos="1190 1514"/>
+      <node id="64" type="abs" pos="960 1929"/>
+      <node id="65" type="out" name="joint:in1.target" pos="2800 1232"/>
+      <node id="66" type="sub" pos="270 1476"/>
+      <node id="67" type="atan2" pos="730 1572"/>
+      <node id="68" type="sin" pos="500 1638"/>
+      <node id="69" type="cos" pos="500 1714"/>
+      <node id="70" type="mul" pos="2110 1171"/>
+      <node id="71" type="mul" pos="1880 546"/>
+      <node id="72" type="const" params="0.00475" pos="1650 1522"/>
+      <node id="73" type="add" pos="1650 652"/>
+      <node id="74" type="cos" pos="1420 762"/>
+      <node id="75" type="div" pos="1190 762"/>
+      <node id="76" type="mul" pos="960 965"/>
+      <node id="77" type="lt" pos="1190 1796"/>
+      <node id="78" type="abs" pos="960 2193"/>
+      <node id="79" type="out" name="joint:ex1.target" pos="2800 1468"/>
+      <node id="80" type="add" pos="270 1664"/>
+      <node id="81" type="const" params="1.134464" pos="40 2178"/>
+      <node id="82" type="atan2" pos="730 1876"/>
+      <node id="83" type="sin" pos="500 1942"/>
+      <node id="84" type="cos" pos="500 2018"/>
+      <node id="85" type="mul" pos="2110 1406"/>
+      <node id="86" type="mul" pos="1880 734"/>
+      <node id="87" type="add" pos="1650 1146"/>
+      <node id="88" type="cos" pos="1420 950"/>
+      <node id="89" type="div" pos="1190 950"/>
+      <node id="90" type="mul" pos="960 1247"/>
+      <node id="91" type="lt" pos="1190 2078"/>
+      <node id="92" type="abs" pos="960 2439"/>
+      <node id="93" type="out" name="joint:in2.target" pos="2800 1704"/>
+      <node id="94" type="add" pos="270 2228"/>
+      <node id="95" type="const" params="3.0543262" pos="40 2414"/>
+      <node id="96" type="atan2" pos="730 2788"/>
+      <node id="97" type="sin" pos="500 2854"/>
+      <node id="98" type="cos" pos="500 2930"/>
+      <node id="99" type="mul" pos="2110 2252"/>
+      <node id="100" type="mul" pos="1880 1674"/>
+      <node id="101" type="add" pos="1650 1922"/>
+      <node id="102" type="cos" pos="1420 1660"/>
+      <node id="103" type="div" pos="1190 1608"/>
+      <node id="104" type="mul" pos="960 2005"/>
+      <node id="105" type="lt" pos="1190 2642"/>
+      <node id="106" type="abs" pos="960 2895"/>
+      <node id="107" type="out" name="joint:ex2.target" pos="2800 2530"/>
+      <node id="108" type="add" pos="270 1570"/>
+      <node id="109" type="const" params="0.0872665" pos="40 1824"/>
+      <node id="110" type="atan2" pos="730 1724"/>
+      <node id="111" type="sin" pos="500 1790"/>
+      <node id="112" type="cos" pos="500 1866"/>
+      <node id="113" type="mul" pos="2110 1312"/>
+      <node id="114" type="mul" pos="1880 640"/>
+      <node id="115" type="add" pos="1650 1052"/>
+      <node id="116" type="cos" pos="1420 856"/>
+      <node id="117" type="div" pos="1190 856"/>
+      <node id="118" type="mul" pos="960 1059"/>
+      <node id="119" type="lt" pos="1190 1984"/>
+      <node id="120" type="abs" pos="960 2363"/>
+      <node id="121" type="out" name="joint:in3.target" pos="2800 1586"/>
+      <node id="122" type="add" pos="270 1946"/>
+      <node id="123" type="const" params="2.0071286" pos="40 2060"/>
+      <node id="124" type="atan2" pos="730 2332"/>
+      <node id="125" type="sin" pos="500 2398"/>
+      <node id="126" type="cos" pos="500 2474"/>
+      <node id="127" type="mul" pos="2110 1970"/>
+      <node id="128" type="mul" pos="1880 1392"/>
+      <node id="129" type="add" pos="1650 1640"/>
+      <node id="130" type="cos" pos="1420 1432"/>
+      <node id="131" type="div" pos="1190 1232"/>
+      <node id="132" type="mul" pos="960 1529"/>
+      <node id="133" type="lt" pos="1190 2360"/>
+      <node id="134" type="abs" pos="960 2667"/>
+      <node id="135" type="out" name="joint:ex3.target" pos="2800 2176"/>
+      <node id="136" type="sub" pos="270 2322"/>
+      <node id="137" type="const" params="0.9599311" pos="40 2532"/>
+      <node id="138" type="atan2" pos="730 2940"/>
+      <node id="139" type="sin" pos="500 3006"/>
+      <node id="140" type="cos" pos="500 3082"/>
+      <node id="141" type="mul" pos="2110 2158"/>
+      <node id="142" type="mul" pos="1880 1486"/>
+      <node id="143" type="add" pos="1650 2016"/>
+      <node id="144" type="cos" pos="1420 1736"/>
+      <node id="145" type="div" pos="1190 1702"/>
+      <node id="146" type="mul" pos="960 2099"/>
+      <node id="147" type="lt" pos="1190 2736"/>
+      <node id="148" type="abs" pos="960 2971"/>
+      <node id="149" type="out" name="joint:in4.target" pos="2800 2412"/>
+      <node id="150" type="add" pos="270 2416"/>
+      <node id="151" type="atan2" pos="730 3092"/>
+      <node id="152" type="sin" pos="500 3158"/>
+      <node id="153" type="cos" pos="500 3234"/>
+      <node id="154" type="mul" pos="2110 2346"/>
+      <node id="155" type="mul" pos="1880 1768"/>
+      <node id="156" type="add" pos="1650 2110"/>
+      <node id="157" type="cos" pos="1420 1890"/>
+      <node id="158" type="div" pos="1190 1890"/>
+      <node id="159" type="mul" pos="960 2269"/>
+      <node id="160" type="lt" pos="1190 2830"/>
+      <node id="161" type="abs" pos="960 3092"/>
+      <node id="162" type="out" name="joint:ex4.target" pos="2800 2648"/>
+      <node id="163" type="sub" pos="270 1758"/>
+      <node id="164" type="atan2" pos="730 2028"/>
+      <node id="165" type="sin" pos="500 2094"/>
+      <node id="166" type="cos" pos="500 2170"/>
+      <node id="167" type="mul" pos="2110 1594"/>
+      <node id="168" type="mul" pos="1880 1016"/>
+      <node id="169" type="add" pos="1650 1334"/>
+      <node id="170" type="cos" pos="1420 1044"/>
+      <node id="171" type="div" pos="1190 1044"/>
+      <node id="172" type="mul" pos="960 1341"/>
+      <node id="173" type="lt" pos="1190 2172"/>
+      <node id="174" type="abs" pos="960 2515"/>
+      <node id="175" type="out" name="joint:in5.target" pos="2800 1822"/>
+      <node id="176" type="sub" pos="270 1852"/>
+      <node id="177" type="atan2" pos="730 2180"/>
+      <node id="178" type="sin" pos="500 2246"/>
+      <node id="179" type="cos" pos="500 2322"/>
+      <node id="180" type="mul" pos="2110 1782"/>
+      <node id="181" type="mul" pos="1880 1298"/>
+      <node id="182" type="add" pos="1650 1428"/>
+      <node id="183" type="cos" pos="1420 1238"/>
+      <node id="184" type="div" pos="1190 1138"/>
+      <node id="185" type="mul" pos="960 1435"/>
+      <node id="186" type="lt" pos="1190 2266"/>
+      <node id="187" type="abs" pos="960 2591"/>
+      <node id="188" type="out" name="joint:ex5.target" pos="2800 1940"/>
+      <node id="189" type="sub" pos="270 2040"/>
+      <node id="190" type="atan2" pos="730 2484"/>
+      <node id="191" type="sin" pos="500 2550"/>
+      <node id="192" type="cos" pos="500 2626"/>
+      <node id="193" type="mul" pos="2110 1876"/>
+      <node id="194" type="mul" pos="1880 1204"/>
+      <node id="195" type="add" pos="1650 1734"/>
+      <node id="196" type="cos" pos="1420 1508"/>
+      <node id="197" type="div" pos="1190 1326"/>
+      <node id="198" type="mul" pos="960 1623"/>
+      <node id="199" type="lt" pos="1190 2454"/>
+      <node id="200" type="abs" pos="960 2743"/>
+      <node id="201" type="out" name="joint:in6.target" pos="2800 2058"/>
+      <node id="202" type="sub" pos="270 2134"/>
+      <node id="203" type="atan2" pos="730 2636"/>
+      <node id="204" type="sin" pos="500 2702"/>
+      <node id="205" type="cos" pos="500 2778"/>
+      <node id="206" type="mul" pos="2110 2064"/>
+      <node id="207" type="mul" pos="1880 1580"/>
+      <node id="208" type="add" pos="1650 1828"/>
+      <node id="209" type="cos" pos="1420 1584"/>
+      <node id="210" type="div" pos="1190 1420"/>
+      <node id="211" type="mul" pos="960 1717"/>
+      <node id="212" type="lt" pos="1190 2548"/>
+      <node id="213" type="abs" pos="960 2819"/>
+      <node id="214" type="out" name="joint:ex6.target" pos="2800 2294"/>
+      <node id="215" type="div" pos="1880 828"/>
+      <node id="216" type="mul" pos="1650 1240"/>
+      <node id="217" type="const" params="180" pos="1420 1314"/>
+      <node id="218" type="out" name="scope:vtc_deg" pos="2800 878"/>
+      <node id="219" type="mul" pos="270 2510"/>
+      <node id="220" type="in" name="joint:in1.pos" pos="40 2650"/>
+      <node id="221" type="const" params="1000" pos="40 2768"/>
+      <node id="222" type="out" name="scope:lift_in1_mm" pos="2800 2766"/>
+      <node id="223" type="mul" pos="270 2604"/>
+      <node id="224" type="in" name="joint:ex1.pos" pos="40 2886"/>
+      <node id="225" type="out" name="scope:lift_ex1_mm" pos="2800 2884"/>
+      <wire from="2" to="1"/>
+      <wire from="3" to="1" port="1"/>
+      <wire from="4" to="1" port="2"/>
+      <wire from="9" to="8"/>
+      <wire from="10" to="8" port="1"/>
+      <wire from="8" to="7"/>
+      <wire from="11" to="7" port="1"/>
+      <wire from="15" to="14"/>
+      <wire from="14" to="13"/>
+      <wire from="20" to="19" port="1"/>
+      <wire from="19" to="18"/>
+      <wire from="22" to="21"/>
+      <wire from="20" to="25" port="1"/>
+      <wire from="25" to="24"/>
+      <wire from="20" to="26" port="1"/>
+      <wire from="26" to="24" port="1"/>
+      <wire from="24" to="23"/>
+      <wire from="23" to="21" port="1"/>
+      <wire from="21" to="18" port="1"/>
+      <wire from="18" to="27"/>
+      <wire from="20" to="29" port="1"/>
+      <wire from="29" to="28"/>
+      <wire from="22" to="30"/>
+      <wire from="20" to="32" port="1"/>
+      <wire from="32" to="31"/>
+      <wire from="31" to="30" port="1"/>
+      <wire from="30" to="28" port="1"/>
+      <wire from="28" to="33"/>
+      <wire from="20" to="37" port="1"/>
+      <wire from="37" to="36"/>
+      <wire from="22" to="38"/>
+      <wire from="20" to="41" port="1"/>
+      <wire from="41" to="40"/>
+      <wire from="20" to="42" port="1"/>
+      <wire from="42" to="40" port="1"/>
+      <wire from="40" to="39"/>
+      <wire from="39" to="38" port="1"/>
+      <wire from="38" to="36" port="1"/>
+      <wire from="36" to="43"/>
+      <wire from="20" to="45" port="1"/>
+      <wire from="45" to="44"/>
+      <wire from="22" to="46"/>
+      <wire from="20" to="48" port="1"/>
+      <wire from="48" to="47"/>
+      <wire from="47" to="46" port="1"/>
+      <wire from="46" to="44" port="1"/>
+      <wire from="44" to="49"/>
+      <wire from="51" to="50" port="1"/>
+      <wire from="53" to="52"/>
+      <wire from="54" to="52" port="1"/>
+      <wire from="57" to="56"/>
+      <wire from="4" to="58"/>
+      <wire from="11" to="61"/>
+      <wire from="61" to="60"/>
+      <wire from="62" to="60" port="1"/>
+      <wire from="60" to="59"/>
+      <wire from="59" to="58" port="1"/>
+      <wire from="58" to="56" port="1"/>
+      <wire from="56" to="55"/>
+      <wire from="64" to="63"/>
+      <wire from="62" to="63" port="1"/>
+      <wire from="63" to="55" port="1"/>
+      <wire from="55" to="65"/>
+      <wire from="51" to="66" port="1"/>
+      <wire from="68" to="67"/>
+      <wire from="69" to="67" port="1"/>
+      <wire from="72" to="71"/>
+      <wire from="4" to="73"/>
+      <wire from="11" to="76"/>
+      <wire from="76" to="75"/>
+      <wire from="62" to="75" port="1"/>
+      <wire from="75" to="74"/>
+      <wire from="74" to="73" port="1"/>
+      <wire from="73" to="71" port="1"/>
+      <wire from="71" to="70"/>
+      <wire from="78" to="77"/>
+      <wire from="62" to="77" port="1"/>
+      <wire from="77" to="70" port="1"/>
+      <wire from="70" to="79"/>
+      <wire from="81" to="80" port="1"/>
+      <wire from="83" to="82"/>
+      <wire from="84" to="82" port="1"/>
+      <wire from="57" to="86"/>
+      <wire from="4" to="87"/>
+      <wire from="11" to="90"/>
+      <wire from="90" to="89"/>
+      <wire from="62" to="89" port="1"/>
+      <wire from="89" to="88"/>
+      <wire from="88" to="87" port="1"/>
+      <wire from="87" to="86" port="1"/>
+      <wire from="86" to="85"/>
+      <wire from="92" to="91"/>
+      <wire from="62" to="91" port="1"/>
+      <wire from="91" to="85" port="1"/>
+      <wire from="85" to="93"/>
+      <wire from="95" to="94" port="1"/>
+      <wire from="97" to="96"/>
+      <wire from="98" to="96" port="1"/>
+      <wire from="72" to="100"/>
+      <wire from="4" to="101"/>
+      <wire from="11" to="104"/>
+      <wire from="104" to="103"/>
+      <wire from="62" to="103" port="1"/>
+      <wire from="103" to="102"/>
+      <wire from="102" to="101" port="1"/>
+      <wire from="101" to="100" port="1"/>
+      <wire from="100" to="99"/>
+      <wire from="106" to="105"/>
+      <wire from="62" to="105" port="1"/>
+      <wire from="105" to="99" port="1"/>
+      <wire from="99" to="107"/>
+      <wire from="109" to="108" port="1"/>
+      <wire from="111" to="110"/>
+      <wire from="112" to="110" port="1"/>
+      <wire from="57" to="114"/>
+      <wire from="4" to="115"/>
+      <wire from="11" to="118"/>
+      <wire from="118" to="117"/>
+      <wire from="62" to="117" port="1"/>
+      <wire from="117" to="116"/>
+      <wire from="116" to="115" port="1"/>
+      <wire from="115" to="114" port="1"/>
+      <wire from="114" to="113"/>
+      <wire from="120" to="119"/>
+      <wire from="62" to="119" port="1"/>
+      <wire from="119" to="113" port="1"/>
+      <wire from="113" to="121"/>
+      <wire from="123" to="122" port="1"/>
+      <wire from="125" to="124"/>
+      <wire from="126" to="124" port="1"/>
+      <wire from="72" to="128"/>
+      <wire from="4" to="129"/>
+      <wire from="11" to="132"/>
+      <wire from="132" to="131"/>
+      <wire from="62" to="131" port="1"/>
+      <wire from="131" to="130"/>
+      <wire from="130" to="129" port="1"/>
+      <wire from="129" to="128" port="1"/>
+      <wire from="128" to="127"/>
+      <wire from="134" to="133"/>
+      <wire from="62" to="133" port="1"/>
+      <wire from="133" to="127" port="1"/>
+      <wire from="127" to="135"/>
+      <wire from="137" to="136" port="1"/>
+      <wire from="139" to="138"/>
+      <wire from="140" to="138" port="1"/>
+      <wire from="57" to="142"/>
+      <wire from="4" to="143"/>
+      <wire from="11" to="146"/>
+      <wire from="146" to="145"/>
+      <wire from="62" to="145" port="1"/>
+      <wire from="145" to="144"/>
+      <wire from="144" to="143" port="1"/>
+      <wire from="143" to="142" port="1"/>
+      <wire from="142" to="141"/>
+      <wire from="148" to="147"/>
+      <wire from="62" to="147" port="1"/>
+      <wire from="147" to="141" port="1"/>
+      <wire from="141" to="149"/>
+      <wire from="137" to="150" port="1"/>
+      <wire from="152" to="151"/>
+      <wire from="153" to="151" port="1"/>
+      <wire from="72" to="155"/>
+      <wire from="4" to="156"/>
+      <wire from="11" to="159"/>
+      <wire from="159" to="158"/>
+      <wire from="62" to="158" port="1"/>
+      <wire from="158" to="157"/>
+      <wire from="157" to="156" port="1"/>
+      <wire from="156" to="155" port="1"/>
+      <wire from="155" to="154"/>
+      <wire from="161" to="160"/>
+      <wire from="62" to="160" port="1"/>
+      <wire from="160" to="154" port="1"/>
+      <wire from="154" to="162"/>
+      <wire from="123" to="163" port="1"/>
+      <wire from="165" to="164"/>
+      <wire from="166" to="164" port="1"/>
+      <wire from="57" to="168"/>
+      <wire from="4" to="169"/>
+      <wire from="11" to="172"/>
+      <wire from="172" to="171"/>
+      <wire from="62" to="171" port="1"/>
+      <wire from="171" to="170"/>
+      <wire from="170" to="169" port="1"/>
+      <wire from="169" to="168" port="1"/>
+      <wire from="168" to="167"/>
+      <wire from="174" to="173"/>
+      <wire from="62" to="173" port="1"/>
+      <wire from="173" to="167" port="1"/>
+      <wire from="167" to="175"/>
+      <wire from="109" to="176" port="1"/>
+      <wire from="178" to="177"/>
+      <wire from="179" to="177" port="1"/>
+      <wire from="72" to="181"/>
+      <wire from="4" to="182"/>
+      <wire from="11" to="185"/>
+      <wire from="185" to="184"/>
+      <wire from="62" to="184" port="1"/>
+      <wire from="184" to="183"/>
+      <wire from="183" to="182" port="1"/>
+      <wire from="182" to="181" port="1"/>
+      <wire from="181" to="180"/>
+      <wire from="187" to="186"/>
+      <wire from="62" to="186" port="1"/>
+      <wire from="186" to="180" port="1"/>
+      <wire from="180" to="188"/>
+      <wire from="95" to="189" port="1"/>
+      <wire from="191" to="190"/>
+      <wire from="192" to="190" port="1"/>
+      <wire from="57" to="194"/>
+      <wire from="4" to="195"/>
+      <wire from="11" to="198"/>
+      <wire from="198" to="197"/>
+      <wire from="62" to="197" port="1"/>
+      <wire from="197" to="196"/>
+      <wire from="196" to="195" port="1"/>
+      <wire from="195" to="194" port="1"/>
+      <wire from="194" to="193"/>
+      <wire from="200" to="199"/>
+      <wire from="62" to="199" port="1"/>
+      <wire from="199" to="193" port="1"/>
+      <wire from="193" to="201"/>
+      <wire from="81" to="202" port="1"/>
+      <wire from="204" to="203"/>
+      <wire from="205" to="203" port="1"/>
+      <wire from="72" to="207"/>
+      <wire from="4" to="208"/>
+      <wire from="11" to="211"/>
+      <wire from="211" to="210"/>
+      <wire from="62" to="210" port="1"/>
+      <wire from="210" to="209"/>
+      <wire from="209" to="208" port="1"/>
+      <wire from="208" to="207" port="1"/>
+      <wire from="207" to="206"/>
+      <wire from="213" to="212"/>
+      <wire from="62" to="212" port="1"/>
+      <wire from="212" to="206" port="1"/>
+      <wire from="206" to="214"/>
+      <wire from="217" to="216" port="1"/>
+      <wire from="216" to="215"/>
+      <wire from="11" to="215" port="1"/>
+      <wire from="215" to="218"/>
+      <wire from="220" to="219"/>
+      <wire from="221" to="219" port="1"/>
+      <wire from="219" to="222"/>
+      <wire from="224" to="223"/>
+      <wire from="221" to="223" port="1"/>
+      <wire from="223" to="225"/>
+      <wire from="6" to="9"/>
+      <wire from="7" to="12"/>
+      <wire from="12" to="14" port="1"/>
+      <wire from="1" to="14" port="2"/>
+      <wire from="6" to="19"/>
+      <wire from="5" to="25"/>
+      <wire from="13" to="26"/>
+      <wire from="16" to="23" port="1"/>
+      <wire from="6" to="29"/>
+      <wire from="5" to="32"/>
+      <wire from="17" to="31" port="1"/>
+      <wire from="6" to="37"/>
+      <wire from="5" to="41"/>
+      <wire from="13" to="42"/>
+      <wire from="34" to="39" port="1"/>
+      <wire from="6" to="45"/>
+      <wire from="5" to="48"/>
+      <wire from="35" to="47" port="1"/>
+      <wire from="16" to="50"/>
+      <wire from="50" to="53"/>
+      <wire from="50" to="54"/>
+      <wire from="52" to="61" port="1"/>
+      <wire from="52" to="64"/>
+      <wire from="17" to="66"/>
+      <wire from="66" to="68"/>
+      <wire from="66" to="69"/>
+      <wire from="67" to="76" port="1"/>
+      <wire from="67" to="78"/>
+      <wire from="34" to="80"/>
+      <wire from="80" to="83"/>
+      <wire from="80" to="84"/>
+      <wire from="82" to="90" port="1"/>
+      <wire from="82" to="92"/>
+      <wire from="35" to="94"/>
+      <wire from="94" to="97"/>
+      <wire from="94" to="98"/>
+      <wire from="96" to="104" port="1"/>
+      <wire from="96" to="106"/>
+      <wire from="16" to="108"/>
+      <wire from="108" to="111"/>
+      <wire from="108" to="112"/>
+      <wire from="110" to="118" port="1"/>
+      <wire from="110" to="120"/>
+      <wire from="17" to="122"/>
+      <wire from="122" to="125"/>
+      <wire from="122" to="126"/>
+      <wire from="124" to="132" port="1"/>
+      <wire from="124" to="134"/>
+      <wire from="34" to="136"/>
+      <wire from="136" to="139"/>
+      <wire from="136" to="140"/>
+      <wire from="138" to="146" port="1"/>
+      <wire from="138" to="148"/>
+      <wire from="35" to="150"/>
+      <wire from="150" to="152"/>
+      <wire from="150" to="153"/>
+      <wire from="151" to="159" port="1"/>
+      <wire from="151" to="161"/>
+      <wire from="16" to="163"/>
+      <wire from="163" to="165"/>
+      <wire from="163" to="166"/>
+      <wire from="164" to="172" port="1"/>
+      <wire from="164" to="174"/>
+      <wire from="17" to="176"/>
+      <wire from="176" to="178"/>
+      <wire from="176" to="179"/>
+      <wire from="177" to="185" port="1"/>
+      <wire from="177" to="187"/>
+      <wire from="34" to="189"/>
+      <wire from="189" to="191"/>
+      <wire from="189" to="192"/>
+      <wire from="190" to="198" port="1"/>
+      <wire from="190" to="200"/>
+      <wire from="35" to="202"/>
+      <wire from="202" to="204"/>
+      <wire from="202" to="205"/>
+      <wire from="203" to="211" port="1"/>
+      <wire from="203" to="213"/>
+      <wire from="13" to="216"/>
+    </formula>
+    <formula name="combustion">
+      <source line="# VR30DDTT 風 3.0L V6 ツインターボの燃焼モデル（筒内圧 → ピストンへの力）。"/>
+      <source line="# 吸気が閉じてから（IVC）排気が開くまで（EVO）は閉じた筒: ポリトロープの圧縮・膨張"/>
+      <source line="# p V^n = 一定、燃焼は Wiebe 関数で圧力を (1 + R xb) 倍。IVC / EVO はカムシャフトの"/>
+      <source line="# **実際の角度**（ジョイントの計測値）から求める = 吸気 VTC で吸気を遅く閉じれば"/>
+      <source line="# 実圧縮が減り（ミラーサイクル）、進めればオーバーラップが増えて掃気が効く。"/>
+      <source line="# ツインターボは物理モデル: タービン軸の回転数を状態に持ち、排気のエネルギー（タービン）で"/>
+      <source line="# 回り、空気を圧縮する仕事（コンプレッサー）で減速する。過給圧は軸の回転数で決まり、"/>
+      <source line="# 電子制御のウェイストゲート（PI）が目標過給圧で頭打ちにする = 低回転で立ち上がらない・"/>
+      <source line="# 踏んでから遅れて効く（ターボラグ）が式から出てくる。目標過給圧のマップは既定で"/>
+      <source line="# カタログのトルク曲線に合うように較正してある。"/>
+      <source line="# 寸法: ボア 86 x ストローク 86 mm、圧縮比 10.3、コンロッド 144 mm（仮定）。"/>
+      <source line="throttle = clamp(param:throttle, 0, 1)   # アクセル開度（制御盤のパラメータ。走らせながら変えられる）"/>
+      <source line="r = 0.043; Lr = 0.144             # クランク半径・コンロッド長 (m)"/>
+      <source line="A = 0.0058088048                  # ピストン面積 (m^2)"/>
+      <source line="Vc = 0.0000537158                 # すきま容積 = 行程容積 / (圧縮比 - 1) (m^3)"/>
+      <source line="n = 1.32                          # ポリトロープ指数"/>
+      <source line="R = 3.0                           # 燃焼による圧力上昇（理論空燃比・全開）"/>
+      <source line="ign = -0.2094395                  # 点火（燃焼開始）= 上死点前 12 度 (rad)"/>
+      <source line="burn = 0.9599311                  # 燃焼期間 55 度 (rad)"/>
+      <source line="ivc0 = -2.2689280             # 吸気が閉じる角（VTC 0、点火上死点から）= 下死点後 50 度"/>
+      <source line="evo0 = 2.2689280              # 排気が開く角 = 下死点前 50 度"/>
+      <source line="ovl0 = 0.3490659              # オーバーラップ（VTC 0）= 20 度"/>
+      <source line="patm = 101325"/>
+      <source line=""/>
+      <source line="th = joint:crank.angle            # 力は始点の姿勢でクランクへ伝わるので角度も始点の値"/>
+      <source line="w = joint:crank.rate"/>
+      <source line="rpm = abs(w) * 30 / pi"/>
+      <source line="fire = (rpm &gt; 400) * (rpm &lt; 7000)  # 400 rpm で点火、7000 rpm で燃料カット（レブリミッタ）"/>
+      <source line=""/>
+      <source line="# ---- ツインターボ（左右のバンクに 1 基ずつ。同じ物なので 1 基ぶんを解いて流量を半分にする）"/>
+      <source line="# パラメータ（制御盤）: boost = 目標過給圧のピーク (bar ゲージ)、turbo_inertia = タービン軸の"/>
+      <source line="# 慣性の倍率（大きいほどラグが長い）、intercooler = インタークーラーの効率 (0..0.95)、"/>
+      <source line="# afr = 空燃比、ambient = 外気温 (℃)。"/>
+      <source line="boost_map = curve(rpm, 0, 1, 1000, 1.2634, 1500, 1.9544, 1600, 2.1089, 2500, 2.2177, 3500, 2.3503, 4200, 2.4918, 5000, 2.7661, 5200, 2.773, 6000, 2.6525, 6400, 2.5598, 7000, 2.2213)   # ECU の目標過給圧 (bar abs、ピーク 2.77 = ゲージ 1.77)"/>
+      <source line="# param:boost = 目標過給圧のピーク (bar ゲージ)。既定の 1.77 でマップどおり、それ以外はマップを比で伸縮"/>
+      <source line="target = 100000 * (1 + (boost_map - 1) * clamp(param:boost, 0, 2.5) / 1.77)   # 目標 (Pa abs)"/>
+      <source line="T1 = 273.15 + clamp(param:ambient, -30, 50)   # 外気温 (K)"/>
+      <source line="Tcool = T1 + 7                    # インタークーラーの冷却側（外気より少し高い）"/>
+      <source line="eps = clamp(param:intercooler, 0, 0.95)"/>
+      <source line="afr = clamp(param:afr, 9, 18)"/>
+      <source line="phi = 14.7 / afr                  # 当量比（1 より大きい = 濃い）"/>
+      <source line="Jt = 0.00003 * clamp(param:turbo_inertia, 0.2, 5)   # タービン軸の慣性 (kg m^2)"/>
+      <source line="wt = integrate(dwt, 0, 26000)     # タービン軸の角速度 (rad/s、上限 約 250000 rpm)"/>
+      <source line="PR = 1 + 0.0000000045 * wt * wt   # コンプレッサーの圧力比（翼端速度の 2 乗に比例）"/>
+      <source line="pin = lerp(35000, PR * patm, throttle)   # 吸気圧 (Pa abs) = スロットルで絞った過給圧"/>
+      <source line="# 吸気温度: 圧縮で上がり（効率 etac）、インタークーラーで冷える。流量（= 効率）と温度は"/>
+      <source line="# 互いに依存するので、まず効率 0.72 で見積もった流量 ma0 から効率を決める（代数ループを切る）。"/>
+      <source line="# 左右のバンクは VTC が同じなので、充填は右バンクの値（vivcR / scavR）で代表する。"/>
+      <source line="T20 = T1 * (1 + (PR^0.2857 - 1) / 0.72)"/>
+      <source line="Tin0 = T20 - eps * (T20 - Tcool)"/>
+      <source line="ma0 = 6 * pin * vivcR / (287 * Tin0) * rpm / 120"/>
+      <source line="etac = max(0.4, 0.72 - 1.2 * max(0, ma0 / 2 / 0.2 - 0.75)^2)   # 流量が多いと効率が落ちる（チョーク）"/>
+      <source line="T2 = T1 * (1 + (PR^0.2857 - 1) / etac)"/>
+      <source line="Tin = T2 - eps * (T2 - Tcool)     # 吸気温度 (K)"/>
+      <source line="ma = 6 * scavR * pin * vivcR / (287 * Tin) * rpm / 120   # 吸気量 (kg/s) = 6 気筒 × 1 サイクルの充填 × 回転"/>
+      <source line="me = ma * (1 + 1 / afr)           # 排気の流量（空気 + 燃料）"/>
+      <source line="wg = pid((PR * patm - target) / patm, 2, 8, 0, 0, 0.95)   # ウェイストゲートの開度（目標を超えたら開く）"/>
+      <source line="wgf = 1.5 * wg / (1 + 1.5 * wg)   # タービンを素通りする排気の割合"/>
+      <source line="mt = (1 - wgf) * me / 2           # 1 基のタービンを通る流量"/>
+      <source line="egt = (600 + 280 * min(1, pin / 150000) + 0.045 * rpm) * (1 - 0.5 * clamp(phi - 1, -0.1, 0.3))   # 排気温度 (K)"/>
+      <source line="pt4 = patm * 1.03                 # タービンの出口（触媒・マフラー）"/>
+      <source line="pt3 = sqrt(pt4 * pt4 + (110000 * mt)^2 * egt)   # タービンの入口 = ノズルを流れる量で決まる"/>
+      <source line="Pt = 0.7 * mt * 1150 * egt * (1 - (pt4 / pt3)^0.2481)   # タービンの出力 (W)"/>
+      <source line="Pc = ma / 2 * 1005 * T1 * (PR^0.2857 - 1) / etac        # コンプレッサーが要る仕事 (W)"/>
+      <source line="dwt = (Pt - Pc) / (Jt * max(wt, 2000))"/>
+      <source line="# 燃焼の圧力上昇: 吸気が冷たいほど空気が濃く燃料も多く入る（基準 = 既定の IC 効率 0.8・外気 25 ℃）、"/>
+      <source line="# 空燃比は理論より少し濃いところで最大、薄いと下がる"/>
+      <source line="T2r = 298.15 * (1 + (PR^0.2857 - 1) / etac)"/>
+      <source line="Tinr = T2r - 0.8 * (T2r - 305.15)"/>
+      <source line="hr = min(phi, 1) * (1 + 0.05 * clamp((phi - 1) / 0.2, 0, 1)) * (1 - 0.3 * max(0, phi - 1.25))"/>
+      <source line="Rc = R * (Tinr / Tin) * hr / 1.044   # 1.044 = 既定の空燃比 12.5 での hr（既定の条件で Rc = R）"/>
+      <source line="# 炎のパーティクル（見た目だけ）: 燃えている間（点火から燃焼期間）だけ、1 回の燃焼で"/>
+      <source line="# 約 60 粒（吸気圧で増減）を出す。量 = 粒子 / 秒なので、角度の幅を時間に直す（w / burn）。"/>
+      <source line="flame = clamp(param:flame, 0, 1)"/>
+      <source line="nflame = 60 * flame * abs(w) / burn * fire * pin / 200000"/>
+      <source line="pexh = pin * (0.85 + 0.0000428 * rpm)    # 排気の背圧（低回転は吸気圧より低い = 掃気できる）"/>
+      <source line=""/>
+      <source line="# 右バンクのカム位相（クランク角, rad。正 = 遅角）と、そこから決まる IVC / EVO"/>
+      <source line="phRi = 2 * atan2(sin(joint:camRi.angle - th / 2), cos(joint:camRi.angle - th / 2))"/>
+      <source line="phRe = 2 * atan2(sin(joint:camRe.angle - th / 2), cos(joint:camRe.angle - th / 2))"/>
+      <source line="ivcR = ivc0 + phRi"/>
+      <source line="evoR = evo0 + phRe"/>
+      <source line="vivcR = Vc + A * (r * (1 - cos(ivcR)) + Lr - sqrt(Lr * Lr - (r * sin(ivcR))^2))   # IVC の容積"/>
+      <source line="ovlR = ovl0 - phRi + phRe"/>
+      <source line="scavR = 1 + 0.15 * clamp((ovlR - ovl0) / 0.7, 0, 1) * clamp((pin - pexh) / (0.1 * pin), 0, 1)   # 掃気で増える充填"/>
+      <source line=""/>
+      <source line="# 左バンクのカム位相（クランク角, rad。正 = 遅角）と、そこから決まる IVC / EVO"/>
+      <source line="phLi = 2 * atan2(sin(joint:camLi.angle - th / 2), cos(joint:camLi.angle - th / 2))"/>
+      <source line="phLe = 2 * atan2(sin(joint:camLe.angle - th / 2), cos(joint:camLe.angle - th / 2))"/>
+      <source line="ivcL = ivc0 + phLi"/>
+      <source line="evoL = evo0 + phLe"/>
+      <source line="vivcL = Vc + A * (r * (1 - cos(ivcL)) + Lr - sqrt(Lr * Lr - (r * sin(ivcL))^2))   # IVC の容積"/>
+      <source line="ovlL = ovl0 - phLi + phLe"/>
+      <source line="scavL = 1 + 0.15 * clamp((ovlL - ovl0) / 0.7, 0, 1) * clamp((pin - pexh) / (0.1 * pin), 0, 1)   # 掃気で増える充填"/>
+      <source line=""/>
+      <source line="# 1 番（右バンク、点火 0 度）"/>
+      <source line="h1 = (th - 0.0000000) / 2"/>
+      <source line="psi1 = 2 * atan2(sin(h1), cos(h1))     # 点火上死点からのクランク角（-360..360 度 = 1 サイクル）"/>
+      <source line="s1 = r * (1 - cos(psi1)) + Lr - sqrt(Lr * Lr - (r * sin(psi1))^2)"/>
+      <source line="xb1 = 1 - exp(-5 * max(0, (psi1 - ign) / burn)^3)"/>
+      <source line="pc1 = scavR * pin * (vivcR / (Vc + A * s1))^n * (1 + Rc * xb1 * fire)"/>
+      <source line="p1 = select(psi1 &gt; evoR, pexh, select(psi1 &gt; ivcR, pc1, pin))"/>
+      <source line="F1 = (p1 - patm) * A"/>
+      <source line="body:piston1.fx = -0.500000 * F1"/>
+      <source line="body:piston1.fy = -0.866025 * F1"/>
+      <source line="emitter:flame1.rate = nflame * (psi1 &gt; ign) * (psi1 &lt; ign + burn)"/>
+      <source line=""/>
+      <source line="# 2 番（左バンク、点火 120 度）"/>
+      <source line="h2 = (th - 2.0943951) / 2"/>
+      <source line="psi2 = 2 * atan2(sin(h2), cos(h2))     # 点火上死点からのクランク角（-360..360 度 = 1 サイクル）"/>
+      <source line="s2 = r * (1 - cos(psi2)) + Lr - sqrt(Lr * Lr - (r * sin(psi2))^2)"/>
+      <source line="xb2 = 1 - exp(-5 * max(0, (psi2 - ign) / burn)^3)"/>
+      <source line="pc2 = scavL * pin * (vivcL / (Vc + A * s2))^n * (1 + Rc * xb2 * fire)"/>
+      <source line="p2 = select(psi2 &gt; evoL, pexh, select(psi2 &gt; ivcL, pc2, pin))"/>
+      <source line="F2 = (p2 - patm) * A"/>
+      <source line="body:piston2.fx = 0.500000 * F2"/>
+      <source line="body:piston2.fy = -0.866025 * F2"/>
+      <source line="emitter:flame2.rate = nflame * (psi2 &gt; ign) * (psi2 &lt; ign + burn)"/>
+      <source line=""/>
+      <source line="# 3 番（右バンク、点火 240 度）"/>
+      <source line="h3 = (th - 4.1887902) / 2"/>
+      <source line="psi3 = 2 * atan2(sin(h3), cos(h3))     # 点火上死点からのクランク角（-360..360 度 = 1 サイクル）"/>
+      <source line="s3 = r * (1 - cos(psi3)) + Lr - sqrt(Lr * Lr - (r * sin(psi3))^2)"/>
+      <source line="xb3 = 1 - exp(-5 * max(0, (psi3 - ign) / burn)^3)"/>
+      <source line="pc3 = scavR * pin * (vivcR / (Vc + A * s3))^n * (1 + Rc * xb3 * fire)"/>
+      <source line="p3 = select(psi3 &gt; evoR, pexh, select(psi3 &gt; ivcR, pc3, pin))"/>
+      <source line="F3 = (p3 - patm) * A"/>
+      <source line="body:piston3.fx = -0.500000 * F3"/>
+      <source line="body:piston3.fy = -0.866025 * F3"/>
+      <source line="emitter:flame3.rate = nflame * (psi3 &gt; ign) * (psi3 &lt; ign + burn)"/>
+      <source line=""/>
+      <source line="# 4 番（左バンク、点火 360 度）"/>
+      <source line="h4 = (th - 6.2831853) / 2"/>
+      <source line="psi4 = 2 * atan2(sin(h4), cos(h4))     # 点火上死点からのクランク角（-360..360 度 = 1 サイクル）"/>
+      <source line="s4 = r * (1 - cos(psi4)) + Lr - sqrt(Lr * Lr - (r * sin(psi4))^2)"/>
+      <source line="xb4 = 1 - exp(-5 * max(0, (psi4 - ign) / burn)^3)"/>
+      <source line="pc4 = scavL * pin * (vivcL / (Vc + A * s4))^n * (1 + Rc * xb4 * fire)"/>
+      <source line="p4 = select(psi4 &gt; evoL, pexh, select(psi4 &gt; ivcL, pc4, pin))"/>
+      <source line="F4 = (p4 - patm) * A"/>
+      <source line="body:piston4.fx = 0.500000 * F4"/>
+      <source line="body:piston4.fy = -0.866025 * F4"/>
+      <source line="emitter:flame4.rate = nflame * (psi4 &gt; ign) * (psi4 &lt; ign + burn)"/>
+      <source line=""/>
+      <source line="# 5 番（右バンク、点火 480 度）"/>
+      <source line="h5 = (th - 8.3775804) / 2"/>
+      <source line="psi5 = 2 * atan2(sin(h5), cos(h5))     # 点火上死点からのクランク角（-360..360 度 = 1 サイクル）"/>
+      <source line="s5 = r * (1 - cos(psi5)) + Lr - sqrt(Lr * Lr - (r * sin(psi5))^2)"/>
+      <source line="xb5 = 1 - exp(-5 * max(0, (psi5 - ign) / burn)^3)"/>
+      <source line="pc5 = scavR * pin * (vivcR / (Vc + A * s5))^n * (1 + Rc * xb5 * fire)"/>
+      <source line="p5 = select(psi5 &gt; evoR, pexh, select(psi5 &gt; ivcR, pc5, pin))"/>
+      <source line="F5 = (p5 - patm) * A"/>
+      <source line="body:piston5.fx = -0.500000 * F5"/>
+      <source line="body:piston5.fy = -0.866025 * F5"/>
+      <source line="emitter:flame5.rate = nflame * (psi5 &gt; ign) * (psi5 &lt; ign + burn)"/>
+      <source line=""/>
+      <source line="# 6 番（左バンク、点火 600 度）"/>
+      <source line="h6 = (th - 10.4719755) / 2"/>
+      <source line="psi6 = 2 * atan2(sin(h6), cos(h6))     # 点火上死点からのクランク角（-360..360 度 = 1 サイクル）"/>
+      <source line="s6 = r * (1 - cos(psi6)) + Lr - sqrt(Lr * Lr - (r * sin(psi6))^2)"/>
+      <source line="xb6 = 1 - exp(-5 * max(0, (psi6 - ign) / burn)^3)"/>
+      <source line="pc6 = scavL * pin * (vivcL / (Vc + A * s6))^n * (1 + Rc * xb6 * fire)"/>
+      <source line="p6 = select(psi6 &gt; evoL, pexh, select(psi6 &gt; ivcL, pc6, pin))"/>
+      <source line="F6 = (p6 - patm) * A"/>
+      <source line="body:piston6.fx = 0.500000 * F6"/>
+      <source line="body:piston6.fy = -0.866025 * F6"/>
+      <source line="emitter:flame6.rate = nflame * (psi6 &gt; ign) * (psi6 &lt; ign + burn)"/>
+      <source line=""/>
+      <source line="# 機械損失（摩擦）: 20 Nm + 0.004 Nm/rpm をクランクへ。全開のトルクの較正（カタログは正味）は"/>
+      <source line="# この摩擦を含めて行った。アクセルを戻したときに増えるポンプ損失は dyno の Tloss が持つ。"/>
+      <source line="body:crank.tz = -(20 + 0.004 * rpm) * clamp(w * 0.5, -1, 1)"/>
+      <source line="scope:p1_bar = p1 / 100000"/>
+      <source line="scope:p4_bar = p4 / 100000"/>
+      <source line="scope:boost_bar = pin / 100000           # 吸気圧（マニホールド）"/>
+      <source line="scope:target_bar = target / 100000       # 目標過給圧"/>
+      <source line="scope:turbo_krpm = wt * 30 / pi / 1000   # タービン軸の回転数"/>
+      <source line="scope:wastegate_pct = wg * 100"/>
+      <source line="scope:air_gs = ma * 1000                 # 吸気量 (g/s)"/>
+      <source line="scope:fuel_gs = ma / afr * 1000          # 燃料 (g/s)"/>
+      <source line="scope:charge_mg = ma / (3 * rpm / 60 + 0.001) * 1000000   # 1 気筒 1 回ぶんの空気 (mg)"/>
+      <source line="scope:intake_C = Tin - 273.15"/>
+      <source line="scope:egt_C = egt - 273.15"/>
+      <source line="scope:exhaust_bar = pt3 / 100000          # タービン入口の排気圧"/>
+      <source line="scope:ivc_deg = ivcR * 180 / pi + 360    # 吸気が閉じる角（下死点 = 180）"/>
+      <source line="scope:overlap_deg = ovlR * 180 / pi"/>
+      <source line="scope:rod1_kN = joint:rod1.force / 1000"/>
+      <node id="1" type="clamp" pos="270 158"/>
+      <node id="2" type="in" name="param:throttle" pos="40 158"/>
+      <node id="3" type="const" params="0" pos="40 1856"/>
+      <node id="4" type="const" params="1" pos="40 1620"/>
+      <node id="5" type="in" name="joint:crank.angle" pos="40 2416"/>
+      <node id="6" type="in" name="joint:crank.rate" pos="40 1974"/>
+      <node id="7" type="div" pos="730 443"/>
+      <node id="8" type="mul" pos="500 615"/>
+      <node id="9" type="abs" pos="270 600"/>
+      <node id="10" type="const" params="30" pos="40 2092"/>
+      <node id="11" type="const" params="3.141592654" pos="270 2378"/>
+      <node id="12" type="mul" pos="1190 394"/>
+      <node id="13" type="gt" pos="960 288"/>
+      <node id="14" type="const" params="400" pos="730 288"/>
+      <node id="15" type="lt" pos="960 500"/>
+      <node id="16" type="const" params="7000" pos="730 537"/>
+      <node id="17" type="curve"
+            params="0 1 1000 1.2634 1500 1.9544 1600 2.1089 2500 2.2177 3500 2.3503 4200 2.4918 5000 2.7661 5200 2.773 6000 2.6525 6400 2.5598 7000 2.2213"
+            pos="960 594"/>
+      <node id="18" type="mul" pos="2110 240"/>
+      <node id="19" type="const" params="100000" pos="1190 656"/>
+      <node id="20" type="add" pos="1880 346"/>
+      <node id="21" type="div" pos="1650 377"/>
+      <node id="22" type="mul" pos="1420 620"/>
+      <node id="23" type="sub" pos="1190 488"/>
+      <node id="24" type="clamp" pos="270 752"/>
+      <node id="25" type="in" name="param:boost" pos="40 752"/>
+      <node id="26" type="const" params="2.5" pos="40 870"/>
+      <node id="27" type="const" params="1.77" pos="1420 377"/>
+      <node id="28" type="add" pos="500 871"/>
+      <node id="29" type="const" params="273.15" pos="270 864"/>
+      <node id="30" type="clamp" pos="270 1260"/>
+      <node id="31" type="in" name="param:ambient" pos="40 1266"/>
+      <node id="32" type="const" params="-30" pos="40 1384"/>
+      <node id="33" type="const" params="50" pos="40 1502"/>
+      <node id="34" type="add" pos="730 655"/>
+      <node id="35" type="const" params="7" pos="500 709"/>
+      <node id="36" type="clamp" pos="270 1030"/>
+      <node id="37" type="in" name="param:intercooler" pos="40 1030"/>
+      <node id="38" type="const" params="0.95" pos="40 1148"/>
+      <node id="39" type="clamp" pos="270 3132"/>
+      <node id="40" type="in" name="param:afr" pos="40 3132"/>
+      <node id="41" type="const" params="9" pos="40 3250"/>
+      <node id="42" type="const" params="18" pos="40 3368"/>
+      <node id="43" type="div" pos="500 1727"/>
+      <node id="44" type="const" params="14.7" pos="270 1766"/>
+      <node id="45" type="mul" pos="500 2257"/>
+      <node id="46" type="const" params="3e-05" pos="270 2684"/>
+      <node id="47" type="clamp" pos="270 3950"/>
+      <node id="48" type="in" name="param:turbo_inertia" pos="40 4194"/>
+      <node id="49" type="const" params="0.2" pos="40 2657"/>
+      <node id="50" type="const" params="5" pos="40 4312"/>
+      <node id="51" type="integrate" params="0 26000" pos="40 3840"/>
+      <node id="52" type="add" pos="730 2331"/>
+      <node id="53" type="mul" pos="500 3403"/>
+      <node id="54" type="mul" pos="270 4062"/>
+      <node id="55" type="const" params="4.5e-09" pos="40 4430"/>
+      <node id="56" type="lerp" pos="1190 774"/>
+      <node id="57" type="const" params="35000" pos="960 806"/>
+      <node id="58" type="mul" pos="960 1431"/>
+      <node id="59" type="const" params="101325" pos="730 1519"/>
+      <node id="60" type="mul" pos="1880 722"/>
+      <node id="61" type="add" pos="1650 676"/>
+      <node id="62" type="div" pos="1420 871"/>
+      <node id="63" type="sub" pos="1190 1352"/>
+      <node id="64" type="pow" pos="960 1713"/>
+      <node id="65" type="const" params="0.2857" pos="730 2137"/>
+      <node id="66" type="const" params="0.72" pos="1190 886"/>
+      <node id="67" type="sub" pos="2570 902"/>
+      <node id="68" type="mul" pos="2340 963"/>
+      <node id="69" type="sub" pos="2110 636"/>
+      <node id="70" type="div" pos="4180 394"/>
+      <node id="71" type="mul" pos="3950 654"/>
+      <node id="72" type="div" pos="3720 866"/>
+      <node id="73" type="mul" pos="3490 1034"/>
+      <node id="74" type="mul" pos="1420 756"/>
+      <node id="75" type="const" params="6" pos="1190 1234"/>
+      <node id="76" type="mul" pos="2800 518"/>
+      <node id="77" type="const" params="287" pos="2570 484"/>
+      <node id="78" type="const" params="120" pos="3950 403"/>
+      <node id="79" type="max" pos="6020 362"/>
+      <node id="80" type="const" params="0.4" pos="5790 362"/>
+      <node id="81" type="sub" pos="5790 685"/>
+      <node id="82" type="mul" pos="5560 787"/>
+      <node id="83" type="const" params="1.2" pos="5330 787"/>
+      <node id="84" type="pow" pos="5330 1534"/>
+      <node id="85" type="max" pos="5100 550"/>
+      <node id="86" type="sub" pos="4870 943"/>
+      <node id="87" type="div" pos="4640 1751"/>
+      <node id="88" type="div" pos="4410 1456"/>
+      <node id="89" type="const" params="2" pos="40 2775"/>
+      <node id="90" type="const" params="0.75" pos="4640 943"/>
+      <node id="91" type="mul" pos="6710 707"/>
+      <node id="92" type="add" pos="6480 574"/>
+      <node id="93" type="div" pos="6250 808"/>
+      <node id="94" type="sub" pos="1190 1446"/>
+      <node id="95" type="pow" pos="960 1807"/>
+      <node id="96" type="sub" pos="7400 768"/>
+      <node id="97" type="mul" pos="7170 829"/>
+      <node id="98" type="sub" pos="6940 628"/>
+      <node id="99" type="div" pos="8320 413"/>
+      <node id="100" type="mul" pos="8090 691"/>
+      <node id="101" type="div" pos="7860 940"/>
+      <node id="102" type="mul" pos="3720 1430"/>
+      <node id="103" type="mul" pos="3490 940"/>
+      <node id="104" type="mul" pos="3260 1179"/>
+      <node id="105" type="mul" pos="7630 451"/>
+      <node id="106" type="mul" pos="8550 646"/>
+      <node id="107" type="add" pos="730 880"/>
+      <node id="108" type="div" pos="500 1409"/>
+      <node id="109" type="pid" params="2 8 0 0 0.95" pos="2800 1188"/>
+      <node id="110" type="div" pos="2570 996"/>
+      <node id="111" type="sub" pos="2340 1057"/>
+      <node id="112" type="mul" pos="960 1525"/>
+      <node id="113" type="div" pos="3490 597"/>
+      <node id="114" type="mul" pos="3030 673"/>
+      <node id="115" type="const" params="1.5" pos="2800 788"/>
+      <node id="116" type="add" pos="3260 521"/>
+      <node id="117" type="mul" pos="3030 767"/>
+      <node id="118" type="div" pos="9010 1530"/>
+      <node id="119" type="mul" pos="8780 541"/>
+      <node id="120" type="sub" pos="3720 437"/>
+      <node id="121" type="mul" pos="2570 1090"/>
+      <node id="122" type="add" pos="2340 628"/>
+      <node id="123" type="add" pos="2110 393"/>
+      <node id="124" type="const" params="600" pos="1880 440"/>
+      <node id="125" type="mul" pos="1880 558"/>
+      <node id="126" type="const" params="280" pos="1650 558"/>
+      <node id="127" type="min" pos="1650 770"/>
+      <node id="128" type="div" pos="1420 965"/>
+      <node id="129" type="const" params="150000" pos="1190 1116"/>
+      <node id="130" type="mul" pos="960 712"/>
+      <node id="131" type="const" params="0.045" pos="730 749"/>
+      <node id="132" type="sub" pos="1420 1173"/>
+      <node id="133" type="mul" pos="1190 2246"/>
+      <node id="134" type="const" params="0.5" pos="40 2242"/>
+      <node id="135" type="clamp" pos="960 1319"/>
+      <node id="136" type="sub" pos="730 1092"/>
+      <node id="137" type="const" params="-0.1" pos="730 1374"/>
+      <node id="138" type="const" params="0.3" pos="730 1637"/>
+      <node id="139" type="sqrt" pos="10160 867"/>
+      <node id="140" type="add" pos="9930 754"/>
+      <node id="141" type="const" params="1.089200104e+10" pos="9700 754"/>
+      <node id="142" type="mul" pos="9700 1469"/>
+      <node id="143" type="pow" pos="9470 1848"/>
+      <node id="144" type="mul" pos="9240 1041"/>
+      <node id="145" type="const" params="110000" pos="9010 1134"/>
+      <node id="146" type="mul" pos="11080 596"/>
+      <node id="147" type="mul" pos="9700 913"/>
+      <node id="148" type="mul" pos="9470 735"/>
+      <node id="149" type="mul" pos="9240 1323"/>
+      <node id="150" type="const" params="0.7" pos="1880 2254"/>
+      <node id="151" type="const" params="1150" pos="9240 735"/>
+      <node id="152" type="sub" pos="10850 280"/>
+      <node id="153" type="pow" pos="10620 285"/>
+      <node id="154" type="div" pos="10390 435"/>
+      <node id="155" type="const" params="104364.75" pos="10160 435"/>
+      <node id="156" type="const" params="0.2481" pos="10390 285"/>
+      <node id="157" type="div" pos="9470 897"/>
+      <node id="158" type="mul" pos="9240 1511"/>
+      <node id="159" type="mul" pos="9010 1040"/>
+      <node id="160" type="mul" pos="8780 1147"/>
+      <node id="161" type="div" pos="8550 1759"/>
+      <node id="162" type="const" params="1005" pos="8550 1147"/>
+      <node id="163" type="sub" pos="1190 1540"/>
+      <node id="164" type="pow" pos="960 1901"/>
+      <node id="165" type="div" pos="11540 1961"/>
+      <node id="166" type="sub" pos="11310 747"/>
+      <node id="167" type="mul" pos="730 3439"/>
+      <node id="168" type="max" pos="270 4274"/>
+      <node id="169" type="const" params="2000" pos="40 4548"/>
+      <node id="170" type="mul" pos="6710 456"/>
+      <node id="171" type="const" params="298.15" pos="6480 456"/>
+      <node id="172" type="add" pos="6480 668"/>
+      <node id="173" type="div" pos="6250 902"/>
+      <node id="174" type="sub" pos="1190 1634"/>
+      <node id="175" type="pow" pos="960 1995"/>
+      <node id="176" type="sub" pos="7400 303"/>
+      <node id="177" type="mul" pos="7170 220"/>
+      <node id="178" type="const" params="0.8" pos="6940 220"/>
+      <node id="179" type="sub" pos="6940 338"/>
+      <node id="180" type="const" params="305.15" pos="6710 338"/>
+      <node id="181" type="mul" pos="2110 1206"/>
+      <node id="182" type="mul" pos="1880 1170"/>
+      <node id="183" type="min" pos="730 1186"/>
+      <node id="184" type="add" pos="1650 880"/>
+      <node id="185" type="mul" pos="1420 1479"/>
+      <node id="186" type="const" params="0.05" pos="1190 1728"/>
+      <node id="187" type="clamp" pos="1190 1004"/>
+      <node id="188" type="div" pos="960 2270"/>
+      <node id="189" type="sub" pos="730 1280"/>
+      <node id="190" type="sub" pos="1420 1059"/>
+      <node id="191" type="mul" pos="1190 1846"/>
+      <node id="192" type="max" pos="960 924"/>
+      <node id="193" type="sub" pos="730 1755"/>
+      <node id="194" type="const" params="1.25" pos="500 1821"/>
+      <node id="195" type="div" pos="8320 727"/>
+      <node id="196" type="mul" pos="8090 1226"/>
+      <node id="197" type="mul" pos="7860 1247"/>
+      <node id="198" type="const" params="3" pos="730 2595"/>
+      <node id="199" type="div" pos="7630 545"/>
+      <node id="200" type="const" params="1.044" pos="8090 785"/>
+      <node id="201" type="clamp" pos="270 1372"/>
+      <node id="202" type="in" name="param:flame" pos="40 1738"/>
+      <node id="203" type="div" pos="1880 1076"/>
+      <node id="204" type="mul" pos="1650 1348"/>
+      <node id="205" type="mul" pos="1420 1573"/>
+      <node id="206" type="div" pos="960 2458"/>
+      <node id="207" type="mul" pos="730 1967"/>
+      <node id="208" type="mul" pos="500 1939"/>
+      <node id="209" type="const" params="60" pos="270 2166"/>
+      <node id="210" type="abs" pos="270 676"/>
+      <node id="211" type="const" params="0.9599311" pos="730 4065"/>
+      <node id="212" type="const" params="200000" pos="1650 1136"/>
+      <node id="213" type="mul" pos="1420 1385"/>
+      <node id="214" type="add" pos="1190 2152"/>
+      <node id="215" type="const" params="0.85" pos="960 2152"/>
+      <node id="216" type="mul" pos="960 1619"/>
+      <node id="217" type="const" params="4.28e-05" pos="730 1849"/>
+      <node id="218" type="mul" pos="1190 2729"/>
+      <node id="219" type="atan2" pos="960 2646"/>
+      <node id="220" type="sin" pos="730 2425"/>
+      <node id="221" type="sub" pos="500 2163"/>
+      <node id="222" type="in" name="joint:camRi.angle" pos="270 2802"/>
+      <node id="223" type="div" pos="270 1484"/>
+      <node id="224" type="cos" pos="730 2831"/>
+      <node id="225" type="sub" pos="500 2463"/>
+      <node id="226" type="div" pos="270 1578"/>
+      <node id="227" type="mul" pos="1190 2917"/>
+      <node id="228" type="atan2" pos="960 2795"/>
+      <node id="229" type="sin" pos="730 2907"/>
+      <node id="230" type="sub" pos="500 2557"/>
+      <node id="231" type="in" name="joint:camRe.angle" pos="270 3244"/>
+      <node id="232" type="div" pos="270 1672"/>
+      <node id="233" type="cos" pos="730 2983"/>
+      <node id="234" type="sub" pos="500 2651"/>
+      <node id="235" type="div" pos="270 1884"/>
+      <node id="236" type="add" pos="1420 2281"/>
+      <node id="237" type="const" params="-2.268928" pos="1190 2611"/>
+      <node id="238" type="add" pos="1420 2692"/>
+      <node id="239" type="const" params="2.268928" pos="1190 3212"/>
+      <node id="240" type="add" pos="3260 1273"/>
+      <node id="241" type="const" params="5.37158e-05" pos="2800 1306"/>
+      <node id="242" type="mul" pos="3030 1425"/>
+      <node id="243" type="const" params="0.0058088048" pos="2570 1611"/>
+      <node id="244" type="sub" pos="2800 2576"/>
+      <node id="245" type="add" pos="2340 1263"/>
+      <node id="246" type="mul" pos="2110 1300"/>
+      <node id="247" type="const" params="0.043" pos="1420 2786"/>
+      <node id="248" type="sub" pos="1880 1290"/>
+      <node id="249" type="cos" pos="1650 2303"/>
+      <node id="250" type="const" params="0.144" pos="1880 1666"/>
+      <node id="251" type="sqrt" pos="2570 2339"/>
+      <node id="252" type="sub" pos="2340 2205"/>
+      <node id="253" type="const" params="0.020736" pos="1880 3124"/>
+      <node id="254" type="pow" pos="2110 3416"/>
+      <node id="255" type="mul" pos="1880 2372"/>
+      <node id="256" type="sin" pos="1650 2379"/>
+      <node id="257" type="add" pos="1650 2831"/>
+      <node id="258" type="sub" pos="1420 2446"/>
+      <node id="259" type="const" params="0.3490659" pos="1190 3330"/>
+      <node id="260" type="add" pos="3030 485"/>
+      <node id="261" type="mul" pos="2800 694"/>
+      <node id="262" type="mul" pos="2570 658"/>
+      <node id="263" type="const" params="0.15" pos="2340 733"/>
+      <node id="264" type="clamp" pos="2340 851"/>
+      <node id="265" type="div" pos="2110 1982"/>
+      <node id="266" type="sub" pos="1880 3242"/>
+      <node id="267" type="clamp" pos="2110 730"/>
+      <node id="268" type="div" pos="1880 1572"/>
+      <node id="269" type="sub" pos="1650 1042"/>
+      <node id="270" type="mul" pos="1420 1667"/>
+      <node id="271" type="const" params="0.1" pos="1190 1940"/>
+      <node id="272" type="mul" pos="1190 3566"/>
+      <node id="273" type="atan2" pos="960 3261"/>
+      <node id="274" type="sin" pos="730 3363"/>
+      <node id="275" type="sub" pos="500 2933"/>
+      <node id="276" type="in" name="joint:camLi.angle" pos="270 3644"/>
+      <node id="277" type="div" pos="270 1978"/>
+      <node id="278" type="cos" pos="730 3685"/>
+      <node id="279" type="sub" pos="500 3121"/>
+      <node id="280" type="div" pos="270 2072"/>
+      <node id="281" type="mul" pos="1190 3942"/>
+      <node id="282" type="atan2" pos="960 3840"/>
+      <node id="283" type="sin" pos="730 4183"/>
+      <node id="284" type="sub" pos="500 3497"/>
+      <node id="285" type="in" name="joint:camLe.angle" pos="270 4156"/>
+      <node id="286" type="div" pos="270 2284"/>
+      <node id="287" type="cos" pos="730 4259"/>
+      <node id="288" type="sub" pos="500 3591"/>
+      <node id="289" type="div" pos="270 2496"/>
+      <node id="290" type="add" pos="1420 2904"/>
+      <node id="291" type="add" pos="1420 3732"/>
+      <node id="292" type="add" pos="3260 1367"/>
+      <node id="293" type="mul" pos="3030 1519"/>
+      <node id="294" type="sub" pos="2800 2670"/>
+      <node id="295" type="add" pos="2340 1357"/>
+      <node id="296" type="mul" pos="2110 1700"/>
+      <node id="297" type="sub" pos="1880 2066"/>
+      <node id="298" type="cos" pos="1650 3301"/>
+      <node id="299" type="sqrt" pos="2570 2585"/>
+      <node id="300" type="sub" pos="2340 2410"/>
+      <node id="301" type="pow" pos="2110 3980"/>
+      <node id="302" type="mul" pos="1880 2842"/>
+      <node id="303" type="sin" pos="1650 3377"/>
+      <node id="304" type="add" pos="1650 5051"/>
+      <node id="305" type="sub" pos="1420 3356"/>
+      <node id="306" type="add" pos="3030 579"/>
+      <node id="307" type="mul" pos="2800 1000"/>
+      <node id="308" type="mul" pos="2570 808"/>
+      <node id="309" type="clamp" pos="2340 1151"/>
+      <node id="310" type="div" pos="2110 2852"/>
+      <node id="311" type="sub" pos="1880 3994"/>
+      <node id="312" type="clamp" pos="2110 842"/>
+      <node id="313" type="div" pos="1880 1784"/>
+      <node id="314" type="sub" pos="1650 1254"/>
+      <node id="315" type="mul" pos="1420 1761"/>
+      <node id="316" type="div" pos="500 1503"/>
+      <node id="317" type="sub" pos="270 388"/>
+      <node id="318" type="mul" pos="1190 2517"/>
+      <node id="319" type="atan2" pos="960 2364"/>
+      <node id="320" type="sin" pos="730 2061"/>
+      <node id="321" type="cos" pos="730 2255"/>
+      <node id="322" type="sub" pos="2570 1517"/>
+      <node id="323" type="add" pos="2110 1112"/>
+      <node id="324" type="mul" pos="1880 1384"/>
+      <node id="325" type="sub" pos="1650 1442"/>
+      <node id="326" type="cos" pos="1420 2540"/>
+      <node id="327" type="sqrt" pos="2340 1923"/>
+      <node id="328" type="sub" pos="2110 1888"/>
+      <node id="329" type="pow" pos="1880 2560"/>
+      <node id="330" type="mul" pos="1650 1941"/>
+      <node id="331" type="sin" pos="1420 2616"/>
+      <node id="332" type="sub" pos="2800 1424"/>
+      <node id="333" type="exp" pos="2570 1829"/>
+      <node id="334" type="mul" pos="2340 1829"/>
+      <node id="335" type="const" params="-5" pos="2110 2264"/>
+      <node id="336" type="pow" pos="2110 2076"/>
+      <node id="337" type="max" pos="1880 1478"/>
+      <node id="338" type="div" pos="1650 2549"/>
+      <node id="339" type="sub" pos="1420 2998"/>
+      <node id="340" type="const" params="-0.2094395" pos="1190 4116"/>
+      <node id="341" type="mul" pos="9240 612"/>
+      <node id="342" type="mul" pos="3950 748"/>
+      <node id="343" type="mul" pos="3260 615"/>
+      <node id="344" type="pow" pos="3720 772"/>
+      <node id="345" type="div" pos="3490 1246"/>
+      <node id="346" type="add" pos="3030 861"/>
+      <node id="347" type="mul" pos="2800 1094"/>
+      <node id="348" type="const" params="1.32" pos="3490 1128"/>
+      <node id="349" type="add" pos="9010 476"/>
+      <node id="350" type="mul" pos="8780 677"/>
+      <node id="351" type="mul" pos="8550 959"/>
+      <node id="352" type="select" pos="9700 1761"/>
+      <node id="353" type="gt" pos="1650 2643"/>
+      <node id="354" type="select" pos="9470 1256"/>
+      <node id="355" type="gt" pos="1650 2455"/>
+      <node id="356" type="mul" pos="10160 943"/>
+      <node id="357" type="sub" pos="9930 1202"/>
+      <node id="358" type="mul" pos="10390 623"/>
+      <node id="359" type="const" params="-0.5" pos="10160 749"/>
+      <node id="360" type="out" name="body:piston1.fx" pos="11770 653"/>
+      <node id="361" type="mul" pos="10390 811"/>
+      <node id="362" type="const" params="-0.866025" pos="10160 1225"/>
+      <node id="363" type="out" name="body:piston1.fy" pos="11770 1125"/>
+      <node id="364" type="mul" pos="2340 2904"/>
+      <node id="365" type="mul" pos="2110 2570"/>
+      <node id="366" type="gt" pos="1420 3092"/>
+      <node id="367" type="lt" pos="1420 3450"/>
+      <node id="368" type="const" params="0.7504916" pos="1190 4677"/>
+      <node id="369" type="out" name="emitter:flame1.rate" pos="11770 3131"/>
+      <node id="370" type="div" pos="500 2745"/>
+      <node id="371" type="sub" pos="270 3362"/>
+      <node id="372" type="const" params="2.0943951" pos="40 3486"/>
+      <node id="373" type="mul" pos="1190 3011"/>
+      <node id="374" type="atan2" pos="960 3007"/>
+      <node id="375" type="sin" pos="730 3059"/>
+      <node id="376" type="cos" pos="730 3135"/>
+      <node id="377" type="sub" pos="2570 2075"/>
+      <node id="378" type="add" pos="2110 1394"/>
+      <node id="379" type="mul" pos="1880 1878"/>
+      <node id="380" type="sub" pos="1650 2086"/>
+      <node id="381" type="cos" pos="1420 4014"/>
+      <node id="382" type="sqrt" pos="2340 2628"/>
+      <node id="383" type="sub" pos="2110 2664"/>
+      <node id="384" type="pow" pos="1880 3524"/>
+      <node id="385" type="mul" pos="1650 2737"/>
+      <node id="386" type="sin" pos="1420 4090"/>
+      <node id="387" type="sub" pos="2800 1518"/>
+      <node id="388" type="exp" pos="2570 1999"/>
+      <node id="389" type="mul" pos="2340 1999"/>
+      <node id="390" type="pow" pos="2110 2476"/>
+      <node id="391" type="max" pos="1880 2160"/>
+      <node id="392" type="div" pos="1650 3453"/>
+      <node id="393" type="sub" pos="1420 3544"/>
+      <node id="394" type="mul" pos="9240 853"/>
+      <node id="395" type="mul" pos="3950 976"/>
+      <node id="396" type="mul" pos="3260 897"/>
+      <node id="397" type="pow" pos="3720 960"/>
+      <node id="398" type="div" pos="3490 1340"/>
+      <node id="399" type="add" pos="3030 955"/>
+      <node id="400" type="mul" pos="2800 1706"/>
+      <node id="401" type="add" pos="9010 570"/>
+      <node id="402" type="mul" pos="8780 771"/>
+      <node id="403" type="mul" pos="8550 1053"/>
+      <node id="404" type="select" pos="9700 2623"/>
+      <node id="405" type="gt" pos="1650 4581"/>
+      <node id="406" type="select" pos="9470 1736"/>
+      <node id="407" type="gt" pos="1650 3735"/>
+      <node id="408" type="mul" pos="10160 1343"/>
+      <node id="409" type="sub" pos="9930 1722"/>
+      <node id="410" type="mul" pos="10390 1882"/>
+      <node id="411" type="out" name="body:piston2.fx" pos="11770 2423"/>
+      <node id="412" type="mul" pos="10390 1187"/>
+      <node id="413" type="out" name="body:piston2.fy" pos="11770 1715"/>
+      <node id="414" type="mul" pos="2340 3656"/>
+      <node id="415" type="mul" pos="2110 3322"/>
+      <node id="416" type="gt" pos="1420 3638"/>
+      <node id="417" type="lt" pos="1420 4166"/>
+      <node id="418" type="out" name="emitter:flame2.rate" pos="11770 3656"/>
+      <node id="419" type="div" pos="500 2839"/>
+      <node id="420" type="sub" pos="270 3456"/>
+      <node id="421" type="const" params="4.1887902" pos="40 3604"/>
+      <node id="422" type="mul" pos="1190 3105"/>
+      <node id="423" type="atan2" pos="960 3101"/>
+      <node id="424" type="sin" pos="730 3211"/>
+      <node id="425" type="cos" pos="730 3287"/>
+      <node id="426" type="sub" pos="2570 2245"/>
+      <node id="427" type="add" pos="2110 1488"/>
+      <node id="428" type="mul" pos="1880 1972"/>
+      <node id="429" type="sub" pos="1650 2209"/>
+      <node id="430" type="cos" pos="1420 4260"/>
+      <node id="431" type="sqrt" pos="2340 2828"/>
+      <node id="432" type="sub" pos="2110 2946"/>
+      <node id="433" type="pow" pos="1880 3712"/>
+      <node id="434" type="mul" pos="1650 3113"/>
+      <node id="435" type="sin" pos="1420 4336"/>
+      <node id="436" type="sub" pos="2800 1612"/>
+      <node id="437" type="exp" pos="2570 2169"/>
+      <node id="438" type="mul" pos="2340 2111"/>
+      <node id="439" type="pow" pos="2110 2758"/>
+      <node id="440" type="max" pos="1880 2466"/>
+      <node id="441" type="div" pos="1650 4017"/>
+      <node id="442" type="sub" pos="1420 3826"/>
+      <node id="443" type="mul" pos="9240 947"/>
+      <node id="444" type="mul" pos="3950 882"/>
+      <node id="445" type="mul" pos="3260 709"/>
+      <node id="446" type="pow" pos="3720 1054"/>
+      <node id="447" type="div" pos="3490 1434"/>
+      <node id="448" type="add" pos="3030 1049"/>
+      <node id="449" type="mul" pos="2800 1800"/>
+      <node id="450" type="add" pos="9010 664"/>
+      <node id="451" type="mul" pos="8780 865"/>
+      <node id="452" type="mul" pos="8550 1265"/>
+      <node id="453" type="select" pos="9700 2237"/>
+      <node id="454" type="gt" pos="1650 3829"/>
+      <node id="455" type="select" pos="9470 1497"/>
+      <node id="456" type="gt" pos="1650 2925"/>
+      <node id="457" type="mul" pos="10160 1037"/>
+      <node id="458" type="sub" pos="9930 1440"/>
+      <node id="459" type="mul" pos="10390 717"/>
+      <node id="460" type="out" name="body:piston3.fx" pos="11770 889"/>
+      <node id="461" type="mul" pos="10390 999"/>
+      <node id="462" type="out" name="body:piston3.fy" pos="11770 1479"/>
+      <node id="463" type="mul" pos="2340 4078"/>
+      <node id="464" type="mul" pos="2110 3792"/>
+      <node id="465" type="gt" pos="1420 3920"/>
+      <node id="466" type="lt" pos="1420 4600"/>
+      <node id="467" type="out" name="emitter:flame3.rate" pos="11770 4132"/>
+      <node id="468" type="div" pos="500 3027"/>
+      <node id="469" type="sub" pos="270 3550"/>
+      <node id="470" type="const" params="6.2831853" pos="40 3722"/>
+      <node id="471" type="mul" pos="1190 3660"/>
+      <node id="472" type="atan2" pos="960 3355"/>
+      <node id="473" type="sin" pos="730 3533"/>
+      <node id="474" type="cos" pos="730 3609"/>
+      <node id="475" type="sub" pos="2570 2491"/>
+      <node id="476" type="add" pos="2110 1794"/>
+      <node id="477" type="mul" pos="1880 2654"/>
+      <node id="478" type="sub" pos="1650 3207"/>
+      <node id="479" type="cos" pos="1420 5470"/>
+      <node id="480" type="sqrt" pos="2340 2998"/>
+      <node id="481" type="sub" pos="2110 3040"/>
+      <node id="482" type="pow" pos="1880 3806"/>
+      <node id="483" type="mul" pos="1650 4487"/>
+      <node id="484" type="sin" pos="1420 5546"/>
+      <node id="485" type="sub" pos="2800 1894"/>
+      <node id="486" type="exp" pos="2570 2415"/>
+      <node id="487" type="mul" pos="2340 2299"/>
+      <node id="488" type="pow" pos="2110 3134"/>
+      <node id="489" type="max" pos="1880 2748"/>
+      <node id="490" type="div" pos="1650 4393"/>
+      <node id="491" type="sub" pos="1420 4412"/>
+      <node id="492" type="mul" pos="9240 1135"/>
+      <node id="493" type="mul" pos="3950 1164"/>
+      <node id="494" type="mul" pos="3260 991"/>
+      <node id="495" type="pow" pos="3720 1148"/>
+      <node id="496" type="div" pos="3490 1528"/>
+      <node id="497" type="add" pos="3030 1143"/>
+      <node id="498" type="mul" pos="2800 2106"/>
+      <node id="499" type="add" pos="9010 758"/>
+      <node id="500" type="mul" pos="8780 959"/>
+      <node id="501" type="mul" pos="8550 1359"/>
+      <node id="502" type="select" pos="9700 2861"/>
+      <node id="503" type="gt" pos="1650 5145"/>
+      <node id="504" type="select" pos="9470 2054"/>
+      <node id="505" type="gt" pos="1650 4111"/>
+      <node id="506" type="mul" pos="10160 1437"/>
+      <node id="507" type="sub" pos="9930 1816"/>
+      <node id="508" type="mul" pos="10390 1976"/>
+      <node id="509" type="out" name="body:piston4.fx" pos="11770 2541"/>
+      <node id="510" type="mul" pos="10390 1281"/>
+      <node id="511" type="out" name="body:piston4.fy" pos="11770 1833"/>
+      <node id="512" type="mul" pos="2340 4454"/>
+      <node id="513" type="mul" pos="2110 4074"/>
+      <node id="514" type="gt" pos="1420 4506"/>
+      <node id="515" type="lt" pos="1420 5188"/>
+      <node id="516" type="out" name="emitter:flame4.rate" pos="11770 4454"/>
+      <node id="517" type="div" pos="500 3215"/>
+      <node id="518" type="sub" pos="270 3762"/>
+      <node id="519" type="const" params="8.3775804" pos="40 3958"/>
+      <node id="520" type="mul" pos="1190 3754"/>
+      <node id="521" type="atan2" pos="960 3536"/>
+      <node id="522" type="sin" pos="730 3761"/>
+      <node id="523" type="cos" pos="730 3837"/>
+      <node id="524" type="sub" pos="2570 2813"/>
+      <node id="525" type="add" pos="2110 2170"/>
+      <node id="526" type="mul" pos="1880 2936"/>
+      <node id="527" type="sub" pos="1650 3547"/>
+      <node id="528" type="cos" pos="1420 5622"/>
+      <node id="529" type="sqrt" pos="2340 3392"/>
+      <node id="530" type="sub" pos="2110 3510"/>
+      <node id="531" type="pow" pos="1880 3900"/>
+      <node id="532" type="mul" pos="1650 4675"/>
+      <node id="533" type="sin" pos="1420 5698"/>
+      <node id="534" type="sub" pos="2800 2200"/>
+      <node id="535" type="exp" pos="2570 2661"/>
+      <node id="536" type="mul" pos="2340 2534"/>
+      <node id="537" type="pow" pos="2110 3604"/>
+      <node id="538" type="max" pos="1880 3030"/>
+      <node id="539" type="div" pos="1650 4769"/>
+      <node id="540" type="sub" pos="1420 4694"/>
+      <node id="541" type="mul" pos="9240 1229"/>
+      <node id="542" type="mul" pos="3950 1070"/>
+      <node id="543" type="mul" pos="3260 803"/>
+      <node id="544" type="pow" pos="3720 1242"/>
+      <node id="545" type="div" pos="3490 1622"/>
+      <node id="546" type="add" pos="3030 1237"/>
+      <node id="547" type="mul" pos="2800 2388"/>
+      <node id="548" type="add" pos="9010 852"/>
+      <node id="549" type="mul" pos="8780 1053"/>
+      <node id="550" type="mul" pos="8550 1453"/>
+      <node id="551" type="select" pos="9700 2511"/>
+      <node id="552" type="gt" pos="1650 4205"/>
+      <node id="553" type="select" pos="9470 1942"/>
+      <node id="554" type="gt" pos="1650 3641"/>
+      <node id="555" type="mul" pos="10160 1131"/>
+      <node id="556" type="sub" pos="9930 1628"/>
+      <node id="557" type="mul" pos="10390 905"/>
+      <node id="558" type="out" name="body:piston5.fx" pos="11770 1243"/>
+      <node id="559" type="mul" pos="10390 1093"/>
+      <node id="560" type="out" name="body:piston5.fy" pos="11770 1597"/>
+      <node id="561" type="mul" pos="2340 4548"/>
+      <node id="562" type="mul" pos="2110 4168"/>
+      <node id="563" type="gt" pos="1420 4788"/>
+      <node id="564" type="lt" pos="1420 5282"/>
+      <node id="565" type="out" name="emitter:flame5.rate" pos="11770 4572"/>
+      <node id="566" type="div" pos="500 3309"/>
+      <node id="567" type="sub" pos="270 3856"/>
+      <node id="568" type="const" params="10.4719755" pos="40 4076"/>
+      <node id="569" type="mul" pos="1190 3848"/>
+      <node id="570" type="atan2" pos="960 3688"/>
+      <node id="571" type="sin" pos="730 3913"/>
+      <node id="572" type="cos" pos="730 3989"/>
+      <node id="573" type="sub" pos="2570 2922"/>
+      <node id="574" type="add" pos="2110 2382"/>
+      <node id="575" type="mul" pos="1880 3430"/>
+      <node id="576" type="sub" pos="1650 3923"/>
+      <node id="577" type="cos" pos="1420 5774"/>
+      <node id="578" type="sqrt" pos="2340 3580"/>
+      <node id="579" type="sub" pos="2110 3698"/>
+      <node id="580" type="pow" pos="1880 4088"/>
+      <node id="581" type="mul" pos="1650 4863"/>
+      <node id="582" type="sin" pos="1420 5850"/>
+      <node id="583" type="sub" pos="2800 2294"/>
+      <node id="584" type="exp" pos="2570 2737"/>
+      <node id="585" type="mul" pos="2340 2704"/>
+      <node id="586" type="pow" pos="2110 3886"/>
+      <node id="587" type="max" pos="1880 3336"/>
+      <node id="588" type="div" pos="1650 4957"/>
+      <node id="589" type="sub" pos="1420 4882"/>
+      <node id="590" type="mul" pos="9240 1417"/>
+      <node id="591" type="mul" pos="3950 1258"/>
+      <node id="592" type="mul" pos="3260 1085"/>
+      <node id="593" type="pow" pos="3720 1336"/>
+      <node id="594" type="div" pos="3490 1716"/>
+      <node id="595" type="add" pos="3030 1331"/>
+      <node id="596" type="mul" pos="2800 2482"/>
+      <node id="597" type="add" pos="9010 946"/>
+      <node id="598" type="mul" pos="8780 1241"/>
+      <node id="599" type="mul" pos="8550 1665"/>
+      <node id="600" type="select" pos="9700 2973"/>
+      <node id="601" type="gt" pos="1650 5239"/>
+      <node id="602" type="select" pos="9470 2166"/>
+      <node id="603" type="gt" pos="1650 4299"/>
+      <node id="604" type="mul" pos="10160 1531"/>
+      <node id="605" type="sub" pos="9930 1910"/>
+      <node id="606" type="mul" pos="10390 2070"/>
+      <node id="607" type="out" name="body:piston6.fx" pos="11770 2777"/>
+      <node id="608" type="mul" pos="10390 1375"/>
+      <node id="609" type="out" name="body:piston6.fy" pos="11770 1951"/>
+      <node id="610" type="mul" pos="2340 4642"/>
+      <node id="611" type="mul" pos="2110 4262"/>
+      <node id="612" type="gt" pos="1420 5094"/>
+      <node id="613" type="lt" pos="1420 5376"/>
+      <node id="614" type="out" name="emitter:flame6.rate" pos="11770 4690"/>
+      <node id="615" type="mul" pos="1650 3019"/>
+      <node id="616" type="neg" pos="1420 3186"/>
+      <node id="617" type="add" pos="1190 2823"/>
+      <node id="618" type="const" params="20" pos="960 2889"/>
+      <node id="619" type="mul" pos="960 2552"/>
+      <node id="620" type="const" params="0.004" pos="730 2713"/>
+      <node id="621" type="clamp" pos="500 2351"/>
+      <node id="622" type="mul" pos="270 3038"/>
+      <node id="623" type="const" params="-1" pos="270 2920"/>
+      <node id="624" type="out" name="body:crank.tz" pos="11770 3249"/>
+      <node id="625" type="div" pos="9930 948"/>
+      <node id="626" type="out" name="scope:p1_bar" pos="11770 1361"/>
+      <node id="627" type="div" pos="9930 1534"/>
+      <node id="628" type="out" name="scope:p4_bar" pos="11770 2069"/>
+      <node id="629" type="div" pos="1420 495"/>
+      <node id="630" type="out" name="scope:boost_bar" pos="11770 417"/>
+      <node id="631" type="div" pos="2340 187"/>
+      <node id="632" type="out" name="scope:target_bar" pos="11770 187"/>
+      <node id="633" type="div" pos="730 2501"/>
+      <node id="634" type="div" pos="500 1253"/>
+      <node id="635" type="mul" pos="270 2590"/>
+      <node id="636" type="const" params="1000" pos="40 2893"/>
+      <node id="637" type="out" name="scope:turbo_krpm" pos="11770 2895"/>
+      <node id="638" type="mul" pos="3030 1743"/>
+      <node id="639" type="const" params="100" pos="2800 1988"/>
+      <node id="640" type="out" name="scope:wastegate_pct" pos="11770 2305"/>
+      <node id="641" type="mul" pos="8550 2041"/>
+      <node id="642" type="out" name="scope:air_gs" pos="11770 2659"/>
+      <node id="643" type="mul" pos="8780 2657"/>
+      <node id="644" type="div" pos="8550 1853"/>
+      <node id="645" type="out" name="scope:fuel_gs" pos="11770 3013"/>
+      <node id="646" type="mul" pos="8780 1535"/>
+      <node id="647" type="div" pos="8550 1947"/>
+      <node id="648" type="add" pos="1420 3262"/>
+      <node id="649" type="div" pos="1190 2058"/>
+      <node id="650" type="mul" pos="960 1196"/>
+      <node id="651" type="const" params="0.001" pos="1190 3448"/>
+      <node id="652" type="const" params="1000000" pos="8550 1547"/>
+      <node id="653" type="out" name="scope:charge_mg" pos="11770 2187"/>
+      <node id="654" type="sub" pos="7630 639"/>
+      <node id="655" type="out" name="scope:intake_C" pos="11770 771"/>
+      <node id="656" type="sub" pos="2800 906"/>
+      <node id="657" type="out" name="scope:egt_C" pos="11770 1007"/>
+      <node id="658" type="div" pos="10390 529"/>
+      <node id="659" type="out" name="scope:exhaust_bar" pos="11770 535"/>
+      <node id="660" type="add" pos="2110 4356"/>
+      <node id="661" type="div" pos="1880 3618"/>
+      <node id="662" type="mul" pos="1650 5333"/>
+      <node id="663" type="const" params="180" pos="1420 4976"/>
+      <node id="664" type="const" params="360" pos="1880 4356"/>
+      <node id="665" type="out" name="scope:ivc_deg" pos="11770 4250"/>
+      <node id="666" type="div" pos="2110 3228"/>
+      <node id="667" type="mul" pos="1880 4261"/>
+      <node id="668" type="out" name="scope:overlap_deg" pos="11770 3367"/>
+      <node id="669" type="div" pos="270 4368"/>
+      <node id="670" type="in" name="joint:rod1.force" pos="40 4666"/>
+      <node id="671" type="out" name="scope:rod1_kN" pos="11770 4014"/>
+      <wire from="2" to="1"/>
+      <wire from="3" to="1" port="1"/>
+      <wire from="4" to="1" port="2"/>
+      <wire from="9" to="8"/>
+      <wire from="10" to="8" port="1"/>
+      <wire from="8" to="7"/>
+      <wire from="11" to="7" port="1"/>
+      <wire from="14" to="13" port="1"/>
+      <wire from="13" to="12"/>
+      <wire from="16" to="15" port="1"/>
+      <wire from="15" to="12" port="1"/>
+      <wire from="19" to="18"/>
+      <wire from="4" to="20"/>
+      <wire from="4" to="23" port="1"/>
+      <wire from="23" to="22"/>
+      <wire from="25" to="24"/>
+      <wire from="3" to="24" port="1"/>
+      <wire from="26" to="24" port="2"/>
+      <wire from="24" to="22" port="1"/>
+      <wire from="22" to="21"/>
+      <wire from="27" to="21" port="1"/>
+      <wire from="21" to="20" port="1"/>
+      <wire from="20" to="18" port="1"/>
+      <wire from="29" to="28"/>
+      <wire from="31" to="30"/>
+      <wire from="32" to="30" port="1"/>
+      <wire from="33" to="30" port="2"/>
+      <wire from="30" to="28" port="1"/>
+      <wire from="35" to="34" port="1"/>
+      <wire from="37" to="36"/>
+      <wire from="3" to="36" port="1"/>
+      <wire from="38" to="36" port="2"/>
+      <wire from="40" to="39"/>
+      <wire from="41" to="39" port="1"/>
+      <wire from="42" to="39" port="2"/>
+      <wire from="44" to="43"/>
+      <wire from="46" to="45"/>
+      <wire from="48" to="47"/>
+      <wire from="49" to="47" port="1"/>
+      <wire from="50" to="47" port="2"/>
+      <wire from="47" to="45" port="1"/>
+      <wire from="4" to="52"/>
+      <wire from="55" to="54"/>
+      <wire from="54" to="53"/>
+      <wire from="53" to="52" port="1"/>
+      <wire from="57" to="56"/>
+      <wire from="59" to="58" port="1"/>
+      <wire from="58" to="56" port="1"/>
+      <wire from="4" to="61"/>
+      <wire from="65" to="64" port="1"/>
+      <wire from="64" to="63"/>
+      <wire from="4" to="63" port="1"/>
+      <wire from="63" to="62"/>
+      <wire from="66" to="62" port="1"/>
+      <wire from="62" to="61" port="1"/>
+      <wire from="61" to="60" port="1"/>
+      <wire from="69" to="68" port="1"/>
+      <wire from="68" to="67" port="1"/>
+      <wire from="75" to="74"/>
+      <wire from="74" to="73"/>
+      <wire from="73" to="72"/>
+      <wire from="77" to="76"/>
+      <wire from="76" to="72" port="1"/>
+      <wire from="72" to="71"/>
+      <wire from="71" to="70"/>
+      <wire from="78" to="70" port="1"/>
+      <wire from="80" to="79"/>
+      <wire from="66" to="81"/>
+      <wire from="83" to="82"/>
+      <wire from="3" to="85"/>
+      <wire from="89" to="88" port="1"/>
+      <wire from="88" to="87"/>
+      <wire from="49" to="87" port="1"/>
+      <wire from="87" to="86"/>
+      <wire from="90" to="86" port="1"/>
+      <wire from="86" to="85" port="1"/>
+      <wire from="85" to="84"/>
+      <wire from="89" to="84" port="1"/>
+      <wire from="84" to="82" port="1"/>
+      <wire from="82" to="81" port="1"/>
+      <wire from="81" to="79" port="1"/>
+      <wire from="4" to="92"/>
+      <wire from="65" to="95" port="1"/>
+      <wire from="95" to="94"/>
+      <wire from="4" to="94" port="1"/>
+      <wire from="94" to="93"/>
+      <wire from="93" to="92" port="1"/>
+      <wire from="92" to="91" port="1"/>
+      <wire from="98" to="97" port="1"/>
+      <wire from="97" to="96" port="1"/>
+      <wire from="75" to="104"/>
+      <wire from="104" to="103"/>
+      <wire from="103" to="102"/>
+      <wire from="102" to="101"/>
+      <wire from="77" to="105"/>
+      <wire from="105" to="101" port="1"/>
+      <wire from="101" to="100"/>
+      <wire from="100" to="99"/>
+      <wire from="78" to="99" port="1"/>
+      <wire from="4" to="107"/>
+      <wire from="4" to="108"/>
+      <wire from="108" to="107" port="1"/>
+      <wire from="107" to="106" port="1"/>
+      <wire from="59" to="112" port="1"/>
+      <wire from="112" to="111"/>
+      <wire from="111" to="110"/>
+      <wire from="59" to="110" port="1"/>
+      <wire from="110" to="109"/>
+      <wire from="115" to="114"/>
+      <wire from="114" to="113"/>
+      <wire from="4" to="116"/>
+      <wire from="115" to="117"/>
+      <wire from="117" to="116" port="1"/>
+      <wire from="116" to="113" port="1"/>
+      <wire from="4" to="120"/>
+      <wire from="120" to="119"/>
+      <wire from="119" to="118"/>
+      <wire from="89" to="118" port="1"/>
+      <wire from="124" to="123"/>
+      <wire from="126" to="125"/>
+      <wire from="4" to="127"/>
+      <wire from="129" to="128" port="1"/>
+      <wire from="128" to="127" port="1"/>
+      <wire from="127" to="125" port="1"/>
+      <wire from="125" to="123" port="1"/>
+      <wire from="123" to="122"/>
+      <wire from="131" to="130"/>
+      <wire from="130" to="122" port="1"/>
+      <wire from="122" to="121"/>
+      <wire from="4" to="132"/>
+      <wire from="134" to="133"/>
+      <wire from="4" to="136" port="1"/>
+      <wire from="136" to="135"/>
+      <wire from="137" to="135" port="1"/>
+      <wire from="138" to="135" port="2"/>
+      <wire from="135" to="133" port="1"/>
+      <wire from="133" to="132" port="1"/>
+      <wire from="132" to="121" port="1"/>
+      <wire from="141" to="140"/>
+      <wire from="145" to="144"/>
+      <wire from="144" to="143"/>
+      <wire from="89" to="143" port="1"/>
+      <wire from="143" to="142"/>
+      <wire from="142" to="140" port="1"/>
+      <wire from="140" to="139"/>
+      <wire from="150" to="149"/>
+      <wire from="149" to="148"/>
+      <wire from="151" to="148" port="1"/>
+      <wire from="148" to="147"/>
+      <wire from="147" to="146"/>
+      <wire from="4" to="152"/>
+      <wire from="155" to="154"/>
+      <wire from="154" to="153"/>
+      <wire from="156" to="153" port="1"/>
+      <wire from="153" to="152" port="1"/>
+      <wire from="152" to="146" port="1"/>
+      <wire from="89" to="161" port="1"/>
+      <wire from="161" to="160"/>
+      <wire from="162" to="160" port="1"/>
+      <wire from="160" to="159"/>
+      <wire from="159" to="158"/>
+      <wire from="65" to="164" port="1"/>
+      <wire from="164" to="163"/>
+      <wire from="4" to="163" port="1"/>
+      <wire from="163" to="158" port="1"/>
+      <wire from="158" to="157"/>
+      <wire from="166" to="165"/>
+      <wire from="169" to="168" port="1"/>
+      <wire from="168" to="167" port="1"/>
+      <wire from="167" to="165" port="1"/>
+      <wire from="171" to="170"/>
+      <wire from="4" to="172"/>
+      <wire from="65" to="175" port="1"/>
+      <wire from="175" to="174"/>
+      <wire from="4" to="174" port="1"/>
+      <wire from="174" to="173"/>
+      <wire from="173" to="172" port="1"/>
+      <wire from="172" to="170" port="1"/>
+      <wire from="178" to="177"/>
+      <wire from="180" to="179" port="1"/>
+      <wire from="179" to="177" port="1"/>
+      <wire from="177" to="176" port="1"/>
+      <wire from="4" to="183" port="1"/>
+      <wire from="183" to="182"/>
+      <wire from="4" to="184"/>
+      <wire from="186" to="185"/>
+      <wire from="4" to="189" port="1"/>
+      <wire from="189" to="188"/>
+      <wire from="49" to="188" port="1"/>
+      <wire from="188" to="187"/>
+      <wire from="3" to="187" port="1"/>
+      <wire from="4" to="187" port="2"/>
+      <wire from="187" to="185" port="1"/>
+      <wire from="185" to="184" port="1"/>
+      <wire from="184" to="182" port="1"/>
+      <wire from="182" to="181"/>
+      <wire from="4" to="190"/>
+      <wire from="138" to="191"/>
+      <wire from="3" to="192"/>
+      <wire from="194" to="193" port="1"/>
+      <wire from="193" to="192" port="1"/>
+      <wire from="192" to="191" port="1"/>
+      <wire from="191" to="190" port="1"/>
+      <wire from="190" to="181" port="1"/>
+      <wire from="198" to="197"/>
+      <wire from="199" to="197" port="1"/>
+      <wire from="197" to="196"/>
+      <wire from="196" to="195"/>
+      <wire from="200" to="195" port="1"/>
+      <wire from="202" to="201"/>
+      <wire from="3" to="201" port="1"/>
+      <wire from="4" to="201" port="2"/>
+      <wire from="209" to="208"/>
+      <wire from="208" to="207"/>
+      <wire from="210" to="207" port="1"/>
+      <wire from="207" to="206"/>
+      <wire from="211" to="206" port="1"/>
+      <wire from="206" to="205"/>
+      <wire from="205" to="204"/>
+      <wire from="204" to="203"/>
+      <wire from="212" to="203" port="1"/>
+      <wire from="215" to="214"/>
+      <wire from="217" to="216"/>
+      <wire from="216" to="214" port="1"/>
+      <wire from="214" to="213" port="1"/>
+      <wire from="89" to="218"/>
+      <wire from="222" to="221"/>
+      <wire from="89" to="223" port="1"/>
+      <wire from="223" to="221" port="1"/>
+      <wire from="221" to="220"/>
+      <wire from="220" to="219"/>
+      <wire from="222" to="225"/>
+      <wire from="89" to="226" port="1"/>
+      <wire from="226" to="225" port="1"/>
+      <wire from="225" to="224"/>
+      <wire from="224" to="219" port="1"/>
+      <wire from="219" to="218" port="1"/>
+      <wire from="89" to="227"/>
+      <wire from="231" to="230"/>
+      <wire from="89" to="232" port="1"/>
+      <wire from="232" to="230" port="1"/>
+      <wire from="230" to="229"/>
+      <wire from="229" to="228"/>
+      <wire from="231" to="234"/>
+      <wire from="89" to="235" port="1"/>
+      <wire from="235" to="234" port="1"/>
+      <wire from="234" to="233"/>
+      <wire from="233" to="228" port="1"/>
+      <wire from="228" to="227" port="1"/>
+      <wire from="237" to="236"/>
+      <wire from="239" to="238"/>
+      <wire from="241" to="240"/>
+      <wire from="243" to="242"/>
+      <wire from="247" to="246"/>
+      <wire from="4" to="248"/>
+      <wire from="249" to="248" port="1"/>
+      <wire from="248" to="246" port="1"/>
+      <wire from="246" to="245"/>
+      <wire from="250" to="245" port="1"/>
+      <wire from="245" to="244"/>
+      <wire from="253" to="252"/>
+      <wire from="247" to="255"/>
+      <wire from="256" to="255" port="1"/>
+      <wire from="255" to="254"/>
+      <wire from="89" to="254" port="1"/>
+      <wire from="254" to="252" port="1"/>
+      <wire from="252" to="251"/>
+      <wire from="251" to="244" port="1"/>
+      <wire from="244" to="242" port="1"/>
+      <wire from="242" to="240" port="1"/>
+      <wire from="259" to="258"/>
+      <wire from="258" to="257"/>
+      <wire from="4" to="260"/>
+      <wire from="263" to="262"/>
+      <wire from="259" to="266" port="1"/>
+      <wire from="266" to="265"/>
+      <wire from="150" to="265" port="1"/>
+      <wire from="265" to="264"/>
+      <wire from="3" to="264" port="1"/>
+      <wire from="4" to="264" port="2"/>
+      <wire from="264" to="262" port="1"/>
+      <wire from="262" to="261"/>
+      <wire from="269" to="268"/>
+      <wire from="271" to="270"/>
+      <wire from="270" to="268" port="1"/>
+      <wire from="268" to="267"/>
+      <wire from="3" to="267" port="1"/>
+      <wire from="4" to="267" port="2"/>
+      <wire from="267" to="261" port="1"/>
+      <wire from="261" to="260" port="1"/>
+      <wire from="89" to="272"/>
+      <wire from="276" to="275"/>
+      <wire from="89" to="277" port="1"/>
+      <wire from="277" to="275" port="1"/>
+      <wire from="275" to="274"/>
+      <wire from="274" to="273"/>
+      <wire from="276" to="279"/>
+      <wire from="89" to="280" port="1"/>
+      <wire from="280" to="279" port="1"/>
+      <wire from="279" to="278"/>
+      <wire from="278" to="273" port="1"/>
+      <wire from="273" to="272" port="1"/>
+      <wire from="89" to="281"/>
+      <wire from="285" to="284"/>
+      <wire from="89" to="286" port="1"/>
+      <wire from="286" to="284" port="1"/>
+      <wire from="284" to="283"/>
+      <wire from="283" to="282"/>
+      <wire from="285" to="288"/>
+      <wire from="89" to="289" port="1"/>
+      <wire from="289" to="288" port="1"/>
+      <wire from="288" to="287"/>
+      <wire from="287" to="282" port="1"/>
+      <wire from="282" to="281" port="1"/>
+      <wire from="237" to="290"/>
+      <wire from="239" to="291"/>
+      <wire from="241" to="292"/>
+      <wire from="243" to="293"/>
+      <wire from="247" to="296"/>
+      <wire from="4" to="297"/>
+      <wire from="298" to="297" port="1"/>
+      <wire from="297" to="296" port="1"/>
+      <wire from="296" to="295"/>
+      <wire from="250" to="295" port="1"/>
+      <wire from="295" to="294"/>
+      <wire from="253" to="300"/>
+      <wire from="247" to="302"/>
+      <wire from="303" to="302" port="1"/>
+      <wire from="302" to="301"/>
+      <wire from="89" to="301" port="1"/>
+      <wire from="301" to="300" port="1"/>
+      <wire from="300" to="299"/>
+      <wire from="299" to="294" port="1"/>
+      <wire from="294" to="293" port="1"/>
+      <wire from="293" to="292" port="1"/>
+      <wire from="259" to="305"/>
+      <wire from="305" to="304"/>
+      <wire from="4" to="306"/>
+      <wire from="263" to="308"/>
+      <wire from="259" to="311" port="1"/>
+      <wire from="311" to="310"/>
+      <wire from="150" to="310" port="1"/>
+      <wire from="310" to="309"/>
+      <wire from="3" to="309" port="1"/>
+      <wire from="4" to="309" port="2"/>
+      <wire from="309" to="308" port="1"/>
+      <wire from="308" to="307"/>
+      <wire from="314" to="313"/>
+      <wire from="271" to="315"/>
+      <wire from="315" to="313" port="1"/>
+      <wire from="313" to="312"/>
+      <wire from="3" to="312" port="1"/>
+      <wire from="4" to="312" port="2"/>
+      <wire from="312" to="307" port="1"/>
+      <wire from="307" to="306" port="1"/>
+      <wire from="3" to="317" port="1"/>
+      <wire from="317" to="316"/>
+      <wire from="89" to="316" port="1"/>
+      <wire from="89" to="318"/>
+      <wire from="320" to="319"/>
+      <wire from="321" to="319" port="1"/>
+      <wire from="319" to="318" port="1"/>
+      <wire from="247" to="324"/>
+      <wire from="4" to="325"/>
+      <wire from="326" to="325" port="1"/>
+      <wire from="325" to="324" port="1"/>
+      <wire from="324" to="323"/>
+      <wire from="250" to="323" port="1"/>
+      <wire from="323" to="322"/>
+      <wire from="253" to="328"/>
+      <wire from="247" to="330"/>
+      <wire from="331" to="330" port="1"/>
+      <wire from="330" to="329"/>
+      <wire from="89" to="329" port="1"/>
+      <wire from="329" to="328" port="1"/>
+      <wire from="328" to="327"/>
+      <wire from="327" to="322" port="1"/>
+      <wire from="4" to="332"/>
+      <wire from="335" to="334"/>
+      <wire from="3" to="337"/>
+      <wire from="340" to="339" port="1"/>
+      <wire from="339" to="338"/>
+      <wire from="211" to="338" port="1"/>
+      <wire from="338" to="337" port="1"/>
+      <wire from="337" to="336"/>
+      <wire from="198" to="336" port="1"/>
+      <wire from="336" to="334" port="1"/>
+      <wire from="334" to="333"/>
+      <wire from="333" to="332" port="1"/>
+      <wire from="343" to="342"/>
+      <wire from="241" to="346"/>
+      <wire from="243" to="347"/>
+      <wire from="347" to="346" port="1"/>
+      <wire from="346" to="345" port="1"/>
+      <wire from="345" to="344"/>
+      <wire from="348" to="344" port="1"/>
+      <wire from="344" to="342" port="1"/>
+      <wire from="342" to="341"/>
+      <wire from="4" to="349"/>
+      <wire from="351" to="350"/>
+      <wire from="350" to="349" port="1"/>
+      <wire from="349" to="341" port="1"/>
+      <wire from="353" to="352"/>
+      <wire from="355" to="354"/>
+      <wire from="354" to="352" port="2"/>
+      <wire from="59" to="357" port="1"/>
+      <wire from="357" to="356"/>
+      <wire from="243" to="356" port="1"/>
+      <wire from="359" to="358"/>
+      <wire from="358" to="360"/>
+      <wire from="362" to="361"/>
+      <wire from="361" to="363"/>
+      <wire from="340" to="366" port="1"/>
+      <wire from="366" to="365" port="1"/>
+      <wire from="365" to="364"/>
+      <wire from="368" to="367" port="1"/>
+      <wire from="367" to="364" port="1"/>
+      <wire from="364" to="369"/>
+      <wire from="372" to="371" port="1"/>
+      <wire from="371" to="370"/>
+      <wire from="89" to="370" port="1"/>
+      <wire from="89" to="373"/>
+      <wire from="375" to="374"/>
+      <wire from="376" to="374" port="1"/>
+      <wire from="374" to="373" port="1"/>
+      <wire from="247" to="379"/>
+      <wire from="4" to="380"/>
+      <wire from="381" to="380" port="1"/>
+      <wire from="380" to="379" port="1"/>
+      <wire from="379" to="378"/>
+      <wire from="250" to="378" port="1"/>
+      <wire from="378" to="377"/>
+      <wire from="253" to="383"/>
+      <wire from="247" to="385"/>
+      <wire from="386" to="385" port="1"/>
+      <wire from="385" to="384"/>
+      <wire from="89" to="384" port="1"/>
+      <wire from="384" to="383" port="1"/>
+      <wire from="383" to="382"/>
+      <wire from="382" to="377" port="1"/>
+      <wire from="4" to="387"/>
+      <wire from="335" to="389"/>
+      <wire from="3" to="391"/>
+      <wire from="340" to="393" port="1"/>
+      <wire from="393" to="392"/>
+      <wire from="211" to="392" port="1"/>
+      <wire from="392" to="391" port="1"/>
+      <wire from="391" to="390"/>
+      <wire from="198" to="390" port="1"/>
+      <wire from="390" to="389" port="1"/>
+      <wire from="389" to="388"/>
+      <wire from="388" to="387" port="1"/>
+      <wire from="396" to="395"/>
+      <wire from="241" to="399"/>
+      <wire from="243" to="400"/>
+      <wire from="400" to="399" port="1"/>
+      <wire from="399" to="398" port="1"/>
+      <wire from="398" to="397"/>
+      <wire from="348" to="397" port="1"/>
+      <wire from="397" to="395" port="1"/>
+      <wire from="395" to="394"/>
+      <wire from="4" to="401"/>
+      <wire from="403" to="402"/>
+      <wire from="402" to="401" port="1"/>
+      <wire from="401" to="394" port="1"/>
+      <wire from="405" to="404"/>
+      <wire from="407" to="406"/>
+      <wire from="406" to="404" port="2"/>
+      <wire from="59" to="409" port="1"/>
+      <wire from="409" to="408"/>
+      <wire from="243" to="408" port="1"/>
+      <wire from="134" to="410"/>
+      <wire from="410" to="411"/>
+      <wire from="362" to="412"/>
+      <wire from="412" to="413"/>
+      <wire from="340" to="416" port="1"/>
+      <wire from="416" to="415" port="1"/>
+      <wire from="415" to="414"/>
+      <wire from="368" to="417" port="1"/>
+      <wire from="417" to="414" port="1"/>
+      <wire from="414" to="418"/>
+      <wire from="421" to="420" port="1"/>
+      <wire from="420" to="419"/>
+      <wire from="89" to="419" port="1"/>
+      <wire from="89" to="422"/>
+      <wire from="424" to="423"/>
+      <wire from="425" to="423" port="1"/>
+      <wire from="423" to="422" port="1"/>
+      <wire from="247" to="428"/>
+      <wire from="4" to="429"/>
+      <wire from="430" to="429" port="1"/>
+      <wire from="429" to="428" port="1"/>
+      <wire from="428" to="427"/>
+      <wire from="250" to="427" port="1"/>
+      <wire from="427" to="426"/>
+      <wire from="253" to="432"/>
+      <wire from="247" to="434"/>
+      <wire from="435" to="434" port="1"/>
+      <wire from="434" to="433"/>
+      <wire from="89" to="433" port="1"/>
+      <wire from="433" to="432" port="1"/>
+      <wire from="432" to="431"/>
+      <wire from="431" to="426" port="1"/>
+      <wire from="4" to="436"/>
+      <wire from="335" to="438"/>
+      <wire from="3" to="440"/>
+      <wire from="340" to="442" port="1"/>
+      <wire from="442" to="441"/>
+      <wire from="211" to="441" port="1"/>
+      <wire from="441" to="440" port="1"/>
+      <wire from="440" to="439"/>
+      <wire from="198" to="439" port="1"/>
+      <wire from="439" to="438" port="1"/>
+      <wire from="438" to="437"/>
+      <wire from="437" to="436" port="1"/>
+      <wire from="445" to="444"/>
+      <wire from="241" to="448"/>
+      <wire from="243" to="449"/>
+      <wire from="449" to="448" port="1"/>
+      <wire from="448" to="447" port="1"/>
+      <wire from="447" to="446"/>
+      <wire from="348" to="446" port="1"/>
+      <wire from="446" to="444" port="1"/>
+      <wire from="444" to="443"/>
+      <wire from="4" to="450"/>
+      <wire from="452" to="451"/>
+      <wire from="451" to="450" port="1"/>
+      <wire from="450" to="443" port="1"/>
+      <wire from="454" to="453"/>
+      <wire from="456" to="455"/>
+      <wire from="455" to="453" port="2"/>
+      <wire from="59" to="458" port="1"/>
+      <wire from="458" to="457"/>
+      <wire from="243" to="457" port="1"/>
+      <wire from="359" to="459"/>
+      <wire from="459" to="460"/>
+      <wire from="362" to="461"/>
+      <wire from="461" to="462"/>
+      <wire from="340" to="465" port="1"/>
+      <wire from="465" to="464" port="1"/>
+      <wire from="464" to="463"/>
+      <wire from="368" to="466" port="1"/>
+      <wire from="466" to="463" port="1"/>
+      <wire from="463" to="467"/>
+      <wire from="470" to="469" port="1"/>
+      <wire from="469" to="468"/>
+      <wire from="89" to="468" port="1"/>
+      <wire from="89" to="471"/>
+      <wire from="473" to="472"/>
+      <wire from="474" to="472" port="1"/>
+      <wire from="472" to="471" port="1"/>
+      <wire from="247" to="477"/>
+      <wire from="4" to="478"/>
+      <wire from="479" to="478" port="1"/>
+      <wire from="478" to="477" port="1"/>
+      <wire from="477" to="476"/>
+      <wire from="250" to="476" port="1"/>
+      <wire from="476" to="475"/>
+      <wire from="253" to="481"/>
+      <wire from="247" to="483"/>
+      <wire from="484" to="483" port="1"/>
+      <wire from="483" to="482"/>
+      <wire from="89" to="482" port="1"/>
+      <wire from="482" to="481" port="1"/>
+      <wire from="481" to="480"/>
+      <wire from="480" to="475" port="1"/>
+      <wire from="4" to="485"/>
+      <wire from="335" to="487"/>
+      <wire from="3" to="489"/>
+      <wire from="340" to="491" port="1"/>
+      <wire from="491" to="490"/>
+      <wire from="211" to="490" port="1"/>
+      <wire from="490" to="489" port="1"/>
+      <wire from="489" to="488"/>
+      <wire from="198" to="488" port="1"/>
+      <wire from="488" to="487" port="1"/>
+      <wire from="487" to="486"/>
+      <wire from="486" to="485" port="1"/>
+      <wire from="494" to="493"/>
+      <wire from="241" to="497"/>
+      <wire from="243" to="498"/>
+      <wire from="498" to="497" port="1"/>
+      <wire from="497" to="496" port="1"/>
+      <wire from="496" to="495"/>
+      <wire from="348" to="495" port="1"/>
+      <wire from="495" to="493" port="1"/>
+      <wire from="493" to="492"/>
+      <wire from="4" to="499"/>
+      <wire from="501" to="500"/>
+      <wire from="500" to="499" port="1"/>
+      <wire from="499" to="492" port="1"/>
+      <wire from="503" to="502"/>
+      <wire from="505" to="504"/>
+      <wire from="504" to="502" port="2"/>
+      <wire from="59" to="507" port="1"/>
+      <wire from="507" to="506"/>
+      <wire from="243" to="506" port="1"/>
+      <wire from="134" to="508"/>
+      <wire from="508" to="509"/>
+      <wire from="362" to="510"/>
+      <wire from="510" to="511"/>
+      <wire from="340" to="514" port="1"/>
+      <wire from="514" to="513" port="1"/>
+      <wire from="513" to="512"/>
+      <wire from="368" to="515" port="1"/>
+      <wire from="515" to="512" port="1"/>
+      <wire from="512" to="516"/>
+      <wire from="519" to="518" port="1"/>
+      <wire from="518" to="517"/>
+      <wire from="89" to="517" port="1"/>
+      <wire from="89" to="520"/>
+      <wire from="522" to="521"/>
+      <wire from="523" to="521" port="1"/>
+      <wire from="521" to="520" port="1"/>
+      <wire from="247" to="526"/>
+      <wire from="4" to="527"/>
+      <wire from="528" to="527" port="1"/>
+      <wire from="527" to="526" port="1"/>
+      <wire from="526" to="525"/>
+      <wire from="250" to="525" port="1"/>
+      <wire from="525" to="524"/>
+      <wire from="253" to="530"/>
+      <wire from="247" to="532"/>
+      <wire from="533" to="532" port="1"/>
+      <wire from="532" to="531"/>
+      <wire from="89" to="531" port="1"/>
+      <wire from="531" to="530" port="1"/>
+      <wire from="530" to="529"/>
+      <wire from="529" to="524" port="1"/>
+      <wire from="4" to="534"/>
+      <wire from="335" to="536"/>
+      <wire from="3" to="538"/>
+      <wire from="340" to="540" port="1"/>
+      <wire from="540" to="539"/>
+      <wire from="211" to="539" port="1"/>
+      <wire from="539" to="538" port="1"/>
+      <wire from="538" to="537"/>
+      <wire from="198" to="537" port="1"/>
+      <wire from="537" to="536" port="1"/>
+      <wire from="536" to="535"/>
+      <wire from="535" to="534" port="1"/>
+      <wire from="543" to="542"/>
+      <wire from="241" to="546"/>
+      <wire from="243" to="547"/>
+      <wire from="547" to="546" port="1"/>
+      <wire from="546" to="545" port="1"/>
+      <wire from="545" to="544"/>
+      <wire from="348" to="544" port="1"/>
+      <wire from="544" to="542" port="1"/>
+      <wire from="542" to="541"/>
+      <wire from="4" to="548"/>
+      <wire from="550" to="549"/>
+      <wire from="549" to="548" port="1"/>
+      <wire from="548" to="541" port="1"/>
+      <wire from="552" to="551"/>
+      <wire from="554" to="553"/>
+      <wire from="553" to="551" port="2"/>
+      <wire from="59" to="556" port="1"/>
+      <wire from="556" to="555"/>
+      <wire from="243" to="555" port="1"/>
+      <wire from="359" to="557"/>
+      <wire from="557" to="558"/>
+      <wire from="362" to="559"/>
+      <wire from="559" to="560"/>
+      <wire from="340" to="563" port="1"/>
+      <wire from="563" to="562" port="1"/>
+      <wire from="562" to="561"/>
+      <wire from="368" to="564" port="1"/>
+      <wire from="564" to="561" port="1"/>
+      <wire from="561" to="565"/>
+      <wire from="568" to="567" port="1"/>
+      <wire from="567" to="566"/>
+      <wire from="89" to="566" port="1"/>
+      <wire from="89" to="569"/>
+      <wire from="571" to="570"/>
+      <wire from="572" to="570" port="1"/>
+      <wire from="570" to="569" port="1"/>
+      <wire from="247" to="575"/>
+      <wire from="4" to="576"/>
+      <wire from="577" to="576" port="1"/>
+      <wire from="576" to="575" port="1"/>
+      <wire from="575" to="574"/>
+      <wire from="250" to="574" port="1"/>
+      <wire from="574" to="573"/>
+      <wire from="253" to="579"/>
+      <wire from="247" to="581"/>
+      <wire from="582" to="581" port="1"/>
+      <wire from="581" to="580"/>
+      <wire from="89" to="580" port="1"/>
+      <wire from="580" to="579" port="1"/>
+      <wire from="579" to="578"/>
+      <wire from="578" to="573" port="1"/>
+      <wire from="4" to="583"/>
+      <wire from="335" to="585"/>
+      <wire from="3" to="587"/>
+      <wire from="340" to="589" port="1"/>
+      <wire from="589" to="588"/>
+      <wire from="211" to="588" port="1"/>
+      <wire from="588" to="587" port="1"/>
+      <wire from="587" to="586"/>
+      <wire from="198" to="586" port="1"/>
+      <wire from="586" to="585" port="1"/>
+      <wire from="585" to="584"/>
+      <wire from="584" to="583" port="1"/>
+      <wire from="592" to="591"/>
+      <wire from="241" to="595"/>
+      <wire from="243" to="596"/>
+      <wire from="596" to="595" port="1"/>
+      <wire from="595" to="594" port="1"/>
+      <wire from="594" to="593"/>
+      <wire from="348" to="593" port="1"/>
+      <wire from="593" to="591" port="1"/>
+      <wire from="591" to="590"/>
+      <wire from="4" to="597"/>
+      <wire from="599" to="598"/>
+      <wire from="598" to="597" port="1"/>
+      <wire from="597" to="590" port="1"/>
+      <wire from="601" to="600"/>
+      <wire from="603" to="602"/>
+      <wire from="602" to="600" port="2"/>
+      <wire from="59" to="605" port="1"/>
+      <wire from="605" to="604"/>
+      <wire from="243" to="604" port="1"/>
+      <wire from="134" to="606"/>
+      <wire from="606" to="607"/>
+      <wire from="362" to="608"/>
+      <wire from="608" to="609"/>
+      <wire from="340" to="612" port="1"/>
+      <wire from="612" to="611" port="1"/>
+      <wire from="611" to="610"/>
+      <wire from="368" to="613" port="1"/>
+      <wire from="613" to="610" port="1"/>
+      <wire from="610" to="614"/>
+      <wire from="618" to="617"/>
+      <wire from="620" to="619"/>
+      <wire from="619" to="617" port="1"/>
+      <wire from="617" to="616"/>
+      <wire from="616" to="615"/>
+      <wire from="134" to="622" port="1"/>
+      <wire from="622" to="621"/>
+      <wire from="623" to="621" port="1"/>
+      <wire from="4" to="621" port="2"/>
+      <wire from="621" to="615" port="1"/>
+      <wire from="615" to="624"/>
+      <wire from="19" to="625" port="1"/>
+      <wire from="625" to="626"/>
+      <wire from="19" to="627" port="1"/>
+      <wire from="627" to="628"/>
+      <wire from="19" to="629" port="1"/>
+      <wire from="629" to="630"/>
+      <wire from="19" to="631" port="1"/>
+      <wire from="631" to="632"/>
+      <wire from="10" to="635" port="1"/>
+      <wire from="635" to="634"/>
+      <wire from="11" to="634" port="1"/>
+      <wire from="634" to="633"/>
+      <wire from="636" to="633" port="1"/>
+      <wire from="633" to="637"/>
+      <wire from="639" to="638" port="1"/>
+      <wire from="638" to="640"/>
+      <wire from="636" to="641" port="1"/>
+      <wire from="641" to="642"/>
+      <wire from="644" to="643"/>
+      <wire from="636" to="643" port="1"/>
+      <wire from="643" to="645"/>
+      <wire from="198" to="650"/>
+      <wire from="650" to="649"/>
+      <wire from="209" to="649" port="1"/>
+      <wire from="649" to="648"/>
+      <wire from="651" to="648" port="1"/>
+      <wire from="648" to="647" port="1"/>
+      <wire from="647" to="646"/>
+      <wire from="652" to="646" port="1"/>
+      <wire from="646" to="653"/>
+      <wire from="29" to="654" port="1"/>
+      <wire from="654" to="655"/>
+      <wire from="29" to="656" port="1"/>
+      <wire from="656" to="657"/>
+      <wire from="19" to="658" port="1"/>
+      <wire from="658" to="659"/>
+      <wire from="663" to="662" port="1"/>
+      <wire from="662" to="661"/>
+      <wire from="11" to="661" port="1"/>
+      <wire from="661" to="660"/>
+      <wire from="664" to="660" port="1"/>
+      <wire from="660" to="665"/>
+      <wire from="663" to="667" port="1"/>
+      <wire from="667" to="666"/>
+      <wire from="11" to="666" port="1"/>
+      <wire from="666" to="668"/>
+      <wire from="670" to="669"/>
+      <wire from="636" to="669" port="1"/>
+      <wire from="669" to="671"/>
+      <wire from="6" to="9"/>
+      <wire from="7" to="13"/>
+      <wire from="7" to="15"/>
+      <wire from="7" to="17"/>
+      <wire from="17" to="23"/>
+      <wire from="28" to="34"/>
+      <wire from="39" to="43" port="1"/>
+      <wire from="165" to="51"/>
+      <wire from="51" to="54" port="1"/>
+      <wire from="51" to="53" port="1"/>
+      <wire from="52" to="58"/>
+      <wire from="1" to="56" port="2"/>
+      <wire from="28" to="60"/>
+      <wire from="52" to="64"/>
+      <wire from="60" to="67"/>
+      <wire from="36" to="68"/>
+      <wire from="60" to="69"/>
+      <wire from="34" to="69" port="1"/>
+      <wire from="56" to="74" port="1"/>
+      <wire from="240" to="73" port="1"/>
+      <wire from="67" to="76" port="1"/>
+      <wire from="7" to="71" port="1"/>
+      <wire from="70" to="88"/>
+      <wire from="28" to="91"/>
+      <wire from="52" to="95"/>
+      <wire from="79" to="93" port="1"/>
+      <wire from="91" to="96"/>
+      <wire from="36" to="97"/>
+      <wire from="91" to="98"/>
+      <wire from="34" to="98" port="1"/>
+      <wire from="260" to="104" port="1"/>
+      <wire from="56" to="103" port="1"/>
+      <wire from="240" to="102" port="1"/>
+      <wire from="96" to="105" port="1"/>
+      <wire from="7" to="100" port="1"/>
+      <wire from="99" to="106"/>
+      <wire from="39" to="108" port="1"/>
+      <wire from="52" to="112"/>
+      <wire from="18" to="111" port="1"/>
+      <wire from="109" to="114" port="1"/>
+      <wire from="109" to="117" port="1"/>
+      <wire from="113" to="120" port="1"/>
+      <wire from="106" to="119" port="1"/>
+      <wire from="56" to="128"/>
+      <wire from="7" to="130" port="1"/>
+      <wire from="43" to="136"/>
+      <wire from="118" to="144" port="1"/>
+      <wire from="121" to="142" port="1"/>
+      <wire from="118" to="149" port="1"/>
+      <wire from="121" to="147" port="1"/>
+      <wire from="139" to="154" port="1"/>
+      <wire from="99" to="161"/>
+      <wire from="28" to="159" port="1"/>
+      <wire from="52" to="164"/>
+      <wire from="79" to="157" port="1"/>
+      <wire from="146" to="166"/>
+      <wire from="157" to="166" port="1"/>
+      <wire from="45" to="167"/>
+      <wire from="51" to="168"/>
+      <wire from="52" to="175"/>
+      <wire from="79" to="173" port="1"/>
+      <wire from="170" to="176"/>
+      <wire from="170" to="179"/>
+      <wire from="43" to="183"/>
+      <wire from="43" to="189"/>
+      <wire from="43" to="193"/>
+      <wire from="176" to="199"/>
+      <wire from="96" to="199" port="1"/>
+      <wire from="181" to="196" port="1"/>
+      <wire from="201" to="208" port="1"/>
+      <wire from="6" to="210"/>
+      <wire from="12" to="205" port="1"/>
+      <wire from="56" to="204" port="1"/>
+      <wire from="56" to="213"/>
+      <wire from="7" to="216" port="1"/>
+      <wire from="5" to="223"/>
+      <wire from="5" to="226"/>
+      <wire from="5" to="232"/>
+      <wire from="5" to="235"/>
+      <wire from="218" to="236" port="1"/>
+      <wire from="227" to="238" port="1"/>
+      <wire from="236" to="249"/>
+      <wire from="236" to="256"/>
+      <wire from="218" to="258" port="1"/>
+      <wire from="227" to="257" port="1"/>
+      <wire from="257" to="266"/>
+      <wire from="56" to="269"/>
+      <wire from="213" to="269" port="1"/>
+      <wire from="56" to="270" port="1"/>
+      <wire from="5" to="277"/>
+      <wire from="5" to="280"/>
+      <wire from="5" to="286"/>
+      <wire from="5" to="289"/>
+      <wire from="272" to="290" port="1"/>
+      <wire from="281" to="291" port="1"/>
+      <wire from="290" to="298"/>
+      <wire from="290" to="303"/>
+      <wire from="272" to="305" port="1"/>
+      <wire from="281" to="304" port="1"/>
+      <wire from="304" to="311"/>
+      <wire from="56" to="314"/>
+      <wire from="213" to="314" port="1"/>
+      <wire from="56" to="315" port="1"/>
+      <wire from="5" to="317"/>
+      <wire from="316" to="320"/>
+      <wire from="316" to="321"/>
+      <wire from="318" to="326"/>
+      <wire from="318" to="331"/>
+      <wire from="318" to="339"/>
+      <wire from="260" to="343"/>
+      <wire from="56" to="343" port="1"/>
+      <wire from="240" to="345"/>
+      <wire from="322" to="347" port="1"/>
+      <wire from="195" to="351"/>
+      <wire from="332" to="351" port="1"/>
+      <wire from="12" to="350" port="1"/>
+      <wire from="318" to="353"/>
+      <wire from="238" to="353" port="1"/>
+      <wire from="213" to="352" port="1"/>
+      <wire from="318" to="355"/>
+      <wire from="236" to="355" port="1"/>
+      <wire from="341" to="354" port="1"/>
+      <wire from="56" to="354" port="2"/>
+      <wire from="352" to="357"/>
+      <wire from="356" to="358" port="1"/>
+      <wire from="356" to="361" port="1"/>
+      <wire from="203" to="365"/>
+      <wire from="318" to="366"/>
+      <wire from="318" to="367"/>
+      <wire from="5" to="371"/>
+      <wire from="370" to="375"/>
+      <wire from="370" to="376"/>
+      <wire from="373" to="381"/>
+      <wire from="373" to="386"/>
+      <wire from="373" to="393"/>
+      <wire from="306" to="396"/>
+      <wire from="56" to="396" port="1"/>
+      <wire from="292" to="398"/>
+      <wire from="377" to="400" port="1"/>
+      <wire from="195" to="403"/>
+      <wire from="387" to="403" port="1"/>
+      <wire from="12" to="402" port="1"/>
+      <wire from="373" to="405"/>
+      <wire from="291" to="405" port="1"/>
+      <wire from="213" to="404" port="1"/>
+      <wire from="373" to="407"/>
+      <wire from="290" to="407" port="1"/>
+      <wire from="394" to="406" port="1"/>
+      <wire from="56" to="406" port="2"/>
+      <wire from="404" to="409"/>
+      <wire from="408" to="410" port="1"/>
+      <wire from="408" to="412" port="1"/>
+      <wire from="203" to="415"/>
+      <wire from="373" to="416"/>
+      <wire from="373" to="417"/>
+      <wire from="5" to="420"/>
+      <wire from="419" to="424"/>
+      <wire from="419" to="425"/>
+      <wire from="422" to="430"/>
+      <wire from="422" to="435"/>
+      <wire from="422" to="442"/>
+      <wire from="260" to="445"/>
+      <wire from="56" to="445" port="1"/>
+      <wire from="240" to="447"/>
+      <wire from="426" to="449" port="1"/>
+      <wire from="195" to="452"/>
+      <wire from="436" to="452" port="1"/>
+      <wire from="12" to="451" port="1"/>
+      <wire from="422" to="454"/>
+      <wire from="238" to="454" port="1"/>
+      <wire from="213" to="453" port="1"/>
+      <wire from="422" to="456"/>
+      <wire from="236" to="456" port="1"/>
+      <wire from="443" to="455" port="1"/>
+      <wire from="56" to="455" port="2"/>
+      <wire from="453" to="458"/>
+      <wire from="457" to="459" port="1"/>
+      <wire from="457" to="461" port="1"/>
+      <wire from="203" to="464"/>
+      <wire from="422" to="465"/>
+      <wire from="422" to="466"/>
+      <wire from="5" to="469"/>
+      <wire from="468" to="473"/>
+      <wire from="468" to="474"/>
+      <wire from="471" to="479"/>
+      <wire from="471" to="484"/>
+      <wire from="471" to="491"/>
+      <wire from="306" to="494"/>
+      <wire from="56" to="494" port="1"/>
+      <wire from="292" to="496"/>
+      <wire from="475" to="498" port="1"/>
+      <wire from="195" to="501"/>
+      <wire from="485" to="501" port="1"/>
+      <wire from="12" to="500" port="1"/>
+      <wire from="471" to="503"/>
+      <wire from="291" to="503" port="1"/>
+      <wire from="213" to="502" port="1"/>
+      <wire from="471" to="505"/>
+      <wire from="290" to="505" port="1"/>
+      <wire from="492" to="504" port="1"/>
+      <wire from="56" to="504" port="2"/>
+      <wire from="502" to="507"/>
+      <wire from="506" to="508" port="1"/>
+      <wire from="506" to="510" port="1"/>
+      <wire from="203" to="513"/>
+      <wire from="471" to="514"/>
+      <wire from="471" to="515"/>
+      <wire from="5" to="518"/>
+      <wire from="517" to="522"/>
+      <wire from="517" to="523"/>
+      <wire from="520" to="528"/>
+      <wire from="520" to="533"/>
+      <wire from="520" to="540"/>
+      <wire from="260" to="543"/>
+      <wire from="56" to="543" port="1"/>
+      <wire from="240" to="545"/>
+      <wire from="524" to="547" port="1"/>
+      <wire from="195" to="550"/>
+      <wire from="534" to="550" port="1"/>
+      <wire from="12" to="549" port="1"/>
+      <wire from="520" to="552"/>
+      <wire from="238" to="552" port="1"/>
+      <wire from="213" to="551" port="1"/>
+      <wire from="520" to="554"/>
+      <wire from="236" to="554" port="1"/>
+      <wire from="541" to="553" port="1"/>
+      <wire from="56" to="553" port="2"/>
+      <wire from="551" to="556"/>
+      <wire from="555" to="557" port="1"/>
+      <wire from="555" to="559" port="1"/>
+      <wire from="203" to="562"/>
+      <wire from="520" to="563"/>
+      <wire from="520" to="564"/>
+      <wire from="5" to="567"/>
+      <wire from="566" to="571"/>
+      <wire from="566" to="572"/>
+      <wire from="569" to="577"/>
+      <wire from="569" to="582"/>
+      <wire from="569" to="589"/>
+      <wire from="306" to="592"/>
+      <wire from="56" to="592" port="1"/>
+      <wire from="292" to="594"/>
+      <wire from="573" to="596" port="1"/>
+      <wire from="195" to="599"/>
+      <wire from="583" to="599" port="1"/>
+      <wire from="12" to="598" port="1"/>
+      <wire from="569" to="601"/>
+      <wire from="291" to="601" port="1"/>
+      <wire from="213" to="600" port="1"/>
+      <wire from="569" to="603"/>
+      <wire from="290" to="603" port="1"/>
+      <wire from="590" to="602" port="1"/>
+      <wire from="56" to="602" port="2"/>
+      <wire from="600" to="605"/>
+      <wire from="604" to="606" port="1"/>
+      <wire from="604" to="608" port="1"/>
+      <wire from="203" to="611"/>
+      <wire from="569" to="612"/>
+      <wire from="569" to="613"/>
+      <wire from="7" to="619" port="1"/>
+      <wire from="6" to="622"/>
+      <wire from="352" to="625"/>
+      <wire from="502" to="627"/>
+      <wire from="56" to="629"/>
+      <wire from="18" to="631"/>
+      <wire from="51" to="635"/>
+      <wire from="109" to="638"/>
+      <wire from="99" to="641"/>
+      <wire from="99" to="644"/>
+      <wire from="39" to="644" port="1"/>
+      <wire from="99" to="647"/>
+      <wire from="7" to="650" port="1"/>
+      <wire from="96" to="654"/>
+      <wire from="121" to="656"/>
+      <wire from="139" to="658"/>
+      <wire from="236" to="662"/>
+      <wire from="257" to="667"/>
+    </formula>
+    <formula name="dyno">
+      <source line="# エンジンに掛ける負荷。パラメータ mode で 3 通り:"/>
+      <source line="#   0 = ダイナモ  … 回転数を指令どおりに保ち、吸収したトルクを測る（試験台）。"/>
+      <source line="#                   dyno_rpm が 0 なら 1000 → 6800 rpm を 40 秒で掃引（全開の性能曲線）、"/>
+      <source line="#                   0 より大きければその回転数に保つ（変化は 1500 rpm/s まで）。"/>
+      <source line="#   1 = フリーラン … ダイナモを外し、回転数の 2 乗に比例する負荷で回す。"/>
+      <source line="#   2 = 車両      … 9 速 AT の車につなぐ。回転数は車速とギアで決まり、アクセルは"/>
+      <source line="#                   まず車を加速させる。トルクコンバータは粘性結合（容量は回転数の"/>
+      <source line="#                   2 乗 = アイドルでは弱く這い出し、回したほど強くつながる）。"/>
+      <source line="#                   gear 0 = N（空吹かし）、brake で止める。"/>
+      <source line="# どのモードでも 800 rpm を下回るとアイドル補助が押す（ECU のアイドル制御の代わり）。"/>
+      <source line="mode = param:mode"/>
+      <source line="dyno = mode &lt; 0.5"/>
+      <source line="free = (mode &gt; 0.5) * (mode &lt; 1.5)"/>
+      <source line="w = joint:crank.rate"/>
+      <source line="rpm = w * 30 / pi"/>
+      <source line="idle = clamp(30 * (83.8 - w), 0, 300)   # アイドル補助 (N m)。83.8 rad/s = 800 rpm"/>
+      <source line=""/>
+      <source line="# ---- ダイナモ"/>
+      <source line="# 掃引の指令（time = シミュレート開始からの時刻）: 1 秒で 1000 rpm、4 秒まで保ち、"/>
+      <source line="# 44 秒で 6800 rpm（40 秒の掃引）。途中でダイナモへ切り替えると、その時刻の値から始まる。"/>
+      <source line="sweep = curve(time, 0, 0, 1, 1000, 4, 1000, 44, 6800, 50, 6800)"/>
+      <source line="hold = clamp(param:dyno_rpm, 0, 7000)"/>
+      <source line="# ダイナモ以外のときは指令を今の回転数に追従させておく（戻したときに跳ねない・積分が溜まらない）"/>
+      <source line="rl = ratelimit(select(dyno, select(hold &gt; 1, hold, sweep), rpm), 1500, 1500)"/>
+      <source line="rpm_cmd = select(dyno, rl, rpm)"/>
+      <source line="Tdyno = pid(rpm_cmd * pi / 30 - w, 30, 150, 0, -2000, 2000)"/>
+      <source line=""/>
+      <source line="# ---- フリーラン"/>
+      <source line="kload = 0.00115                   # 負荷 = kload w^2（全開の釣り合いが約 6000 rpm）"/>
+      <source line="Tfree = -kload * w * abs(w) + idle"/>
+      <source line=""/>
+      <source line="# ---- 車両（数値は仮定: 車重・タイヤ・ギア比は RZ34 フェアレディ Z 9AT 相当）"/>
+      <source line="m = 1650; rw = 0.345; fd = 3.13; eta = 0.9   # 車重 kg・タイヤ半径 m・最終減速比・伝達効率"/>
+      <source line="crr = 0.012; cda = 0.65; rho = 1.2; g = 9.81  # 転がり抵抗・Cd×前面積 m^2・空気密度"/>
+      <source line="gear = param:gear"/>
+      <source line="brake = clamp(param:brake, 0, 1)"/>
+      <source line="ratio = curve(gear, 0, 0, 1, 5.425, 2, 3.263, 3, 2.25, 4, 1.649, 5, 1.221, 6, 1, 7, 0.862, 8, 0.713, 9, 0.597)"/>
+      <source line="ig = ratio * fd                   # 総減速比"/>
+      <source line="wv = v / rw * ig                  # 車速から決まるトルコンの出力側の回転 (rad/s)"/>
+      <source line="cap = clamp(0.0066 * w * w, 0, 700)   # トルコンが伝えられるトルク（ストール 2500 rpm で約 450 N m）"/>
+      <source line="Ttc = select(gear &gt; 0.5, clamp(200 * (w - wv), -cap, cap), 0)   # トルコンのトルク（N では切る）"/>
+      <source line="Fd = Ttc * ig * eta / rw          # 駆動力 (N)。負ならエンジンブレーキ"/>
+      <source line="Fr = m * g * crr * (v &gt; 0.05) + 0.5 * rho * cda * v * v   # 転がり + 空気抵抗"/>
+      <source line="Fb = brake * 12000 * (v &gt; 0.01)   # ブレーキ（全開で約 0.75 G）"/>
+      <source line="v = integrate((Fd - Fr - Fb) / m, 0, 120)   # 車速 m/s（後退はしない）"/>
+      <source line="Tcar = -Ttc + idle"/>
+      <source line=""/>
+      <source line="# エンジン内部の損失（摩擦とポンプ損失 = アクセルを戻したときのエンジンブレーキ）。"/>
+      <source line="# 全開での損失は燃焼モデルの較正（カタログのトルクは正味）に含まれているので、"/>
+      <source line="# ここで足すのは「閉じるほど増える」ぶんだけ。7000 rpm で約 57 N m（空吹かしから約 1.5 s でアイドルへ）。"/>
+      <source line="Tloss = (1 - clamp(param:throttle, 0, 1)) * (12 + 45 * (rpm / 7000) ^ 2) * sign(w)"/>
+      <source line="Tload = select(dyno, Tdyno, select(free, Tfree, Tcar))   # 外から掛ける負荷（正 = 回す向き）"/>
+      <source line="T = Tload - Tloss"/>
+      <source line="joint:crank.target = T"/>
+      <source line="Tb = lag(-Tload, 0.3)             # 軸トルク = 負荷が受け取るトルク（サイクル平均。損失を引いた正味）"/>
+      <source line="scope:rpm_cmd = rpm_cmd"/>
+      <source line="scope:rpm = rpm"/>
+      <source line="scope:torque_Nm = Tb"/>
+      <source line="scope:power_PS = Tb * w / 735.5"/>
+      <source line="scope:catalog_Nm = curve(rpm, 1000, 270, 1600, 475, 5200, 475, 6400, 445, 7000, 370)"/>
+      <source line="scope:speed_kmh = v * 3.6"/>
+      <source line="scope:gear = gear"/>
+      <source line="scope:slip_rpm = (w - wv) * 30 / pi * (gear &gt; 0.5)"/>
+      <node id="1" type="in" name="param:mode" pos="40 193"/>
+      <node id="2" type="lt" pos="270 99"/>
+      <node id="3" type="const" params="0.5" pos="40 577"/>
+      <node id="4" type="mul" pos="500 240"/>
+      <node id="5" type="gt" pos="270 193"/>
+      <node id="6" type="lt" pos="270 287"/>
+      <node id="7" type="const" params="1.5" pos="40 311"/>
+      <node id="8" type="in" name="joint:crank.rate" pos="40 1004"/>
+      <node id="9" type="div" pos="500 712"/>
+      <node id="10" type="mul" pos="270 772"/>
+      <node id="11" type="const" params="30" pos="40 768"/>
+      <node id="12" type="const" params="3.141592654" pos="270 654"/>
+      <node id="13" type="clamp" pos="730 594"/>
+      <node id="14" type="mul" pos="500 806"/>
+      <node id="15" type="sub" pos="270 866"/>
+      <node id="16" type="const" params="83.8" pos="40 886"/>
+      <node id="17" type="const" params="0" pos="40 1460"/>
+      <node id="18" type="const" params="300" pos="500 594"/>
+      <node id="19" type="curve" params="0 0 1 1000 4 1000 44 6800 50 6800" pos="270 1242"/>
+      <node id="20" type="time" pos="40 1384"/>
+      <node id="21" type="clamp" pos="270 1360"/>
+      <node id="22" type="in" name="param:dyno_rpm" pos="40 1696"/>
+      <node id="23" type="const" params="7000" pos="40 1266"/>
+      <node id="24" type="ratelimit" params="1500 1500" pos="1190 682"/>
+      <node id="25" type="select" pos="960 652"/>
+      <node id="26" type="select" pos="730 1266"/>
+      <node id="27" type="gt" pos="500 1272"/>
+      <node id="28" type="const" params="1" pos="40 2050"/>
+      <node id="29" type="select" pos="1420 452"/>
+      <node id="30" type="pid" params="30 150 0 -2000 2000" pos="2340 450"/>
+      <node id="31" type="sub" pos="2110 450"/>
+      <node id="32" type="div" pos="1880 506"/>
+      <node id="33" type="mul" pos="1650 499"/>
+      <node id="34" type="add" pos="960 764"/>
+      <node id="35" type="mul" pos="500 900"/>
+      <node id="36" type="mul" pos="270 1148"/>
+      <node id="37" type="const" params="-0.00115" pos="40 1148"/>
+      <node id="38" type="abs" pos="270 394"/>
+      <node id="39" type="in" name="param:gear" pos="40 1578"/>
+      <node id="40" type="clamp" pos="270 1566"/>
+      <node id="41" type="in" name="param:brake" pos="40 1932"/>
+      <node id="42" type="curve"
+            params="0 0 1 5.425 2 3.263 3 2.25 4 1.649 5 1.221 6 1 7 0.862 8 0.713 9 0.597"
+            pos="270 1796"/>
+      <node id="43" type="mul" pos="500 1629"/>
+      <node id="44" type="const" params="3.13" pos="270 1678"/>
+      <node id="45" type="mul" pos="730 1833"/>
+      <node id="46" type="div" pos="270 2144"/>
+      <node id="47" type="const" params="0.345" pos="40 2168"/>
+      <node id="48" type="clamp" pos="730 1154"/>
+      <node id="49" type="mul" pos="500 1005"/>
+      <node id="50" type="mul" pos="270 1472"/>
+      <node id="51" type="const" params="0.0066" pos="40 1814"/>
+      <node id="52" type="const" params="700" pos="500 1154"/>
+      <node id="53" type="select" pos="1650 943"/>
+      <node id="54" type="gt" pos="270 960"/>
+      <node id="55" type="clamp" pos="1420 947"/>
+      <node id="56" type="mul" pos="1190 800"/>
+      <node id="57" type="const" params="200" pos="960 858"/>
+      <node id="58" type="sub" pos="960 1264"/>
+      <node id="59" type="neg" pos="960 1188"/>
+      <node id="60" type="div" pos="2340 1204"/>
+      <node id="61" type="mul" pos="2110 757"/>
+      <node id="62" type="mul" pos="1880 1286"/>
+      <node id="63" type="const" params="0.9" pos="1880 757"/>
+      <node id="64" type="add" pos="730 2209"/>
+      <node id="65" type="mul" pos="500 2083"/>
+      <node id="66" type="const" params="194.238" pos="270 2238"/>
+      <node id="67" type="gt" pos="270 2356"/>
+      <node id="68" type="const" params="0.05" pos="40 2404"/>
+      <node id="69" type="mul" pos="500 2291"/>
+      <node id="70" type="mul" pos="270 2450"/>
+      <node id="71" type="const" params="0.39" pos="40 2640"/>
+      <node id="72" type="mul" pos="730 2115"/>
+      <node id="73" type="mul" pos="500 1794"/>
+      <node id="74" type="const" params="12000" pos="270 1914"/>
+      <node id="75" type="gt" pos="270 2544"/>
+      <node id="76" type="const" params="0.01" pos="40 2758"/>
+      <node id="77" type="integrate" params="0 120" pos="40 2522"/>
+      <node id="78" type="div" pos="3030 1022"/>
+      <node id="79" type="sub" pos="2800 1911"/>
+      <node id="80" type="sub" pos="2570 1706"/>
+      <node id="81" type="const" params="1650" pos="2800 1022"/>
+      <node id="82" type="add" pos="2110 851"/>
+      <node id="83" type="neg" pos="1880 969"/>
+      <node id="84" type="mul" pos="1880 875"/>
+      <node id="85" type="mul" pos="1650 1055"/>
+      <node id="86" type="sub" pos="500 1492"/>
+      <node id="87" type="clamp" pos="270 2032"/>
+      <node id="88" type="in" name="param:throttle" pos="40 2286"/>
+      <node id="89" type="add" pos="1420 564"/>
+      <node id="90" type="const" params="12" pos="1190 564"/>
+      <node id="91" type="mul" pos="1190 894"/>
+      <node id="92" type="const" params="45" pos="960 1070"/>
+      <node id="93" type="pow" pos="960 976"/>
+      <node id="94" type="div" pos="730 942"/>
+      <node id="95" type="const" params="2" pos="730 1036"/>
+      <node id="96" type="sign" pos="270 470"/>
+      <node id="97" type="select" pos="2570 389"/>
+      <node id="98" type="select" pos="2340 618"/>
+      <node id="99" type="sub" pos="2800 583"/>
+      <node id="100" type="out" name="joint:crank.target" pos="3720 663"/>
+      <node id="101" type="lag" pos="3030 427"/>
+      <node id="102" type="neg" pos="2800 389"/>
+      <node id="103" type="const" params="0.3" pos="2800 465"/>
+      <node id="104" type="out" name="scope:rpm_cmd" pos="3720 545"/>
+      <node id="105" type="out" name="scope:rpm" pos="3720 781"/>
+      <node id="106" type="out" name="scope:torque_Nm" pos="3720 427"/>
+      <node id="107" type="div" pos="3490 272"/>
+      <node id="108" type="mul" pos="3260 411"/>
+      <node id="109" type="const" params="735.5" pos="3260 272"/>
+      <node id="110" type="out" name="scope:power_PS" pos="3720 272"/>
+      <node id="111" type="curve" params="1000 270 1600 475 5200 475 6400 445 7000 370"
+            pos="730 706"/>
+      <node id="112" type="out" name="scope:catalog_Nm" pos="3720 899"/>
+      <node id="113" type="mul" pos="270 2638"/>
+      <node id="114" type="const" params="3.6" pos="40 2876"/>
+      <node id="115" type="out" name="scope:speed_kmh" pos="3720 2530"/>
+      <node id="116" type="out" name="scope:gear" pos="3720 1414"/>
+      <node id="117" type="mul" pos="1650 849"/>
+      <node id="118" type="div" pos="1420 752"/>
+      <node id="119" type="mul" pos="1190 988"/>
+      <node id="120" type="sub" pos="960 1358"/>
+      <node id="121" type="gt" pos="270 1054"/>
+      <node id="122" type="out" name="scope:slip_rpm" pos="3720 1017"/>
+      <wire from="3" to="2" port="1"/>
+      <wire from="3" to="5" port="1"/>
+      <wire from="5" to="4"/>
+      <wire from="7" to="6" port="1"/>
+      <wire from="6" to="4" port="1"/>
+      <wire from="11" to="10" port="1"/>
+      <wire from="10" to="9"/>
+      <wire from="12" to="9" port="1"/>
+      <wire from="11" to="14"/>
+      <wire from="16" to="15"/>
+      <wire from="15" to="14" port="1"/>
+      <wire from="14" to="13"/>
+      <wire from="17" to="13" port="1"/>
+      <wire from="18" to="13" port="2"/>
+      <wire from="20" to="19"/>
+      <wire from="22" to="21"/>
+      <wire from="17" to="21" port="1"/>
+      <wire from="23" to="21" port="2"/>
+      <wire from="28" to="27" port="1"/>
+      <wire from="27" to="26"/>
+      <wire from="26" to="25" port="1"/>
+      <wire from="25" to="24"/>
+      <wire from="12" to="33" port="1"/>
+      <wire from="33" to="32"/>
+      <wire from="11" to="32" port="1"/>
+      <wire from="32" to="31"/>
+      <wire from="31" to="30"/>
+      <wire from="37" to="36"/>
+      <wire from="36" to="35"/>
+      <wire from="38" to="35" port="1"/>
+      <wire from="35" to="34"/>
+      <wire from="41" to="40"/>
+      <wire from="17" to="40" port="1"/>
+      <wire from="28" to="40" port="2"/>
+      <wire from="44" to="43" port="1"/>
+      <wire from="47" to="46" port="1"/>
+      <wire from="46" to="45"/>
+      <wire from="51" to="50"/>
+      <wire from="50" to="49"/>
+      <wire from="49" to="48"/>
+      <wire from="17" to="48" port="1"/>
+      <wire from="52" to="48" port="2"/>
+      <wire from="3" to="54" port="1"/>
+      <wire from="54" to="53"/>
+      <wire from="57" to="56"/>
+      <wire from="58" to="56" port="1"/>
+      <wire from="56" to="55"/>
+      <wire from="59" to="55" port="1"/>
+      <wire from="55" to="53" port="1"/>
+      <wire from="17" to="53" port="2"/>
+      <wire from="62" to="61"/>
+      <wire from="63" to="61" port="1"/>
+      <wire from="61" to="60"/>
+      <wire from="47" to="60" port="1"/>
+      <wire from="66" to="65"/>
+      <wire from="68" to="67" port="1"/>
+      <wire from="67" to="65" port="1"/>
+      <wire from="65" to="64"/>
+      <wire from="71" to="70"/>
+      <wire from="70" to="69"/>
+      <wire from="69" to="64" port="1"/>
+      <wire from="74" to="73" port="1"/>
+      <wire from="73" to="72"/>
+      <wire from="76" to="75" port="1"/>
+      <wire from="75" to="72" port="1"/>
+      <wire from="80" to="79"/>
+      <wire from="79" to="78"/>
+      <wire from="81" to="78" port="1"/>
+      <wire from="78" to="77"/>
+      <wire from="83" to="82"/>
+      <wire from="28" to="86"/>
+      <wire from="88" to="87"/>
+      <wire from="17" to="87" port="1"/>
+      <wire from="28" to="87" port="2"/>
+      <wire from="87" to="86" port="1"/>
+      <wire from="86" to="85"/>
+      <wire from="90" to="89"/>
+      <wire from="92" to="91"/>
+      <wire from="23" to="94" port="1"/>
+      <wire from="94" to="93"/>
+      <wire from="95" to="93" port="1"/>
+      <wire from="93" to="91" port="1"/>
+      <wire from="91" to="89" port="1"/>
+      <wire from="89" to="85" port="1"/>
+      <wire from="85" to="84"/>
+      <wire from="96" to="84" port="1"/>
+      <wire from="98" to="97" port="2"/>
+      <wire from="102" to="101"/>
+      <wire from="103" to="101" port="1"/>
+      <wire from="108" to="107"/>
+      <wire from="109" to="107" port="1"/>
+      <wire from="107" to="110"/>
+      <wire from="111" to="112"/>
+      <wire from="114" to="113" port="1"/>
+      <wire from="113" to="115"/>
+      <wire from="120" to="119"/>
+      <wire from="11" to="119" port="1"/>
+      <wire from="119" to="118"/>
+      <wire from="12" to="118" port="1"/>
+      <wire from="118" to="117"/>
+      <wire from="3" to="121" port="1"/>
+      <wire from="121" to="117" port="1"/>
+      <wire from="117" to="122"/>
+      <wire from="1" to="2"/>
+      <wire from="1" to="5"/>
+      <wire from="1" to="6"/>
+      <wire from="8" to="10"/>
+      <wire from="8" to="15" port="1"/>
+      <wire from="2" to="25"/>
+      <wire from="21" to="27"/>
+      <wire from="21" to="26" port="1"/>
+      <wire from="19" to="26" port="2"/>
+      <wire from="9" to="25" port="2"/>
+      <wire from="2" to="29"/>
+      <wire from="24" to="29" port="1"/>
+      <wire from="9" to="29" port="2"/>
+      <wire from="29" to="33"/>
+      <wire from="8" to="31" port="1"/>
+      <wire from="8" to="36" port="1"/>
+      <wire from="8" to="38"/>
+      <wire from="13" to="34" port="1"/>
+      <wire from="39" to="42"/>
+      <wire from="42" to="43"/>
+      <wire from="77" to="46"/>
+      <wire from="43" to="45" port="1"/>
+      <wire from="8" to="50" port="1"/>
+      <wire from="8" to="49" port="1"/>
+      <wire from="39" to="54"/>
+      <wire from="8" to="58"/>
+      <wire from="45" to="58" port="1"/>
+      <wire from="48" to="59"/>
+      <wire from="48" to="55" port="2"/>
+      <wire from="53" to="62"/>
+      <wire from="43" to="62" port="1"/>
+      <wire from="77" to="67"/>
+      <wire from="77" to="70" port="1"/>
+      <wire from="77" to="69" port="1"/>
+      <wire from="40" to="73"/>
+      <wire from="77" to="75"/>
+      <wire from="60" to="80"/>
+      <wire from="64" to="80" port="1"/>
+      <wire from="72" to="79" port="1"/>
+      <wire from="53" to="83"/>
+      <wire from="13" to="82" port="1"/>
+      <wire from="9" to="94"/>
+      <wire from="8" to="96"/>
+      <wire from="2" to="97"/>
+      <wire from="30" to="97" port="1"/>
+      <wire from="4" to="98"/>
+      <wire from="34" to="98" port="1"/>
+      <wire from="82" to="98" port="2"/>
+      <wire from="97" to="99"/>
+      <wire from="84" to="99" port="1"/>
+      <wire from="99" to="100"/>
+      <wire from="97" to="102"/>
+      <wire from="29" to="104"/>
+      <wire from="9" to="105"/>
+      <wire from="101" to="106"/>
+      <wire from="101" to="108"/>
+      <wire from="8" to="108" port="1"/>
+      <wire from="9" to="111"/>
+      <wire from="77" to="113"/>
+      <wire from="39" to="116"/>
+      <wire from="8" to="120"/>
+      <wire from="45" to="120" port="1"/>
+      <wire from="39" to="121"/>
+    </formula>
+    <mesh name="v6_crankshaft" file="models/v6/crankshaft.glb" scale="1"/>
+    <mesh name="v6_conrod" file="models/v6/conrod.glb" scale="1"/>
+    <mesh name="v6_piston_R" file="models/v6/piston_R.glb" scale="1"/>
+    <mesh name="v6_piston_L" file="models/v6/piston_L.glb" scale="1"/>
+    <mesh name="v6_valve_in" file="models/v6/valve_in.glb" scale="1"/>
+    <mesh name="v6_valve_ex" file="models/v6/valve_ex.glb" scale="1"/>
+    <mesh name="v6_camRi" file="models/v6/camRi.glb" scale="1"/>
+    <mesh name="v6_camRe" file="models/v6/camRe.glb" scale="1"/>
+    <mesh name="v6_camLi" file="models/v6/camLi.glb" scale="1"/>
+    <mesh name="v6_camLe" file="models/v6/camLe.glb" scale="1"/>
+    <mesh name="v6_block" file="models/v6/block.glb" scale="1"/>
+    <mesh name="v6_head_R" file="models/v6/head_R.glb" scale="1"/>
+    <mesh name="v6_head_L" file="models/v6/head_L.glb" scale="1"/>
+    <mesh name="v6_intake" file="models/v6/intake.glb" scale="1"/>
+    <mesh name="v6_exhaust" file="models/v6/exhaust.glb" scale="1"/>
+    <mesh name="v6_timing" file="models/v6/timing.glb" scale="1"/>
+    <mesh name="v6_stand" file="models/v6/stand.glb" scale="1"/>
+    <prefab name="crankshaft">
+      <part name="crankshaft" type="mesh" mesh="v6_crankshaft" size="1 1 1"/>
+    </prefab>
+    <prefab name="conrod">
+      <part name="conrod" type="mesh" mesh="v6_conrod" size="1 1 1"/>
+    </prefab>
+    <prefab name="piston_R">
+      <part name="piston_R" type="mesh" mesh="v6_piston_R" size="1 1 1"/>
+    </prefab>
+    <prefab name="piston_L">
+      <part name="piston_L" type="mesh" mesh="v6_piston_L" size="1 1 1"/>
+    </prefab>
+    <prefab name="valve_in">
+      <part name="valve_in" type="mesh" mesh="v6_valve_in" size="1 1 1"/>
+    </prefab>
+    <prefab name="valve_ex">
+      <part name="valve_ex" type="mesh" mesh="v6_valve_ex" size="1 1 1"/>
+    </prefab>
+    <prefab name="camRi">
+      <part name="camRi" type="mesh" mesh="v6_camRi" size="1 1 1"/>
+    </prefab>
+    <prefab name="camRe">
+      <part name="camRe" type="mesh" mesh="v6_camRe" size="1 1 1"/>
+    </prefab>
+    <prefab name="camLi">
+      <part name="camLi" type="mesh" mesh="v6_camLi" size="1 1 1"/>
+    </prefab>
+    <prefab name="camLe">
+      <part name="camLe" type="mesh" mesh="v6_camLe" size="1 1 1"/>
+    </prefab>
+    <prefab name="engine_block">
+      <part name="block" type="mesh" mesh="v6_block" size="1 1 1"/>
+      <part name="head_R" type="mesh" mesh="v6_head_R" size="1 1 1"/>
+      <part name="head_L" type="mesh" mesh="v6_head_L" size="1 1 1"/>
+      <part name="intake" type="mesh" mesh="v6_intake" size="1 1 1"/>
+      <part name="exhaust" type="mesh" mesh="v6_exhaust" size="1 1 1"/>
+      <part name="timing" type="mesh" mesh="v6_timing" size="1 1 1"/>
+      <part name="stand" type="mesh" mesh="v6_stand" size="1 1 1"/>
+    </prefab>
+  </asset>
+  <worldbody>
+    <environment hdr="env/engine_studio.hdr" intensity="22000" skybox="false"/>
+    <ground size="4" visual="3" tile="2" rgba="0.32 0.33 0.35 1" roughness="0.75"/>
+    <light name="key" type="sun" pos="0 4 0" euler="40 -30 0" intensity="90000" castshadow="true"/>
+    <light name="fill" type="point" pos="-1.5 1.6 -1.5" intensity="40000" falloff="10" castshadow="false"/>
+    <light name="rim" type="point" pos="1.4 1.5 1.2" intensity="30000" falloff="10" castshadow="false"/>
+    <camera name="cam0" target="0 0.63 0.08" azimuth="130" elevation="22" radius="1.7"/>
+    <camera name="front" target="0 0.67 0" azimuth="180" elevation="8" radius="1.2"/>
+    <camera name="left" target="-0.1 0.63 0.05" azimuth="-110" elevation="15" radius="1.5"/>
+    <camera name="detail" target="0.06 0.72 -0.02" azimuth="105" elevation="12" radius="0.55"/>
+
+    <body name="block" pos="0 0.55 0" fixed="true" mass="60">
+      <prefab name="engine_block"/>
+    </body>
+    <body name="crank" pos="0 0.55 0" mass="2.9">
+      <prefab name="crankshaft"/>
+    </body>
+    <body name="camRi" pos="0.1331 0.8814 -0.0125" mass="1">
+      <prefab name="camRi"/>
+    </body>
+    <body name="camRe" pos="0.2205 0.8309 -0.0125" mass="1">
+      <prefab name="camRe"/>
+    </body>
+    <body name="camLi" pos="-0.1331 0.8814 0.0125" mass="1">
+      <prefab name="camLi"/>
+    </body>
+    <body name="camLe" pos="-0.2205 0.8309 0.0125" mass="1">
+      <prefab name="camLe"/>
+    </body>
+    <body name="valve_in1" pos="0.105 0.7689 -0.1205" euler="0 0 -14" mass="0.12">
+      <prefab name="valve_in"/>
+    </body>
+    <body name="valve_ex1" pos="0.137 0.7504 -0.1205" euler="0 0 -46" mass="0.12">
+      <prefab name="valve_ex"/>
+    </body>
+    <body name="valve_in2" pos="-0.105 0.7689 -0.0955" euler="0 0 14" mass="0.12">
+      <prefab name="valve_in"/>
+    </body>
+    <body name="valve_ex2" pos="-0.137 0.7504 -0.0955" euler="0 0 46" mass="0.12">
+      <prefab name="valve_ex"/>
+    </body>
+    <body name="valve_in3" pos="0.105 0.7689 -0.0125" euler="0 0 -14" mass="0.12">
+      <prefab name="valve_in"/>
+    </body>
+    <body name="valve_ex3" pos="0.137 0.7504 -0.0125" euler="0 0 -46" mass="0.12">
+      <prefab name="valve_ex"/>
+    </body>
+    <body name="valve_in4" pos="-0.105 0.7689 0.0125" euler="0 0 14" mass="0.12">
+      <prefab name="valve_in"/>
+    </body>
+    <body name="valve_ex4" pos="-0.137 0.7504 0.0125" euler="0 0 46" mass="0.12">
+      <prefab name="valve_ex"/>
+    </body>
+    <body name="valve_in5" pos="0.105 0.7689 0.0955" euler="0 0 -14" mass="0.12">
+      <prefab name="valve_in"/>
+    </body>
+    <body name="valve_ex5" pos="0.137 0.7504 0.0955" euler="0 0 -46" mass="0.12">
+      <prefab name="valve_ex"/>
+    </body>
+    <body name="valve_in6" pos="-0.105 0.7689 0.1205" euler="0 0 14" mass="0.12">
+      <prefab name="valve_in"/>
+    </body>
+    <body name="valve_ex6" pos="-0.137 0.7504 0.1205" euler="0 0 46" mass="0.12">
+      <prefab name="valve_ex"/>
+    </body>
+    <body name="rod1" pos="0.0575 0.6496 -0.1205" euler="0 0 -30">
+      <geom type="box" size="0.004 0.072 0.003" mass="0.55" rgba="0.5 0.52 0.56 1"
+            layer="1" nocollide="1"/>
+      <prefab name="conrod"/>
+    </body>
+    <body name="piston1" pos="0.0935 0.7119 -0.1205" euler="0 0 -30">
+      <geom type="sphere" size="0.008" mass="0.4" rgba="0.85 0.45 0.2 1" layer="1" nocollide="1"/>
+      <prefab name="piston_R"/>
+    </body>
+    <body name="rod2" pos="-0.0079 0.6009 -0.0955" euler="0 0 44.9873">
+      <geom type="box" size="0.004 0.072 0.003" mass="0.55" rgba="0.5 0.52 0.56 1"
+            layer="1" nocollide="1"/>
+      <prefab name="conrod"/>
+    </body>
+    <body name="piston2" pos="-0.0588 0.6518 -0.0955" euler="0 0 30">
+      <geom type="sphere" size="0.008" mass="0.4" rgba="0.25 0.55 0.85 1" layer="1" nocollide="1"/>
+      <prefab name="piston_L"/>
+    </body>
+    <body name="rod3" pos="0.0079 0.6009 -0.0125" euler="0 0 -44.9873">
+      <geom type="box" size="0.004 0.072 0.003" mass="0.55" rgba="0.5 0.52 0.56 1"
+            layer="1" nocollide="1"/>
+      <prefab name="conrod"/>
+    </body>
+    <body name="piston3" pos="0.0588 0.6518 -0.0125" euler="0 0 -30">
+      <geom type="sphere" size="0.008" mass="0.4" rgba="0.85 0.45 0.2 1" layer="1" nocollide="1"/>
+      <prefab name="piston_R"/>
+    </body>
+    <body name="rod4" pos="-0.0575 0.6496 0.0125" euler="0 0 30">
+      <geom type="box" size="0.004 0.072 0.003" mass="0.55" rgba="0.5 0.52 0.56 1"
+            layer="1" nocollide="1"/>
+      <prefab name="conrod"/>
+    </body>
+    <body name="piston4" pos="-0.0935 0.7119 0.0125" euler="0 0 30">
+      <geom type="sphere" size="0.008" mass="0.4" rgba="0.25 0.55 0.85 1" layer="1" nocollide="1"/>
+      <prefab name="piston_L"/>
+    </body>
+    <body name="rod5" pos="0.0402 0.5823 0.0955" euler="0 0 -15.0127">
+      <geom type="box" size="0.004 0.072 0.003" mass="0.55" rgba="0.5 0.52 0.56 1"
+            layer="1" nocollide="1"/>
+      <prefab name="conrod"/>
+    </body>
+    <body name="piston5" pos="0.0588 0.6518 0.0955" euler="0 0 -30">
+      <geom type="sphere" size="0.008" mass="0.4" rgba="0.85 0.45 0.2 1" layer="1" nocollide="1"/>
+      <prefab name="piston_R"/>
+    </body>
+    <body name="rod6" pos="-0.0402 0.5823 0.1205" euler="0 0 15.0127">
+      <geom type="box" size="0.004 0.072 0.003" mass="0.55" rgba="0.5 0.52 0.56 1"
+            layer="1" nocollide="1"/>
+      <prefab name="conrod"/>
+    </body>
+    <body name="piston6" pos="-0.0588 0.6518 0.1205" euler="0 0 30">
+      <geom type="sphere" size="0.008" mass="0.4" rgba="0.25 0.55 0.85 1" layer="1" nocollide="1"/>
+      <prefab name="piston_L"/>
+    </body>
+    <emitter name="flame1" body="piston1" pos="0 0.0445 0" radius="0.036" height="0.009"
+             life="0.028" size="0.013" grow="2.4" speed="1.5" inherit="0" rgba="1 0.62 0.22 1"
+             rgba2="0.75 0.12 0.02 1" intensity="3" light="900" lightrange="0.14" max="240"/>
+    <emitter name="flame2" body="piston2" pos="0 0.0445 0" radius="0.036" height="0.009"
+             life="0.028" size="0.013" grow="2.4" speed="1.5" inherit="0" rgba="1 0.62 0.22 1"
+             rgba2="0.75 0.12 0.02 1" intensity="3" max="240"/>
+    <emitter name="flame3" body="piston3" pos="0 0.0445 0" radius="0.036" height="0.009"
+             life="0.028" size="0.013" grow="2.4" speed="1.5" inherit="0" rgba="1 0.62 0.22 1"
+             rgba2="0.75 0.12 0.02 1" intensity="3" light="900" lightrange="0.14" max="240"/>
+    <emitter name="flame4" body="piston4" pos="0 0.0445 0" radius="0.036" height="0.009"
+             life="0.028" size="0.013" grow="2.4" speed="1.5" inherit="0" rgba="1 0.62 0.22 1"
+             rgba2="0.75 0.12 0.02 1" intensity="3" max="240"/>
+    <emitter name="flame5" body="piston5" pos="0 0.0445 0" radius="0.036" height="0.009"
+             life="0.028" size="0.013" grow="2.4" speed="1.5" inherit="0" rgba="1 0.62 0.22 1"
+             rgba2="0.75 0.12 0.02 1" intensity="3" light="900" lightrange="0.14" max="240"/>
+    <emitter name="flame6" body="piston6" pos="0 0.0445 0" radius="0.036" height="0.009"
+             life="0.028" size="0.013" grow="2.4" speed="1.5" inherit="0" rgba="1 0.62 0.22 1"
+             rgba2="0.75 0.12 0.02 1" intensity="3" max="240"/>
+  </worldbody>
+  <equality>
+    <joint name="crank" type="hinge" body1="crank" body2="world" anchor="0 0.55 0" axis="0 0 1"
+           motor="force" target="0"/>
+    <joint name="rod1" type="hinge" body1="rod1" body2="crank" anchor="0.0215 0.5872 -0.1205" axis="0 0 1"/>
+    <joint name="wrist1" type="pointline" body1="rod1" body2="piston1" anchor="0.0935 0.7119 -0.1205" axis="0 0 1"/>
+    <joint name="bore1" type="slide" body1="piston1" body2="world" anchor="0.0935 0.7119 -0.1205" axis="0.5 0.866 0"/>
+    <joint name="rod2" type="hinge" body1="rod2" body2="crank" anchor="0.043 0.55 -0.0955" axis="0 0 1"/>
+    <joint name="wrist2" type="pointline" body1="rod2" body2="piston2" anchor="-0.0588 0.6518 -0.0955" axis="0 0 1"/>
+    <joint name="bore2" type="slide" body1="piston2" body2="world" anchor="-0.0588 0.6518 -0.0955" axis="-0.5 0.866 0"/>
+    <joint name="rod3" type="hinge" body1="rod3" body2="crank" anchor="-0.043 0.55 -0.0125" axis="0 0 1"/>
+    <joint name="wrist3" type="pointline" body1="rod3" body2="piston3" anchor="0.0588 0.6518 -0.0125" axis="0 0 1"/>
+    <joint name="bore3" type="slide" body1="piston3" body2="world" anchor="0.0588 0.6518 -0.0125" axis="0.5 0.866 0"/>
+    <joint name="rod4" type="hinge" body1="rod4" body2="crank" anchor="-0.0215 0.5872 0.0125" axis="0 0 1"/>
+    <joint name="wrist4" type="pointline" body1="rod4" body2="piston4" anchor="-0.0935 0.7119 0.0125" axis="0 0 1"/>
+    <joint name="bore4" type="slide" body1="piston4" body2="world" anchor="-0.0935 0.7119 0.0125" axis="-0.5 0.866 0"/>
+    <joint name="rod5" type="hinge" body1="rod5" body2="crank" anchor="0.0215 0.5128 0.0955" axis="0 0 1"/>
+    <joint name="wrist5" type="pointline" body1="rod5" body2="piston5" anchor="0.0588 0.6518 0.0955" axis="0 0 1"/>
+    <joint name="bore5" type="slide" body1="piston5" body2="world" anchor="0.0588 0.6518 0.0955" axis="0.5 0.866 0"/>
+    <joint name="rod6" type="hinge" body1="rod6" body2="crank" anchor="-0.0215 0.5128 0.1205" axis="0 0 1"/>
+    <joint name="wrist6" type="pointline" body1="rod6" body2="piston6" anchor="-0.0588 0.6518 0.1205" axis="0 0 1"/>
+    <joint name="bore6" type="slide" body1="piston6" body2="world" anchor="-0.0588 0.6518 0.1205" axis="-0.5 0.866 0"/>
+    <joint name="camRi" type="hinge" body1="camRi" body2="world" anchor="0.1331 0.8814 -0.0125" axis="0 0 1"
+           motor="speed" target="0"/>
+    <joint name="camRe" type="hinge" body1="camRe" body2="world" anchor="0.2205 0.8309 -0.0125" axis="0 0 1"
+           motor="speed" target="0"/>
+    <joint name="camLi" type="hinge" body1="camLi" body2="world" anchor="-0.1331 0.8814 0.0125" axis="0 0 1"
+           motor="speed" target="0"/>
+    <joint name="camLe" type="hinge" body1="camLe" body2="world" anchor="-0.2205 0.8309 0.0125" axis="0 0 1"
+           motor="speed" target="0"/>
+    <joint name="in1" type="slide" body1="valve_in1" body2="world" anchor="0.105 0.7689 -0.1205"
+           axis="-0.2419 -0.9703 0" motor="position" target="0"/>
+    <joint name="ex1" type="slide" body1="valve_ex1" body2="world" anchor="0.137 0.7504 -0.1205"
+           axis="-0.7193 -0.6947 0" motor="position" target="0"/>
+    <joint name="in2" type="slide" body1="valve_in2" body2="world" anchor="-0.105 0.7689 -0.0955"
+           axis="0.2419 -0.9703 0" motor="position" target="0"/>
+    <joint name="ex2" type="slide" body1="valve_ex2" body2="world" anchor="-0.137 0.7504 -0.0955"
+           axis="0.7193 -0.6947 0" motor="position" target="0"/>
+    <joint name="in3" type="slide" body1="valve_in3" body2="world" anchor="0.105 0.7689 -0.0125"
+           axis="-0.2419 -0.9703 0" motor="position" target="0"/>
+    <joint name="ex3" type="slide" body1="valve_ex3" body2="world" anchor="0.137 0.7504 -0.0125"
+           axis="-0.7193 -0.6947 0" motor="position" target="0"/>
+    <joint name="in4" type="slide" body1="valve_in4" body2="world" anchor="-0.105 0.7689 0.0125"
+           axis="0.2419 -0.9703 0" motor="position" target="0"/>
+    <joint name="ex4" type="slide" body1="valve_ex4" body2="world" anchor="-0.137 0.7504 0.0125"
+           axis="0.7193 -0.6947 0" motor="position" target="0"/>
+    <joint name="in5" type="slide" body1="valve_in5" body2="world" anchor="0.105 0.7689 0.0955"
+           axis="-0.2419 -0.9703 0" motor="position" target="0"/>
+    <joint name="ex5" type="slide" body1="valve_ex5" body2="world" anchor="0.137 0.7504 0.0955"
+           axis="-0.7193 -0.6947 0" motor="position" target="0"/>
+    <joint name="in6" type="slide" body1="valve_in6" body2="world" anchor="-0.105 0.7689 0.1205"
+           axis="0.2419 -0.9703 0" motor="position" target="0"/>
+    <joint name="ex6" type="slide" body1="valve_ex6" body2="world" anchor="-0.137 0.7504 0.1205"
+           axis="0.7193 -0.6947 0" motor="position" target="0"/>
+  </equality>
+  <!-- イベントは使わない（エンジンはジョイントで組んだ機構なので、マウスで掴んで
+       引き寄せる既定の pickup は要らない）。空の節を書いておかないと、イベントの
+       節が無い文書として既定の pickup が付く。 -->
+  <events/>
+  <control>
+    <controller formula="valvetrain" period="0"/>
+    <controller formula="combustion" period="0"/>
+    <controller formula="dyno" period="0"/>
+    <param name="mode" value="0" min="0" max="2" step="1" label="負荷のかけ方" options="ダイナモ|フリーラン|車両"/>
+    <param name="throttle" value="1" min="0" max="1" label="アクセル開度"/>
+    <param name="brake" value="0" min="0" max="1" label="ブレーキ（車両）"/>
+    <param name="gear" value="1" min="0" max="9" step="1" label="ギア（車両）" options="N|1|2|3|4|5|6|7|8|9"/>
+    <param name="dyno_rpm" value="0" min="0" max="7000" step="50" label="ダイナモ回転数（0 = 自動掃引）"/>
+    <param name="boost" value="1.77" min="0" max="2.5" step="0.05" label="目標過給圧のピーク (bar ゲージ)"/>
+    <param name="turbo_inertia" value="1" min="0.3" max="3" step="0.1" label="ターボの慣性（ラグ）"/>
+    <param name="intercooler" value="0.8" min="0" max="0.95" step="0.05" label="インタークーラー効率"/>
+    <param name="afr" value="12.5" min="10" max="16" step="0.1" label="空燃比"/>
+    <param name="ambient" value="25" min="-20" max="45" step="1" label="外気温 (℃)"/>
+    <param name="flame" value="1" min="0" max="1" step="1" label="炎のパーティクル"/>
+    <chart title="回転数 (rpm)" signals="dyno/scope:rpm dyno/scope:rpm_cmd" span="20"/>
+    <chart title="軸トルク (N m) とカタログ" signals="dyno/scope:torque_Nm dyno/scope:catalog_Nm" span="20"/>
+    <chart title="出力 (PS)" signals="dyno/scope:power_PS" span="20"/>
+    <chart title="吸気圧・目標過給圧・排気圧 (bar 絶対圧)" signals="combustion/scope:boost_bar combustion/scope:target_bar combustion/scope:exhaust_bar" span="20"/>
+    <chart title="ターボ回転数 (krpm) とウェイストゲート (%)" signals="combustion/scope:turbo_krpm combustion/scope:wastegate_pct" span="20"/>
+    <chart title="吸気量と燃料 (g/s)" signals="combustion/scope:air_gs combustion/scope:fuel_gs" span="20"/>
+    <chart title="吸気温度と排気温度 (℃)" signals="combustion/scope:intake_C combustion/scope:egt_C" span="20"/>
+    <chart title="車速 (km/h)" signals="dyno/scope:speed_kmh" span="30"/>
+    <chart title="トルコンの滑り (rpm)" signals="dyno/scope:slip_rpm" span="30"/>
+    <chart title="筒内圧 (bar、1 番 / 4 番)" signals="combustion/scope:p1_bar combustion/scope:p4_bar" span="0.2"/>
+    <chart title="吸気 VTC とオーバーラップ (度)" signals="valvetrain/scope:vtc_deg combustion/scope:overlap_deg" span="20"/>
+    <chart title="バルブリフト (mm、1 番)" signals="valvetrain/scope:lift_in1_mm valvetrain/scope:lift_ex1_mm" span="0.2"/>
+  </control>
+</wizengine>

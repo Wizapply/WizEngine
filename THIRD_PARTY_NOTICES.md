@@ -22,8 +22,13 @@ Charon（旧コードネーム WizEngine）が使っている外部ソフトウ�
 | [cpp-httplib](https://github.com/yhirose/cpp-httplib) | 0.15.3 | MIT | ヘッダのみ。操作ページ・WHEP・`/input` の HTTP サーバ |
 | [cgltf](https://github.com/jkuhlmann/cgltf) | 1.14 | MIT | ヘッダのみ。glTF の当たり判定用メッシュ読み込み |
 | [stb](https://github.com/nothings/stb)（`stb_image.h` / `stb_perlin.h`） | master | MIT または Public Domain（Unlicense）の選択 | ヘッダのみ。テクスチャと HDR 環境マップの読み込み、テレインの高さのノイズ（Perlin の fbm） |
+| [stb](https://github.com/nothings/stb)（`stb_truetype.h` / `stb_rect_pack.h`） | v1.26 / v1.01 | MIT または Public Domain（Unlicense）の選択 | ヘッダのみ。UI の字の SDF と字の置き場（アトラス）の詰め込み |
+| [Noto Sans JP](https://github.com/notofonts/noto-cjk)（`assets/fonts/NotoSansJP-Regular.otf`） | noto-cjk main（Sans/SubsetOTF/JP） | SIL Open Font License 1.1（`assets/fonts/OFL.txt`） | 同梱のフォント。UI の文字の既定のフォント |
 | [Google Filament](https://github.com/google/filament) | 1.74.0 | Apache-2.0 | 描画エンジン。公式プレビルド（`filament` / `gltfio` / `ibl` など）をリンク |
+| [OpenSSL](https://www.openssl.org/) | 3.x（システムの版。任意） | Apache-2.0 | AI のシーン生成が HTTPS の API（OpenAI 互換 / Meshy 互換）を呼ぶため。見つかったときだけ動的リンク（`-DWIZ_WITH_OPENSSL=OFF` で外せる） |
 | [GStreamer](https://gstreamer.freedesktop.org/) | 1.x（システムの版） | LGPL-2.1-or-later | 映像のエンコードと配信。動的リンク（core / base / app / webrtc / sdp / video） |
+| [manifold3d](https://github.com/elalish/manifold) / [trimesh](https://github.com/mikedh/trimesh)（+ NumPy / SciPy / NetworkX） | 3.x / 4.x 以降 | Apache-2.0 / MIT（NumPy・SciPy・NetworkX は BSD-3-Clause） | `samples/v6_engine/` の Python スクリプトが V6 の部品メッシュ（`assets/models/v6/*.glb`）を作るときと、`samples/meshgen/`（手元の Text to 3D）が .glb を作るときだけ使う。実行ファイルには入らない |
+| [Matplotlib](https://matplotlib.org/) | 3.x（任意） | Matplotlib License（PSF 系、BSD 互換） | `samples/meshgen/` が確認用の PNG を描くときだけ使う（無ければ PNG を出さない）。実行ファイルには入らない |
 
 ## 実行時に読み込まれる GStreamer プラグイン
 
@@ -68,3 +73,11 @@ Charon は GStreamer のプラグインを**実行時に**名前で探して使�
 （`CMakeLists.txt` の `wiz_download_header` / `FILAMENT_VERSION` /
 `find_package`、`.gitmodules`、`WebRtcStreamer.cpp` のエンコーダ候補が
 出どころです）。
+
+## 外部サービス
+
+AI のシーン生成（`src/autogen/`）は、設定した場合に限り外部の API へ依頼文と
+シーンの XML を送ります（OpenAI 互換の Chat Completions、Meshy 互換の Text to
+3D）。ライブラリではないのでリンクはしていませんが、送った内容と生成物の扱いは
+それぞれの提供元の利用規約に従います。Meshy で生成したモデルの商用利用の可否は
+契約プランによって異なります。
