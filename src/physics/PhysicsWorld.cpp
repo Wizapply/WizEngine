@@ -52,16 +52,52 @@ void PhysicsWorld::step(double dt) {
     // この速度を見て解く）。
     p_->soft.solveSprings(dt);
     // Multicore 用の手計算のモータ・ばね（Core では空）。
-    applyManualJoints(dt);
+    p_->joints.applyManual(dt);
     p_->gravity.cancel(dt);
     p_->staticPairs.syncIfPending();
     p_->system.doStep(dt);
     p_->staticPairs.syncIfPending();
-    if (p_->diag.afterStep(dt, joints_.size())) logJointReactions();
+    if (p_->diag.afterStep(dt, p_->joints.count())) p_->joints.logReactions();
     // 破断: 反力が閾値を超えたジョイントを外す（このステップの反力を見る）。
-    checkJointBreaks();
+    p_->joints.checkBreaks();
     p_->damping.apply(dt);
 }
+
+// ---- ジョイント（本体は Joints）---------------------------------------------
+
+std::size_t PhysicsWorld::addJoint(JointType type, std::size_t bodyA,
+                                   std::size_t bodyB, const chrono::ChVector3d& anchor,
+                                   const chrono::ChVector3d& axis, double distance) {
+    JointSpec spec;
+    spec.type = type;
+    spec.bodyA = bodyA;
+    spec.bodyB = bodyB;
+    spec.anchor = anchor;
+    spec.axis = axis;
+    spec.distance = distance;
+    return addJoint(spec);
+}
+
+std::size_t PhysicsWorld::addJoint(const JointSpec& spec) { return p_->joints.add(spec); }
+
+void PhysicsWorld::removeAllJoints() {
+    p_->diag.restart();  // 次のシミュレート開始で診断行を出し直す
+    p_->joints.removeAll();
+}
+
+std::size_t PhysicsWorld::jointCount() const { return p_->joints.count(); }
+
+bool PhysicsWorld::setJointMotorTarget(std::size_t joint, double target) {
+    return p_->joints.setMotorTarget(joint, target);
+}
+
+bool PhysicsWorld::jointReaction(std::size_t joint, double& force, double& torque) const {
+    return p_->joints.reaction(joint, force, torque);
+}
+
+bool PhysicsWorld::jointBroken(std::size_t joint) const { return p_->joints.broken(joint); }
+
+std::vector<std::size_t> PhysicsWorld::takeBrokenJoints() { return p_->joints.takeBroken(); }
 
 // ---- 眠り --------------------------------------------------------------------
 

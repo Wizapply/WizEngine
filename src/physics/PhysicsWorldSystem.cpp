@@ -4,9 +4,6 @@
 #include "core/Log.h"
 
 #include <chrono/physics/ChSystem.h>
-#ifdef WIZ_HAVE_LOADS
-#include <chrono/physics/ChLoadContainer.h>
-#endif
 
 #include <memory>
 #include <string>
@@ -22,8 +19,7 @@ void PhysicsWorld::setMaterialCombine(CombineMode mode) {
 // ボディ・ジョイント・ケーブル・荷重は全部捨てる - 番号は無効になるので、
 // Scene が設計値から作り直す（Scene::rebuildPhysicsWorld）。
 void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
-    joints_.clear();
-    brokenPending_.clear();
+    p_->joints.clear();
     cables_.clear();
     p_->bodies.clear();
     // ソフトボディの一覧は名簿と一緒に、系を壊す前に捨てる（途中で例外が出ても
@@ -32,7 +28,6 @@ void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     // clear がコールバックの持ち主を切り離し、ゴーストの番号は状態ごと捨てる
     // （フレームは残す）。Scene が作り直したあとに setTerrain を呼び直す。
     p_->terrain.clear();
-    jointLoads_.reset();
     p_->loads.clear();
     p_->diag.restart();
     p_->system.destroy(backend, contact);
@@ -59,12 +54,7 @@ void PhysicsWorld::createSystem() {
 
     // 荷重コンテナ（ChLoad）。積分に取り込む系でだけ作る。
     // 系へ足す順（ジョイント用 → ボディ用）は残差を足す順なので変えない。
-#ifdef WIZ_HAVE_LOADS
-    if (p_->system.integratesLoads()) {
-        jointLoads_ = chrono_types::make_shared<ChLoadContainer>();
-        p_->system.sys()->Add(jointLoads_);
-    }
-#endif
+    p_->joints.createContainer();
     p_->loads.createContainer();
 
     p_->system.applySolverSettings();

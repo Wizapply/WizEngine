@@ -21,8 +21,6 @@ public:
     bool afterStep(double dt, std::size_t jointCount);
     // ステップ数と NaN の報告済みの印を戻す（次のシミュレート開始で診断行を出し直す）。
     void restart();
-    // restart からのステップ数。
-    int steps() const { return diagSteps_; }
 
 private:
     PhysicsSystem& system_;

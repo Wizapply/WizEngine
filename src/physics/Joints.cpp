@@ -1,11 +1,17 @@
 // ジョイント: 拘束・モータ・ばねの生成、反力の計測、破断。
 
-#include "physics/PhysicsWorldInternal.h"
+#include "physics/Joints.h"
 #include "core/Log.h"
+#include "physics/BodyRegistry.h"
+#include "physics/ChronoCompat.h"
+#include "physics/ChronoMath.h"
+#include "physics/PhysicsSystem.h"
 
 #include <chrono/physics/ChBody.h>
+#include <chrono/physics/ChLinkBase.h>
 #include <chrono/physics/ChLinkDistance.h>
 #include <chrono/physics/ChLinkLock.h>
+#include <chrono/physics/ChSystem.h>
 // ジョイントの拡張（A の導入）: モータ・自在継手・歯車・ねじ・ばね。
 #include <chrono/physics/ChLinkMotorRotationSpeed.h>
 #include <chrono/physics/ChLinkMotorRotationAngle.h>
@@ -37,6 +43,9 @@
 
 using namespace chrono;
 using namespace wizengine::physics::compat;
+
+namespace wizengine {
+namespace physics {
 
 namespace {
 
@@ -77,25 +86,10 @@ bool axisUsable(const chrono::ChVector3d& a) {
 
 }  // namespace
 
-// ---- ジョイント -----------------------------------------------------------
-
-std::size_t PhysicsWorld::addJoint(JointType type, std::size_t bodyA,
-                                   std::size_t bodyB, const ChVector3d& anchor,
-                                   const ChVector3d& axis, double distance) {
-    JointSpec spec;
-    spec.type = type;
-    spec.bodyA = bodyA;
-    spec.bodyB = bodyB;
-    spec.anchor = anchor;
-    spec.axis = axis;
-    spec.distance = distance;
-    return addJoint(spec);
-}
-
-std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
+std::size_t Joints::add(const JointSpec& spec) {
     const std::size_t bodyA = spec.bodyA;
     const std::size_t bodyB = spec.bodyB;
-    if (bodyA >= p_->bodies.count() || bodyB >= p_->bodies.count()) {
+    if (bodyA >= bodies_.count() || bodyB >= bodies_.count()) {
         LOGW("physics", "joint: body id out of range (%zu, %zu)", bodyA, bodyB);
         return kInvalidJoint;
     }
@@ -103,13 +97,13 @@ std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
         LOGW("physics", "joint: both ends are the same body (%zu)", bodyA);
         return kInvalidJoint;
     }
-    if (!p_->bodies.active(bodyA) || !p_->bodies.active(bodyB)) {
+    if (!bodies_.active(bodyA) || !bodies_.active(bodyB)) {
         LOGW("physics", "joint: body has been removed (%zu, %zu)", bodyA, bodyB);
         return kInvalidJoint;
     }
 
-    auto a = p_->bodies.body(bodyA);
-    auto b = p_->bodies.body(bodyB);
+    auto a = bodies_.body(bodyA);
+    auto b = bodies_.body(bodyB);
     // 眠ったままだと拘束が効かないので、両端とも起こしておく。
     wakeUp(a.get(), 0);
     wakeUp(b.get(), 0);
@@ -144,12 +138,12 @@ std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
     bool limitDone = false;
     // Multicore は ChLinkTSDA / ChLinkRSDA / トルク（力）モータの力を積分に
     // 取り込まず、速度モータは専用の一覧（RemoveLink で外れない）を持つ。
-    // そちらでは手計算の力積（applyManualJoints）と「角度モータ + ランプ
+    // そちらでは手計算の力積（applyManual）と「角度モータ + ランプ
     // 関数」で同じ意味を作る。Core は Chrono のリンクをそのまま使う。
-    const bool manualMode = p_->system.backend() == PhysicsBackend::Multicore;
+    const bool manualMode = system_.backend() == PhysicsBackend::Multicore;
     // Multicore は片側拘束（ChLinkLimit）を解けない - 範囲に当たった瞬間に
     // 系全体が NaN になった（実機で確認）。そちらでは可動範囲も手計算の
-    // 力積にする（applyManualJoints）。
+    // 力積にする（applyManual）。
     auto manualLimit = [&](bool linear) {
         rec.manual.limited = true;
         rec.manual.limitLinear = linear;
@@ -191,7 +185,7 @@ std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
                 if (spec.motor == MotorType::Speed && manualMode) {
                     // Multicore: 角度モータ + ランプ関数（角速度 = 傾き）。
                     auto am = chrono_types::make_shared<ChLinkMotorRotationAngle>();
-                    fn = rampFor(p_->system.sys()->GetChTime(), 0.0, spec.motorTarget);
+                    fn = rampFor(system_.sys()->GetChTime(), 0.0, spec.motorTarget);
                     rec.rampMotor = am;
                     m = am;
                 } else {
@@ -281,7 +275,7 @@ std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
                 std::shared_ptr<chrono::ChFunction> fn;
                 if (spec.motor == MotorType::Speed && manualMode) {
                     auto pm = chrono_types::make_shared<ChLinkMotorLinearPosition>();
-                    fn = rampFor(p_->system.sys()->GetChTime(), 0.0, spec.motorTarget);
+                    fn = rampFor(system_.sys()->GetChTime(), 0.0, spec.motorTarget);
                     rec.rampMotor = pm;
                     rec.rampLinear = true;
                     m = pm;
@@ -450,7 +444,7 @@ std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
                 return kInvalidJoint;
             }
             if (manualMode) {
-                // リンク無し。毎ステップの力積だけ（applyManualJoints）。
+                // リンク無し。毎ステップの力積だけ（applyManual）。
                 const ChVector3d p1 = a->IsFixed() ? anchor : a->GetPos();
                 const ChVector3d p2 = b->IsFixed() ? anchor : b->GetPos();
                 rec.manual.kind = JointRec::Manual::Kind::Spring;
@@ -471,7 +465,7 @@ std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
             // stiffness / damping、回転 3 軸は rotStiffness / rotDamping。
             // 取り付け座標系はアンカー + 指定軸を Z にした向き。
 #ifdef WIZ_HAVE_LOADS
-            if (manualMode || !jointLoads_) {
+            if (!jointLoads_) {
                 LOGW("physics", "bushing: needs the core backend (loads are not integrated "
                                 "by Chrono::Multicore) - skipped");
                 return kInvalidJoint;
@@ -504,8 +498,8 @@ std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
         LOGW("physics", "joint: limits could not be applied (this joint type or "
                         "Chrono version has no limit API) - ignored");
     }
-    if (link) p_->system.sys()->AddLink(link);
-    if (rec.extra) p_->system.sys()->AddLink(rec.extra);
+    if (link) system_.sys()->AddLink(link);
+    if (rec.extra) system_.sys()->AddLink(rec.extra);
     rec.link = link;
     LOGI("physics", "joint #%zu: type %d bodies %zu-%zu motor %d limited %d spring %s manual %d",
          joints_.size(), int(spec.type), bodyA, bodyB, int(spec.motor), int(spec.limited),
@@ -514,14 +508,16 @@ std::size_t PhysicsWorld::addJoint(const JointSpec& spec) {
     return joints_.size() - 1;
 }
 
-void PhysicsWorld::removeAllJoints() {
-    p_->diag.restart();  // 次のシミュレート開始で診断行を出し直す
+void Joints::removeAll() {
+    // 暖機は先にやり直しにする（途中の RemoveLink が例外を投げても、次の走行は
+    // 暖機から始まる）。
+    breakSteps_ = 0;
     bool anyLoad = false;
     for (auto& j : joints_) {
         // 破断したリンクも無効化されて系に残っている（走行中の RemoveLink は
         // Multicore を壊す）ので、ここでまとめて外す。
-        if (j.link) p_->system.sys()->RemoveLink(j.link);
-        if (j.extra) p_->system.sys()->RemoveLink(j.extra);
+        if (j.link) system_.sys()->RemoveLink(j.link);
+        if (j.extra) system_.sys()->RemoveLink(j.extra);
         if (j.load) anyLoad = true;
     }
 #ifdef WIZ_HAVE_LOADS
@@ -534,14 +530,10 @@ void PhysicsWorld::removeAllJoints() {
     brokenPending_.clear();
     // 拘束の増減はソルバの構成を変えるので、Setup で作り直させる
     // （wakeAll と同じ理由）。
-    p_->system.sys()->Setup();
+    system_.sys()->Setup();
 }
 
-std::size_t PhysicsWorld::jointCount() const {
-    return joints_.size();
-}
-
-bool PhysicsWorld::setJointMotorTarget(std::size_t joint, double target) {
+bool Joints::setMotorTarget(std::size_t joint, double target) {
     if (joint >= joints_.size()) return false;
     JointRec& j = joints_[joint];
     if (j.broken) return false;
@@ -552,7 +544,7 @@ bool PhysicsWorld::setJointMotorTarget(std::size_t joint, double target) {
     }
     if (j.rampMotor) {
         // 今の角度 / 位置から新しい傾きで引き直す（跳びを作らない）。
-        const double now = p_->system.sys()->GetChTime();
+        const double now = system_.sys()->GetChTime();
         if (j.rampLinear) {
             auto pm = std::dynamic_pointer_cast<ChLinkMotorLinearPosition>(j.rampMotor);
             if (!pm) return false;
@@ -571,7 +563,7 @@ bool PhysicsWorld::setJointMotorTarget(std::size_t joint, double target) {
     return true;
 }
 
-bool PhysicsWorld::jointReaction(std::size_t joint, double& force, double& torque) const {
+bool Joints::reaction(std::size_t joint, double& force, double& torque) const {
     force = 0.0;
     torque = 0.0;
     if (joint >= joints_.size()) return false;
@@ -603,20 +595,20 @@ bool PhysicsWorld::jointReaction(std::size_t joint, double& force, double& torqu
     return linkReaction(j.link.get(), force, torque, 0);
 }
 
-bool PhysicsWorld::jointBroken(std::size_t joint) const {
+bool Joints::broken(std::size_t joint) const {
     return joint < joints_.size() && joints_[joint].broken;
 }
 
-std::vector<std::size_t> PhysicsWorld::takeBrokenJoints() {
+std::vector<std::size_t> Joints::takeBroken() {
     std::vector<std::size_t> out;
     out.swap(brokenPending_);
     return out;
 }
 
-void PhysicsWorld::logJointReactions() const {
+void Joints::logReactions() const {
     for (std::size_t j = 0; j < joints_.size(); ++j) {
         double f = 0.0, t = 0.0;
-        const bool ok = jointReaction(j, f, t);
+        const bool ok = reaction(j, f, t);
         LOGE("physics", "  joint #%zu type %d: reaction %s (force %.3g torque %.3g)%s",
              j, int(joints_[j].type),
              ok ? (std::isfinite(f + t) ? "finite" : "NaN") : "n/a", f, t,
@@ -624,20 +616,23 @@ void PhysicsWorld::logJointReactions() const {
     }
 }
 
-void PhysicsWorld::checkJointBreaks() {
+void Joints::checkBreaks() {
     // 開始直後はソルバが収束途中で反力が跳ねる（Multicore で静止荷重 59 N の
     // 棒が 1 ステップ目に 325 N を返した）ので、最初の数ステップは見ない。
     constexpr int kWarmupSteps = 10;
-    if (p_->diag.steps() < kWarmupSteps) return;
+    // 数えるのは暖機の間だけ（kWarmupSteps で止める = 長く走らせてもあふれない）。
+    // N ステップ目の呼び出しで N になり、kWarmupSteps ステップ目から判定する。
+    if (breakSteps_ < kWarmupSteps) ++breakSteps_;
+    if (breakSteps_ < kWarmupSteps) return;
     for (std::size_t i = 0; i < joints_.size(); ++i) {
         JointRec& j = joints_[i];
         if (j.broken || j.breakForce <= 0.0 || j.load) continue;
         double force = 0.0, torque = 0.0;
-        if (!jointReaction(i, force, torque)) continue;
+        if (!reaction(i, force, torque)) continue;
         if (!std::isfinite(force) || force <= j.breakForce) continue;
         // 外すのではなく無効化する。走行中の RemoveLink + Setup は Multicore の
         // データマネージャを壊し、拘束の付いた物が全部 NaN になった。
-        // 系からは次の removeAllJoints（停止時）でまとめて外す。
+        // 系からは次の removeAll（停止時）でまとめて外す。
         bool ok = true;
         if (j.link) ok = disableLink(j.link.get(), 0) && ok;
         if (j.extra) ok = disableLink(j.extra.get(), 0) && ok;
@@ -652,3 +647,21 @@ void PhysicsWorld::checkJointBreaks() {
              j.breakForce);
     }
 }
+
+void Joints::createContainer() {
+#ifdef WIZ_HAVE_LOADS
+    if (!system_.integratesLoads()) return;
+    jointLoads_ = chrono_types::make_shared<ChLoadContainer>();
+    system_.sys()->Add(jointLoads_);
+#endif
+}
+
+void Joints::clear() {
+    joints_.clear();
+    brokenPending_.clear();
+    jointLoads_.reset();
+    breakSteps_ = 0;
+}
+
+}  // namespace physics
+}  // namespace wizengine
