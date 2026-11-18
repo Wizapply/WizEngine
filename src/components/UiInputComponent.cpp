@@ -285,11 +285,6 @@ void UiInputComponent::lowerHeld(Cam& cam) {
     if (cam.held.exchange(false)) cam.released.store(cam.serial.load());
 }
 
-void UiInputComponent::onPhysicsStep(Scene& scene, double dt) {
-    (void)dt;
-    pointer_.onPhysicsStep(scene);
-}
-
 void UiInputComponent::onEditorStep(Scene& scene, double dt) {
     (void)dt;
     for (std::size_t c = 0; c < cams_.size(); ++c) {

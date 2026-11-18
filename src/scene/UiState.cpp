@@ -430,9 +430,14 @@ bool UiState::moveCanvasContentsToAsset(int index, ui::UiAssetDesc asset) {
 }
 
 // ---- 実行時の状態 ------------------------------------------------------------------
-std::uint64_t UiState::runtimeVersion() const {
+std::uint64_t UiState::pointersVersion() const {
     std::lock_guard<std::mutex> lk(mutex_);
-    return runtimeVersion_;
+    return pointersVersion_;
+}
+
+std::uint64_t UiState::overridesVersion() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return overridesVersion_;
 }
 
 std::uint64_t UiState::runtimeGeneration() const {
@@ -459,15 +464,74 @@ void UiState::setPointer(std::size_t camera, const Pointer& pointer) {
     }
     if (pointers_[camera] == pointer) return;
     pointers_[camera] = pointer;
-    ++runtimeVersion_;
+    ++pointersVersion_;
 }
 
 bool UiState::copyPointersIfChanged(std::uint64_t& known, std::vector<Pointer>& out) const {
     std::lock_guard<std::mutex> lk(mutex_);
-    if (known == runtimeVersion_) return false;
+    if (known == pointersVersion_) return false;
     out = pointers_;
-    known = runtimeVersion_;
+    known = pointersVersion_;
     return true;
+}
+
+bool UiState::copyOverridesIfChanged(std::uint64_t& known, NodeOverrideSet& out) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (known == overridesVersion_) return false;
+    // 消えた Canvas の分を落とし、版の違う Canvas だけを写す（版は増える一方 = 同じ版なら
+    // 同じ中身）。
+    for (auto it = out.canvases.begin(); it != out.canvases.end();) {
+        it = overrides_.count(it->first) ? std::next(it) : out.canvases.erase(it);
+    }
+    for (const auto& [index, slot] : overrides_) {
+        CanvasOverrides& mine = out.canvases[index];
+        if (mine.revision != slot.revision) mine = slot;
+    }
+    known = overridesVersion_;
+    return true;
+}
+
+const ui::NodeOverrides* UiState::NodeOverrideSet::of(int index) const {
+    const auto it = canvases.find(index);
+    return it == canvases.end() ? nullptr : &it->second.props;
+}
+
+std::uint64_t UiState::NodeOverrideSet::revision(int index) const {
+    const auto it = canvases.find(index);
+    return it == canvases.end() ? 0 : it->second.revision;
+}
+
+UiState::NodePropResult UiState::setNodeProp(int canvas, const std::string& element,
+                                             int elementId, ui::Prop prop,
+                                             const ui::PropValue& value) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const CanvasItem* item = liveItemAt(canvases_, canvas);
+    if (!item) return NodePropResult::NoCanvas;
+    const std::vector<ui::ElementDesc>& elements = elementsIn(item->desc, uiAssets_);
+    const ui::ElementDesc* e = nullptr;
+    if (!element.empty()) {
+        e = ui::findElementByName(elements, element);
+    } else {
+        const std::size_t at = ui::elementIndex(elements, elementId);
+        e = at < elements.size() ? &elements[at] : nullptr;
+    }
+    if (!e) return NodePropResult::NoElement;
+    const ui::ElementKindInfo* kind = ui::kindInfo(e->kind);
+    if (!kind || !(ui::propsOfKind(kind->id) & ui::propBit(prop))) {
+        return NodePropResult::KindLacksProp;
+    }
+    const ui::ValueSpec& spec = ui::propInfo(prop).spec;
+    // ノードの欄が持たない成分（色の不透明度）は設計値のまま（ui::withNodeValue）。
+    const ui::PropValue clamped =
+        ui::withNodeValue(spec, ui::clampValue(spec, value), ui::effectiveValue(e->props, prop));
+    CanvasOverrides& slot = overrides_[canvas];
+    ui::PropSet& props = slot.props[e->id];
+    if (props.has(prop) && ui::sameValue(spec, props.get(prop), clamped)) {
+        return NodePropResult::Unchanged;
+    }
+    props.set(prop, clamped);
+    slot.revision = ++overridesVersion_;
+    return NodePropResult::Ok;
 }
 
 void UiState::pushClick(const PendingClick& click) {
@@ -483,9 +547,13 @@ bool UiState::clickValidLocked(const PendingClick& c, Click& out) const {
     if (!ui::overlayShownOnCamera(desc, int(c.camera))) return false;  // 他のカメラ向け
     const std::vector<ui::ElementDesc>& elements = elementsIn(desc, uiAssets_);
     const std::size_t at = ui::elementIndex(elements, c.ref.element);
+    // 性質はノードの上書きまで重ねた値（描く側・当たりと同じ口 ui::resolveElements）。
+    const auto over = overrides_.find(c.ref.canvas);
+    const std::vector<ui::PropSet> resolved =
+        ui::resolveElements(elements, over == overrides_.end() ? nullptr : &over->second.props);
     // 見えるか（祖先も）は矩形を解かずに決める（描く側の layoutTree と同じ規則）。
-    const bool visible = ui::elementVisible(elements, {}, ui::parentIndices(elements), at);
-    if (!ui::acceptsClick(elements[at], elements[at].props, visible)) return false;
+    const bool visible = ui::elementVisible(elements, resolved, ui::parentIndices(elements), at);
+    if (!ui::acceptsClick(elements[at], resolved[at], visible)) return false;
     out.camera = c.camera;
     out.canvas = c.ref.canvas;
     out.element = c.ref.element;
@@ -509,7 +577,9 @@ void UiState::resetRuntime() {
     std::lock_guard<std::mutex> lk(mutex_);
     pointers_.clear();
     clicks_.clear();
-    ++runtimeVersion_;
+    overrides_.clear();
+    ++pointersVersion_;
+    ++overridesVersion_;
     ++runtimeGeneration_;
 }
 

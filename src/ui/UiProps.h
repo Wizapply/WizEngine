@@ -122,6 +122,23 @@ PropSet lerpProps(const PropSet& a, const PropSet& b, double t);
 // 要素 1 個に対するポインタの様子（カメラごと。持ち主は UiState の実行時の状態）。
 enum class PointerPhase : std::uint8_t { None, Hover, Pressed };
 
+// ---- ノード（SetUiProp）の性質と値 ---------------------------------------------
+// 性質の名前とノードの欄から、書き換える性質と値を決める（唯一の確かめ。読込の警告 =
+// SceneDocument と、実行 = Scene が同じ答えを使う = 2 つの確かめが食い違わない）。
+struct NodePropValue {
+    enum class Problem : std::uint8_t {
+        None,         // 使える
+        NoProp,       // 性質を選んでいない（置いたばかりのノード。警告しない = 未設定）
+        UnknownProp,  // 表に無い名前
+        BadText,      // text の欄が性質の型に合わない
+    };
+    Problem problem = Problem::NoProp;
+    const PropInfo* prop = nullptr;  // UnknownProp / NoProp では nullptr
+    PropValue value;                 // None のとき: 表の範囲へ丸めた値
+    std::string message;             // UnknownProp / BadText の理由（英語。ログと警告の本文）
+};
+NodePropValue nodePropValue(const std::string& propName, const NodeFieldValues& in);
+
 // ポインタの段ごとの背景の色を持つ性質（唯一の対応）。pointerColor・ブラウザへ送る要素ごとの
 // 「既定」（scene/UiJson）・「既定は派生」の判断（defaultIsDerived）がこの表を引く。
 struct PointerColorProp {
@@ -149,6 +166,10 @@ PropSet resolve(const PropSet& design, const PropSet& anim, const PropSet& node,
 // （kHoverLighten / kPressedDarken）。None は color のまま。描く側（resolve）と、ブラウザに
 // 送る「既定」の値（scene/UiJson）が使う。
 PropValue pointerColor(const PropSet& props, PointerPhase phase);
+// 性質 p の、描く側が使う値（重ねる前）: 書いてあればその値、書いていなければ既定が派生する
+// 性質（defaultIsDerived = hover / pressed）は派生した値（pointerColor）、ほかは表の既定値。
+// ノードの上書きが持たない成分（色の不透明度 = withNodeValue）をここから取る。
+PropValue effectiveValue(const PropSet& props, Prop p);
 
 }  // namespace ui
 }  // namespace wizengine

@@ -3482,6 +3482,9 @@
     onJointBreak:   { icon: '💥', label: 'ジョイントが切れたら', trigger: true, target: 'joint' },
     setVelocity:    { icon: '💨', label: '速度を与える', trigger: false, target: 'object' },
     setMotor:       { icon: '⚙️', label: 'モータの目標', trigger: false, target: 'joint' },
+    // UI のノード（本文は ui.js の uiNodeBody）。
+    onUiClick:      { icon: '🔘', label: 'ボタンが押されたら', trigger: true, target: 'canvas' },
+    setUiProp:      { icon: '🖼', label: 'UI の性質を変える', trigger: false, target: 'canvas' },
   };
   let nodeEdOpen = false;
   let ndGraphKey = '';   // 前回組み立てたグラフ+選択肢のキー（変化検知）
@@ -3967,10 +3970,10 @@
 
   // ノード追加メニューの並び（NODE_DEF から見出しとラベルを作る）。
   const NODE_MENU_TRIGGERS = ['onCollision', 'onStart', 'onUpdate', 'onTimer', 'onGrab',
-                              'onJointBreak'];
+                              'onJointBreak', 'onUiClick'];
   const NODE_MENU_ACTIONS = ['setColor', 'impulse', 'setVelocity', 'setFixed', 'grabPull',
                              'setMotor', 'lightColor', 'lightIntensity', 'cameraLookAt',
-                             'cameraBehind', 'cameraOrbit'];
+                             'cameraBehind', 'cameraOrbit', 'setUiProp'];
   function nodeMenuItems(x, y) {
     const item = (kind) => {
       const def = NODE_DEF[kind];
@@ -4414,6 +4417,8 @@
       h += ndRow('ジョイント', ndSelHtml(n.id, 'target', ndJointItems(), n.target,
                                          n.kind === 'onJointBreak' ? [[-1, '(どれでも)']]
                                                                    : [[-1, '(選んでください)']]));
+    } else if (def.target === 'canvas') {
+      h += uiNodeBody(n);  // UI のノード（ui.js）
     }
     if (n.kind === 'onCollision') {
       h += ndRow('相手', ndSelHtml(n.id, 'other', ndObjItems(), n.other,
@@ -4581,7 +4586,7 @@
       (sceneData.objects || []).map((o) => o.index + ':' + (o.name || '')).join(',') +
       '|' + (sceneData.lights || []).map((l) => l.index + ':' + (l.name || '')).join(',') +
       '|' + (sceneData.cameras || []).filter((c) => c.active !== false)
-              .map((c) => c.index).join(',');
+              .map((c) => c.index).join(',') + '|' + uiNodeOptKey();
     const key = 'e@' + JSON.stringify(g) + '@' + optKey + '@' +
       eventAssets().map((a) => a.name).join(',') + '@' +
       formulaAssets().map((a) => a.name).join(',');

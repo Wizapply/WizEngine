@@ -60,6 +60,24 @@ std::vector<int> parentIndices(const std::vector<ElementDesc>& elements) {
     return out;
 }
 
+std::vector<PropSet> resolveElements(const std::vector<ElementDesc>& elements,
+                                     const NodeOverrides* node,
+                                     const std::function<PointerPhase(int id)>& phase) {
+    static const PropSet kNone;
+    std::vector<PropSet> out;
+    out.reserve(elements.size());
+    for (const auto& e : elements) {
+        const PropSet* upper = &kNone;
+        if (node) {
+            const auto it = node->find(e.id);
+            if (it != node->end()) upper = &it->second;
+        }
+        // アニメの段は後の PR（今は無し）。
+        out.push_back(resolve(e.props, kNone, *upper, phase ? phase(e.id) : PointerPhase::None));
+    }
+    return out;
+}
+
 const PropSet& elementProps(const std::vector<ElementDesc>& elements,
                             const std::vector<PropSet>& resolved, std::size_t i) {
     return i < resolved.size() ? resolved[i] : elements[i].props;

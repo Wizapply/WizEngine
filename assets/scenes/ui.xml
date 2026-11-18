@@ -8,7 +8,8 @@
        * cameras="1" の Canvas が Camera 1 のページにだけ出るか
        * 後処理（ブルーム・ビネット）が UI に掛からないか
        * ボタン（下の中央）: シミュレート中に上に乗せると hover の色、押している間は
-         pressed の色になり、ボタンの上で離すとコンソールに "button click" が出るか。
+         pressed の色になり、ボタンの上で離すと左上の見出しの字が変わるか（イベント
+         start_heading = onUiClick → setUiProp。シミュレートを止めると元の字に戻る）。
          エディタ中は押せず、Text / Image と同じく選んで動かせるか
      字は同梱の Noto Sans JP（assets/fonts/、<font> を書かなければこれ）。 -->
 <wizengine model="ui" version="4">
@@ -21,6 +22,21 @@
   </visual>
   <asset>
     <ui name="hud" file="ui/hud.xml"/>
+    <!-- マウスで掴んだ物をカーソルへ引き寄せる（イベントの節を書くと既定では付かないので
+         default.xml と同じものを書く）。 -->
+    <event name="pickup">
+      <node id="1" type="onGrab" pos="40 40" target="-1"/>
+      <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+      <wire from="1" to="2"/>
+    </event>
+    <!-- ボタン start（Canvas 4 = buttons）を押したら、左上の板（Canvas 0 = title）の
+         見出し heading の字を変える。値は性質の型で決まる欄（text の性質は text 属性）。 -->
+    <event name="start_heading">
+      <node id="1" type="onUiClick" pos="40 40" target="4" element="start"/>
+      <node id="2" type="setUiProp" pos="300 40" target="0" element="heading" prop="text"
+            text="スタート！"/>
+      <wire from="1" to="2"/>
+    </event>
   </asset>
   <worldbody>
     <environment hdr="studio.hdr" intensity="30000"/>
@@ -74,4 +90,8 @@
               hover="0.3 0.55 0.95 1" pressed="0.1 0.28 0.6 1" textColor="1 1 1 1"/>
     </canvas>
   </worldbody>
+  <events>
+    <event name="pickup"/>
+    <event name="start_heading"/>
+  </events>
 </wizengine>

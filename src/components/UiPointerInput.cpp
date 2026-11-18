@@ -3,7 +3,6 @@
 #include <algorithm>
 
 #include "core/Json.h"
-#include "core/Log.h"
 #include "scene/Scene.h"
 #include "ui/UiKinds.h"
 #include "ui/UiLayout.h"
@@ -20,6 +19,8 @@ bool UiPointerInput::onCommand(Scene& scene, std::size_t camIndex, const std::st
                                const nlohmann::json& msg, const UiState::Snapshot& snap,
                                int viewW, int viewH) {
     if (camIndex >= cams_.size()) return false;
+    // ノードの上書き（実行時の状態）の写し。変わったときだけ写す（当たりは 1 フレーム古くてよい）。
+    scene.ui().copyOverridesIfChanged(overridesVersion_, overrides_);
     Cam& cam = cams_[camIndex];
     const bool dragOrRelease = cmd == "drag" || cmd == "release";
     if (cam.pressing && dragOrRelease) {
@@ -37,7 +38,7 @@ bool UiPointerInput::onCommand(Scene& scene, std::size_t camIndex, const std::st
 
 UiPointerInput::ButtonHit UiPointerInput::buttonAt(const UiState::Snapshot& snap,
                                                    std::size_t camIndex, double x, double y,
-                                                   int viewW, int viewH) {
+                                                   int viewW, int viewH) const {
     ButtonHit hit;
     if (viewW <= 0 || viewH <= 0) return hit;  // まだビューが無い
     // このカメラの映像に重なる Canvas を手前から（描く順と同じ規則 ui::canvasBehind の逆）。
@@ -53,7 +54,10 @@ UiPointerInput::ButtonHit UiPointerInput::buttonAt(const UiState::Snapshot& snap
         const ui::CanvasDesc& desc = *snap.liveCanvas(index);
         const std::vector<ui::ElementDesc>& elements = snap.elementsOf(desc);
         const ui::Rect canvas = ui::canvasRect(desc.height, viewW, viewH);
-        const std::vector<ui::LayoutNode> nodes = ui::layoutTree(elements, {}, canvas);
+        // 性質はノードの上書きまで重ねた値（描く側・クリックの確かめと同じ口）。
+        const std::vector<ui::PropSet> resolved =
+            ui::resolveElements(elements, overrides_.of(index));
+        const std::vector<ui::LayoutNode> nodes = ui::layoutTree(elements, resolved, canvas);
         double px = 0.0, py = 0.0;
         ui::ndcToCanvas(canvas, x, y, px, py);
         // 押下を受け止めるのはボタンだけ（上に重なった字や板はボタンを隠さない）。
@@ -63,7 +67,7 @@ UiPointerInput::ButtonHit UiPointerInput::buttonAt(const UiState::Snapshot& snap
         if (k < 0) continue;
         const ui::ElementDesc& e = elements[std::size_t(k)];
         hit.ref = snap.elementRef(index, e.id);
-        hit.accepts = ui::acceptsClick(e, e.props, nodes[std::size_t(k)].visible);
+        hit.accepts = ui::acceptsClick(e, resolved[std::size_t(k)], nodes[std::size_t(k)].visible);
         return hit;
     }
     return hit;
@@ -136,13 +140,4 @@ void UiPointerInput::pressCommand(Scene& scene, std::size_t camIndex, const std:
     pointer.canvas = cam.press.ref.canvas;
     if (cam.pressOver) pointer = pointerOver(cam.press, true);
     scene.ui().setPointer(camIndex, pointer);
-}
-
-void UiPointerInput::onPhysicsStep(Scene& scene) {
-    // 確かめたクリック（UiState::takeClicks が唯一の確かめ）。受け手のノード（OnUiClick）が
-    // できるまではログに出すだけ（取り出さないと、積んだ物が上限まで溜まる）。
-    for (const auto& c : scene.ui().takeClicks(scene.editor().modeEpoch())) {
-        LOGI("ui", "button click: canvas %d element %d '%s' (camera %zu)", c.canvas, c.element,
-             c.name.c_str(), c.camera);
-    }
 }

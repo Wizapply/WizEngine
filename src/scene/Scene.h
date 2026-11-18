@@ -577,6 +577,10 @@ private:
         std::size_t camera = 0;              // OnGrab: 掴んでいるカメラ
         bool hasPoint = false;               // OnGrab: カーソルの指す点
         double px = 0.0, py = 0.0, pz = 0.0;
+        // OnUiClick: 押されたボタン（Canvas の番号・要素の id。-1 = 無し）。SetUiProp の
+        // target / element を書いていないときの相手。
+        int uiCanvas = -1;
+        int uiElement = -1;
     };
     // 発火したトリガーから繋がった 1 個のアクションを実行する。
     void runGraphAction(const wizengine::editor::NodeDesc& node,
@@ -588,6 +592,18 @@ private:
                            const GraphContext& ctx);
     // 付いているアセットの一覧（実行の単位）を作り直す。
     void rebuildGraphInstances();
+    // ---- UI のノード（SceneUiEvents.cpp。PHYSICS スレッド）-------------------
+    // このステップのボタンのクリックを UiState から取り出す（runEventGraph の先頭で毎ステップ
+    // 1 回。取り出さないと積んだ物が上限まで溜まる）。
+    void collectUiClicks();
+    // UI のトリガー（OnUiClick）が発火する文脈を fires に足す（ほかの種類は何もしない）。
+    void collectUiTriggers(const wizengine::editor::NodeDesc& node, const GraphContext& base,
+                           std::vector<GraphContext>& fires);
+    // 取り込んだグラフ（graphRt_.assets）の SetUiProp の性質と値を 1 回だけ解いて持つ
+    // （graphRt_.ui.compiled。assets を取り直したら呼ぶ）。
+    void compileUiNodes();
+    // UI のアクション（SetUiProp）を実行する（ほかの種類は何もしない）。
+    void runUiAction(const wizengine::editor::NodeDesc& node, const GraphContext& ctx);
     // イベントアセットを既定の構成（マウス操作スクリプト）へ戻す。
     // 節を持たない文書の読み込みと「全消し」で使う - ライトを 1 灯も書かない
     // 文書が初期構成で開くのと同じ扱い（掴んでも動かないシーンで始めない）。
@@ -641,7 +657,7 @@ private:
     // 実行時の上書き（色・ライト・固定）を捨てて設計値へ戻す。
     // シミュレートの開始・停止・Reset で呼ぶ。
     void resetGraphRuntime();
-    // 消えた対象（オブジェクト / ライト / カメラ）を参照するノードを掃除する。
+    // 消えた対象（オブジェクト / ライト / カメラ / Canvas）を参照するノードを掃除する。
     // 対象そのものが消えたノードは削除、OnCollision の相手フィルタだけが
     // 消えた場合は「何でも」(-2) に戻す。ジョイントの掃除と同じ流儀。
     void pruneGraphForRemoved(wizengine::editor::NodeTargetKind kind, int index);
@@ -1317,6 +1333,16 @@ private:
         // カメラのアクションの注文（カメラ番号ごと、PHYSICS 専用）。毎ステップ
         // の終わりに cameraRigs_ へ写す。
         std::vector<CameraRig> rigs;
+        // UI のノードの実行状態（SceneUiEvents.cpp）。
+        struct UiPart {
+            // このステップのクリック（collectUiClicks が毎ステップ入れ替える）。
+            std::vector<wizengine::UiState::Click> clicks;
+            // 動かせなかった SetUiProp の警告の文（同じ文は 1 回だけ LOGW。開始ごとに空）。
+            std::set<std::string> warned;
+            // SetUiProp のノード（graphRt_.assets の中を指す）→ 解いた性質と値（compileUiNodes）。
+            std::map<const wizengine::editor::NodeDesc*, wizengine::ui::NodePropValue> compiled;
+        };
+        UiPart ui;
     };
     GraphRuntime graphRt_;
     // ステップの注文を cameraRigs_ へ写す（PHYSICS）。

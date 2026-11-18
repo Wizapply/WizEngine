@@ -159,6 +159,7 @@ Result removeCanvas(UiState& state, const nlohmann::json& args) {
     ui::CanvasDesc removed;
     Result r;
     if (!state.removeCanvas(index, &removed)) return r;  // 行き違い（もう無い）
+    r.removedCanvas = index;
     r.status = "UI: " + ui::canvasLabel(removed, index) + " を削除しました";
     return r;
 }

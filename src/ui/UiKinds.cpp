@@ -36,9 +36,13 @@ void elementColor(const ResolvedElement& e, Prop colorProp, float out[4]) {
     out[3] = float(c.v[3] * e.alpha);
 }
 
+bool kindCatchesPointer(const ElementKindInfo& kind) {
+    return kind.interaction == Interaction::Click;
+}
+
 bool catchesPointer(const ElementDesc& e) {
     const ElementKindInfo* kind = kindInfo(e.kind);
-    return kind && kind->interaction == Interaction::Click;
+    return kind && kindCatchesPointer(*kind);
 }
 
 bool acceptsClick(const ElementDesc& e, const PropSet& props, bool visible) {

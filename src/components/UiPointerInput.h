@@ -29,8 +29,9 @@ class Scene;
 // UiState へ直接置く（見た目に物理の 1 パスを待たせない）。受け付けない（enabled = false の）
 // ボタンも同じく置き、見た目を変えないのは描く側（ui::resolve）の判断。クリックを積むのは
 // 受け付けるボタン（ui::acceptsClick）だけで、押したときの世代（モード・実行時・要素の参照）を
-// 添える。PHYSICS が UiState::takeClicks で確かめて取り出す（今はログに出すだけ。受け手の
-// ノード OnUiClick は後のタスク）。
+// 添える。PHYSICS が UiState::takeClicks で確かめて取り出し、ノードの OnUiClick が受ける
+// （Scene::collectUiClicks）。当たりの性質はノード（SetUiProp）の上書きまで重ねた値
+// （ui::resolveElements。実行時の状態は版で写す）。
 class UiPointerInput {
 public:
     explicit UiPointerInput(std::size_t cameraCount);
@@ -41,8 +42,6 @@ public:
     bool onCommand(Scene& scene, std::size_t camIndex, const std::string& cmd,
                    const nlohmann::json& msg, const wizengine::UiState::Snapshot& snap,
                    int viewW, int viewH);
-    // PHYSICS（シミュレートの毎ステップ）: 確かめたクリックを取り出す。
-    void onPhysicsStep(Scene& scene);
 
 private:
     // 映像の上のボタンの当たり。
@@ -60,8 +59,8 @@ private:
     };
 
     // 映像の位置 (x, y)（NDC）にあるボタン（押下を受け止める種類だけ = ui::catchesPointer）。
-    static ButtonHit buttonAt(const wizengine::UiState::Snapshot& snap, std::size_t camIndex,
-                              double x, double y, int viewW, int viewH);
+    ButtonHit buttonAt(const wizengine::UiState::Snapshot& snap, std::size_t camIndex,
+                       double x, double y, int viewW, int viewH) const;
     // ボタン hit の上にいる（pressed = 押している）ときのポインタ（hit が無ければ「無し」）。
     static wizengine::UiState::Pointer pointerOver(const ButtonHit& hit, bool pressed);
     // hover / pick。epoch / generation = 受け付けるかを見る前に読んだ世代。
@@ -74,4 +73,8 @@ private:
                       int viewW, int viewH);
 
     std::vector<Cam> cams_;  // 数は作るときに決まり、以後変えない
+    // UiState のノードの上書きの写し（当たりに使う）と、その版（INPUT 専用。変わった Canvas
+    // だけ写し直す）。
+    wizengine::UiState::NodeOverrideSet overrides_;
+    std::uint64_t overridesVersion_ = 0;
 };

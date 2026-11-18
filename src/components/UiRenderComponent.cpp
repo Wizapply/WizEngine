@@ -235,13 +235,11 @@ ui::UiMeshData UiRenderComponent::buildOne(wizengine::Renderer& renderer, int in
                                            const ui::CanvasDesc& desc, double canvasWidth,
                                            const wizengine::UiState::Pointer& pointer) {
     const std::vector<ui::ElementDesc>& elements = snap_.elementsOf(desc);
-    // 重ね順（設計値 → アニメ → ノード → ポインタ）。アニメとノードの段は後の PR。
-    const ui::PropSet none;
-    std::vector<ui::PropSet> resolved;
-    resolved.reserve(elements.size());
-    for (const auto& e : elements) {
-        resolved.push_back(ui::resolve(e.props, none, none, pointer.phaseOf(index, e.id)));
-    }
+    // 重ね順（設計値 → アニメ → ノード → ポインタ。重ね方は ui::resolveElements の 1 か所）。
+    // アニメの段は後の PR。
+    const std::vector<ui::PropSet> resolved = ui::resolveElements(
+        elements, overrides_.of(index),
+        [&pointer, index](int id) { return pointer.phaseOf(index, id); });
 
     ui::UiTextureLookup lookup;
     lookup.fontPage = [this](int /*page*/) { return atlasTexture_; };
@@ -259,6 +257,8 @@ void UiRenderComponent::buildMeshes(wizengine::Renderer& renderer, bool all) {
         // 組み直すのは、この Canvas の材料（自分・使っている UI・フォント）が変わったときだけ
         // （ほかの Canvas の編集やドラッグでは組まない）。
         const std::uint64_t revision = snap_.contentsRevision(int(index));
+        // ノードの上書き（実行時の状態）の版。変わった Canvas だけ組み直す。
+        const std::uint64_t overrides = overrides_.revision(int(index));
         // 同じ縦横比で同じポインタのビューは同じ中身（組むのはその組ごとに 1 回）。
         using Key = std::tuple<double, int, int>;  // 幅・ポインタの上・押下
         struct Pending {
@@ -270,7 +270,8 @@ void UiRenderComponent::buildMeshes(wizengine::Renderer& renderer, bool all) {
             const double width = canvasWidthOn(renderer, desc, view);
             const wizengine::UiState::Pointer pointer = pointerOn(view, int(index));
             const ViewBuild& b = slot.built[view];
-            const bool sameMaterial = b.revision == revision && b.generation == generation;
+            const bool sameMaterial = b.revision == revision && b.generation == generation &&
+                                      b.overrides == overrides;
             const bool samePointer = b.hover == pointer.hover && b.pressed == pointer.pressed;
             const bool upToDate = sameMaterial && b.canvasWidth == width && samePointer;
             if (upToDate && !all) continue;
@@ -289,7 +290,7 @@ void UiRenderComponent::buildMeshes(wizengine::Renderer& renderer, bool all) {
                 renderer.setUiCanvasMesh(slot.rendererId, views[k],
                                          last ? std::move(mesh) : ui::UiMeshData(mesh));
                 slot.built[views[k]] = {revision, width, generation, pointer.hover,
-                                        pointer.pressed};
+                                        pointer.pressed, overrides};
             }
         }
     }
@@ -379,8 +380,10 @@ void UiRenderComponent::updateFrame(wizengine::Renderer& renderer) {
 
 void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::UiState& state) {
     const bool changed = state.copyIfChanged(version_, snap_);
-    // ポインタ（実行時の状態）は別の版。変わったビューだけを buildMeshes が組み直す。
-    state.copyPointersIfChanged(runtimeVersion_, pointers_);
+    // 実行時の状態（ポインタ・ノードの上書き）は別の版。変わったビュー・Canvas だけを
+    // buildMeshes が組み直す。
+    state.copyPointersIfChanged(pointersVersion_, pointers_);
+    state.copyOverridesIfChanged(overridesVersion_, overrides_);
     if (changed) {
         anyAlive_ = anyAliveCanvas();  // 写したときに 1 回だけ数える
         // 一覧が縮んだ（全消し・読込）ら、外になった番号の警告の記録を捨てる（次に同じ

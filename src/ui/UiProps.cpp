@@ -185,11 +185,43 @@ PropSet resolve(const PropSet& design, const PropSet& anim, const PropSet& node,
     return out;
 }
 
+NodePropValue nodePropValue(const std::string& propName, const NodeFieldValues& in) {
+    NodePropValue out;
+    if (propName.empty()) return out;  // NoProp
+    const PropInfo* suggestion = nullptr;
+    out.prop = propFromName(propName, &suggestion);
+    if (!out.prop) {
+        out.problem = NodePropValue::Problem::UnknownProp;
+        out.message = "unknown property \"" + propName + "\"" +
+                      (suggestion ? std::string(" (did you mean \"") + suggestion->name + "\"?)"
+                                  : std::string());
+        return out;
+    }
+    PropValue v;
+    if (!valueFromNodeFields(out.prop->spec, in, v)) {
+        out.problem = NodePropValue::Problem::BadText;
+        out.message = "text \"" + in.text + "\" is not a valid " +
+                      propTypeName(out.prop->spec.type) + " value for \"" + propName + "\"";
+        return out;
+    }
+    out.problem = NodePropValue::Problem::None;
+    out.value = clampValue(out.prop->spec, std::move(v));
+    return out;
+}
+
 bool defaultIsDerived(Prop p) {
     for (const auto& c : kPointerColorProps) {
         if (c.prop == p) return true;
     }
     return false;
+}
+
+PropValue effectiveValue(const PropSet& props, Prop p) {
+    if (props.has(p)) return props.get(p);
+    for (const auto& c : kPointerColorProps) {
+        if (c.prop == p) return pointerColor(props, c.phase);
+    }
+    return props.get(p);
 }
 
 PropValue pointerColor(const PropSet& props, PointerPhase phase) {

@@ -66,7 +66,6 @@ public:
 
     bool onCommand(Scene& scene, std::size_t camIndex,
                    const nlohmann::json& msg) override;
-    void onPhysicsStep(Scene& scene, double dt) override;
     void onEditorStep(Scene& scene, double dt) override;
     void onRender(Scene& scene) override;
 

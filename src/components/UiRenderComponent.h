@@ -32,6 +32,8 @@ class Renderer;
 // シミュレート中のボタンの見た目（ポインタが上にある・押している）は、UiState の実行時の
 // ポインタ（カメラごと）を重ね順の最後の段（ui::resolve の pointer）に入れて組む。ポインタは
 // カメラごとなので、そのカメラのビューの中身だけが変わる（組み直しの条件にもビューごとに入る）。
+// ノード（SetUiProp）の上書きは「ノード」の段（ui::resolveElements）で、上書きの版が変わった
+// Canvas だけを組み直す。
 // エディタの選択枠（選んでいる要素の枠とつまみ、ui/UiHandles.h の形）も、エディタ
 // カメラのビューにだけ出す専用の Canvas として描く（どの UI よりも手前。後処理なし）。
 // onRender が選択とエディタカメラを写し、組み立ては onRenderUnlocked。
@@ -50,6 +52,7 @@ private:
         int generation = -1;        // 字の置き場の世代
         // そのビューのカメラのポインタ（この Canvas の上のボタンの id。-1 = 無し）
         int hover = -1, pressed = -1;
+        std::uint64_t overrides = 0;  // ノードの上書きの版（Runtime::overridesRevision）
     };
     struct CanvasSlot {
         std::size_t rendererId = 0;
@@ -119,9 +122,12 @@ private:
     std::vector<int> cameraViews_;
     // シミュレート中か（onRender が写す。エディタ中はポインタの段を使わない）。
     bool simulating_ = false;
-    // カメラ（スロット番号）→ ポインタ（UiState の実行時の状態の写し）と、その版。
+    // UiState の実行時の状態の写しと、その版: カメラ（スロット番号）→ ポインタと、ノードの
+    // 上書き（版は別 = ボタンをまたいでも上書きは写し直さない）。
     std::vector<wizengine::UiState::Pointer> pointers_;
-    std::uint64_t runtimeVersion_ = 0;
+    std::uint64_t pointersVersion_ = 0;
+    wizengine::UiState::NodeOverrideSet overrides_;
+    std::uint64_t overridesVersion_ = 0;
     // 選択枠の対象（onRender が写す。-1 = 出さない = 選択が無い・エディタモードでない・
     // プレハブ編集中）とエディタカメラのスロット番号。
     int frameCanvas_ = -1, frameElement_ = -1;

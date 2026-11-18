@@ -8,6 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/SceneLimits.h"
+
 // UI の値の型と表記（XML の属性文字列・JSON ⇄ 値、丸め、補間）。
 //
 // 性質の表（UiProps）と Canvas の属性の表（UiTypes.h の kCanvasAttrs）が同じ
@@ -68,7 +70,7 @@ struct ValueSpec {
 
 // ---- 部品 --------------------------------------------------------------------
 // 文字列の値の上限（バイト。Text の性質と、正しくない添字の並びに保つ文字列）。
-inline constexpr std::size_t kMaxTextBytes = 4096;
+inline constexpr std::size_t kMaxTextBytes = kMaxUiTextBytes;  // core/SceneLimits.h
 
 // 整数への丸めは core/Clamp.h の roundToInt（XML の整数属性と同じ規則）。
 
@@ -135,6 +137,36 @@ PropValue lerpValue(const ValueSpec& spec, const PropValue& a, const PropValue& 
                     double t);
 // 型の意味で同じ値か（保存で既定値を書かないための比較）。
 bool sameValue(const ValueSpec& spec, const PropValue& a, const PropValue& b);
+
+// ---- ノードの欄 --------------------------------------------------------------
+// 性質を書き換えるノード（SetUiProp）が値を置く欄の割り当て（唯一の定義）。ノードは性質
+// ごとの欄を持たず、値の型で決まる欄に置く: value = 数・整数・真偽（0 / 1）、vec = 2〜3
+// 成分（Vec2 は x y）、color = 色の rgb（不透明度は持たない = 設計値のまま。透けさせるのは
+// alpha の性質）、text = それ以外（揃え・アンカー・文字・パスなど。属性の文字列 =
+// parseValue / formatValue）。
+// 文書の読み書き（SceneDocument）・実行（Scene）・ブラウザの欄（schema の nodeField）が引く。
+enum class NodeField : std::uint8_t { Value, Vec, Color, Text };
+NodeField nodeField(PropType type);
+// 欄の名前（"value" / "vec" / "color" / "text" = ノードの JSON のキーと同じ）。
+const char* nodeFieldName(NodeField field);
+// ノードの欄の値（document の NodeDesc から詰め替えて渡す = ui はノードの型を知らない）。
+struct NodeFieldValues {
+    double value = 0.0;
+    double vec[3] = {0.0, 0.0, 0.0};
+    double color[3] = {0.0, 0.0, 0.0};  // rgb（リニア値）
+    std::string text;
+};
+// 欄の値 → 性質の値（nodeField の欄だけを見る）。text の欄は parseValue で読み、読めなければ
+// false で out は変えない。範囲へは丸めない（呼び手が clampValue）。欄が持たない成分（色の
+// 不透明度）は表の既定値（重ねるときに withNodeValue が設計値へ戻す）。
+bool valueFromNodeFields(const ValueSpec& spec, const NodeFieldValues& in, PropValue& out);
+// 逆向き: 性質の値 → 欄の値（nodeField の欄だけを埋める。text の欄は formatValue）。ノード
+// エディタで性質を選び直したときの欄の既定値（scene/UiJson の schema の nodeDef）に使う。
+NodeFieldValues nodeFieldsFromValue(const ValueSpec& spec, const PropValue& value);
+// ノードの値 nodeValue を、重ねる前の値 design の上に置いた値（唯一の規則）: ノードの欄が
+// 持たない成分（色の不透明度）は design のまま。
+PropValue withNodeValue(const ValueSpec& spec, const PropValue& nodeValue,
+                        const PropValue& design);
 
 }  // namespace ui
 }  // namespace wizengine

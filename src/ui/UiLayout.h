@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <vector>
 
 #include "ui/UiProps.h"
@@ -78,6 +79,17 @@ std::vector<int> parentIndices(const std::vector<ElementDesc>& elements);
 // これを通して読む。
 const PropSet& elementProps(const std::vector<ElementDesc>& elements,
                             const std::vector<PropSet>& resolved, std::size_t i);
+
+// 要素の id → ノードの上書き（SetUiProp が書いた性質。持ち主は UiState の実行時の状態）。
+using NodeOverrides = std::map<int, PropSet>;
+// Canvas の要素ごとの重ね済みの性質（並びは elements と同じ）。重ね方の唯一の口:
+// 要素ごとに ui::resolve（設計値 → アニメ → ノード → ポインタ）を当てる。node = その Canvas の
+// ノードの上書き（nullptr = 無し）、phase = 要素の id → ポインタの段（空 = 無し）。描く側・
+// ボタンの当たり（INPUT）・クリックの確かめ（PHYSICS）が同じこの口で読む = SetUiProp で
+// visible / enabled / pos を変えれば、見た目と押せる場所が一緒に変わる。
+std::vector<PropSet> resolveElements(const std::vector<ElementDesc>& elements,
+                                     const NodeOverrides* node,
+                                     const std::function<PointerPhase(int id)>& phase = {});
 
 // i 番目の要素が見えるか（唯一の規則）: 自分と祖先が全部 visible（性質は elementProps）。
 // parents = parentIndices(elements) の結果。矩形は解かない（クリックの確かめのように、
