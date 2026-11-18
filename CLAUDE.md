@@ -42,7 +42,7 @@ PhysicsWorld.step(dt)
 
 **エディタ** は物理を止めて、置く・大きさを決める・ジョイントを設計する時間。
 **シミュレート** は今までどおり Chrono を回す時間。切り替えはブラウザ上部の
-2 ボタン、既定は `SceneConfig.h` の `kStartMode`（初期値 Simulate＝従来の挙動）。
+2 ボタン、既定は config.json の `scene.startMode`（初期値 simulate＝従来の挙動）。
 
 - **設計値と実体を分ける**。オブジェクトは `GameObject::desc`（`editor::BodyDesc`＝
   形・大きさ・置いた姿勢・質量・色）と、実体（`physId` = Chrono、`renderId` =
@@ -56,6 +56,12 @@ PhysicsWorld.step(dt)
 - **生成は2スレッドにまたがる**。物理スレッドが剛体を作って `boxes_` に足し
   （`renderId` は未確定）、描画スレッドが次のフレームで `syncRenderables()` から
   レンダラブルを作る。削除はその逆順。つまり「置いた次のフレームから見える」。
+- **削除は Inspector の 🗑・オブジェクトの右クリック（ビュー / 階層一覧の「🗑 削除」。
+  ライトの行・Cameras 一覧の行も右クリックで消せる）・
+  Delete / Backspace キー**（app.js の `deleteSelection`。エディタモード×エディタカメラの
+  ページで、入力欄にフォーカスが無くモーダルが閉じているときだけ。選択の種類で
+  対象が変わる = プレハブ編集中は部品、ライト / カメラ / 地面 / テレイン、無ければ
+  オブジェクト。送るのは既存の `edit.remove {index}` などでサーバーは無変更）。
 - **削除しても番号は詰めない**（`GameObject::alive = false`）。詰めるとブラウザの
   選択とジョイントの参照が別の物を指す。Chrono 側も本当には消さず
   `PhysicsWorld::disableBody()`（当たり判定を切って地面の下へ）。Multicore
@@ -70,8 +76,10 @@ PhysicsWorld.step(dt)
   `ChLinkLockLock` / `...Revolute` / `...Spherical` / `...Prismatic` /
   `ChLinkDistance`。**Revolute と Prismatic はリンク座標系の Z 軸が基準**なので、
   ユーザー指定のワールド軸を Z に合わせる四元数を作って渡している
-  （直動モータ `ChLinkMotorLinear*` と PointLine だけは X 軸基準 =
-  `quatFromXAxis`）。文書のジョイント → `JointSpec` の変換（度 → rad）は
+  （PointLine だけは X 軸基準 = `quatFromXAxis`。直動モータ
+  `ChLinkMotorLinear*` は **Chrono 8 まで X 軸、9.0 から Z 軸**なので `CH_VERSION`
+  で分けている - 以前は 9 でも X を渡していて、slide のモータは軸方向がガイドで
+  固まって横へ押していた = 動かなかった。V6 のバルブで見つけた）。文書のジョイント → `JointSpec` の変換（度 → rad）は
   `SceneInternal.h` の `toJointSpec` 1 か所。
 - **`objectsMutex_` は「一覧の構造」だけを守る**。書くのは物理スレッドだけなので
   そのスレッドは読むときにロック不要。他のスレッド（HTTP の階層 JSON、INPUT の
@@ -83,7 +91,7 @@ PhysicsWorld.step(dt)
   定義。保存時にオブジェクト番号を詰め、ジョイント・イベントノードの参照も
   付け替える。名前は英数字と `_ -` だけに正規化（保存先を assets/scenes に
   固定するため）。旧 `*.json`（version 1〜3）は**読み込みだけ**できる。
-- **シーンを書き換えるエディタ操作はエディタカメラ（`kEditorCamera`、既定 0）
+- **シーンを書き換えるエディタ操作はエディタカメラ（config.json の `scene.editorCamera`、既定 0）
   のページ専用**。edit.*（sim を除く）は EditorComponent が、ギズモの pick /
   drag / hover は GizmoComponent が、他のカメラからのぶんを弾く。UI 側もその
   ページ以外では Inspector タブを隠すが、**判定はサーバーが持つ**（リクエスト
@@ -91,7 +99,7 @@ PhysicsWorld.step(dt)
   **どのカメラからでも切り替え可** - シーンの中身を書き換える操作ではなく、
   Camera 1/2 で観察しながら回す・止めるのは普通の使い方のため（エディタ
   カメラは「編集できる」カメラなだけで、モードを握ってはいない）。
-  `edit.sim`（シミュレート設定）も全カメラ可: World/Physics タブは全ページにあり、
+  `edit.sim`（シミュレート設定）も全カメラ可: World タブは全ページにあり、
   隣に並ぶ Solver / Rate は誰でも触れるので、これだけ弾くと分かりにくい。
 - **ライトとカメラもエディタで編集できる**（追加・削除・位置・向き。
   **エディタモード×エディタカメラ限定** - edit.light.* / edit.camera.* と
@@ -102,9 +110,9 @@ PhysicsWorld.step(dt)
   (0,-1,0)」**（`scenemath::lightDirection`）。種類・影・減衰・円錐角は
   Filament のライト実体を決めるので、変更 = 実体の作り直し（`rebuild`）。
   初期 2 灯は `lightConfigs()`（方向ベクトル表記）を取り込んで編集可能に
-  している。カメラは **`kMaxCameras`（既定 5、exe 引数 `--max-cameras N` で
-  1〜16 に上書き可 - スロット数は実行環境の割り当てなので CPU コア指定と
-  同じく起動引数。main が Scene のコンストラクタへ渡す）個の固定スロット**。
+  している。カメラは **config.json の `scene.maxCameras`（既定 5、1〜16。exe 引数
+  `--max-cameras N` で上書き可 - スロット数は実行環境の割り当てなので CPU コア
+  指定と同じく起動設定。main が `SceneSystemConfig` で Scene へ渡す）個の固定スロット**。
   ページと
   WebRTC の受け口は起動時に全部できているが、**動画ビュー（スワップチェーン +
   読み戻しバッファ）は予備スロットぶんを作り置きせず、「カメラを追加」
@@ -115,7 +123,11 @@ PhysicsWorld.step(dt)
   生きたまま、一覧から消える）。位置・向きの編集はオービット表現との変換
   （位置 = 視点ごと平行移動、回転 = pitch/yaw ⇄ elevation/azimuth。
   `Scene::cameraEditPose` が唯一の定義で、UI の数字・ギズモ・camera.set が
-  揃う。ロールは無い）。**選択は EditorState の editorSel（atomic）**で、
+  揃う。ロールは無い）。**寄れるのは注視点から 10 cm まで**（`CameraObject::Config::
+  minRadius`、以前の 2 m ではエンジンの部品に寄れなかった）。near クリップは
+  `Renderer::setCamera` が注視点までの距離の 1/10（0.5 cm〜10 cm）に縮める =
+  寄っても手前が切れない（深度は逆 Z の float なので near を小さくしても精度は
+  落ちない）。**選択は EditorState の editorSel（atomic）**で、
   オブジェクト選択（BoxController）とは排他 - 立てる側が必ず反対を消す。
   エディタカメラのビューには**ライト（黄）/ カメラ（水色）の線画アイコン**
   （GizmoComponent がバッチ 5/6 に毎フレーム構築、エディタ専用レイヤ）が
@@ -140,9 +152,9 @@ PhysicsWorld.step(dt)
   ボタンなので、開く側は結局 ☰ が受け持っていた）。サイドバーのヘッダは
   「ロゴ / Charon / Version 1.0.0 (WizEngine)」の表記のみで、カメラ名は映像ヘッダーが
   受け持つ。
-- ブラウザ側のタブは **Scene / Inspector / World/Physics**（`web/index.html` +
+- ブラウザ側のタブは **Scene / Inspector / World**（`web/index.html` +
   `app.js` の `renderEditor()`。Inspector の内部 id は `tabEditor` /
-  `paneEditor`、World/Physics は `tabPhysics` / `panePhysics` のまま）。
+  `paneEditor`、World は `tabPhysics` / `panePhysics` のまま）。
   **シミュレート → エディタに戻ったら、ブラウザは必ず Editor Camera の
   ページへ移る**（app.js の `followEditorCamera`。ポーリングで見た前回の
   モードとの差分で判定するので、どのページ・どの経路で戻しても同じ。開いた
@@ -153,7 +165,9 @@ PhysicsWorld.step(dt)
   エディタモード×エディタカメラのページでは**クリック = エディタ選択**
   （ビューにギズモが出て移動 / 回転。もう一度で解除。数値・削除は選択で
   出る Inspector の「選択カメラ」節）、追加は見出しの ＋、ページ移動は
-  ダブルクリック、映像の確認は行の目アイコン。それ以外では従来どおり
+  ダブルクリック、映像の確認は行の目アイコン、**削除は行の右クリック**
+  （選択 / ページへ移動 / 映像 / 🗑 削除のメニュー。エディタカメラ自身は
+  消せないので灰色）。それ以外では従来どおり
   クリック = ページ移動。**Inspector に常設のカメラ一覧は置かない** -
   Inspector は「選択しているものの内容」だけ、という整理（一覧と選択の
   二重表示になるため一度置いて廃止した）。行の目アイコン（👁 の絵文字は
@@ -172,7 +186,7 @@ PhysicsWorld.step(dt)
   窓なので、走らせる段になったら残さない。**シーン全体の設定は Physics
   タブ**: World 節（`secWorld`。環境光 = HDR・強さ・背景 = `edit.environment`
   と、シーン全体のイベントの付け外し）と描画節（`secRender`、`<visual>` =
-  `edit.render`）は、以前 Inspector に常設していたが World/Physics タブへ移した
+  `edit.render`）は、以前 Inspector に常設していたが World タブへ移した
   （Inspector は選択しているものの内容だけ、という整理）。どちらも
   エディタカメラのページ専用の edit.* を送るので、`renderEditor()` が
   そのページでだけ表示する（edit.sim と違ってサーバーは他のページからの
@@ -221,7 +235,7 @@ PhysicsWorld.step(dt)
   置いてクリックを受け、エディタモード×Editor Camera のページでだけ
   `renderEditor()` が表示する。**Inspector は「選択しているオブジェクトの
   内容」だけ**: Transform・質量・固定・色に加え、**付いているイベント
-  アセットの一覧**（付ける / 外す。シーン全体ぶんは World/Physics タブの World 節）と、ジョイント節も
+  アセットの一覧**（付ける / 外す。シーン全体ぶんは World タブの World 節）と、ジョイント節も
   選択時のみ表示し、一覧は選択が関わるものに絞る（どのジョイントにも地面でない体が
   必ずあるので、どれかを選べば必ず一覧に届く）。ギズモの数値設定（スナップ・
   刻み・グリッド）は普段隠れた `secGizmo` 節で、ツールバー右端の ⚙
@@ -232,10 +246,16 @@ PhysicsWorld.step(dt)
   メッシュはクリックで配置、**イベントアセット（⚡）はクリックで
   ノードエディタに開く**（「✨ 新しいイベント」で作成）、保存済み
   シーンはダブルクリックで読込（confirm 付き。読込は現在の配置を置き換える
-  ため）。見出し下の操作列（`.asBar`）に、新規オブジェクトの初期値
-  （edNewSize / edNewColor）とシーン名・💾保存・🗑全消し（旧 Inspector の
-  配置・シーン節の移設先。読込ボタンと保存済み select は廃止＝タイルが
-  受け持つ）。エディタモード中の Editor Camera ページにだけ出る。見た目と見出しはサイド
+  ため）。見出し下の操作列（`.asBar`）に、✨ 新規シーン・💾保存・📄 XML・🤖 AI・📥 取込
+  （旧 Inspector の配置・シーン節の移設先。読込ボタンと保存済み select は廃止＝
+  タイルが受け持つ）。**シーンの名前は「新規シーン」で決める**（`edit.new {name}` =
+  空のシーンにして sceneFile をその名前にする。ファイルはまだ書かない。既にある
+  名前なら上書きの確認）。💾 保存は今の名前（新規・読込で決まる。映像ヘッダーの
+  シーンタイトル）へ書き、無題なら押したときに名前を聞く。以前の「シーン名の
+  欄」とタイルのクリックで名前を入れる動きは廃止。🗑 全消しのボタンも廃止した
+  （サーバーの `edit.clear` は残っている）。
+  新しく置く物の大きさ・色の欄は持たない（置いた後に Inspector で
+  決める。edit.add はサーバーの既定 = 0.5 m・BodyDesc の色で置く）。エディタモード中の Editor Camera ページにだけ出る。見た目と見出しはサイド
   バーの流儀（見出しクリックで折りたたみ）。高さは textarea と同じ右下の
   つまみ（CSS の `resize: vertical`。ドラッグ結果はブラウザが inline style に
   書くだけなので、ResizeObserver で拾って localStorage に記憶・復元する）。
@@ -247,8 +267,47 @@ PhysicsWorld.step(dt)
   scrollBy で動かすとなめらかスクロールが効かないので CSS の切替だけで
   済ませる）。シミュレート設定（重力・摩擦・反発・減衰・スリープ）・
   World（環境光とシーン全体のイベント）・描画（`<visual>`）といった
-  シーン全体の設定は World/Physics タブに置く。入力欄は 500ms ポーリングで上書きされるが、
+  シーン全体の設定は World タブに置く。入力欄は 500ms ポーリングで上書きされるが、
   **フォーカス中の欄だけは触らない**（打っている途中の数字が消えるため）。
+
+## ローカルアセットとグローバルアセット（アセットパネル）
+
+アセットパネル（`renderAssets`）は **🧱 作成 / 📍 ローカル / 🌐 グローバル** の 3 区分
+（見出しは `.asSec`）。
+
+- **🧱 作成** … 組み込み（Box・球・Soft・Stairs・ライト・Ground・Terrain）。クリックで置く。
+- **📍 ローカル** … このシーンだけの物。中身がシーンの XML に入る: 宣言したメッシュ
+  （`<asset><mesh>`）・イベント / 計算式 / プレハブのうち file の無いもの。
+- **🌐 グローバル** … 全シーン共通の物。中身が assets/ のファイル:
+  イベント（`assets/events/`）・計算式（`assets/formulas/`）・プレハブ（`assets/prefabs/`）・
+  モデル（assets/ 以下の .glb / .gltf。web / scenes / events / formulas / prefabs /
+  terrains / materials は見ない、2000 件まで）・テレイン・シーン。**このシーンで使って
+  いる物は濃く（🌐 の印）、まだ使っていない物は薄く**（クリック = このシーンで使う =
+  `edit.lib.import`。モデルはこのシーンに宣言して置く = `edit.mesh.add` を送り終えて
+  から `edit.add`。fetch は並行に飛ぶので続けて送ると逆順に着くことがある）。
+
+**グローバルの計算式・プレハブはイベントの共通化と同じ流儀**（`src/scene/SceneLibrary.cpp`）:
+シーンの XML は `<formula name file="formulas/x.xml"/>` / `<prefab name
+file="prefabs/x.xml"/>` の参照だけを書き（`FormulaGraphDesc::file` / `PrefabDesc::file`。
+子要素を書いても警告して読まない）、ファイルはルートがその要素の同じ書式
+（`formulaToLibraryXmlText` / `parsePrefabLibraryXml` など。**プレハブのファイルには
+メッシュの部品が使う `<mesh>` の宣言も入る** = どのシーンで読んでも同じ見た目、読む
+側に同じ名前の宣言が無ければ足す）。`loadDocument` / `appendDocument` が
+`resolveLibraryAssets` で中身を入れ（読めなければ空のまま参照を残し、ステータスに
+件数）、**保存は変わったものだけ書く**: 読んだとき / 書いたときの中身の XML を
+`Scene::libBaseline_` に覚え、保存で今の中身から作ったテキストと違うものだけ書く
+（触っていないものは書き戻さない = 他のシーンの編集を巻き戻さない。読めなかった
+ものは覚えが無いので書かない = 空で上書きしない）。数式で書き直しても file は残る
+（`EditorState::replaceFormulaAsset`）。操作は `edit.lib.share / unshare / import /
+delete / refresh {kind: event|formula|prefab, name, overwrite}`（event は従来の
+`edit.event.*` へ回す）と `edit.mesh.add {file, name, scale}`（同じファイルの宣言が
+あれば何もしない。名前はファイル名、重なれば `_2` …）。一覧は
+`EditorState::refreshLibraries`（起動・共通化・削除・保存・ブラウザのタブに戻ったとき）、
+`/scene` の `library {events, formulas, prefabs, meshes}`、計算式とプレハブの JSON に
+`file`。UI はタイルの右クリックに「🌐 グローバルにする / 📍 ローカルにする」、薄い
+タイルに「このシーンで使う / グローバルから削除（ごみ箱。今のシーンが使っているものは
+断る）」。**注意**: XML の適用（📄 XML）とシーンの読込はグローバルのものをファイル
+から読み直すので、保存していない編集はそこで消える（イベントと同じ）。
 
 ## シーン文書（MuJoCo 風の XML）
 
@@ -364,7 +423,7 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   もう一度パースして loadDocument。警告は読込と同じくログ + 件数）。上限
   1MB。適用はファイルに書かない（保存は従来どおり 💾）。エディタカメラの
   ページ限定（他の edit.* と同じガード）。
-- **起動時に読むシーンは `SceneConfig.h` の `kStartupScene`**（既定
+- **起動時に読むシーンは config.json の `scene.startupScene`**（既定
   "default" = 同梱の `assets/scenes/default.xml`）。シーンの中身（配置・
   モデル・ジョイント・イベント）はコードではなく文書が持つ - 以前
   Scene.cpp にあった**格子の自動生成は廃止**した。読めなければ警告を出して
@@ -395,7 +454,7 @@ Scene（Chrono / Filament の実体） <-> SceneDocument <-> XML テキスト
   **節を書かない文書は既定値 = 従来の絵**（後処理は全部オフ、露出も
   Filament の既定と同じ f/16・1/125・ISO100、トーンマップは ACES legacy）。
 - **プリセットの定義は C++ に 1 か所**（`editor::renderPreset` の draft /
-  standard / photo）。ブラウザの World/Physics タブ「描画」のボタンは名前だけを送り
+  standard / photo）。ブラウザの World タブ「描画」のボタンは名前だけを送り
   （`edit.render` の `preset`）、続けて個別の値を上書きできる（部分更新）。
   UI 側に数値を持たせない = 画面とサーバーの食い違いが起きない。
 - **材質は `<geom>` / `<part>` の属性**（`rgba` の隣）: `roughness`
@@ -550,8 +609,13 @@ WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクト�
   軸ごと、`<vehicle>` 直下に書けば全軸の既定値）。座標は**前 = -Z、右 = +X**
   で、axle の z は「前向きの距離」。読み込みは既定値付き、駆動軸が 1 本も無い・
   未知の節は warnings。値の範囲は `clampVehicle`。Inspector の「車両」節で
-  できるのは「車両にする / やめる」とタイヤ式の付け外しだけで、サス・
-  エンジン・ギアの数値は 📄 XML で編集する。
+  できるのは「車両にする / やめる」と軸ごとのソフトタイヤ・剛性・空気圧
+  だけで、サス・エンジン・ギアの数値は 📄 XML で編集する。設計値を変えたら
+  `EditorState::bumpVehicleVersion()`（Inspector の edit.vehicle.* と読込）で
+  VehicleComponent が車両モデルを作り直す。**タイヤ式・空気圧式をノード式で
+  差し替える仕組みは廃止した**（タイヤは組み込みの Magic Formula、空気圧は
+  等温変化だけ）。古い文書の `<tire formula / pressureFormula>` と `<vehicle>`
+  内の `<formula>` は警告して読み飛ばす。
 - **実行状態はエディタに戻ると捨てる**（`onEditorStep`）。次のシミュレート
   開始で設計値から作り直すので、XML を適用すればそのまま効く。
 - **ソフトタイヤ**（`src/vehicle/SoftTire.{h,cpp}`、`<tire soft="true"
@@ -575,14 +639,7 @@ WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクト�
   粒子の面積ベクトル = 隣接三角形の面積 × 法線 / 3 の和）、自然長 = 静止
   半径 + p V / (p_abs A_tot)（圧力ぶんの膨らみ）。力として陽に足すと
   結合剛性の分母で釣り合いが縮んで膨らみがほぼ消えるので、この形にした。
-  潰すほど急に硬くなり、離せば張り戻る（ゴムの復元）。**この「体積比 →
-  圧力」はノード式で差し替えられる**（`<tire pressureFormula="名前">`、
-  入出力の約束は `TireFormula.h` の `pressureFormulaInputs / Outputs`:
-  ratio / rate / p0 / load / deflection / radius → pressure。既定グラフは
-  `defaultPressureFormulaGraph()`、`vehicle_test --dump-pressure-formula` で
-  XML が出る。`edit.formula.add` の `template="pressure"`、🧮 タイルの右
-  クリック「空気圧式に付ける」、Inspector の軸ごとの「空気圧 / 空気圧式」。
-  失敗したステップは組み込みで代用して `formulaFailures()` に数える）。**メッシュは閉じた面**（帯 + 両側の扇）にして
+  潰すほど急に硬くなり、離せば張り戻る（ゴムの復元）。**メッシュは閉じた面**（帯 + 両側の扇）にして
   ある - 穴が開いていると向こう側の内面が背面カリングで透けて見える。
   ソフト形状のマテリアルは両面描画（`setCullingMode(NONE)`）で、フラスタム
   カリングも切ってある（`addSoftShape`）。ばねは PhysicsWorld の
@@ -607,66 +664,506 @@ WheelController**。`<body>` に `<vehicle>` 節を書いたオブジェクト�
   `vehicle_test` の 8（接地で底が地面に揃う・浮くと丸に戻る・直列ばねで
   潰れのぶん低く座る・XML 往復）。
 
-### ノード式（`src/vehicle/Formula.{h,cpp}` + LuaJIT）
+## 計算式（ノード式。`src/formula/` + LuaJIT）
 
-研究者が計算式をノードで組み替えるための仕組み。いま差し替えられるのは
-**タイヤの「スリップ → 力」**（`TireFormula.h` に入出力の約束）。ユーザーは
-Lua を見ない: ノード → Lua ソース → LuaJIT、はエンジンの中で閉じている。
+研究者が計算式をノードかテキストで組むための**汎用の部品**（特定の用途には
+依らない。以前は車両のタイヤ式・空気圧式の差し替え口だったが、それは廃止し、
+いまの使い手は制御器 = 下の章）。ユーザーは Lua を見ない: ノード → Lua
+ソース → LuaJIT、はエンジンの中で閉じている。名前空間は `wizengine::formula`。
 
-- **型は 3 つ**: `FormulaGraphDesc`（文書の値 = ノード + ワイヤー）、
-  `FormulaProgram`（検証・整列済みの線形命令列。入出力は名前で結び、lag /
-  integrate に状態スロットを割る）、`FormulaInstance`（車輪 1 本ぶんの実行口）。
-  実行口は **C++ の参照インタプリタ**（`FormulaProgram::interpret`）と
-  **LuaJIT**（`LuaFormula.h`）の 2 つで、同じ命令列から作るので結果は一致する
-  （`vehicle_test` の 7 が 3 実装の差 0 を検査）。LuaJIT の無いビルド
+- **型は 3 つ**: `FormulaGraphDesc`（文書の値 = ノード + ワイヤー + 元の
+  テキスト `source`）、`FormulaProgram`（検証・整列済みの線形命令列。入出力は
+  名前で結び、状態を持つノードに状態スロットを割る）、`FormulaInstance`
+  （1 実体の実行口）。実行口は **C++ の参照インタプリタ**
+  （`FormulaProgram::interpret`）と **LuaJIT**（`LuaFormula.h`）の 2 つで、
+  同じ命令列から作るので結果は一致する（差 0 を確認）。LuaJIT の無いビルド
   （`WIZ_HAVE_LUAJIT` 未定義）はインタプリタに落ちる（遅いが同じ結果）。
 - **語彙は全部スカラー**（`Formula.h` の冒頭に一覧）。in / out / const / dt、
   四則と min max pow atan2 gt lt、単項の neg abs sqrt sin cos tan atan exp log
-  sign、clamp / lerp / select、折れ線 curve、状態を持つ lag / integrate、
-  車両向けの magic（Pacejka）と ellipse（摩擦楕円、出力 2）。未接続の入力は
-  0（警告）、循環はエラー（式は動かず組み込みで代用）。**陰解法の部品
-  （クラッチ・デフ）はノードに分解しない** - 不安定になるので C++ に残す。
-- **Lua の作法**（`LuaFormula.cpp`）: Lua ステートは物理スレッドに 1 つ
-  （VehicleComponent が持つ）。1 グラフ = 1 関数 `function(I, O, S, dt)` で、
-  ノードは関数のローカル変数になる = トレース JIT が境界を消す。入出力と
-  状態は Lua 側で確保した FFI の double 配列で、C++ はそのアドレス（intptr →
-  double で運ぶ）に直接読み書きする。**ティック内でテーブルも文字列も作ら
-  ない**（GC を起こさない）。呼び出しは `lua_rawgeti` × 4 + `lua_pcall`。
-  LuaJIT は `third_parties/luajit`（v2.1、サブモジュール）。`cmake/LuaJIT.cmake`
-  がライブラリを探し、無ければ configure 時にビルドする（Linux は
-  `make BUILDMODE=static`、Windows は `msvcbuild.bat static` = VS の開発者環境
-  が要る）。`-DWIZ_WITH_LUAJIT=OFF` で外せる。
+  sign、clamp / lerp / select、折れ線 curve、lag / integrate、**制御ブロック**
+  （time / gain / saturate / deadzone / delay / derivative / ratelimit / pid。
+  係数は params、既定値は `Formula.cpp` の `paramDefaults`）。未接続の入力は
+  0（警告）、循環はエラー。ただし **delay（単位遅延 z⁻¹）と integrate を
+  挟んだ輪は組める**: どちらも直達しない（出力は今の状態、入力の取り込み
+  `DelayStore` / `IntegrateStore` は命令列の最後）ので、整列はこの 2 つへ入る
+  線を数えない（`formulaBreaksFeedback`。ブラウザの線の循環検査
+  `EditorState::addFormulaWire` も同じ規則）。**integrate は前進オイラー**
+  （以前は入力をその場で足して出す直達型だった）= Simulink の積分器と同じく
+  連続系 x' = f(x) を輪のまま組める。車両専用だった magic / ellipse は廃止。
+- **数式のテキスト ⇄ グラフ**（`FormulaText.{h,cpp}`）: `e = ref - y` /
+  `out u = pid(e, kp, ki, kd, -50, 50)` / `joint:arm.target = u` のような
+  1 行 1 文のテキストを再帰下降で読み、ノードのグラフに起こす
+  （`formulaFromText`。代入しない名前・信号名・"…" は入力、`out 名前` と信号名・
+  "…" の左辺は出力、`kp = 40` のような定数の変数は係数に使える名前付き定数、
+  後で代入する変数も参照できる = フィードバック。起こしたグラフは compile まで
+  通して確かめる = 壊れた式はアセットに入らない。エラーは行番号付きの英語）。
+  逆にどんなグラフもテキストに起こせる（`formulaToText`。1 回だけ使う値は
+  式へ埋め込み、何度も使う値と輪で後から参照される値は変数 v<id>、括弧は
+  優先順位で必要なところだけ）。**読み戻すと同じ計算**（差 0 を確認）。
+  テキストで作った式は元のテキストを `source` に残し（コメント・名前付き定数を
+  保つため。XML では `<formula>` の中の `<source line="…"/>` を行ごと）、
+  ノード / ワイヤーを編集したら捨てる（位置だけの移動は保つ）。/scene の
+  formulas.assets[].text は source があればそれ、無ければ formulaToText。
+  **起こしたグラフの配置は自動**（`FormulaText.cpp` の `layout`、Sugiyama 風の
+  簡易版）: 列 = 依存の深さ（delay / integrate へ入る線は数えない）、入力・定数は
+  使う先のいちばん左の列のすぐ左へ寄せ（全部を左端に積むと線がキャンバスを
+  横断する）、出力は右端の列。列の中はつながる相手の高さの平均で並べ、ノードの
+  高さの見積もり（`nodeHeight`、app.js の `fNodeHtml` と同じ作り）で重ならない
+  ように積む。**ノードエディタのキャンバスはノードの範囲に合わせて広がる**
+  （app.js の `ndFitCanvas`。CSS の 2000 × 1400 は最小。以前は固定で、外に出た
+  ノードの線が SVG に切られて描かれなかった）。数百ノードの式（V6 の combustion
+  = 671 ノード）はノードで追うより 📝 数式で読む方が速い。
+- **Lua の作法**（`LuaFormula.cpp`）: Lua ステートは使い手ごとに 1 つ（物理
+  スレッド専用。ControlComponent が持つ）。1 グラフ = 1 関数
+  `function(I, O, S, dt)` で、ノードは関数のローカル変数になる = トレース JIT が
+  境界を消す。入出力と状態は Lua 側で確保した FFI の double 配列で、C++ は
+  そのアドレス（intptr → double で運ぶ）に直接読み書きする。**ティック内で
+  テーブルも文字列も作らない**（GC を起こさない）。呼び出しは `lua_rawgeti` ×
+  4 + `lua_pcall`。LuaJIT は `third_parties/luajit`（v2.1、サブモジュール）。
+  `cmake/LuaJIT.cmake` がライブラリを探し、無ければ configure 時にビルドする
+  （Linux は `make BUILDMODE=static`、Windows は `msvcbuild.bat static` = VS の
+  開発者環境が要る）。`-DWIZ_WITH_LUAJIT=OFF` で外せる。
 - **計算式はシーンのアセット**（イベントアセットと同じ扱い）。文書では
-  `<asset>` の `<formula name>`（`FormulaXml.h`。`<node id type name params pos>`
-  と `<wire from fromPort to port>`）で、`<tire formula="名前">` が名前で参照
-  する。`<vehicle>` の中に書いた `<formula>`（旧置き場）も読めるが、読込時に
-  シーンのアセットへ移す（次の保存で `<asset>` に出る）。本体は
-  `EditorState::formulaAssets()`（`formulaVersion()` は式かタイヤの参照が
-  変わるたびに進み、VehicleComponent がこれを見て**車両モデルを作り直す** =
-  シミュレート中の編集もすぐ効く。走行状態は一度リセットされる）。
-  既定の Magic Formula をノードで組んだものが
-  `defaultTireFormulaGraph()`（`vehicle_test --dump-formula` で XML が出る。
-  `assets/scenes/vehicle.xml` に貼ってある。`edit.formula.add` の
-  `template="tire"` で同じものが作れる）。
+  `<asset>` の `<formula name>`（`FormulaXml.h`。`<source line>`、
+  `<node id type name params pos>` と `<wire from fromPort to port>`）で、
+  制御器（`<control><controller formula>`）が名前で参照する。本体は
+  `EditorState::formulaAssets()`（`formulaVersion()` は式が変わるたびに進む）。
+- **雛形**（`control/ControlTemplates.{h,cpp}`、車に限らない）: 空・PID で
+  ジョイントの角度を目標へ・PD + 重力補償で物体の高さを保つ・一次遅れ系の
+  応答・質量-ばね-ダンパ・PI 制御 + 一次遅れプラント・信号発生器。中身は
+  **数式のテキスト**（`{joint}` / `{body}` を相手の名前で置き換える）で、
+  変換器を通してグラフにする = 雛形の書き損じは作成時にエラーになる。
+  `edit.formula.add {name, template, target}` が雛形から作って制御器として
+  付ける。一覧（id・表示名・説明・相手の種類・テキスト）は /scene の
+  formulas.templates。
 - **UI**: アセットパネルの **🧮 タイル**（クリックでノードエディタ、右クリックで
-  作成 / 削除 / 選択中の車両の全軸に付ける）、**ノードエディタは ⚡ と共用**
-  （見出しの選択が「⚡ イベント」「🧮 計算式」の 2 グループ、`ndKind` で
-  切替。計算式ノードは左に入力ポート・右に出力ポートが**行ごと**に並び、
-  座標は app.js の `FPORT_Y0` / `FPORT_DY` と CSS の `.ndPortRow` の高さで
-  揃える。同じ入力に繋ぐと張り替え、循環はサーバーが弾く）、**Inspector の
-  「車両」節**（「車両として扱う」チェック = `edit.vehicle.enable`、軸ごとの
-  タイヤ式の選択 = `edit.vehicle.tire`）。コマンドは edit.formula.add /
-  remove、edit.fnode.add / set / remove、edit.fwire.add / remove で、
-  すべて EditorComponent → Op → 物理スレッド（イベントと同じ配管）。入力 `fxLo fxHi fyLo fyHi`（力の
-  許される範囲: 滑りの向きに逆らわず、滑り速度を反転させない大きさまで）は
-  緩和長の**前**にクランプする - 組み込みも同じ順序で、状態が範囲を超えて
-  溜まらない（順序を変える・符号を見ないと、制動で溜まった逆向きの力が
-  停車後に車を押し戻す）。
-- **失敗は組み込みで代用**: 式が NaN や実行時エラーを出したティックは
-  組み込みのタイヤで計算し、`formulaFailures()` に数える。VehicleComponent が
-  1 回だけ LOGW。安全のため出力にももう一度 ±cap を掛ける。
-- **未**: タイヤ以外（サス・エンジン曲線）の差し替え口、vec3 型、ノードの
-  値のライブ表示（デバッグバッジ）。
+  開く / 📝 数式で編集 / 制御器にする / 外す / スコープ / 作成 / 削除）、
+  **ノードエディタは ⚡ と共用**（見出しの選択が「⚡ イベント」「🧮 計算式」の
+  2 グループ、`ndKind` で切替。計算式ノードは左に入力ポート・右に出力ポートが
+  **行ごと**に並び、座標は app.js の `FPORT_Y0` / `FPORT_DY` と CSS の
+  `.ndPortRow` の高さで揃える。同じ入力に繋ぐと張り替え、循環はサーバーが
+  弾く。見出しの「📝 数式で編集」）、**数式エディタ**（`#fxEd`、control.js。
+  名前・テキスト・雛形の差し込み・✓ 適用 = `edit.formula.text {name, text}`。
+  INPUT スレッドで一度起こして検証し、壊れていれば行番号付きの理由を
+  ステータスへ出して積まない。物理スレッドがもう一度起こして
+  `replaceFormulaAsset` で丸ごと差し替える = ノードの id と位置は振り直し）。
+  コマンドは edit.formula.add / remove / text、edit.fnode.add / set / remove、
+  edit.fwire.add / remove で、すべて EditorComponent → Op → 物理スレッド
+  （イベントと同じ配管）。
+- **未**: vec3 / 行列の信号、サブシステム（式の入れ子）、ノードの値の
+  ライブ表示（デバッグバッジ）。
+
+## 制御器（ブロック線図。`src/control/` + `components/ControlComponent`）
+
+Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（🧮 計算式アセット）を
+そのままブロック線図として使い、Chrono をプラント（制御される側）にして
+シミュレート中に回す**。ロボット（ジョイントのモータ）・浮遊体（力）・車両
+（アクセル / ブレーキ / ハンドル）の制御を 3D で確かめるためのもの。見本は
+`assets/scenes/control_arm.xml`（PID の腕と高さ制御の箱）と
+`assets/scenes/vehicle.xml` の `cruise`（クルーズコントロール、既定は無効）。
+
+- **制御器 = 計算式アセット + 実行周期**。文書ではルートの
+  `<control><controller formula="arm_pid" period="0.01" enabled="true"/></control>`
+  （`ed::ControllerDesc`、`EditorState::controllers()` / `controlVersion()`）。
+  同じ計算式は 1 回だけ付く。計算式を消すと制御器も外れる。
+- **信号は in / out ノードの name**（`control/ControlSignals.h` が唯一の定義）。
+  センサ: `time`、`body:<名前>.x y z vx vy vz wx wy wz rx ry rz speed vfwd vlat`、
+  `joint:<名前>.angle rate pos vel force torque`、`vehicle:<名前>.speed rpm gear`、
+  `param:<名前>`（下のパラメータ）、`var:<名前>`（下の変数）。
+  アクチュエータ: `joint:<名前>.target`（モータの目標値）、`body:<名前>.fx fy fz
+  tx ty tz`（ワールド）/ `lfx lfy lfz ltx lty ltz`（ローカル）、
+  `vehicle:<名前>.throttle brake steer handbrake`、パーティクルの量
+  `emitter:<名前>.rate`（下の「パーティクル」の章）、パラメータの書き換え
+  `param:<名前>`・変数への書き込み `var:<名前>`（下記）、記録だけの `scope:<ラベル>`。
+  **単位は SI で角度は rad**（文書の度とは違う。ジョイントの目標値も換算しない）。
+  名前はオブジェクト / ジョイントの name で引く（無い・重複は警告）。ポート名に
+  `: . -` を通すため `sanitizePortName` を広げた（96 文字まで）。
+- **パラメータ**（`<control><param name value min max/>`、`ed::ParamDesc`、
+  `EditorState::params()`）: 式からセンサ `param:<名前>` で読む値で、制御盤
+  （下記）のスライダーで**シミュレート中に**変えられる（アクセル開度・目標値・
+  ゲインなど）。値の変更は `paramVersion` だけを進め、ControlComponent は変わった
+  ときに名前 → 値の表を写す = **式を作り直さない**（PID の積分もターボラグの状態も
+  続く。式の定数を書き換える方法だと制御器ごと作り直しになる）。コマンドは
+  `edit.param.add / remove / set`。**値の set だけはどのカメラのページからでも
+  可**（edit.sim と同じ扱い。走らせながら観察用のカメラで触るのは普通の使い方）、
+  追加・削除・範囲はエディタカメラのページだけ。スライダーは 40 ms に 1 回送り、
+  最後の値は必ず送る。保存すると今の値が文書に残る。
+  `label`（表示名、日本語可 = `sanitizeLabel`）と `step`（刻み、0 = 自動）を持ち、
+  **min 0・max 1・step 1 のパラメータはスイッチ**として出る（`paramIsSwitch`）。
+  **`options="A|B|C"`（選択肢、2〜16 個）を持つパラメータは切り替え**: 値は
+  選んだ項目の番号 0..n−1（`clampParam` が min 0・max n−1・step 1 に揃え、
+  値を整数に丸める）。制御盤ではボタン列で出す。
+  式からは普通の数値として読む（`param:mode` が 0 / 1 / 2）。
+- **変数（`var:<名前>`）**: 制御器の間で共有する名前付きの値（ControlComponent の
+  `vars_`。宣言は要らず、最初に書くまでは 0、開始・Reset で空に戻る、シーンには
+  保存しない）。どの制御器からも読み書きでき、書くのは出力を当てるとき
+  （`applyOutputs`）なので、**一覧の上の制御器が書いた値は同じステップの下の
+  制御器が読み、下が書いた値は次のステップ**。式の中で読む var: は**いつも評価を
+  始めたときの値**（数式のテキストで同じ変数に代入した後の行でも同じ）= 自分で
+  書く変数を読めば前回の値 = 状態を持つ変数（`var:count = var:count + 1` で
+  カウンタ）。ノードエディタではキャンバスの右クリック →「📦 変数を読む / 変数に
+  書く」（中身は名前が `var:…` の in / out ノードで、見出しが「📦 変数 名前 …」・
+  左の帯が水色になる）。今の値は `/scene` の `control.vars`（0.2 秒ごと。状態の
+  公開を「64 ステップごと」から実時間 0.2 秒ごとに改めた）と、制御盤の「変数」の段。
+- **式からパラメータを書き換える（`param:<名前>` アクチュエータ）**: 値が
+  **変わったときだけ**書く（同じ値を出し続けている間はスライダーで上書きできる）。
+  ControlComponent の写し（`params_`）へすぐ入れ（後の制御器が同じステップで読む）、
+  ステップの終わりに `EditorState::setParamValues` でまとめて書く（min / max と
+  選択肢の番号へ丸め、変わったら paramVersion を 1 回進める = 制御盤のスライダーが
+  動く・保存すると残る）。右クリックの「🎛 パラメータを書き換える」。
+- **制御盤**（`web/panel.js`、Scene タブの Events の下の「🎛 制御盤（コントローラ）」）:
+  別ウィンドウに**制御器の一覧**（有効・周期・評価回数 / エラー・警告、🧮 ノード
+  エディタ / 📝 数式 / 📈 スコープは元のページに開く）・パラメータ（スライダー /
+  スイッチ）・メーター（全制御器の `scope:*` の現在値）・グラフを並べる。グラフは**文書の
+  `<control><chart title signals span/>`**（`ed::ChartDesc`、`EditorState::charts()`、
+  /scene の `formulas.charts`）で、signals は「計算式/入出力の名前」
+  （`dyno/scope:torque_Nm`）、span は表示幅 (s、0 = 全部)。= ダッシュボードは
+  シーンと一緒に保存される。**制御盤の設計は窓の中の「✎ 編集」**（エディタ
+  モード × エディタカメラのページだけ出る。シミュレートに入ると抜ける）: パラメータの
+  追加（末尾の「＋ パラメータを追加」カード）・表示名・範囲・刻み・スイッチ化・
+  並び（◀ ▶ = `edit.param.set {move}`、`EditorState::updateParam` が入れ替える）・
+  削除と、グラフの追加（＋ グラフ）・⚙ で信号と表示幅・◀ ▶ で並び・✕
+  （`edit.chart.add / set {index, title, signals, span, move} / remove`）。窓の
+  💾 保存は `edit.save`（無題なら名前を聞く）。欄は離れた（change）ときに送る。
+  **値（スライダー / スイッチ）は編集モードと関係なく、どのカメラのページからでも
+  変えられる** - サーバーはエディタカメラ以外から来た `edit.param.set` を値だけに
+  削る（範囲・表示名・並びは制御盤の設計 = シーンの書き換えなので）。窓の中の
+  prompt / confirm / alert は `panel.win.*` で呼ぶ（このページの関数で呼ぶと
+  ダイアログが元のページ側に出る）。**窓の中身はこのページの JS が描く**:
+  `window.open('')` の空ページは同じオリジンなので DOM を直接組み、送信・取得は
+  このページの send / fetch（窓にはスクリプトも状態も無い。ボタンは
+  addEventListener で結ぶ = onclick= 文字列は窓のグローバルで評価されて関数が
+  見えない）。データは /control の差分をスコープとは別の since で取り、グラフが
+  参照する制御器ごとに「最大の表示幅 + 1 s」だけ持つ。このページを離れると窓も
+  閉じる。
+- **時刻の意味**: ControlComponent は物理ステップの**積分の前**（`onPhysicsStep`、
+  **車両より先に登録** = 車の入力の上書きが同じステップに効く）に、周期が来た
+  制御器を評価する。センサは前のステップの結果、出力はこのステップから効く
+  （プラントが状態を持つので代数ループは無い）。**出力は次の評価まで保持して
+  毎ステップ当てる**（ゼロ次ホールド。力は毎ステップ掛け続ける必要がある）。
+  評価の dt は前回の評価からの実際の経過（周期が物理の dt の倍数でなくても
+  積分が合う）。NaN・実行時エラーのティックは出力を前回のまま（1 回だけ LOGW）。
+- **ジョイントの計測は自前**（`control/ControlMath.h` の `JointMeasure`）: body1
+  を body2 から見た相対回転の twist（軸 = ジョイントの axis を body2 のローカル
+  に固定）を、シミュレート開始時の姿勢を 0 として連続化する（±π で折り返さ
+  ない）。符号はモータが body1 に正のトルクを掛ける向き（Chrono の
+  `ChLinkMotorRotation` と手計算のトルクモータの約束）。基準は世代
+  （`Scene::runGeneration` = 開始・停止・Reset で進む）の最初のステップで全
+  ジョイントぶん取るので、途中で制御器を作り直しても角度は続く。PhysicsWorld
+  には触らない（物理のリファクタと衝突しないため）。
+- **トルクは力の対**（PhysicsWorld にトルクの口が無いので、`torqueAsCouple` で
+  重心の両側に逆向きの力を `applyForceAtPoint`）。力は `applyForce`（固定ボディ
+  には掛からない - 既存の約束）。ジョイントの目標値は値が変わったときだけ
+  `setJointMotorTarget`（Multicore の速度モータはランプを引き直すため）。
+  モータの無いジョイントへの target は警告して無視。
+- **ジョイントでつないだ物どうしも接触する**（Chrono はリンクで接触を切らない）。
+  トルク / 力で制御する物が相手と重なっていると、摩擦付きの接触が操作量と押し
+  合ってプルプルし、トルクが小さくなった所で摩擦に捕まって止まる（実機で確認:
+  初版の `control_arm.xml` は腕が柱の上端にめり込んでいた）。見本は腕を柱の
+  手前（z）にずらし、先端の球は見た目だけのプレハブにしてある。重ねたいなら
+  衝突レイヤ（`<geom layer nocollide>`）で当たりを切る。
+- **車両**: `VehicleComponent::setControlDrive`（書いた項目だけブラウザの入力を
+  置き換える、このステップ限り）と `telemetry`（前のステップの計測値）。
+- **作り直し**: 制御器の一覧か式の中身（`formulaSignature`）が変わったときだけ
+  コンパイルし直す。ノードを動かしただけ・周期 / 有効の変更では PID の積分も
+  遅延の状態も消えない。世代が変わる（開始・Reset）と全部やり直し、記録も
+  新しい世代にする。実行エンジンは LuaJIT（ControlComponent が Lua ステートを
+  1 つ持つ、物理スレッド専用）、無ければ C++ インタプリタ。
+- **スコープ**: ControlComponent が評価ごとに `[t, 入力..., 出力...]` を記録
+  （制御器ごとに最大 5 万行、mutex_ の下）。`/control?since=N` が通し番号 N より
+  後の行を最大 4000 行返し（ブラウザは差分を積むだけ）、`/control.csv?formula=`
+  が全行を CSV で返す。`/scene` の `control` はコンパイルの成否・エラー・警告・
+  評価回数（`statusJson`）、`formulas.controllers` は文書の値、
+  `formulas.sensors / actuators` は候補を組むための量の一覧。
+- **UI**: 制御器の操作の口は**制御盤の窓**（`web/panel.js`。有効と周期は
+  エディタカメラのページならいつでも、付け外し・「＋ 新しい計算式」（雛形から。
+  `newFormulaAsset(panel.win)` でダイアログを窓の側に出す）・「📝 数式で書く」は
+  窓の「✎ 編集」の中）と 🧮 タイルの右クリックだけ（World タブにあった「制御器」
+  節は廃止 - 制御盤と二重になるため）。`web/control.js` は映像の
+  右下に浮かぶ**スコープ窓**（`#scopeWin`、モーダルにしない = 映像を見ながら
+  使う。見出しのドラッグで移動、右下で拡縮、表示幅 5〜60 s / 全部、凡例の
+  チェックで系列の表示切替 = localStorage、停止、CSV。横 1 ピクセルに複数点
+  来たら min / max だけ描く）。ノードエディタの in / out の名前は自由入力 +
+  `<datalist>` の候補（シーンの名前から組んだ信号名）、制御
+  ブロックの係数は 1 行のテキスト欄。🧮 タイルの右クリックに「制御器にする /
+  外す」「スコープで見る」。コマンドは `edit.control.add / remove / set` と
+  `edit.formula.add {template, target}`（雛形を作って制御器として付ける。
+  上の「計算式」の章）。edit.* なのでエディタカメラのページ専用
+  （シミュレート中も可）。一覧とスコープはどのページでも見える。
+- **確認**: ブロックの C++ インタプリタと LuaJIT の結果は一致（差 0）、delay の
+  輪の整列、信号名の解析、
+  ジョイント角の連続化、`<control>` の XML 往復、同梱シーンが警告 0 件、見本の
+  2 制御器を簡単なプラント（1 自由度の回転 / 並進）で閉ループに回して収束する
+  こと、ブラウザ UI をモックのサーバーで描画・操作できることまで（いずれも
+  手元のスクラッチで。`tests/` は .gitignore 済み）。**実機で確認済み**:
+  ビルドと、`control_arm.xml` で腕が目標角に追従する・箱が浮く（トルク
+  モータ = Core の `ChLinkMotorRotationTorque`、ボディの力）。車のクルーズ
+  制御（`vehicle.xml` の `cruise`）は未確認。
+- **見本: V6 エンジンのダイナモ試験**（`assets/scenes/v6_engine.xml`、日産
+  VR30DDTT 相当 = 60° V6・2997 cc・86 × 86 mm・圧縮比 10.3・点火順 1-2-3-4-5-6）。
+  制御器を「プラントのモデルの一部」として使う例: `combustion` が筒内圧
+  （ポリトロープの圧縮・膨張 + Wiebe 燃焼 + ツインターボの物理モデル）から
+  ピストンへの力を毎ステップ出し、`dyno` が回転数を PI 制御で保って吸収
+  トルクを測る（1000 → 6800 rpm を 40 秒で掃引、カタログの曲線 catalog_Nm と
+  並べてスコープに出る）。負荷のかけ方はパラメータ `mode`（選択肢）で 3 通り:
+  **ダイナモ**（回転数を保つ。`dyno_rpm` 0 = 掃引、> 0 = その回転数、変化は
+  1500 rpm/s まで。**回転数を保つので、スロットルで変わるのはトルクだけ** =
+  実物のダイナモと同じ）・**フリーラン**（負荷 kload ω²、プロペラの形）・
+  **車両**（9 速 AT の車。車重 1650 kg・タイヤ半径 0.345 m・最終減速比 3.13・
+  転がり + 空気抵抗は仮定値。トルコンは粘性結合で、容量は回転数の 2 乗 =
+  アイドルでは弱く這い出し、回すほど強くつながる。`gear`（選択肢 N・1〜9）と
+  `brake` を制御盤で変える。車速は式の integrate が持ち、`scope:speed_kmh`）。
+  どのモードも 800 rpm 以下はアイドル補助が押し、アクセルを戻すほど増える
+  損失（摩擦 + ポンプ損失 = エンジンブレーキ、7000 rpm で約 57 Nm）を引く。
+  全開での損失は燃焼モデルの較正（カタログの正味トルク）に含まれているので、
+  軸トルク（`scope:torque_Nm`）は負荷が受け取るぶん。ダイナモ以外では回転数の
+  指令を今の回転数に追従させておくので、ダイナモへ戻しても跳ねず PID の積分も
+  溜まらない。車両とエンジンは強く結ぶので dyno は毎ステップ回す（period 0）。
+  燃料カットは 7000 rpm（ニュートラルで踏むとそこで頭打ち）。
+  **ツインターボは物理モデル**（`combustion` の中。左右 1 基ずつだが同じ物なので
+  1 基ぶんを解いて流量を半分にする）: タービン軸の角速度を integrate で持ち、
+  タービンの出力（排気の流量 × 温度 × 膨張比。タービン入口の圧力はノズルを
+  流れる量で決まる = 流量が少ない低回転では回らない）とコンプレッサーが要る
+  仕事（吸気量 × 圧力比。流量が多いと効率が落ちる = チョーク）の差で加速 /
+  減速する。過給圧はその回転数の 2 乗で決まり、**電子ウェイストゲート**（PID、
+  目標を超えたら開いて排気をタービンの外へ逃がす）が目標過給圧で頭打ちに
+  する。吸気量は「6 気筒 × IVC で閉じ込めた空気（吸気圧 × 容積 / 吸気温度）×
+  回転」、吸気温度は圧縮で上がりインタークーラーで冷える。燃焼の圧力上昇は
+  吸気温度（冷たいほど濃い空気 = 燃料も多い）と空燃比（理論より少し濃い所で
+  最大）で変わる。**パラメータ**（制御盤）: `boost`（目標過給圧のピーク、bar
+  ゲージ、既定 1.77 = 目標のマップをこの比で伸縮）・`turbo_inertia`（タービン軸の
+  慣性の倍率 = ラグ）・`intercooler`（効率 0..0.95、既定 0.8）・`afr`（空燃比、
+  既定 12.5）・`ambient`（外気温、既定 25 ℃）。計測値は `scope:target_bar /
+  turbo_krpm / wastegate_pct / air_gs / fuel_gs / charge_mg / intake_C / egt_C /
+  exhaust_bar`。**既定の値で目標過給圧のマップ（= 以前の較正値）を再現する**
+  ように定数を合わせてある（タービンのノズル 110000・軸の慣性 3e-5 kg m² など。
+  排気温度の式は経験式）。式の名前は `p1`〜`p6`（筒内圧）・`p4` と重ならない
+  ように、タービンの入口 / 出口は `pt3` / `pt4`。**炎のパーティクル**: 6 気筒の
+  ピストンに `<emitter name="flameN">`（頂面の上の燃焼室、粒子はその場に残る =
+  inherit 0）を付け、`combustion` が燃えている間（点火〜燃焼期間）だけ
+  `emitter:flameN.rate` を出す（1 回の燃焼で約 60 粒 × 吸気圧、角度の幅を時間に
+  直すので回転数によらず同じ数）。右バンク（カットモデルの側）は点光源も持ち、
+  頂面と筒を照らす。パラメータ `flame`（スイッチ）で消せる。
+  **イベントは無し**（空の `<events/>`。節を書かないと既定の pickup が付くが、
+  ジョイントで組んだ機構を掴んで引っぱる用途は無いので外してある）。
+  Chrono で確認: 全開の掃引で 1700〜6800 rpm がカタログの曲線に 1.3% 以内
+  （それより下は掃引が速くターボが追いつかない = ラグ）、ダイナモで 3000 rpm に
+  保って開度 1 → 0.3 にすると 476 → 64 Nm（部分負荷では流量が足りずターボが
+  回らない = 吸気は負圧 0.69 bar。以前の固定マップでは 101 Nm だった）、開度を
+  1 に戻すと約 1 s で 2.28 bar。4000 rpm で目標過給圧 1.77 → 2.3 bar で 479 →
+  571 Nm、インタークーラー効率 0.8 → 0.3 で吸気温度 60 → 128 ℃・571 → 466 Nm、
+  空燃比 12.5 → 15 で排気温度 694 → 798 ℃・466 → 436 Nm、外気温 25 → 40 ℃ で
+  414 Nm。フリーランで開度 1 / 0.3 / 0.1 → 約 6000 / 2140 / 1210 rpm、車両で
+  1 速発進 → 4 速まで手で上げて 16 s で約 164 km/h、ブレーキで 6 s 後に 7 km/h
+  （エンジンはアイドルへ落ち、トルコンが滑る）、ニュートラルで全開 → 戻すと
+  2.5 s で 7000 → 3100 rpm。制御盤の既定のグラフ（回転数・トルクとカタログ・
+  出力・過給圧と目標・ターボ回転数とウェイストゲート・吸気量と燃料・吸気温度と
+  排気温度・車速・トルコンの滑り・筒内圧・VTC・バルブリフト）も文書に入っている。
+  **見た目は実寸の部品メッシュ**（`assets/models/v6/*.glb`、17 個・計 約 7 MB）。
+  CSG（manifold3d）で作るスクリプトが `samples/v6_engine/`（`geom.py` が寸法の唯一の
+  定義、`meshes.py` = 動く部品、`statics.py` = ブロック以下、手順は同じフォルダの
+  README）。各部品は**そのボディの座標系**で作り、プレハブの部品（`type="mesh"`、
+  pos 0・倍率 1）として付ける。I 断面のコンロッド（キャップのボルト・メタル）・
+  リング溝とバルブリセスのあるピストン・カウンターウェイトとリングギヤ付きの
+  クランク・**valvetrain のリフト式どおりの形のカムローブ**（平らなバケットで受けた
+  包絡線 = 半平面の交わり）・36T / 18T のスプロケット（2:1）とチェーン・ガイド・
+  ばねとバケットとリテーナ・ペントルーフの燃焼室とポートとウォータージャケット・
+  点火プラグとコイル・サージタンク・左バンクの排気とターボ・架台とダイナモ。
+  **右バンク（1・3・5 番）の外側半分はカットモデル**（断面は赤 = `add_split` が
+  切り口の面だけ別の材質にする）。**バルブは挟み角 32°**（シリンダ軸から 16°、
+  カム軸間 約 100 mm）に傾けてある - 以前の平行なバルブ（カム軸間 38 mm）では
+  スプロケットが重なって実寸にできなかった。式はジョイントの角度と位置しか見ない
+  ので、配置を変えても計算は同じ（Chrono で確認: 3000 rpm の 476 → 101 Nm、
+  6500 rpm の 426 Nm とも変わらず）。動く部品とブロック / ヘッドの食い込みは
+  クランク 15° ごとに体積で調べて 0、バルブとピストンの最小すき間は 6.4 mm。
+  コンロッドとピストンの `<geom>` は質量と慣性を持たせる芯で、メッシュの中に隠れる
+  大きさにしてある（コンロッドの面内の慣性はほぼ長さで決まるので幅を細くしても
+  1% 程度）。環境光は `assets/env/engine_studio.hdr`（`studio_hdr.py` が手続きで作る
+  スタジオ。HDR が無いと Filament の一様アンビエントでは金属が暗く沈む）。
+  組み方の要点:
+  * **拘束はちょうど 1 自由度に**: クランク = hinge（トルクモータ = ダイナモ）、
+    コンロッド = クランクピンへ hinge、ピストン = シリンダ軸へ slide、
+    コンロッドの小端 ⇄ ピストン = **pointline（Z 軸の線）**。hinge / ball を
+    使うと平面機構の面外方向が冗長になる。
+  * **60° V で等間隔点火にするには分割ピン**（対になる 2 気筒のピンを 60°
+    ずらす）。ピン角は「TDC の角 = バンク角 − ピン角」から逆算してある。
+  * **形の無いボディの慣性は 1 辺 0.5 m の箱 = m / 24**（`BodyFactory::addFrame`）
+    なので、クランクの mass は欲しい回転慣性から逆算した値（見た目はプレハブ）。
+  * **力の式はステップの始点のクランク角で評価する**（センサの値そのまま）。
+    制御器の力は「積分の前の速度の力積」として入り、始点の姿勢のジョイントを
+    通ってクランクへ伝わるので、角度もそこに揃えるのが正しい。中点（θ + ω dt/2）
+    へずらすと位相が遅れ、Chrono で回した軸トルクが 7〜17% 低く出た。
+  * **高速で回る機構は `<option recovery>` を大きく**（見本は 10 m/s）。Chrono は
+    ジョイントのずれを直す速さも recovery（接触の押し戻し速さと同じ値）で頭打ちに
+    する。1 ステップのずれは r (ω dt)² 程度なので、既定の 0.2 m/s・3840 Hz では
+    約 2000 rpm で直しきれなくなり、ずれが指数的に育ってクランクが急に止まった
+    （拘束の反力が数ステップで 7 kN → 1.6 MN。ソルバ・反復回数・直接法・
+    ジョイントの組み方を替えても同じで、recovery だけが効いた）。接触の無い
+    シーンなので大きくしても副作用は無い。
+  * 刻みは 240 Hz × 16 サブステップ = 3840 Hz（6800 rpm で 10.6°/ステップ）。
+    そのため **substeps の上限を 8 → 32 に上げた**（`clampSim` と System タブ）。
+    Chrono 9.0（Core / NSC / bb 100 回）で実時間の約 1 倍、軸トルクはカタログの
+    曲線に 1.5% 以内で合う（471〜476 Nm、約 400 PS / 6500 rpm）。実時間より遅く
+    回っても、制御器の時刻は物理の時刻なので結果は同じ。
+  * **動弁系**: カムシャフト 4 本（hinge の速度モータ。目標 = w/2 + K·位相の誤差
+    で位相ロック、吸気側は電動 VTC の位相を足す）とバルブ 12 体（1 気筒の吸気 /
+    排気 2 本ずつ。slide の位置モータ、目標 = カムの**計測角**から求めたリフト）。
+    燃焼モデルも IVC / EVO をカムの計測角から出す = VTC を動かせば実圧縮（ミラー）
+    とオーバーラップ（掃気）がそのまま効く。位置モータを角度で使う（hinge の
+    position）と目標の微分が 0 なので recovery で頭打ちになり高速で追えない
+    → カムは速度モータ + 位相ロックにした。ボディ 30・ジョイント 35 で、
+    iterations 50 で 100 と同じ結果、実時間の約 0.65 倍（Chrono 単体）。
+  * HHT（`integrator="hht"`）は使えない: 力を速度の力積として入れる作りと合わず
+    "Reached minimum allowable step size" で止まる。`projected` は安定するが
+    数値の散逸が大きい（6800 rpm で −300 Nm 相当）。
+- **次の段（未）**: 実時間より速いバッチ実行と 1 ステップ実行（物理スレッドは
+  壁時計駆動なので、決定論的な再現にはここが要る）、ブロックごとの複数周期を
+  1 つの式の中で、パラメータの式（他のパラメータから計算する値）、
+  サブシステム（式を部品として入れ子にしてコンパイル時に平坦化）、ベクトル
+  信号（コンパイル時にスカラーへ展開）、離散伝達関数 / 状態空間ブロック、
+  状態機械（イベントグラフの拡張）、FMI / FMU の取り込み、制御器の C コード生成。
+
+## 起動設定（`config.json` + `src/app/AppConfig.{h,cpp}`）
+
+**実行環境・システムに関わる設定はすべて `config.json`**（リポジトリ直下に
+説明付きの見本。ビルドが `build/config.json` へ**無いときだけ**コピーする =
+編集したビルド先のコピーは上書きしない）。読むのはカレントディレクトリ
+（`assets/` と同じ場所）の `config.json`、`--config <path>` で別のファイル。
+
+| 節 | 中身 |
+|---|---|
+| `server` | `mode`（web / window / stream / rtsp）・`httpPort`・`streamHost` / `streamPort`・`rtspUrl` |
+| `video` | `width` / `height`（偶数）・`fps`・`codec`（h264 / h265 / av1 / vp9）・`encoder`・`bitrate`・`gpuConvert` |
+| `cpu` | `physicsCores` / `renderCores`（"0-11" 形式）・`physicsThreads` |
+| `log` | `level`（debug / info / warn / error。環境変数 `WIZENGINE_LOG` が優先） |
+| `scene` | `startupScene`・`startMode`・`maxCameras`・`editorCamera`・`idleWhenUnwatched` |
+| `physics` | `backend`・`multicoreForSoftBodies`・`multicoreMinBodies`・`terrainForcesCore` |
+| `ai` | `llm`（url / model / apiKey / temperature / timeoutSec / repairs / maxSceneKB）・`meshy`（url / apiKey / refine / artStyle / aiModel / targetPolycount / pollSec / timeoutSec / maxDownloadMB）・`maxMeshes`・`caFile`・`generatedDir` |
+
+- **優先順位は「既定値 < config.json < exe 引数」**。既定値の定義はコードに
+  1 か所ずつ（`AppConfig.h` の構造体・`scene/SceneSystemConfig.h`・
+  `autogen/AiConfig.h`）で、同梱の config.json は同じ値を書いてあるだけ
+  （書かないキーは既定値 = 古い config.json のままでも起動する）。exe 引数は
+  従来の分（モードとポートの位置引数・`--physics-cores` など・`--max-cameras`・
+  `--codec`・`--encoder`）だけ残してある。**API キー**は config.json の apiKey が
+  空のときだけ環境変数から補う。
+- **SceneConfig.h との分担**: 「どのマシンで・どう動かすか」で変わる値が
+  config.json、物理の手触り（摩擦・減衰・反復回数・スリープ）やライトの初期
+  構成・掴みのばねといった**エンジンの既定値**は従来どおり `SceneConfig.h`
+  （コンパイル時）。Scene は実行環境の値を `SceneSystemConfig`（コンストラクタで
+  受けて `sys_` に持つ）として受け取る。`PhysicsBackend` は Chrono 抜きで読める
+  `physics/PhysicsBackend.h` に分けた。
+- **読み方はシーン文書と同じ約束**: コメント（`//` と `/* */`）可、UTF-8 の BOM
+  可。知らないキー（打ち間違い）・型違い・範囲外・不正な列挙値は**警告して
+  既定値 / 丸めた値**で続ける（起動ログの `config: ...` に全件）。`_` か `$`
+  で始まるキーは注記として読み飛ばす。**JSON として壊れているときだけ起動を
+  止める**（行と列付き。壊れた設定で黙って既定値のまま動くと、どの値が
+  効いているのか分からなくなるため）。`--config` で指定したファイルが無いときも
+  止める。カレントに config.json が無いのは既定値で起動（ログに 1 行）。
+- **値を足すとき**: 構造体にメンバ（既定値付き）→ `parseAppConfig` に 1 行
+  （`r.str / r.integer / r.number / r.boolean`、範囲と許す値を書く。読んだパスが
+  「知っているキー」になる）→ 同梱の config.json に説明付きで 1 行。
+
+## AI によるシーン自動構築（`src/autogen/` + `components/AutoGenComponent`）
+
+依頼文（日本語でよい）から **OpenAI 互換の LLM** がシーン文書（XML）を書き、
+必要な物は **Meshy 互換の Text to 3D** で .glb を作って、今のシーンへ適用する。
+入口はアセットパネルの **🤖 AI**（`web/autogen.js` のモーダル）、コマンドは
+`ai.generate {prompt, mode: new|edit|append, meshes}` / `ai.cancel`（エディタ
+モード × エディタカメラのページ専用、判定はサーバー）。状態は `/scene` の `ai`。
+
+```
+依頼文 ─► LLM ─► XML（壊れていれば・文書の警告が出れば LLM に直させる = llmRepairs 回）
+          <mesh name generate="英語の説明" height="m">  ← 生成の依頼（WizEngine 内部の印）
+       ─► Meshy: 作成を全部先に投げて並行に待つ ─► assets/generated/*.glb
+          倍率 = 頼んだ高さ ÷ モデルの高さ（GlbBounds: POSITION の min/max × ノード変換）
+       ─► SceneLayout: 動く物の重なり・床へのめり込みを真上へ載せ直す
+       ─► toXmlText ─► EditorState の Op "xml"（置き換え）/ "xml.append"（appendDocument）
+```
+
+- **`src/autogen/` は Chrono も Filament も知らない**（文書層 + HTTP だけ）。
+  ネットワークの待ちは分単位なので、エンジンのどのスレッドでも回さず、
+  `SceneGenerator` の**切り離したスレッド**で 1 件ずつ回す。適用は Op で物理
+  スレッドへ（📄 XML の「✓ 適用」と同じ経路 = Chrono を触るのは物理スレッド
+  だけ、の約束どおり）。`shutdown()` の後は結果を Scene へ渡さない（main が
+  join の後に呼ぶ。Scene の破棄も係を先に壊すようにした = `~Scene()` が
+  `components_.clear()`）。通信中のスレッドは待たない（終了が LLM の応答待ちで
+  数分止まらないため）。
+- **接続先は実行環境の設定 = config.json の `ai` 節**（下の「起動設定」の章。
+  キーの一覧は `AiConfig.h` の冒頭）: `ai.llm.url`（既定
+  https://api.openai.com/v1、Ollama なら http://127.0.0.1:11434/v1）・
+  `ai.llm.model`（必須。空 = 機能オフ）・`ai.meshy.url`・`ai.meshy.refine`・
+  `ai.maxMeshes` など。**API キー**は `ai.llm.apiKey` / `ai.meshy.apiKey`、空なら
+  環境変数（`WIZ_LLM_API_KEY` → `OPENAI_API_KEY`、`WIZ_MESHY_API_KEY` →
+  `MESHY_API_KEY`。`fillAiKeysFromEnvironment`）。AI 専用の exe 引数は無い。
+  ブラウザへは「設定済みか」とホスト名しか出さない。
+- **HTTPS は OpenSSL 付きのビルドだけ**（CMake が OpenSSL 3 を見つけたら
+  `CPPHTTPLIB_OPENSSL_SUPPORT` を**ターゲット全体**に立てる。httplib はこの
+  定義で class の中身が変わるので TU ごとに立て分けると ODR 違反）。無ければ
+  http:// の接続先だけ。プロキシは `HTTPS_PROXY` / `NO_PROXY`、CA は
+  `ai.caFile`。送るのは `model` と `messages` だけ（`max_tokens` /
+  `temperature` / `response_format` は提供元とモデルの世代で可否が違うので
+  送らない）。
+- **LLM に教えるのは文書の部分集合**（`ScenePrompt.cpp` の指示文、英語）: 箱・
+  球・生成モデルの剛体、ライト、カメラ、地面、描画、基本のジョイント。車両・
+  テレイン・ソフトボディ・ケーブル・プレハブ・イベントのノードは書かせない
+  （数値の整合を LLM が取れず、黙って動かないシーンになるため）。編集モードは
+  今のシーンの XML を渡して「触らない物はそのまま返せ」と言う（96 KB を超える
+  シーンは断る - 途中で切った XML を渡すと壊れた文書が返る）。
+- **指示文の構成**（`buildSystemPrompt`）: ①エンジンが文書をどう使うか（エディタで
+  置かれ、シミュレートで書いた姿勢から物理が始まる・fixed 以外は落ちる・マウスで
+  掴める・1 body = 1 geom・cam0 がブラウザの視点・問題は送り返される）②座標と
+  単位 ③見本の文書（`systemPromptExample()`）④要素ごとの注意（読込が警告にする
+  組み合わせ = motor と range の併用・存在しない body 名・入れ子 body などを
+  先に言う。ジョイントの単位はモードと種類ごと）⑤**実在するファイルの一覧**
+  （`scanAssetInventory` が assets/ を歩いて HDR・地面テクスチャ・.glb を集め、
+  モデルは倍率 1 の外接箱つき = LLM が scale を決められる。作り上げた
+  ファイル名は文書としては正しいので検査を通ってしまうため）⑥書かない物 ⑦出す前の
+  点検表。**見本の文書は警告 0 件で読めること**（以前の見本は存在しない body
+  "door" を参照していて、真似た LLM が毎回修正の往復になっていた）。文書の
+  書式を変えたら見本も `fromXml` に通して確かめる。
+- **手元の Text to 3D（`samples/meshgen/`、Python）**: Meshy を使わずに .glb を作る
+  第 1 段。LLM（接続先は同じ `ai.llm`）が `cad.py` の API（box / cylinder /
+  revolve / extrude / tube / hull と + - &、材質）で `build(m)` を書き、別プロセスで
+  制限付きに回して .glb と確認用 PNG にする。例外・規則違反（import など）・
+  **浮いた部品**（全部品の和を `decompose` して 2 個以上）は LLM に返して直させる。
+  スクリプトは .glb の隣に残る = 手で直して `--script` で作り直せる（v6_engine と
+  同じ「コードが正」）。出力は既定で `assets/generated/local/`（.gitignore 済み）で、
+  シーンからは `<mesh file="generated/local/x.glb">` で使える。**動く所のある物は
+  部品（`m.part`）と関節（`m.joint` = hinge / slide / ball / weld、range / motor）で
+  書く**と、V6 の見本と同じく部品ごとの .glb（原点 = その部品の凸包の体積重心 =
+  エンジンが凸包の剛体の原点を寄せる先。文書の pos がそのまま置き場所になる）と、
+  剛体 + `<equality>` のシーン文書（質量 = 体積 × 材質の密度、部品どうしは
+  `layer="7" nocollide="7"` で当たらない）を出す。`--scene` で `assets/scenes/` にも置く。
+  確認用 PNG の右は関節を range の 70% まで動かした姿勢（開く向き = range の符号の確認）。
+  文書は `fromXml` で警告 0 件まで確認済み、Chrono での動きは実機待ち。**まだエンジンの
+  生成経路（`<mesh generate>`）にはつながっていない**。
+- **LLM との往復は `assets/generated/last_chat.txt` に残る**（system / user /
+  assistant の全文と、エンジンの検査で見つかった問題。返答のたびに上書き、
+  キーは入らない）。「なぜこのシーンになったか」はまずこれを見る。
+- **生成モデルのキャッシュ**は `assets/generated/index.json`（キー = 説明文 +
+  画風 + refine + モデルの FNV-1a）。同じ説明文は再生成しない（再課金しない）
+  ので、指示文にも過去の説明文を最大 40 件載せて再利用を促す。モデルはでき
+  た順に目録へ書く（後で全体が失敗しても払った分は残る）。失敗・時間切れ・
+  上限超えのモデルは**箱の代役**（頼んだ高さ × geom の半径）に差し替え、
+  シーンは必ず完成させる。
+- **重なりの後始末**（`SceneLayout`）は決定的な計算: 動く物（固定でもジョイント
+  でもない物）だけを、低い物から順に、重なった相手の上面（外接箱）へ載せ
+  直す。床の下は床の上へ。横へはずらさない。編集モードは「動かした / 新しい
+  物」だけ、追加モードは既存の物を障害物として見る。
+- **生成物は `/scene.xml` と同じ文書**なので、気に入らなければ 📄 XML で直す、
+  💾 で保存する、がそのまま使える。適用はファイルに書かない。
+- **できないこと / 効率の悪いこと**（実装しない判断）: 生成中の LLM 通信の
+  中断（キャンセルは今の通信が終わってから効く。Meshy 側で走り始めたタスクは
+  止まらず課金される）、生成モデルの凹形状の当たり判定（凸包のまま。器の中に
+  物は入らない）、レンダリング結果を見て直す視覚フィードバック（画像を LLM に
+  渡す往復は 1 回ごとに重い）、物理的に妥当な配置の保証（外接箱での後始末まで）。
+- **確認**: 文書層とパイプラインはモックの OpenAI / Meshy サーバーで結合テスト
+  済み（修正の往復・生成・リダイレクト付きダウンロード・倍率・重なり・
+  キャッシュ・追加モードの改名・Meshy 無しの代役・スレッド経由の適用）。
+  エンジン側（AutoGenComponent / main / SceneEdit の `xml.append`）は Chrono /
+  Filament の無い環境で書いたので実機でのビルド確認待ち。本物の OpenAI /
+  Meshy への接続も未確認。
 
 ## Chrono の拘束・物性（`PhysicsWorld::JointSpec` / `BodyOptions`）
 
@@ -747,7 +1244,7 @@ Chrono が持っていて WizEngine が使っていなかった機能のうち�
 - **ブラウザ側**: Inspector の「物性」節（摩擦・反発・転がり・粘着・レイヤ・
   当てないレイヤ・重力・初速）、ジョイント節の追加行（`renderJointForm` が
   種類に合う行だけ出す。一覧の行クリックでフォームへ読込、✎ で
-  `edit.joint.set`）、World/Physics タブの重力 X/Z・積分器・ソルバ・合成。
+  `edit.joint.set`）、World タブの重力 X/Z・積分器・ソルバ・合成。
   コマンドは edit.set の新キー（surface / layer / nocollide / gravity /
   velocity / angularVelocity）、edit.joint.add の追加キー、edit.joint.set。
 - **Multicore バックエンドでの扱い**（ソフトボディや大量の剛体のシーンで自動的に選ばれる系。下の「バックエンドの自動切替」）。
@@ -803,9 +1300,9 @@ Chrono の「中規模」の機能（新モジュールのリンクか設計変�
 車両 Chrono::Vehicle は自前実装があるので対象外）。**バックエンドは Scene が
 文書の中身から自動で選ぶ**（`Scene::requiredBackend` / `syncBackend` /
 `rebuildPhysicsWorld`）: ①Multicore が扱えない機能を使っていれば Core、
-②無くてソフトボディがあるかボディが `kMulticoreMinBodies`（既定 200、
+②無くてソフトボディがあるかボディが `physics.multicoreMinBodies`（config.json、既定 200、
 粒子と collide 部品も数える）以上なら Multicore、③どちらでもなければ
-`kBackend`（既定 **Core**）。見本は `assets/scenes/flexible.xml`。
+`physics.backend`（既定 **Core**）。値は `SceneSystemConfig`（Scene が持つ `sys_`）。見本は `assets/scenes/flexible.xml`。
 
 - **なぜ Core が既定か**。Core（`ChSystemNSC` + Bullet）は Chrono の全機能が
   そのまま使え（B 群は全部 Core 専用、A 群のばね / トルクモータ / 可動範囲も
@@ -832,7 +1329,7 @@ Chrono の「中規模」の機能（新モジュールのリンクか設計変�
   が地面 → 全オブジェクト（設計値から `rebuildBody`）→ シミュレート中なら
   ジョイントとケーブルの順で組み直す。判定（`requiredBackend`）は Core を
   要する理由を英文で集め、`backendNote()`（`/scene` の `engineNote`、
-  `/stats` の `engineNote`、World/Physics タブの「バックエンド」）に出す。Core を
+  `/stats` の `engineNote`、World タブの「バックエンド」）に出す。Core を
   要するのは **FEA ケーブル・ブッシュ / 定常荷重（ChLoad）・MINRES と直接法・
   HHT / Newmark・モーダル解析**。呼ぶのはシミュレート開始（`enterMode`）・
   `edit.sim`・読込 / 全消し / 取込・ジョイント / ケーブルの増減・荷重の
@@ -885,7 +1382,7 @@ Chrono の「中規模」の機能（新モジュールのリンクか設計変�
 - **モーダル解析（20）**: `<option modal="N">`。シミュレート開始時に
   `PhysicsWorld::modalFrequencies` が M / K / Cq を取り出して
   `ChModalSolveUndamped`（Lanczos）で N 本の固有振動数を求め、ログ・
-  ステータス・`/scene` の `modal`（World/Physics タブに一覧）に出す。CMake の
+  ステータス・`/scene` の `modal`（World タブに一覧）に出す。CMake の
   `WIZ_WITH_CHRONO_MODAL`（`chrono_modal/ChEigenvalueSolver.h`、Chrono 9.0.0
   の API）。接触は入らないので、ケーブルのある系で意味を持つ。
 - **取込（21）**: `src/physics/ModelImport.{h,cpp}`。`edit.import {file}`
@@ -923,6 +1420,40 @@ Chrono の「中規模」の機能（新モジュールのリンクか設計変�
   扱い。それでもコンパイルが止まったら該当ヘッダの名前を見る（A 群と同じ
   手口で直す）。実機での確認は Multicore → Core の切替が起きること、
   ケーブルが垂れること、ブッシュの箱が止まること、荷重の箱が押されることの順。
+
+## パーティクル（`<emitter>` + `components/EffectsComponent` + `Renderer::setParticles`）
+
+炎・火花のような**見た目だけの粒子**（物理には何も返さない）。文書は `<worldbody>` の
+`<emitter name body pos euler radius height rate life size grow speed inherit rgba
+rgba2 intensity light lightrange max>`（`ed::EmitterDesc`、`EditorState::emitters()` /
+`emitterVersion()`、/scene の `emitters`）。付け先（body、world = -1）のローカルの範囲
+（+Y を軸にした円柱、height 0 なら球）で生まれ、その瞬間の付け先の速度
+（`inherit` 倍、ω × r 込み）にばらつき（`speed`）を足して**等速で飛ぶだけ**（力も
+衝突も無い）。`life` 秒で `size` → `size × grow`、色は `rgba` → `rgba2`、明るさは
+`intensity` 倍（1 を超えると光って見える = ブルームが拾う）。量は `rate`（粒子 /
+秒）か、**制御器のアクチュエータ `emitter:<名前>.rate`**（書いたステップはそちらが
+勝つ = 燃焼の式が燃えている間だけ出す、など）。見本は `v6_engine.xml` の炎。
+
+- **2 つのスレッドに分ける**。PHYSICS（`onPhysicsStep`、**制御器より後に登録** =
+  そのステップの量を読む）が端数を持ち越しながら粒子を生み（付け先の姿勢と
+  速度はそのステップの物理から。生まれる時刻はステップの中で均等にばらす =
+  高い回転数でも 1 か所に固まらない）、mutex の下の溜まりへ渡す。RENDER
+  （`onRender`）が受け取って**描くフレームのシミュレーション時刻**
+  （`Scene::renderSimTime`、補間した姿勢と同じ時刻）で年齢を数える =
+  実時間より遅く回るシーンでも炎の長さ（クランク角）が変わらず、まだ描く
+  フレームに届いていない粒子（年齢が負）は待つ。シミュレートの開始・停止・
+  Reset（`runGeneration`）で全部消える。
+- **描画は加算合成**（`assets/materials/particle.mat`、unlit・`blending : add`・
+  奥行きは書かない）。粒子 1 個 = **直交する 3 枚の円盤**（中心の頂点だけ色、縁は
+  黒 = 補間がそのまま柔らかい減衰。テクスチャ不要、どの向きから見ても玉）。
+  `Renderer::addParticleMesh(最大数)` は 1 回、`setParticles` は毎フレームで、
+  転送は「今の数と前回の数の大きい方」だけ、残りの席は面積 0（線バッチと同じ =
+  実行中にプリミティブ数を変える版依存の API を使わない）。全ビューに映る。
+- **点光源**（`light` > 0）: 範囲の中心に置き、生きている粒子の明るさの重みの
+  合計（6 で最大）で明るさを揺らす。影は落とさない（壁越しにも照らす）。
+- **未**: 力（重力・浮力・抵抗）、当たり判定、テクスチャ付きの粒子、カメラに
+  向く板（ビューが共有なので 3 枚の円盤で代える）、エディタでの配置 UI
+  （いまは 📄 XML で書く）。
 
 ## ソフトボディ（`src/scene/SoftLattice.{h,cpp}` + `PhysicsWorld::addSoftBody` + `Renderer::addSoftShape`）
 
@@ -1115,6 +1646,11 @@ collide 部品の外接箱、当たり判定は collide 部品だけ）が実体
   広さは `kGridHalf`（50m ＝ 100×100m。見える地面 16m・物理の床 20m より
   広い作業目安なので、床の外はシミュレートで落ちる）。表示と間隔は
   GizmoSettings（`grid` / `gridStep`、Inspector タブ、下限 0.25m）。
+- **ジョイント線の表示**も GizmoSettings（`jointLines`、⚙ の「ジョイント線」）。
+  線はサーバーが全ビュー共通で描く（`Scene::applyToRenderer`）ので、切ると
+  エディタ / シミュレート・全カメラで消える。地面につないだジョイントは「アンカーの
+  真下の床」まで線を引くので、宙に浮いた機構（V6 のピストン・バルブ・カム）では
+  床へ伸びる縦線が並ぶ - そのための切替。
 
 ## イベントアセット（ノードベースのイベント設計）
 
@@ -1128,7 +1664,7 @@ collide 部品の外接箱、当たり判定は collide 部品だけ）が実体
 （対象・カーソルの指す点）は `Scene::pointerGrab` が出すだけで、実際に
 引き寄せるのは既定シーンに付いているイベントアセット `pickup`
 （onGrab → grabPull）。外せば掴んでも動かなくなり、差し替えれば挙動を
-ノードで書き換えられる。イベントの節を持たない文書と「🗑 全消し」は
+ノードで書き換えられる。イベントの節を持たない文書と全消し（`edit.clear`）は
 `Scene::resetEventsToDefaults()` がこの 2 ノードを作って付ける（ライトを
 1 灯も書かない文書が初期構成で開くのと同じ扱い）。
 
@@ -1247,7 +1783,7 @@ collide 部品の外接箱、当たり判定は collide 部品だけ）が実体
   objects / selected の `events`）をポーリングで描く。アセットは**アセット
   パネルの ⚡ タイル**（クリックでノードエディタがそのアセットに切り替わる）と
   **ノードエディタ見出しの選択**で選び、**付け外しは Inspector の「イベント」**
-  （オブジェクト＝選択中の物）と World/Physics タブの World 節（シーン全体）。ライト / カメラの
+  （オブジェクト＝選択中の物）と World タブの World 節（シーン全体）。ライト / カメラの
   Inspector は「そのライト / カメラを対象にしているノード」の読み取り専用一覧。
   **作成・削除・付ける・ノードの追加は右クリック（コンテキストメニュー）**が
   入口: アセットパネルの何もない所 =「新しいイベント」、⚡ タイルの上 =
@@ -1290,11 +1826,22 @@ src/
                  SceneComponent, PrefabDefaults, PrefabFrame, SceneMath,
                  MathBridge, RenderBridge
   components/    EditorComponent, GizmoComponent, PhysicsControlComponent,
-                 StreamControlComponent, VehicleComponent, PrefabComponent
-  vehicle/       車両モデルとノード式（純粋な数値ライブラリ。tests/vehicle が使う）
+                 StreamControlComponent, VehicleComponent, PrefabComponent,
+                 AutoGenComponent, ControlComponent, EffectsComponent（パーティクル）
+  app/           起動設定（config.json の読み込み = AppConfig）
+  autogen/       AI によるシーン自動構築（LLM / Meshy の HTTP クライアント・指示文・
+                 配置の後始末。Chrono も Filament も知らない）
+  vehicle/       車両モデル（純粋な数値ライブラリ。tests/vehicle が使う）
+  formula/       計算式（ノード式）の検証・実行（C++ / LuaJIT）・XML・数式テキスト
+  control/       制御器の信号名・センサの計算・雛形（純粋。ControlComponent が使う）
 tests/vehicle/   車両モデルの単体テスト（-DWIZ_BUILD_TESTS=ON で本体からも回せる）
 tests/document/  シーン文書の単体テスト（同上。Chrono も Filament も要らない）
 cmake/           LuaJIT.cmake（LuaJIT の検出・ビルド）
+samples/         見本シーンの素材を作るもの（エンジンのビルド・実行には使わない）。
+                 v6_engine/ = V6 の部品メッシュと環境光を作る Python（manifold3d + trimesh）
+                 meshgen/ = 手元の Text to 3D（LLM が cad.py の API で CSG のスクリプトを書き、
+                 ここで回して .glb にする。動く物は部品ごとの .glb + ジョイントのシーン文書。
+                 Meshy の代わりの第 1 段。README.md）
 web/             ブラウザ UI（ビルド時に assets/web/ へコピー）
 assets/          実行時に読むもの（materials / textures / scenes）
 third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, json, httplib, cgltf, stb）
@@ -1306,11 +1853,12 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
   `project(VERSION)` には持たせない（2 か所に書くと必ずずれる）。起動ログの
   1 行目（`Charon 1.0.0 "WizEngine"`）、`/stats` の `versions.Charon`（素の
   semver）と `versions.Codename`、ブラウザのサイド
-  バー見出しと About 節（World/Physics タブ）がここから出る。ブラウザ側は
+  バー見出しと About 節（World タブ）がここから出る。ブラウザ側は
   `app.js` の `PRODUCT` が同じ名前を持つ（/stats のキー名を引くため）。
-- **CPU コアの固定**（`src/core/CpuAffinity.{h,cpp}`、Windows / Linux 両対応）。設定は **exe 引数**（`--physics-cores "0-11"` / `--render-cores "12-15"` /
-  `--physics-threads N`、`--help` で一覧）。**SceneConfig.h には置かない**（scene はユーザーが
-  触るシーン内容、CPU 割り当ては実行環境の設定という分離）。オプションはモードの前後
+- **CPU コアの固定**（`src/core/CpuAffinity.{h,cpp}`、Windows / Linux 両対応）。設定は **config.json の `cpu`**（`physicsCores` "0-11" / `renderCores` "12-15" /
+  `physicsThreads`）で、exe 引数（`--physics-cores` / `--render-cores` /
+  `--physics-threads`、`--help` で一覧）でも上書きできる。**SceneConfig.h には置かない**（scene はユーザーが
+  触るシーン内容、CPU 割り当ては実行環境の設定という分離）。exe 引数はモードの前後
   どこに書いてもよく、位置引数とは分けて解析される。Windows は `SetThreadAffinityMask` /
   `GetProcessAffinityMask`、Linux は `pthread_setaffinity_np` / `sched_getaffinity`。
   **Chrono::Multicore は OpenMP で解くので、呼び出し元スレッドを固定しても
@@ -1445,12 +1993,15 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
   イベントの引き寄せで同じ答えが要るため（動かすかどうかはイベントアセット
   次第）。**シーンの中身は持たない**（配置・モデル・ジョイントは
   assets/scenes/*.xml。`build()` は地面・ライト・カメラの初期化と
-  kStartupScene の読み込みだけ）。エンジン側の既定値は `SceneConfig.h`。
+  config.json の `scene.startupScene` の読み込みだけ）。エンジン側の既定値は
+  `SceneConfig.h`、実行環境の設定は `SceneSystemConfig`（config.json）。
 - `src/streaming/VideoStreamer.{h,cpp}` — GStreamer パイプライン。`OutputMode` で
   web/None（GStreamer出力なし。ブラウザへは WebRtcStreamer が担当）/ window / stream
   （RTP/UDP）/ rtsp（rtspclientsink）を切替。
 - `src/streaming/WebRtcStreamer.{h,cpp}` — GStreamer `webrtcbin` でブラウザへ WebRTC 配信。
-  コーデックは `SceneConfig.h` の `kVideoCodec`（VP8 / VP9 / H264）と `kVideoBitrate` で指定。
+  コーデック・ビットレート・解像度・fps・エンコーダ要素は config.json の `video`
+  （`codec` = h264 / h265 / av1 / vp9、`bitrate`、`encoder`。exe 引数 `--codec` /
+  `--encoder` でも上書き可）。
   VP9 は同画質で VP8 の約半分の帯域だがエンコードが重い（`cpu-used=8` で速度優先）。
   H264 は GPU エンコード（amfh264enc → mfh264enc → x264enc → openh264enc の順で自動選択、
   起動時に `h264 encoder: ...` と表示）。`h264parse config-interval=-1` で SPS/PPS を
@@ -1483,7 +2034,7 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
   → `ShapeMaterial`、描画設定 `RenderDesc` → `RenderSettings`）。Scene と
   PrefabComponent の両方が使うので Scene の私的ヘッダには置かない
   （同じ変換を 2 か所に書くと、値を足したとき片方だけ直して黙って食い違う）。
-- **視聴者がいない間は完全に休む**（web モードのみ、`SceneConfig.h` の `kIdleWhenUnwatched`）。
+- **視聴者がいない間は完全に休む**（web モードのみ、config.json の `scene.idleWhenUnwatched`）。
   `HttpServer::hasViewer()`（トークン＋ハートビート）で判定し、描画スレッドは 100ms 間隔の
   ポーリングのみ、物理スレッドも停止（アキュムレータもクリアするので復帰時に一気に進まない）。
   WebRTC のパイプラインは視聴者離脱時に破棄済みなのでエンコードも止まる。window/stream/rtsp
@@ -1492,6 +2043,22 @@ third_parties/   サブモジュール（Chrono, Eigen, Blaze, Thrust, LuaJIT, j
   ぶんだけ dt 単位で進め、遅れは次のパスで取り戻す。取り戻せる上限は `kMaxCatchUp`（4）で、
   超えたぶんは捨てる＝その間はスローモーションになる。実時間との比は `/stats` の
   `realtime` に出し、ブラウザに `speed 1.00x` として表示（0.95 未満で警告色）。
+- **時間の速さ（スローモーション）**: Scene タブの Pause / Reset の下の
+  「⏱ 時間の速さ」（`#speedRow`、シミュレート中だけ出る。1x〜0.01x、
+  app.js の `TIME_SCALES`）が `timescale {scale}` を送り、
+  `PhysicsTuning::timeScale`（0.01〜1 にクランプ）に入る。物理ループは
+  経過した実時間にこれを掛けてアキュムレータへ積むだけで、**dt は変えない**
+  = 結果は速さによらず同じ（制御器・スコープ・パーティクルの時計は物理の
+  時計なので、そのままスローになる）。どのカメラのページからでも変えられ
+  （Pause と同じ扱い）、シーン文書には入れない。ループは毎パス
+  `Scene::setTimeScale` へも写し、**描画の補間**（1 パスを「パスの
+  シミュレーション時間 ÷ 速さ」の実時間で描く。`PoseFrame::timeScale`）と
+  **カメラの注文の保持時間**（`kCameraHoldSeconds ÷ 速さ`）を伸ばす -
+  でないと 0.01x の 30 Hz（3.3 秒に 1 ステップ）でコマ送りになり、追従
+  カメラが注文の合間に外れる。`/stats` の `realtime` は
+  「速さを掛けた実時間 − 追いつけずに捨てた時間」÷ 窓の実時間（進んだ
+  ステップを数えると 0.01x では 0 と 0.02 の間でばたつくため）、`timeScale`
+  が設定値で、警告は realtime < 0.95 × timeScale のとき。
 - **描画は物理の 2 フレームの間を補間する**（`Scene::buildRenderFrame`）。物理
   （既定 30 Hz）と描画（60 fps）は別の時計なので、最新の姿勢をそのまま描くと
   1 フレームに 0 / 1 / 2 ステップ進むフレームが不規則に混ざり、動く物と
@@ -1592,9 +2159,9 @@ CRT を変えたときは build フォルダを削除してから再 configure�
 物理バックエンドの選択は2段構え。
 1. CMake `-DWIZ_USE_MULTICORE=ON`（既定 OFF）… Multicore モジュールを**リンクして使える
    状態にする**だけ。`find_package(Chrono COMPONENTS Multicore)` になる。
-2. `SceneConfig.h` の `kBackend`（`PhysicsBackend::Core` / `::Multicore`、既定 Core）…
+2. config.json の `physics.backend`（`core` / `multicore`、既定 core）…
    **シーンが何も要求しないときの系**。実際には Scene が文書の中身で選ぶ
-   （Core 専用機能 → Core、ソフトボディ / `kMulticoreMinBodies` 以上 → Multicore。
+   （Core 専用機能 → Core、ソフトボディ / `physics.multicoreMinBodies` 以上 → Multicore。
    上の「Chrono の B 群」の章）。
 CMake が OFF なら Multicore を選ぶ条件でも Core のまま（起動時にメッセージ）。Multicore は `ChSystemMulticoreNSC`＋APGD で設定は
 `GetSettings()` 経由。**スリープ非対応**なので `asleep` は 0 のまま。起動ログとブラウザの
@@ -1681,13 +2248,17 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   選択、初速、円柱部品と三角メッシュの当たり判定。上の「Chrono の拘束・
   物性」の章）。
 - 済: シーン文書の MuJoCo 風 XML 化（`assets/scenes/*.xml`、`/scene.xml`、
-  `kStartupScene`。上の「シーン文書（XML）」の章を参照）。
+  `scene.startupScene`。上の「シーン文書（XML）」の章を参照）。
 - 済: glTF モデルの文書化（`<asset><mesh/>` + `<geom type="mesh" mesh=...>`。
   配置も含め、シーンの中身はコードから文書へ全面移行。Scene.cpp の
   格子自動生成・kBoxModelPath プール・置物 kModelPath は廃止し、既定シーンは
   `assets/scenes/default.xml`）。
 - 済（試作）: 車両シミュレーション（グラフ型パワートレイン + レイキャスト式
   車輪、車輪の描画、ソフトタイヤ、シーンの剛体への接地。上の「車両」の章）。
+- 済（実機で確認）: 制御器（ブロック線図。ノード式に PID・遅延などの制御
+  ブロックを足し、センサ / アクチュエータの信号名で Chrono とつなぐ。スコープと
+  CSV。上の「制御器」の章）と、計算式の数式テキスト ⇄ ノードの変換・汎用の
+  雛形（上の「計算式」の章）。車両のタイヤ式・空気圧式の差し替えは廃止。
 - 済: イベントアセット（Node-RED 風のノードエディタ。衝突・開始・タイマー・
   掴みのトリガーと、色・力・固定・引き寄せ・ライト・カメラ注視のアクション。
   ノードは名前付きアセットにまとめ、オブジェクト / シーン全体に何本でも
@@ -1698,6 +2269,9 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   露出・トーンマップと色調整、`<geom>` / `<part>` の PBR 材質、
   `<ground roughness metallic>`、`<environment skybox>`。上の「フォトリアル
   描画」の章と `docs/photorealism.md`）。
+- 済（実機待ち）: 起動設定の config.json 化（上の「起動設定」の章）。
+- 済（実機待ち）: AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換
+  Text to 3D。上の「AI によるシーン自動構築」の章）。
 - 済: ステップ3（姿勢反映）〜6（UDP配信）。
 - 未: ステップ7（クライアント→サーバーの入力・制御チャネル。カメラ操作を
   UDP/TCP で受けて `Renderer` にカメラ更新 API を追加）。

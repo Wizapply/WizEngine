@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <cmath>
 
-#include "vehicle/TireFormula.h"
-
 namespace wizengine {
 namespace vehicle {
 
@@ -55,13 +53,7 @@ WheelController::WheelController(const TireDesc& tire,
                                  const Vec3& localAttach)
     : tire_(tire), sus_(suspension), localAttach_(localAttach) {}
 
-void WheelController::setTireFormula(std::unique_ptr<FormulaInstance> formula) {
-    formula_ = std::move(formula);
-    formulaFailures_ = 0;
-}
-
 void WheelController::reset() {
-    if (formula_) formula_->reset();
     grounded_ = false;
     compression_ = 0.0;
     deflection_ = 0.0;
@@ -140,7 +132,6 @@ void WheelController::updateContact(const ChassisState& chassis, double steerRad
         // 浮いている間はタイヤ力を残さない（緩和長の状態も含めて）。
         forceX_ = forceY_ = 0.0;
         relaxX_ = relaxY_ = 0.0;
-        if (formula_) formula_->reset();
         contactPoint_ = attachWorld_ + down * reach;
         vx_ = vy_ = 0.0;
         return;
@@ -230,9 +221,8 @@ double WheelController::tick(double omega, double tickDt) {
     const double fyLo = vy_ >= 0.0 ? -capY : 0.0;
     const double fyHi = vy_ >= 0.0 ? 0.0 : capY;
 
-    // 組み込みの「スリップ → 力」: Magic Formula + 摩擦楕円 + 上限 + 緩和長。
-    // ノード式（formula_）はこれと同じ入力を受けて fx / fy を返す。
-    auto builtin = [&]() {
+    // 「スリップ → 力」: Magic Formula + 摩擦楕円 + 上限 + 緩和長。
+    {
         const double peak = tire_.mu * load_;
         double fx = peak * magic(slipRatio_, tire_.bx, tire_.cx, tire_.ex);
         double fy = -peak * magic(slipAngle_, tire_.by, tire_.cy, tire_.ey);
@@ -247,7 +237,6 @@ double WheelController::tick(double omega, double tickDt) {
         fx = clampd(fx, fxLo, fxHi);
         fy = clampd(fy, fyLo, fyHi);
         // 緩和長: 力が定常値へ一次遅れで追従する（時定数 = σ / 速度）。
-        // 既定のノード式（TireFormula.cpp）と同じ順序・同じ状態の持ち方。
         if (tire_.relaxation > 1e-6) {
             const double tau = tire_.relaxation / v;
             const double a = std::min(1.0, tickDt / tau);
@@ -259,27 +248,9 @@ double WheelController::tick(double omega, double tickDt) {
         }
         forceX_ = relaxX_;
         forceY_ = relaxY_;
-    };
-    bool done = false;
-    if (formula_) {
-        // 順番は tireFormulaInputs() と同じ。
-        const double in[20] = {slipRatio_, slipAngle_, load_,    tire_.mu,
-                               v,          vx_,        vy_,      omega,
-                               r,          tire_.bx,   tire_.cx, tire_.ex,
-                               tire_.by,   tire_.cy,   tire_.ey, tire_.relaxation,
-                               fxLo,       fxHi,       fyLo,     fyHi};
-        double out[2] = {0.0, 0.0};
-        if (formula_->eval(in, out, tickDt)) {
-            forceX_ = out[0];
-            forceY_ = out[1];
-            done = true;
-        } else {
-            ++formulaFailures_;
-        }
     }
-    if (!done) builtin();
-
-    // 安全のため出力にももう一度範囲を掛ける（式が守らなくても暴れない）。
+    // 緩和長の状態はこのティックの範囲を超えることがあるので、出力にも
+    // もう一度範囲を掛ける（以前から同じ順序）。
     forceX_ = clampd(forceX_, fxLo, fxHi);
     forceY_ = clampd(forceY_, fyLo, fyHi);
 

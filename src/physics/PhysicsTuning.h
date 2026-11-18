@@ -18,6 +18,10 @@
 struct PhysicsTuning {
     std::atomic<bool> reset{false};       // 1 回だけ: 置いた姿勢（設計値）へ戻す
     std::atomic<bool> paused{false};
+    // 時間の速さ（実時間 1 秒あたりのシミュレーション秒、0.01〜1 = スロー
+    // モーション）。物理ループが経過した実時間にこれを掛けて積む。シーン
+    // 文書には入れない（見る側の操作。Pause と同じ扱い）。
+    std::atomic<double> timeScale{1.0};
     std::atomic<int> substeps{1};
     std::atomic<int> physicsHz{60};
     std::atomic<int> pendingIterations{0};   // 0 = 当てるものが無い

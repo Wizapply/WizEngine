@@ -15,12 +15,14 @@
 //   SceneTerrainScatter.cpp: 散布物（木や小物）のサーバー側の操作
 //   SceneTerrainScatterBody.cpp: 散布物の幹の当たり判定のボディ
 
+#include "scene/StatusCaveat.h"  // warningCountCaveat
 #include "scene/Scene.h"
 #include "scene/SceneConfig.h"
 #include "physics/MeshCollision.h"
 #include "core/Log.h"
 
 #include "scene/SceneMath.h"
+#include "scene/SharedAssetFile.h"
 
 #include <chrono/core/ChQuaternion.h>
 #include <chrono/core/ChVector3.h>
@@ -53,7 +55,6 @@
 #include "terrain/TerrainFrame.h"
 #include "terrain/TerrainLibrary.h"
 #include "terrain/TerrainUndo.h"
-#include "vehicle/TireFormula.h"
 
 namespace ed = wizengine::editor;
 
@@ -398,6 +399,10 @@ inline std::string terrainPatchTypeStatus(const std::string& label, const std::s
 inline void noteBadPatchKey(bool ok, const char* key, std::string* badKey) {
     if (!ok && badKey && badKey->empty()) *badKey = key;
 }
+// ステータスの末尾に付ける件数の注意（定義は scene/StatusCaveat.h。UiOps も使う）。
+// ステータスの末尾に付ける警告の件数（定義は scene/StatusCaveat.h。UiOps も使う）。
+using wizengine::countCaveat;
+using wizengine::warningCountCaveat;
 
 // ---- 塗り分けの層（.terrain の LAYR）-----------------------------------------
 // 層の値の検査と JSON の唯一の定義（型は terrain::TerrainLayer 1 つ。文書の型には
@@ -608,7 +613,7 @@ inline bool readSceneDocument(const std::string& name, ed::SceneDocument& doc,
     }
     std::string text;
     std::string xmlReason;
-    if (EditorState::readText(xmlPath, text, xmlReason)) {
+    if (wizengine::sharedasset::readTextFile(xmlPath, text, xmlReason)) {
         std::string error;
         std::vector<std::string> warnings;
         if (!ed::parseXml(text, doc, error, &warnings)) {

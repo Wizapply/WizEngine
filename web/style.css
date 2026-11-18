@@ -274,6 +274,9 @@
     border-radius: 8px 8px 0 0;
     position: relative; top: 1px;  /* overlaps the strip border when active */
   }
+  /* World タブは文字の幅だけ（他のタブより狭く）。残りの幅は
+     Scene / Inspector が分け合う。 */
+  #tabPhysics { flex: 0 0 auto; }
   .sbTab:hover:enabled { background: #1c1e24; color: #c3c8d0; }
   .sbTab.active {
     background: #17181c;        /* = sidebar bg: tab and pane become one */
@@ -384,6 +387,16 @@
     font: 12px/1.4 ui-monospace, Consolas, monospace;
     color: #98a0ab; text-align: center; letter-spacing: 0.03em;
   }
+  /* 時間の速さ（Play / Reset の下）。1x 以外はスローモーション中だと
+     分かるよう色を付ける。 */
+  .speedRow { flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+              font-size: 12px; color: #9aa0aa; white-space: nowrap; }
+  .speedRow[hidden] { display: none; }
+  .speedRow select { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 4px;
+                     margin: 0; background: #24262c; color: #c8ccd4;
+                     border: 1px solid #3a3d45; border-radius: 5px; }
+  .speedRow.slow { color: #f0c060; }
+  .speedRow.slow select { border-color: #a07a2a; color: #f6dc9c; background: #3a3020; }
   #evtClear { cursor: pointer; }
   #evtClear:hover { color: #b8bcc4; }
   .evtList {
@@ -442,6 +455,8 @@
   }
   .item .sub { margin-left: auto; color: #7b7f88; font-size: 11px; }
   .item .sub.busy { color: #d08a4a; }  /* taken by someone else */
+  /* 親子の段で字下げした行（UI の要素。段は --depth）。 */
+  .item.depth { padding-left: calc(6px + var(--depth) * 14px); }
   /* The section has a fixed height (--inspector-height) and clips overflow,
      so the body and the inspector itself must stretch to fill it - only then
      does the inspector's own scrollbar take over instead of the section
@@ -541,6 +556,30 @@
     border-radius: 4px; background: #212329;
   }
   .edHint { font-size: 11px; color: #7b7f88; line-height: 1.5; }
+  /* UI の Inspector（ui-inspector.js）: 値の欄・既定値（薄く）・色の見本・不正な値。 */
+  .uiRow .uiVal { text-align: right; word-break: break-all; color: #dfe2e7; }
+  .uiRow .uiVal.uiDefault { color: #7b7f88; }
+  .uiSwatch {
+    display: inline-block; width: 10px; height: 10px; margin-right: 4px;
+    border: 1px solid #3a3d45; border-radius: 2px; vertical-align: -1px;
+  }
+  .uiBad { color: #ffb38a; }
+  /* 編集できる欄（ui-inspector.js）: 欄と ↺ を右に寄せ、数値の組は成分の数（--n）で並べる。
+     書いていない性質の行は欄ごと薄くする。 */
+  .uiRow .uiEdit {
+    display: flex; align-items: center; gap: 4px; justify-content: flex-end;
+    flex: 1 1 auto; min-width: 0; max-width: 70%;
+  }
+  .uiRow .uiEdit > .num, .uiRow .uiEdit > .txt { max-width: none; }
+  .uiRow .uiEdit textarea.txt { resize: vertical; font-family: inherit; }
+  .uiVec { display: grid; grid-template-columns: repeat(var(--n), 1fr); gap: 3px; width: 100%; }
+  .uiVec .axis { background: #3a3d45; }
+  .uiColor { display: flex; gap: 4px; align-items: center; }
+  .uiColor .num { width: 54px; }
+  .uiRow.uiDefault .uiEdit input, .uiRow.uiDefault .uiEdit select,
+  .uiRow.uiDefault .uiEdit textarea { opacity: .55; }
+  .uiRow .uiReset { padding: 2px 5px; }
+  .txt.uiBad { color: #ffb38a; border-color: #6b4a35; }
   /* テレインの欄。Missing のときだけ disabled（中の入力とボタンがまとめて無効）。
      薄くするのは部品ごとの :disabled の見た目（入力 .45・button:disabled）に
      任せる（fieldset にも opacity を掛けると重なって一部だけ極端に薄くなる）。
@@ -651,7 +690,6 @@
     cursor: pointer; user-select: none;
   }
   .asHead:hover { color: #b8bcc4; }
-  .asHint { font-size: 11px; color: #7b7f88; text-transform: none; }
   #assets.collapsed .asList { display: none; }
   #assets.collapsed .asBar { display: none; }
   #assets.collapsed .caret { transform: rotate(0deg); }
@@ -681,10 +719,12 @@
      クリックでアクティブになった間だけ auto に切り替える（上の
      #assets.active .asList）。hidden でも resize のつまみは効く。 */
   .asList {
-    height: 132px; min-height: 56px; max-height: 60vh;
+    height: 240px; min-height: 56px; max-height: 60vh;
     resize: vertical;
     display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;
     overflow-y: hidden; scrollbar-gutter: stable; padding: 8px 2px 2px;
+    /* 横には流さない（タイルは折り返す。はみ出しが出ても横スクロールにしない）。 */
+    overflow-x: hidden;
     scrollbar-width: thin; scrollbar-color: #3a3d45 transparent;
     /* overscroll-behavior はここに書かない（上の #assets.active .asList）。 */
   }
@@ -709,6 +749,21 @@
   }
   .asItem.lib { opacity: 0.55; border-style: dashed; }
   .asItem.lib:hover { opacity: 0.9; }
+  /* 区分の見出し（🧱 作成 / 📍 ローカル / 🌐 グローバル）。タイルの折り返しの
+     中で 1 行を丸ごと使う。色の帯で区分を見分ける。 */
+  .asSec {
+    /* 幅 100% に padding と帯を含める（content-box のままだと 15px はみ出して
+       一覧が横にスクロールできてしまう）。 */
+    flex: 0 0 100%; box-sizing: border-box; min-width: 0; display: flex; align-items: baseline; gap: 8px;
+    margin: 6px 0 0; padding: 3px 6px; font-size: 11px; color: #9aa0aa;
+    border-left: 3px solid #4a4e58; background: rgba(255,255,255,.03); border-radius: 3px;
+  }
+  .asSec:first-child { margin-top: 0; }
+  .asSec b { color: #dfe2e7; font-weight: 600; white-space: nowrap; }
+  .asSec span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .asSec.local { border-left-color: #47935c; }
+  .asSec.global { border-left-color: #4a70ad; }
+  .asEmpty { flex: 0 0 100%; box-sizing: border-box; font-size: 11px; color: #6b6f78; padding: 2px 8px; }
   /* テレインのタイルの名前の変更（.name と差し替える input）。 */
   .asItem .asRename {
     display: block; width: 100%; box-sizing: border-box; margin-top: 2px;
@@ -758,6 +813,8 @@
     display: flex; align-items: center; justify-content: center;
   }
   #xmlEd[hidden] { display: none; }
+  /* UI の中身を開いたときに隠すもの（⧉ と、シーン用の説明）。 */
+  #xmlEd [hidden] { display: none; }
   #xmlEd, #xmlEd * { cursor: auto; }
   #xmlEd button, #xmlEd .ndBack { cursor: pointer; }
   #xmText {
@@ -839,6 +896,7 @@
      ポートは行ごとに並ぶ（座標は app.js の FPORT_Y0 / FPORT_DY と揃える）。 */
   .ndNode.fml { border-left-color: #4aad70; }
   .ndNode.fml.io { border-left-color: #d0c33f; }
+  .ndNode.fml.var { border-left-color: #3fb8c8; }
   .ndPorts { display: flex; flex-direction: column; padding: 4px 9px 2px; }
   .ndPortRow { display: flex; justify-content: space-between; height: 18px;
                line-height: 18px; font-size: 10.5px; color: #aeb4bf; }
@@ -988,3 +1046,103 @@
     .tune, .hint, #assets { display: none; }
     #perf { font-size: 11px; line-height: 1.5; }
   }
+
+  /* ---- AI シーン生成のモーダル（web/autogen.js）-------------------------- */
+  /* #stage の外（普通のフォーム）。ノードエディタと同じ .ndBack / .ndWin を
+     使い、ウィンドウだけ小さめにする。 */
+  #aiGen {
+    position: fixed; inset: 0; z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #aiGen[hidden] { display: none; }
+  #aiGen .ndBack { cursor: pointer; }
+  #aiGen .ndWin { width: min(760px, calc(100% - 32px)); height: auto; max-height: 90%; }
+  #aiGen .ndHead button {
+    margin: 0 0 0 auto; padding: 3px 8px; font-size: 11px;
+    background: #2a2d34; color: #dfe2e7; border: 1px solid #3a3d45; border-radius: 4px;
+  }
+  .aiConf {
+    font-size: 11px; color: #9aa3b2; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .aiConf.bad { color: #e0a060; }
+  .aiBody {
+    display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+    overflow: auto; min-height: 0;
+  }
+  .aiRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; }
+  .aiRow label { display: inline-flex; align-items: center; gap: 4px; }
+  .aiSub { color: #7b7f88; font-size: 11px; }
+  #aiPrompt {
+    width: 100%; box-sizing: border-box; resize: vertical; min-height: 90px;
+    padding: 8px 10px; border: 1px solid #3a3d45; border-radius: 6px; outline: none;
+    background: #101216; color: #dfe2e7; font: 13px/1.5 system-ui, sans-serif;
+  }
+  #aiPrompt:focus { border-color: #4a70ad; }
+  .aiRow button {
+    padding: 5px 14px; font-size: 12px; border-radius: 4px;
+    background: #2f5ea8; color: #fff; border: 1px solid #3d6fc0;
+  }
+  .aiRow button#aiStop { background: #2a2d34; border-color: #3a3d45; color: #dfe2e7; }
+  .aiRow button:disabled { opacity: .45; }
+  .aiBar {
+    flex: 1 1 120px; height: 6px; min-width: 80px; border-radius: 3px;
+    background: #2a2d34; overflow: hidden;
+  }
+  #aiBarFill { height: 100%; width: 0; background: #4a8ae0; transition: width .4s; }
+  .aiLog {
+    margin: 0; padding: 8px 10px; min-height: 60px; max-height: 220px; overflow: auto;
+    background: #101216; color: #aeb5c1; border-radius: 6px;
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  #aiGen .ndHint { padding: 0; }
+
+  /* ---- スコープ（制御器の時系列。control.js）---------------------------- */
+  #scopeWin {
+    position: absolute; right: 12px; bottom: 12px; z-index: 5;
+    width: 560px; height: 320px; min-width: 300px; min-height: 180px;
+    display: flex; flex-direction: column; resize: both; overflow: hidden;
+    background: rgba(14, 16, 20, 0.92); border: 1px solid #343a46;
+    border-radius: 6px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  }
+  #scopeWin[hidden] { display: none; }
+  #scopeWin, #scopeWin * { cursor: auto; }
+  #scopeWin button, #scopeWin a, #scopeWin select { cursor: pointer; }
+  .scHead {
+    display: flex; align-items: center; gap: 6px; padding: 4px 6px;
+    border-bottom: 1px solid #2a2f39; font-size: 12px; user-select: none;
+  }
+  #scopeWin .scHead { cursor: move; }
+  .scTitle { font-weight: 600; margin-right: 4px; white-space: nowrap; }
+  .scHead .strSel { max-width: 150px; }
+  .scHead button, .scHead a {
+    background: #1d2129; color: #d6dae1; border: 1px solid #353b47;
+    border-radius: 3px; padding: 1px 7px; font-size: 12px; text-decoration: none;
+  }
+  .scHead button:last-child { margin-left: auto; }
+  #scCanvas { flex: 1; width: 100%; min-height: 0; display: block; }
+  .scLegend {
+    display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 3px 8px 5px;
+    font-size: 11px; color: #b8bec8; max-height: 64px; overflow-y: auto;
+  }
+  .scLegend label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .scLegend .sw { width: 10px; height: 3px; border-radius: 1px; display: inline-block; }
+  .scLegend .val { color: #8b919c; font-variant-numeric: tabular-nums; }
+  /* 数式エディタ（control.js の #fxEd）。XML エディタと同じ作り。 */
+  #fxEd {
+    position: fixed; inset: 0; z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #fxEd[hidden] { display: none; }
+  #fxEd, #fxEd * { cursor: auto; }
+  #fxEd button, #fxEd select, #fxEd .ndBack { cursor: pointer; }
+  #fxName { width: 150px; }
+  #fxText {
+    flex: 1; width: 100%; resize: none; border: 0; outline: none;
+    padding: 10px 12px; box-sizing: border-box;
+    background: #101216; color: #cdd3dd;
+    font: 13px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+    white-space: pre; tab-size: 4;
+  }
+  #ndTextBtn[hidden] { display: none; }

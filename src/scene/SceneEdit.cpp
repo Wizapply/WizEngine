@@ -3,6 +3,10 @@
 // プレハブ部品の移動。ブラウザからの入口は EditorComponent → EditorState。
 #include "scene/SceneInternal.h"
 
+#include "control/ControlTemplates.h"
+#include "formula/FormulaText.h"
+#include "scene/UiOps.h"
+
 #include <filesystem>
 
 using namespace chrono;
@@ -237,6 +241,16 @@ void Scene::destroyObject(std::size_t index) {
             editor_.setCables(std::move(cables));
             if (editor_.mode() == ed::AppMode::Simulate) buildCables();
         }
+    }
+
+    // パーティクルのエミッタがこの物に付いていたらワールドに付け替える。
+    {
+        auto emitters = editor_.emitters();
+        bool changed = false;
+        for (auto& m : emitters) {
+            if (m.body == idx) { m.body = -1; changed = true; }
+        }
+        if (changed) editor_.setEmitters(std::move(emitters));
     }
 
     // このオブジェクトを見張る / 動かすイベントノードも一緒に掃除する
@@ -498,10 +512,8 @@ void Scene::rotateGround(double xDeg, double yDeg, double zDeg) {
 
 void Scene::selectSceneItem(EditorState::SelKind kind) {
     // エディタ選択はエディタモードの状態（シミュレートに入るときに畳む）。
-    if (editor_.mode() != ed::AppMode::Editor) return;
-    const std::size_t cam = editorCamera();
-    if (cam < controllers_.size()) controllers_[cam]->setSelected(BoxController::kNone);
-    editor_.setSel(kind, 0);
+    if (!editor_.isEditor()) return;
+    setEditorSel(editorCamera(), kind, 0);
 }
 
 void Scene::setGroundAndEnvironment(const ed::GroundDesc& ground,
@@ -571,6 +583,22 @@ void Scene::applyPendingEdits() {
 
 void Scene::applyEditorOp(const EditorState::Op& op) {
     const nlohmann::json& a = op.args;
+
+    // UI の設計値（ui.*。読み方は UiOps）。受け付ける規則は INPUT と同じ editsUiFrom:
+    // 積んだ後にシミュレートへ切り替わった・プレハブ編集に入った操作は捨てる（モードの
+    // 切替は drain より先 = applyPendingEdits）。
+    if (wizengine::uiops::isUiOp(op.kind)) {
+        if (!editsUiFrom(op.camera)) return;
+        const wizengine::uiops::Result r = wizengine::uiops::apply(ui_, op.kind, a);
+        if (r.select) {
+            setEditorSel(op.camera, EditorState::SelKind::Canvas, r.canvas, r.element);
+        } else if (editor_.selKind() == EditorState::SelKind::Canvas &&
+                   !ui_.selectionExists(editor_.selIndex(), editor_.selSub())) {
+            editor_.clearSel();  // 消した物を指していた（番号が後で別の物に使われる前に）
+        }
+        if (!r.status.empty()) editor_.setStatus(r.status);
+        return;
+    }
 
     if (op.kind == "add") {
         ed::BodyDesc d = ed::bodyFromJson(a, ed::BodyDesc{});
@@ -862,8 +890,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                             a["shared"].get<bool>();
         const std::string file = shared ? EditorState::eventLibraryFile(name) : std::string();
         if (shared) {
-            std::error_code ec;
-            if (std::filesystem::exists(wizengine::assetPath(file), ec)) {
+            if (wizengine::sharedasset::libraryFileExists(file)) {
                 editor_.setStatus("ライブラリに同じ名前のイベント " + name +
                                   " があります（読み込むならアセットパネルのタイルから）");
                 return;
@@ -895,6 +922,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     }
 
     if (applySharedEventOp(op)) return;
+    if (applyLibraryOp(op)) return;
 
     if (op.kind == "event.remove") {
         const std::string name = a.value("name", "");
@@ -1002,45 +1030,131 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     if (op.kind == "formula.add") {
         const std::string name = a.value("name", "");
         if (name.empty()) return;
-        wizengine::vehicle::FormulaGraphDesc g;
-        if (a.value("template", "") == "tire") {
-            g = wizengine::vehicle::defaultTireFormulaGraph(name);
-        } else if (a.value("template", "") == "pressure") {
-            g = wizengine::vehicle::defaultPressureFormulaGraph(name);
-        } else {
-            g.name = name;
+        // 雛形（ControlTemplates.h）。無指定 = 空の計算式。
+        const std::string tpl = a.value("template", "empty");
+        wizengine::formula::FormulaGraphDesc g;
+        std::string err;
+        if (!wizengine::control::templateGraph(tpl.empty() ? "empty" : tpl, name,
+                                               a.value("target", ""), g, err)) {
+            LOGW("control", "formula template: %s", err.c_str());
+            editor_.setStatus("雛形から作れません: " + err);
+            return;
         }
         if (!editor_.addFormulaAsset(std::move(g))) {
             editor_.setStatus("同じ名前の計算式があります: " + name);
+            return;
+        }
+        if (!tpl.empty() && tpl != "empty") {
+            // 雛形はすぐ回るように制御器として付けておく（スコープに出る）。
+            ed::ControllerDesc c;
+            c.formula = name;
+            editor_.addController(c);
+            editor_.setStatus("雛形から作成して制御器にしました: " + name);
             return;
         }
         editor_.setStatus("計算式を作成: " + name);
         return;
     }
 
+    // 数式のテキストで計算式を作る / 置き換える（FormulaText.h）。テキストは
+    // INPUT スレッドで一度検証済み（壊れていればここへ来ない）。中身を丸ごと
+    // 差し替えるので、ノードの id と位置は振り直しになる。
+    if (op.kind == "formula.text") {
+        const std::string name = a.value("name", "");
+        const std::string text = a.value("text", "");
+        wizengine::formula::FormulaGraphDesc g;
+        std::string err;
+        std::vector<std::string> warns;
+        if (name.empty() || !wizengine::formula::formulaFromText(text, name, g, err, &warns)) {
+            editor_.setStatus("式を起こせません: " + err);
+            return;
+        }
+        g.source = text;
+        for (const std::string& w : warns) LOGI("control", "formula '%s': %s", name.c_str(), w.c_str());
+        const bool existed = editor_.hasFormulaAsset(name);
+        if (!editor_.replaceFormulaAsset(std::move(g))) {
+            editor_.setStatus("計算式を保存できません: " + name);
+            return;
+        }
+        editor_.setStatus(std::string(existed ? "式で置き換えました: " : "式から作成しました: ") +
+                          name + (warns.empty() ? "" : "（注意 " + std::to_string(warns.size()) +
+                                                           " 件はログへ）"));
+        return;
+    }
+
+    // ---- 制御器 --------------------------------------------------------------
+    if (op.kind == "control.add") {
+        const std::string formula = a.value("formula", "");
+        if (!editor_.hasFormulaAsset(formula)) {
+            editor_.setStatus("計算式が見つかりません: " + formula);
+            return;
+        }
+        ed::ControllerDesc c = ed::controllerFromJson(a, ed::ControllerDesc{});
+        if (!editor_.addController(c)) {
+            editor_.setStatus("この計算式は既に制御器です: " + formula);
+            return;
+        }
+        editor_.setStatus("制御器にしました: " + formula);
+        return;
+    }
+    if (op.kind == "control.remove") {
+        const std::string formula = a.value("formula", "");
+        if (editor_.removeController(formula)) {
+            editor_.setStatus("制御器を外しました: " + formula + "（計算式は残ります）");
+        }
+        return;
+    }
+    if (op.kind == "control.set") {
+        editor_.updateController(a.value("formula", ""), a);  // 連投されるので無言
+        return;
+    }
+
+    // ---- 制御器のパラメータ ----------------------------------------------------
+    if (op.kind == "param.add") {
+        ed::ParamDesc p = ed::paramFromJson(a, ed::ParamDesc{});
+        if (!a.contains("value")) p.value = p.min;
+        if (!editor_.addParam(ed::clampParam(p))) {
+            editor_.setStatus("同じ名前のパラメータがあります: " + p.name);
+            return;
+        }
+        editor_.setStatus("パラメータを追加: " + p.name + "（式からは param:" + p.name + "）");
+        return;
+    }
+    if (op.kind == "param.remove") {
+        const std::string name = a.value("name", "");
+        if (editor_.removeParam(name)) editor_.setStatus("パラメータを削除: " + name);
+        return;
+    }
+    if (op.kind == "param.set") {
+        editor_.updateParam(a.value("name", ""), a);  // スライダーで連投されるので無言
+        return;
+    }
+    // ---- 制御盤のグラフ --------------------------------------------------------
+    if (op.kind == "chart.add") {
+        editor_.addChart(ed::chartFromJson(a, ed::ChartDesc{}));
+        return;
+    }
+    if (op.kind == "chart.remove") {
+        editor_.removeChart(ed::jsonInt(a, "index", -1));
+        return;
+    }
+    if (op.kind == "chart.set") {
+        editor_.updateChart(ed::jsonInt(a, "index", -1), a);
+        return;
+    }
+
     if (op.kind == "formula.remove") {
         const std::string name = a.value("name", "");
         if (name.empty() || !editor_.removeFormulaAsset(name)) return;
-        // タイヤの参照を外す（消えた名前を指したままにしない = 組み込みへ）。
-        {
-            std::lock_guard<std::mutex> lk(objectsMutex_);
-            for (auto& o : boxes_) {
-                if (!o.desc.hasVehicle) continue;
-                for (auto& ax : o.desc.vehicle.axles) {
-                    if (ax.tire.formula == name) ax.tire.formula.clear();
-                    if (ax.tire.pressureFormula == name) ax.tire.pressureFormula.clear();
-                }
-            }
-        }
-        editor_.bumpFormulaVersion();
+        editor_.removeController(name);  // 制御器も外す（消えた式を指したままにしない）
         editor_.setStatus("計算式を削除: " + name);
         return;
     }
 
     if (op.kind == "fnode.add") {
         const std::string asset = a.value("asset", "");
-        wizengine::vehicle::FormulaNodeDesc n =
-            ed::clampFormulaNode(ed::formulaNodeFromJson(a, wizengine::vehicle::FormulaNodeDesc{}));
+        wizengine::formula::FormulaNodeDesc n =
+            ed::clampFormulaNode(ed::formulaNodeFromJson(a, wizengine::formula::FormulaNodeDesc{}));
         n.kind = a.value("type", "");
         const int id = editor_.addFormulaNode(asset, n);
         if (id < 0) {
@@ -1070,7 +1184,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
 
     if (op.kind == "fwire.add" || op.kind == "fwire.remove") {
         const std::string asset = a.value("asset", "");
-        const wizengine::vehicle::FormulaWireDesc w = ed::formulaWireFromJson(a);
+        const wizengine::formula::FormulaWireDesc w = ed::formulaWireFromJson(a);
         if (op.kind == "fwire.add") {
             if (editor_.addFormulaWire(asset, w)) {
                 editor_.setStatus("ノードを接続: #" + std::to_string(w.from) + " → #" +
@@ -1246,45 +1360,25 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                             : "#" + std::to_string(index) + " の車両を外しました";
             } else {
                 // 軸（-1 = 全軸）のタイヤ設定。送られてきたキーだけ変える:
-                // formula（計算式）・soft（ソフトタイヤ）・stiffness（径方向剛性）。
+                // soft（ソフトタイヤ）・stiffness（径方向剛性）・pressure（空気圧）。
                 const int axle = ed::jsonInt(a, "axle", -1);
-                const bool hasFormula = a.contains("formula") && a["formula"].is_string();
                 const bool hasSoft = a.contains("soft") && a["soft"].is_boolean();
                 const bool hasStiffness = a.contains("stiffness") && a["stiffness"].is_number();
                 const bool hasPressure = a.contains("pressure") && a["pressure"].is_number();
-                const bool hasPressureFormula =
-                    a.contains("pressureFormula") && a["pressureFormula"].is_string();
-                const std::string formula = hasFormula ? a["formula"].get<std::string>() : "";
-                const std::string pressureFormula =
-                    hasPressureFormula ? a["pressureFormula"].get<std::string>() : "";
-                if (hasFormula && !formula.empty() && !editor_.hasFormulaAsset(formula)) {
-                    status = "計算式が見つかりません: " + formula;
-                } else if (hasPressureFormula && !pressureFormula.empty() &&
-                           !editor_.hasFormulaAsset(pressureFormula)) {
-                    status = "計算式が見つかりません: " + pressureFormula;
-                } else if (!obj.desc.hasVehicle) {
+                if (!obj.desc.hasVehicle) {
                     status = "#" + std::to_string(index) + " は車両ではありません";
                 } else {
                     auto& axles = obj.desc.vehicle.axles;
                     for (std::size_t i = 0; i < axles.size(); ++i) {
                         if (axle >= 0 && std::size_t(axle) != i) continue;
-                        if (hasFormula) axles[i].tire.formula = formula;
                         if (hasSoft) axles[i].tire.soft = a["soft"].get<bool>();
                         if (hasStiffness) {
                             axles[i].tire.stiffness = a["stiffness"].get<double>();
                         }
                         if (hasPressure) axles[i].tire.pressure = a["pressure"].get<double>();
-                        if (hasPressureFormula) axles[i].tire.pressureFormula = pressureFormula;
                     }
                     obj.desc.vehicle = wizengine::vehicle::clampVehicle(obj.desc.vehicle);
-                    if (hasFormula) {
-                        status = "#" + std::to_string(index) + " のタイヤ式: " +
-                                 (formula.empty() ? "(組み込み)" : formula);
-                    } else if (hasPressureFormula) {
-                        status = "#" + std::to_string(index) + " の空気圧式: " +
-                                 (pressureFormula.empty() ? "(組み込み・等温変化)"
-                                                          : pressureFormula);
-                    } else if (hasPressure) {
+                    if (hasPressure) {
                         status = "#" + std::to_string(index) + " の空気圧を更新";
                     } else if (hasSoft) {
                         status = "#" + std::to_string(index) + " のタイヤ: " +
@@ -1295,7 +1389,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                 }
             }
         }
-        editor_.bumpFormulaVersion();  // 車両モデルを作り直させる
+        editor_.bumpVehicleVersion();  // 車両モデルを作り直させる
         editor_.setStatus(status);
         return;
     }
@@ -1484,12 +1578,25 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         loadDocument(doc, true);
         // 保存名は触らない: 適用はファイルにしていない編集で、💾 保存して
         // 初めてファイルになる（モーダルの見出しにもそう書いてある）。
-        editor_.setStatus(
-            (warnings.empty()
-                 ? std::string("XML を適用しました")
-                 : "XML を適用しました（警告 " +
-                       std::to_string(warnings.size()) + " 件 - コンソール参照）") +
-            terrainLoadCaveat() + terrainCombineCaveat(true));
+        editor_.setStatus("XML を適用しました" + loadStatusSuffix(warnings.size()));
+        return;
+    }
+
+    // AI のシーン生成の「追加」モード（AutoGenComponent）。文書の物を今の
+    // シーンへ足す（取込と同じ appendDocument。設定・ライト・カメラは
+    // 文書にあっても使わない）。文書は生成側が正規化済み。
+    if (op.kind == "xml.append") {
+        ed::SceneDocument doc;
+        std::string error;
+        std::vector<std::string> warnings;
+        if (!ed::parseXml(a.value("text", std::string()), doc, error, &warnings)) {
+            editor_.setStatus("XML が読めません: " + error);
+            return;
+        }
+        for (const auto& w : warnings) LOGW("editor", "xml append: %s", w.c_str());
+        appendDocument(doc);
+        editor_.setStatus("AI: " + std::to_string(doc.bodies.size()) + " 個を追加しました" +
+                          warningCountCaveat("警告", warnings.size()));
         return;
     }
 
@@ -1515,11 +1622,23 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         resetCamerasToDefaults();
         resetEventsToDefaults();
         editor_.setFormulaAssets({});  // 計算式もシーンの一部
+        editor_.setControllers({});
+        editor_.setParams({});
+        editor_.setCharts({});
         editor_.setPrefabAssets({});
+        ui_.clear();  // UI（Canvas・共用 UI・フォント）もシーンの一部
+        // 共用のファイルの覚えも捨てる（残すと、全消しの後に同じ名前を作って保存したとき、
+        // 前のシーンの覚えと比べてファイルを上書きしうる）。
+        libBaseline_.clear();
         editor_.setPrefabEditObject(-1);
         editor_.clearSel();
-        editor_.setSceneFile("");
-        editor_.setStatus("シーンを空にしました");
+        // edit.new は名前付きの空のシーン（保存先がその名前になる）。
+        const std::string newName =
+            a.is_object() ? a.value("name", std::string()) : std::string();
+        editor_.setSceneFile(newName);
+        editor_.setStatus(newName.empty()
+                              ? std::string("シーンを空にしました")
+                              : "新規シーン「" + newName + "」（💾 保存でファイルに書きます）");
         // テレインも初期値（= 無し）へ。地面が既定へ戻るのと同じ扱い。
         // .terrain ファイルは消さない（外すだけ）。
         // publishTerrainField は最後に syncBackend を呼ぶ（Core 専用の物もソフト
@@ -1547,12 +1666,12 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             return;
         }
         for (const auto& w : warnings) LOGW("editor", "import '%s': %s", file.c_str(), w.c_str());
-        appendDocument(doc);
+        const std::string caveat = appendDocument(doc);
         editor_.setStatus("取込: " + file + "（" + std::to_string(doc.bodies.size()) +
                           " 体, " + std::to_string(doc.joints.size()) + " ジョイント" +
                           (warnings.empty() ? "" : ", 警告 " + std::to_string(warnings.size()) +
                                                        " 件") +
-                          "）");
+                          "）" + caveat);
         return;
     }
 
@@ -1589,7 +1708,18 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             editor_.setStatus("保存できません（共通イベントのファイルを書けません）: " + reason);
             return;
         }
-        if (EditorState::writeText(path, ed::toXmlText(doc), reason)) {
+        // グローバルの計算式・プレハブも同じく、変わったものだけ先に書く。
+        std::string libWritten;
+        if (!saveLibraryAssets(doc, libWritten, reason)) {
+            LOGW("editor", "save '%s': global asset not written: %s", name.c_str(),
+                 reason.c_str());
+            editor_.setStatus("保存できません（グローバルのファイルを書けません）: " + reason);
+            return;
+        }
+        if (!libWritten.empty()) {
+            eventsWritten += (eventsWritten.empty() ? "" : " ") + libWritten;
+        }
+        if (wizengine::sharedasset::writeTextFile(path, ed::toXmlText(doc), reason)) {
             editor_.setSceneFile(name);
             editor_.setStatus("保存しました: " + name + ".xml" +
                               (terrainWritten.empty()
@@ -1597,7 +1727,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
                                    : "（テレイン " + terrainWritten + " を書きました）") +
                               (eventsWritten.empty()
                                    ? std::string()
-                                   : "（共通イベント " + eventsWritten + " を書きました）"));
+                                   : "（グローバル " + eventsWritten + " を書きました）"));
         } else {
             editor_.setStatus("保存できません: " + reason);
         }
@@ -1618,12 +1748,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         }
         loadDocument(doc, false);  // テレインはファイルから読み直す
         editor_.setSceneFile(name);
-        editor_.setStatus(
-            (warnCount == 0
-                 ? "読み込みました: " + name
-                 : "読み込みました: " + name + "（警告 " +
-                       std::to_string(warnCount) + " 件 - コンソール参照）") +
-            terrainLoadCaveat() + terrainCombineCaveat(true));
+        editor_.setStatus("読み込みました: " + name + loadStatusSuffix(warnCount));
         editor_.refreshSceneFiles();
         return;
     }

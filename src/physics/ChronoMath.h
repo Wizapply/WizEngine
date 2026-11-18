@@ -15,9 +15,10 @@ enum class Axis { X, Z };
 
 // 基準軸（+X か +Z）をこの向きに合わせる回転。ChLinkLockRevolute はリンク座標系の
 // Z 軸まわりに回り、ChLinkLockPrismatic は Z 軸方向にスライドするので、ユーザーが
-// 指定したワールド軸をリンクの Z に持ってくる（Axis::Z）。ChLinkMotorLinear* は
-// X 軸方向に動き、ChLinkLockPointLine の線も X 軸なので、直動モータと PointLine は
-// Axis::X。Chrono の円柱形状も Z 軸が軸なので、部品の X 軸へ回すときは Axis::Z。
+// 指定したワールド軸をリンクの Z に持ってくる（Axis::Z）。ChLinkLockPointLine の
+// 線は X 軸なので PointLine は Axis::X。直動モータ ChLinkMotorLinear* は Chrono 8 まで
+// X 軸、9.0 から Z 軸（Joints.cpp の Prismatic の motor の分岐で CH_VERSION を見る）。
+// Chrono の円柱形状も Z 軸が軸なので、部品の X 軸へ回すときは Axis::Z。
 // Chrono のベクトル演算子は版ごとに名前が違うので、成分計算で書いてある。
 // 軸ごとの式は switch で明示する（汎用の外積で書くと -0 や丸めが変わる）。
 inline chrono::ChQuaternion<> quatFromAxis(Axis base, const chrono::ChVector3d& axis) {

@@ -4,10 +4,10 @@
 #include <cmath>
 #include <cstdint>
 
+#include "core/Clamp.h"
 #include "core/MathConstants.h"
 #include "terrain/TerrainBrush.h"
 #include "terrain/TerrainHash.h"
-#include "terrain/TerrainMath.h"
 
 namespace wizengine {
 namespace terrain {
@@ -179,9 +179,9 @@ bool scatterTouches(const TerrainScatter& s, const HeightField& field, const Gri
 
 ScatterPrototype clampScatterPrototype(ScatterPrototype p) {
     const ScatterPrototype d;
-    p.scale = float(clampOr(p.scale, kScatterScaleMin, kScatterScaleMax, d.scale));
-    p.trunkRadius = float(clampOr(p.trunkRadius, 0.0, kScatterTrunkMax, d.trunkRadius));
-    p.trunkHeight = float(clampOr(p.trunkHeight, 0.0, kScatterTrunkMax, d.trunkHeight));
+    p.scale = float(clampOrFallback(p.scale, kScatterScaleMin, kScatterScaleMax, d.scale));
+    p.trunkRadius = float(clampOrFallback(p.trunkRadius, 0.0, kScatterTrunkMax, d.trunkRadius));
+    p.trunkHeight = float(clampOrFallback(p.trunkHeight, 0.0, kScatterTrunkMax, d.trunkHeight));
     return p;
 }
 

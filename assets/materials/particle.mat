@@ -1,0 +1,25 @@
+// パーティクル（炎・火花など見た目だけの粒子）の材質。頂点色つき・unlit・
+// **加算合成**（重なるほど明るくなる = 光って見える）。粒子は「直交する 3 枚の
+// 円盤」で、中心の頂点だけが色を持ち、縁の頂点は黒（加算で何も足さない）=
+// 三角形の補間がそのまま中心から縁への柔らかい減衰になる（テクスチャ不要）。
+// 色は 1 を超えてよい（ブルームが拾う）。色をそのまま足す（アルファは 1 の
+// まま = 加算にアルファを掛ける版でも掛けない版でも同じ結果になる）。
+// 奥行きは書かない（粒子どうしが隠し合わない）が、
+// 部品の奥にある粒子は奥行き判定で隠れる。面は表裏どちらからも見せたいので
+// culling : none。
+material {
+    name : particle,
+    shadingModel : unlit,
+    blending : add,
+    depthWrite : false,
+    culling : none,
+    requires : [ color ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        vec4 c = getColor();
+        material.baseColor = vec4(c.rgb, 1.0);
+    }
+}

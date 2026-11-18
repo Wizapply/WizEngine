@@ -8,6 +8,8 @@
 #include <chrono/core/ChQuaternion.h>
 #include <chrono/core/ChVector3.h>
 
+#include "physics/PhysicsBackend.h"
+
 // 直前の物理ステップの中で時間をどこに使ったか（秒）。Chrono 自身のタイマーの
 // 値そのまま。何を最適化するかを決めるのに使う: ソルバが大半のステップなら
 // 反復回数を減らし、衝突判定が大半なら接触のエンベロープを小さくするか、
@@ -20,15 +22,9 @@ struct StepTimers {
     double update = 0.0;
 };
 
-// どの Chrono の系の上に組むか。Multicore には MULTICORE モジュール付きで
-// ビルドした Chrono が要る（CMake: -DWIZ_USE_MULTICORE=ON）。それが無ければ
-// Core に倒し、LOGW で知らせる（PhysicsSystem::create）。
-enum class PhysicsBackend {
-    // ChSystemNSC - 接触ソルバは逐次（衝突判定・FEA・Eigen は SetNumThreads の
-    // スレッドを使う）、スリープ対応
-    Core,
-    Multicore,  // ChSystemMulticoreNSC - OpenMP のソルバ + 衝突判定、スリープ無し
-};
+// どの Chrono の系の上に組むか = PhysicsBackend（physics/PhysicsBackend.h。
+// 起動設定 app/AppConfig が Chrono 抜きで読めるよう、enum だけ別の軽い
+// ヘッダに置いてある）。
 
 // このビルドが PhysicsBackend::Multicore を本当に使えるとき true。
 bool multicoreAvailable();

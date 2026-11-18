@@ -86,8 +86,15 @@ private:
     void buildPipeline(int payloadType, const std::string& h264ProfileLevelId);
     void teardownPipeline();  // stop and free the current pipeline
 
+    // 次の回線の大きさ（setStreamFormat が書く。buildPipeline が caps に使う）。
     int width_;
     int height_;
+    // 今の回線の大きさ（buildPipeline が caps を決めたときだけ書く）。pushFrame は
+    // こちらと比べる: 解像度を変えて再接続を頼んだ直後は width_ / height_ が先に
+    // 新しい値になるが、回線はブラウザの読み込み直しまで古い大きさのままなので、
+    // 新しい大きさの絵を入れると砂嵐になる。
+    int sessionWidth_ = 0;
+    int sessionHeight_ = 0;
     int fps_;
     VideoCodec codec_;
     int bitrate_;
@@ -104,6 +111,7 @@ private:
     unsigned busWatchId_ = 0;  // must be removed before the pipeline is freed
     std::thread loopThread_;
 
-    std::mutex pipelineMutex_;  // guards pipeline_/appsrc_/webrtc_ vs pushFrame
+    // guards pipeline_/appsrc_/webrtc_ vs pushFrame（回線の大きさ・fps・ビットレートの値も守る）
+    std::mutex pipelineMutex_;
     std::mutex handleMutex_;    // serializes offers (one negotiation at a time)
 };

@@ -37,8 +37,9 @@ bool loadImageRGBA(const std::string& path, std::vector<uint8_t>& outPixels,
 // 64 KB だけ読み、それで寸法に届かない JPEG だけ丸ごと読み直す）。大きな画像や
 // 形の合わない画像を、画素の確保の前に断るため。
 // 読めなければ false で出力は触らない（理由は imageFailureReason()）。
-// loadImageRGBA / readImageSize / loadImageGray16 の path は UTF-8 で、日本語などを
-// 含むパスも開ける（ファイルを u8path で読んでから stb のメモリ版へ渡す）。
+// loadImageRGBA / readImageSize / loadImageGray16 / loadImageHDR / identifyImageFormat /
+// describeHeaderBytes の path は UTF-8 で、日本語などを含むパスも開ける（ファイルを
+// UTF-8 のパスとして読んでから stb のメモリ版へ渡す）。
 bool readImageSize(const std::string& path, int& width, int& height);
 
 // 画像を 16 ビットのグレースケール（1 画素 1 標本、行優先で上の行から）として

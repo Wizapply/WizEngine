@@ -18,6 +18,8 @@ Thumbs.db
 assets/*.hdr
 assets/*.glb
 assets/*.gltf
+# AI のシーン生成が Meshy 互換 API から落としたモデル（とキャッシュの目録）。
+assets/generated/
 
 # Local dependency installs (Chrono, a local Filament copy, ...)
 # third_parties/ そのものは Git サブモジュール（cpp-httplib 等）を含むので
@@ -25,3 +27,6 @@ assets/*.gltf
 /third_parties/chrono-install/
 /third_parties/filament-*/
 tests/
+
+# Python のキャッシュ（tools/ のスクリプト）
+__pycache__/

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 共用 UI の見本（assets/scenes/ui.xml の <canvas ui="hud"> が使う）。中身は
+     シーンの <asset> の <ui> と同じ書式で、ルートが <ui name>。画面の右下に
+     寄せた半透明の板と、その中に右揃えの数字（縁取り付き）。 -->
+<ui name="hud">
+  <image id="1" name="panel" anchor="1 1 1 1" pivot="1 1" pos="-32 -32" size="420 132"
+         color="0.02 0.03 0.05 0.55"/>
+  <text id="2" parent="1" name="label" anchor="0 0 1 0" pos="0 14" size="-40 0"
+        pivot="0.5 0" text="スコア" fontSize="26" align="right" color="0.8 0.85 0.9 1"/>
+  <text id="3" parent="1" name="score" anchor="0 0 1 0" pos="0 50" size="-40 0"
+        pivot="0.5 0" text="12,345" fontSize="56" align="right" outline="0.06"
+        outlineColor="0 0 0 1"/>
+</ui>

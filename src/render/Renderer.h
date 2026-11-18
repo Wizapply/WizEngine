@@ -16,6 +16,9 @@
 #include <math/vec4.h>
 #include <utils/Entity.h>
 
+// UI の頂点の形（型だけのヘッダ。render が読んでよい唯一の ui/ のヘッダ = Q16）。
+#include "ui/UiMeshFormat.h"
+
 namespace filament {
 class Engine;
 class Renderer;
@@ -425,6 +428,23 @@ public:
                         const std::vector<filament::math::float4>& colors,
                         const std::vector<uint16_t>& indices);
 
+    // ---- パーティクル（加算合成の光る粒子。炎・火花など見た目だけ）------
+    // 粒子 1 個 = 中心・直径・色。描き方は「直交する 3 枚の円盤」で、中心の
+    // 頂点が色・縁の頂点が黒（particle.mat が加算で足す）= どの向きから見ても
+    // 柔らかい光の玉になる（テクスチャ不要）。全ビューに映る（エディタ専用
+    // レイヤではない）。addParticleMesh は最大数を決めて 1 回、setParticles は
+    // 毎フレーム呼んでよい: 転送するのは「今の数と前回の数の大きい方」だけで、
+    // 残りの席は面積 0 の三角形（何も描かない）のまま = 実行中にプリミティブ数を
+    // 変える版依存の API を使わない（線バッチと同じ方針）。RENDER スレッド。
+    struct Particle {
+        filament::math::float3 position{0.0f, 0.0f, 0.0f};
+        float diameter = 0.01f;
+        filament::math::float3 color{1.0f, 1.0f, 1.0f};  // リニア。1 を超えてよい
+    };
+    std::size_t addParticleMesh(std::size_t maxParticles);
+    // particles が最大数を超えたぶんは描かない。
+    void setParticles(std::size_t id, const std::vector<Particle>& particles);
+
     // ---- レイヤ ----------------------------------------------------------
     // ギズモのように「エディタカメラのビューにだけ」見せたい物のための
     // レイヤ分け。シーンは全ビュー共有のままなので、レンダラブルの
@@ -477,11 +497,66 @@ public:
     // shutdown, so no buffer is freed while the GPU still owns it.
     void finishPendingReadbacks();
 
+    // そのビューの今の出力の大きさ（画素。リサイズの要求は適用されてから変わる）。
+    // 範囲外の番号は {0, 0}。UI の Canvas の大きさ（縦横比）を決めるのに使う。
+    filament::math::int2 viewSize(std::size_t viewIndex) const;
+
+    // ---- UI（RendererUiViews.cpp / RendererUiMeshes.cpp）----------------------
+    // overlay の Canvas は、各ビューの上に重ねる UI 専用のビュー（後処理なし・
+    // 半透明で重ねる・直交投影）に描く。そのビューは最初に Canvas を出すときに
+    // 作る（setUiCanvasViews）。座標は「ビューの高さ = 1」の単位で、左上が原点・
+    // y 下向き（Q3）。Canvas の頂点は設計上の画素なので、Canvas ごとに
+    // 1 / 基準の高さ を掛けて出す（setUiCanvasDesignHeight。ビューの解像度が
+    // 変わっても同じ縦横比なら作り直さない）。
+    // Canvas の中身（配置を解いたメッシュ）は**ビューごと**に持つ: アンカーの
+    // 解き方はビューの縦横比で変わるので、呼び手は各ビューの viewSize から組んで
+    // そのビューへ送る（同じ縦横比なら同じ中身 = 転送は省かれる）。どれも RENDER スレッド。
+    //
+    // テクスチャ（番号は UiDrawRun::textureId。kUiNoTexture = 白）。番号は世代付き
+    // （render/UiTextureId.h）: 返した番号を持ったままのメッシュは、枠が使い直されても
+    // 別のテクスチャを指さず白で描く（警告は 1 回）。呼び手はテクスチャを返したら、
+    // それを使っていた Canvas を組み直して送る。
+    // 字の置き場（R8）を作る。作れない（大きさが 0 以下・端末の上限を超える）なら
+    // 警告して kUiNoTexture。
+    int addUiTextureR8(int width, int height);
+    // pixels（1 行 rowStride バイトの画像）の矩形 (x, y, w, h) を同じ位置へ送る
+    // （字の置き場の部分更新。pixels はページ全体を渡せばよい）。
+    void updateUiTexture(int textureId, int x, int y, int w, int h,
+                         const uint8_t* pixels, int rowStride);
+    // assets/ 相対の画像（RGBA）。読めない・端末の上限を超える大きさなら警告して
+    // kUiNoTexture（止めない。報告はここの 1 か所）。rgb はリニアで α を掛けた乗算済みにして入れ、ミップの
+    // 各段もリニアの乗算済みで平均する（ImageScale.h）= 縁の透明な画素の色が、
+    // ミップと線形の引き方でにじまない。
+    int loadUiImage(const std::string& path);
+    // 番号を返す（使っている Canvas は次の setUiCanvasMesh まで描かない）。
+    void releaseUiTexture(int textureId);
+
+    // Canvas（overlay）。番号は削除しても詰めない（空きは再利用）。
+    std::size_t addUiCanvas();
+    void removeUiCanvas(std::size_t id);
+    // そのビューでの中身（UiMesh の組み立ての結果）。前回と同じなら送らない。
+    // 頂点数・描く回数（run）が変わったときだけレンダラブルを作り直す。空 = 描かない。
+    // setUiCanvasViews に無いビューへの中身は捨てる。
+    // 中身は受け取って持つ（次の比較に使う。同じ中身を他のビューにも送るなら呼び手が写す）。
+    void setUiCanvasMesh(std::size_t id, std::size_t viewIndex, ui::UiMeshData mesh);
+    // 出すビューの一覧（ビュー番号）。まだ無いビューの番号は無視する
+    // （呼び手は次のフレームにまた呼ぶ）。外れたビューの中身は壊す。
+    void setUiCanvasViews(std::size_t id, const std::vector<std::size_t>& viewIndices);
+    // Canvas どうしの重なり順（大きいほど手前。同じなら番号の小さい方が奥）。
+    void setUiCanvasOrder(std::size_t id, int order);
+    // Canvas の基準の高さ（設計上の画素。CanvasDesc::height）。
+    void setUiCanvasDesignHeight(std::size_t id, float designHeight);
+
 private:
     // 全ビューのカメラの投影（垂直画角・near・far）。型は Camera::setProjection
     // の引数（double）に合わせる。アスペクト比だけがビューの大きさで決まる。
     static constexpr double kFovDegrees = 45.0;
+    // near は注視点までの距離に合わせて縮める（kNearPlane が上限、距離 ×
+    // kNearPerDistance、下限 kMinNearPlane）。寄ったときに手前が切れないため。
+    // 深度は Filament の逆 Z（float）なので near を小さくしても精度は落ちない。
     static constexpr double kNearPlane = 0.1;
+    static constexpr double kMinNearPlane = 0.005;
+    static constexpr double kNearPerDistance = 0.1;
     static constexpr double kFarPlane = 2000.0;
     // 形状の既定色（リニア）。document/EditorTypes.h の Color3 の既定と同じ値
     // （層が違うので別定義。片方を変えたらもう片方も合わせる）。値は
@@ -528,6 +603,7 @@ private:
         utils::Entity cameraEntity;
 
         int width = 0, height = 0;          // this view's output size
+        double nearPlane = kNearPlane;      // いまの near（setCamera が距離で決める）
         int pendingW = 0, pendingH = 0;     // 0 = no resize requested
 
         // Two capture buffers per view, used alternately: the GPU fills one
@@ -548,8 +624,77 @@ private:
         // A single "pending" slot is not enough: with two captures in flight
         // the older one would be forgotten and its buffer never released.
         std::deque<int> pending;
+
+        // UI（overlay）を重ねるビュー。最初に Canvas を出すときに作る
+        // （RendererUiViews.cpp の ensureUiView）。null = まだ無い。
+        filament::Scene* uiScene = nullptr;
+        filament::View* uiView = nullptr;
+        filament::Camera* uiCamera = nullptr;
+        utils::Entity uiCameraEntity;
     };
     std::vector<ViewSlot> views_;
+
+    // ---- UI（RendererUiViews.cpp / RendererUiMeshes.cpp）----------------------
+    // テクスチャ 1 枚と、それを使う材質インスタンス（画像用と字用。テクスチャを
+    // 材質のパラメータで持つので、テクスチャごとにインスタンスが要る）。
+    struct UiTexture {
+        filament::Texture* texture = nullptr;
+        int width = 0, height = 0;
+        bool mipmapped = false;
+        filament::MaterialInstance* instances[2] = {nullptr, nullptr};  // UiMaterialId
+        int generation = 0;  // 枠の世代（使い直すたびに進む。番号に入る = UiTextureId.h）
+        bool used = false;
+    };
+    // overlay の Canvas の、あるビューでの中身 = レンダラブル 1 個（run ごとに
+    // プリミティブ 1 つ）。そのビューの uiScene にだけ入る。約束: 入れ物は
+    // setUiCanvasViews が ensureUiView の後にだけ作る = 入れ物があれば uiScene もある。
+    struct UiCanvasPart {
+        std::size_t view = 0;
+        utils::Entity entity;
+        filament::VertexBuffer* vb = nullptr;
+        filament::IndexBuffer* ib = nullptr;
+        ui::UiMeshData mesh;  // 今のバッファの中身（同じなら送らない）
+        // run ごとに解決した材質インスタンス（テクスチャが後から用意されたら
+        // 同じ中身でも解決し直して差し替える）。
+        std::vector<filament::MaterialInstance*> instances;
+    };
+    struct UiCanvas {
+        std::vector<UiCanvasPart> parts;  // 出しているビューごと
+        int order = 0;
+        float designHeight = 1.0f;
+        bool used = false;
+    };
+    std::vector<UiTexture> uiTextures_;
+    UiTexture uiWhite_;  // kUiNoTexture の代わり（1×1 の白）
+    std::vector<UiCanvas> uiCanvases_;
+    filament::Material* uiMaterial_ = nullptr;
+    bool uiWarned_ = false;  // 形の壊れた UI のメッシュの警告を出したか（1 回だけ）
+    bool uiBlendWarned_ = false;  // 重なり順の範囲を超えた警告を出したか（1 回だけ）
+    bool uiStaleTextureWarned_ = false;  // 古い番号のテクスチャの警告を出したか（1 回だけ）
+    // ui.filamat の読み込み（コンストラクタ。無い・壊れていれば AssetError）。
+    void loadUiMaterial();
+    void ensureUiView(ViewSlot& slot);
+    void applyUiProjection(ViewSlot& slot);
+    // 番号 → 実体（無効な番号は nullptr。番号の有効性の判定はこの 2 つだけ）。
+    UiTexture* uiTextureAt(int textureId);
+    UiCanvas* uiCanvasAt(std::size_t id);
+    // 描くときのテクスチャ（無効な番号は 1×1 の白）。
+    UiTexture& uiTextureOrWhite(int textureId);
+    filament::MaterialInstance* uiInstance(int textureId, int materialId);
+    void destroyUiCanvasPart(UiCanvasPart& part);
+    // 作り直さずに済んだ中身の run の材質インスタンスを解決し直す（テクスチャが
+    // 後から用意されたら差し替える）。
+    void refreshUiPartInstances(UiCanvasPart& part);
+    // テクスチャ 1 枚の後始末（材質インスタンス → テクスチャ → 空に戻す）。
+    void destroyUiTexture(UiTexture& t);
+    // 作ったテクスチャを空いた枠に入れ、世代を進めた番号を返す（R8 と画像の共通）。
+    int adoptUiTexture(filament::Texture* texture, int width, int height, bool mipmapped);
+    void buildUiCanvasPart(const UiCanvas& canvas, UiCanvasPart& part);
+    void applyUiCanvasTransform(const UiCanvas& canvas, UiCanvasPart& part);
+    // そのビューの UI のシーンの重なり順を振り直す（Canvas の order → 番号 → run）。
+    void refreshUiBlendOrders(std::size_t viewIndex);
+    // 終了時（Engine を壊す前）: Canvas・材質インスタンス・テクスチャ・材質・UI のビュー。
+    void destroyUi();
     filament::VertexBuffer* vb_ = nullptr;
     filament::IndexBuffer* ib_ = nullptr;
     filament::VertexBuffer* groundVb_ = nullptr;
@@ -641,6 +786,19 @@ private:
         bool inScene = false;
     };
     std::vector<OverlayMesh> overlayMeshes_;
+    // パーティクルのメッシュ（席の数は作るときに決まり、以後変えない）。
+    struct ParticleMesh {
+        utils::Entity entity;
+        filament::VertexBuffer* vb = nullptr;
+        filament::IndexBuffer* ib = nullptr;
+        filament::MaterialInstance* mi = nullptr;
+        std::size_t capacity = 0;   // 粒子の席の数
+        std::size_t lastCount = 0;  // 前回描いた数（次の転送でそこまで消す）
+    };
+    std::vector<ParticleMesh> particleMeshes_;
+    filament::Material* particleMaterial_ = nullptr;
+    // particle.filamat の読み込み（コンストラクタが 1 回だけ。無ければ AssetError）。
+    void loadParticleMaterial();
     filament::Material* overlayMaterial_ = nullptr;
     bool overlayWarned_ = false;  // 形の壊れたメッシュの警告を出したか（1 回だけ）
     // overlay.filamat の読み込み（コンストラクタが 1 回だけ呼ぶ）。無い・空・壊れている場合は

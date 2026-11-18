@@ -87,16 +87,21 @@ public:
     // Ground / Terrain はシーンに 1 つずつのオブジェクト（index は使わない、
     // 常に 0）。階層一覧のクリックで選び、Inspector にその節が出る。ギズモで
     // 移動 / 回転できる（GizmoComponent の対象の種類 4 / 5。拡縮は移動に丸める）。
+    // Canvas は UI（index = Canvas の番号、sub = 要素の id。-1 = Canvas そのもの）。
+    // 立てるのは UiInputComponent（select.ui）。sub を使うのは Canvas だけで、他の
+    // 種類は -1。
     enum class SelKind : int {
-        None = 0, Light = 1, Camera = 2, Part = 3, Ground = 4, Terrain = 5
+        None = 0, Light = 1, Camera = 2, Part = 3, Ground = 4, Terrain = 5, Canvas = 6
     };
-    void setSel(SelKind kind, int index) {
+    void setSel(SelKind kind, int index, int sub = -1) {
         selIndex_.store(index);
+        selSub_.store(sub);
         selKind_.store(int(kind));
     }
     void clearSel() { setSel(SelKind::None, -1); }
     SelKind selKind() const { return SelKind(selKind_.load()); }
     int selIndex() const { return selIndex_.load(); }
+    int selSub() const { return selSub_.load(); }
 
     // ---- ジョイント -----------------------------------------------------
     std::vector<wizengine::editor::JointDesc> joints() const;
@@ -115,6 +120,13 @@ public:
     int addCable(const wizengine::editor::CableDesc& cable);
     bool removeCable(int index);
     std::size_t cableCount() const;
+
+    // ---- パーティクルのエミッタ（見た目だけ。<worldbody> の <emitter>）------
+    // 書き換えるたびに emitterVersion が進む（EffectsComponent が粒子と光を
+    // 作り直す合図。制御器の emitter:<名前> の結び直しにも使う）。
+    std::vector<wizengine::editor::EmitterDesc> emitters() const;
+    void setEmitters(std::vector<wizengine::editor::EmitterDesc> emitters);
+    std::uint64_t emitterVersion() const { return emitterVersion_.load(); }
 
     // ---- イベントアセット（ノードベースのスクリプト）------------------------
     // ノードとワイヤーの束を「アセット」として名前で持つ（EditorTypes.h の
@@ -149,10 +161,27 @@ public:
     // 取り直す。
     std::vector<std::string> eventLibrary() const;
     void refreshEventLibrary();
-    // assets/events（無ければ作らない。書くときに作る）。
-    static std::string eventsDir();
+    // イベントライブラリの置き場（assets/ 相対のフォルダ）と拡張子。
+    static constexpr const char* kEventLibraryDir = "events";
+    static constexpr const char* kEventLibraryExt = ".xml";
     // ライブラリのファイル（assets/ 相対、"events/<名前>.xml"）。名前が不正なら空。
     static std::string eventLibraryFile(const std::string& name);
+    // ---- グローバル（ライブラリ）の計算式・プレハブ・メッシュ -------------------
+    // 計算式は assets/formulas/<名前>.xml、プレハブは assets/prefabs/<名前>.xml
+    // （イベントの assets/events と同じ流儀。一覧は拡張子を落とした名前）。
+    // メッシュは assets/ 以下の .glb / .gltf ファイル（assets/ 相対のパス。
+    // web / scenes / events / formulas / prefabs / terrains は見ない）。
+    // どれも refreshLibraries で取り直す（起動・共通化・削除・保存・ブラウザの
+    // タブに戻ったとき）。
+    std::vector<std::string> formulaLibrary() const;
+    std::vector<std::string> prefabLibrary() const;
+    std::vector<std::string> meshLibrary() const;
+    // 共用 UI（assets/ui/<名前>.xml の名前。置き場は scene/UiFiles）。
+    std::vector<std::string> uiLibrary() const;
+    void refreshLibraries();  // イベントも含めて全部
+    // ライブラリのファイル（assets/ 相対）。名前が不正なら空。
+    static std::string formulaLibraryFile(const std::string& name);
+    static std::string prefabLibraryFile(const std::string& name);
     // シーン全体に付いているアセット名。
     std::vector<std::string> worldEvents() const;
     bool attachWorldEvent(const std::string& name);
@@ -184,21 +213,22 @@ public:
     void clearNodeFireCounts();
     std::map<std::pair<std::string, int>, int> nodeFireCounts() const;
 
-    // ---- 計算式アセット（ノード式。vehicle/Formula.h）---------------------
-    // イベントアセットと同じ流儀: 名前で持ち、車両のタイヤが名前で参照する
-    // （BodyDesc::vehicle の axles[].tire.formula）。書くのは物理スレッド
-    // （Op 実行時）、読むのは HTTP スレッド（サイドバー用 JSON）と物理スレッド
-    // （車両の生成時にコンパイル）。ノード id はアセットの中で一意で、削除
-    // しても再利用しない。
-    std::vector<wizengine::vehicle::FormulaGraphDesc> formulaAssets() const;
+    // ---- 計算式アセット（ノード式。formula/Formula.h）---------------------
+    // イベントアセットと同じ流儀: 名前で持ち、制御器が名前で参照する
+    // （controllers()）。書くのは物理スレッド（Op 実行時）、読むのは HTTP
+    // スレッド（サイドバー用 JSON）と物理スレッド（制御器のコンパイル）。
+    // ノード id はアセットの中で一意で、削除しても再利用しない。
+    std::vector<wizengine::formula::FormulaGraphDesc> formulaAssets() const;
     bool hasFormulaAsset(const std::string& name) const;
-    void setFormulaAssets(std::vector<wizengine::vehicle::FormulaGraphDesc> assets);
+    void setFormulaAssets(std::vector<wizengine::formula::FormulaGraphDesc> assets);
     // graph.name が空 / 重複なら false。中身ごと登録できる（テンプレート用）。
-    bool addFormulaAsset(wizengine::vehicle::FormulaGraphDesc graph);
+    bool addFormulaAsset(wizengine::formula::FormulaGraphDesc graph);
+    // 同じ名前があれば中身を丸ごと差し替え、無ければ足す（式エディタの適用）。
+    bool replaceFormulaAsset(wizengine::formula::FormulaGraphDesc graph);
     bool removeFormulaAsset(const std::string& name);
     // id を採番して追加し、その id を返す（アセットが無い・種類が不正なら -1）。
     int addFormulaNode(const std::string& asset,
-                       wizengine::vehicle::FormulaNodeDesc node);
+                       wizengine::formula::FormulaNodeDesc node);
     // 送られてきたキー（x y name params）だけ上書き。種類と id は変えない。
     bool updateFormulaNode(const std::string& asset, int id,
                            const nlohmann::json& patch);
@@ -206,13 +236,53 @@ public:
     // 両端とポート番号を検証し、同じ入力ポートへの古い線は張り替える。
     // 循環になる線は張らない（式は前進評価なので）。
     bool addFormulaWire(const std::string& asset,
-                        const wizengine::vehicle::FormulaWireDesc& wire);
+                        const wizengine::formula::FormulaWireDesc& wire);
     bool removeFormulaWire(const std::string& asset,
-                           const wizengine::vehicle::FormulaWireDesc& wire);
-    // 式（またはタイヤの参照）が変わるたびに増える版番号。VehicleComponent が
-    // 見て、変わっていたら車両モデルを作り直す（式のコンパイルは生成時）。
+                           const wizengine::formula::FormulaWireDesc& wire);
+    // 式が変わるたびに増える版番号。ControlComponent が見て、中身
+    // （formulaSignature）が変わった制御器だけコンパイルし直す。
     std::uint64_t formulaVersion() const { return formulaVersion_.load(); }
     void bumpFormulaVersion() { formulaVersion_.fetch_add(1); }
+    // 車両の設計値（タイヤ・サスなど）や車両そのものが入れ替わるたびに進む
+    // 版番号。VehicleComponent が見て、変わっていたら車両モデルを作り直す
+    // = シミュレート中の編集もすぐ効く（走行状態は一度リセットされる）。
+    std::uint64_t vehicleVersion() const { return vehicleVersion_.load(); }
+    void bumpVehicleVersion() { vehicleVersion_.fetch_add(1); }
+
+    // ---- 制御器（計算式をブロック線図として回す。control/）-----------------
+    // 書くのは物理スレッド（Op 実行時・読込）、読むのは HTTP スレッド（JSON）と
+    // 物理スレッド（ControlComponent。controlVersion が変わったときだけ取る）。
+    // 同じ計算式を 2 回は付けない（付け先はシーン全体の 1 か所なので意味が無い）。
+    std::vector<wizengine::editor::ControllerDesc> controllers() const;
+    void setControllers(std::vector<wizengine::editor::ControllerDesc> list);
+    bool addController(const wizengine::editor::ControllerDesc& c);
+    bool removeController(const std::string& formula);
+    // 送られたキーだけ上書き（period / enabled）。
+    bool updateController(const std::string& formula, const nlohmann::json& patch);
+    std::uint64_t controlVersion() const { return controlVersion_.load(); }
+
+    // 制御器のパラメータ（式からは param:<名前>）。値の変更は paramVersion だけを
+    // 進める = 制御器を作り直さない（PID の積分もターボラグの状態も続く）。
+    // ControlComponent は paramVersion が変わったときだけ一覧を写す。
+    std::vector<wizengine::editor::ParamDesc> params() const;
+    void setParams(std::vector<wizengine::editor::ParamDesc> list);
+    bool addParam(const wizengine::editor::ParamDesc& p);   // 同名があれば false
+    bool removeParam(const std::string& name);
+    // 送られたキーだけ上書き（value / min / max / label / step）。move（-1 / +1）で
+    // 並び替え（制御盤のカードの順 = 文書の順）。
+    bool updateParam(const std::string& name, const nlohmann::json& patch);
+    // 値だけをまとめて書く（制御器の param:<名前> アクチュエータ。PHYSICS スレッド）。
+    // 範囲（min / max）と選択肢の番号へ丸める。1 つでも変わったら版を 1 回進める。
+    void setParamValues(const std::map<std::string, double>& values);
+    std::uint64_t paramVersion() const { return paramVersion_.load(); }
+
+    // 制御盤のグラフ（文書の <chart>）。番号で指す（並び = 表示順）。
+    std::vector<wizengine::editor::ChartDesc> charts() const;
+    void setCharts(std::vector<wizengine::editor::ChartDesc> list);
+    void addChart(const wizengine::editor::ChartDesc& c);
+    bool removeChart(int index);
+    // 送られたキーだけ上書き（title / signals / span）。move で並びを入れ替える。
+    bool updateChart(int index, const nlohmann::json& patch);
 
     // ---- プレハブ（見た目の部品の集合）------------------------------------
     // イベント・計算式と同じ流儀のアセット。部品は番号で参照する（軸と同じ）。
@@ -288,12 +358,8 @@ public:
     // 同じ名前の旧形式（.json）のフルパス。読み込みの後方互換にだけ使う。
     static std::string legacyScenePath(const std::string& name);
 
-    // 保存・読み込み（テキスト）。失敗時は false を返し、reason に理由を
-    // 入れる。中身が XML か JSON かはここでは見ない。
-    static bool writeText(const std::string& path, const std::string& text,
-                          std::string& reason);
-    static bool readText(const std::string& path, std::string& text,
-                         std::string& reason);
+    // テキストファイルの読み書きは scene/SharedAssetFile の readTextFile /
+    // writeTextFile（シーンの保存・読込もそれを呼ぶ）。
     // 旧形式（*.json）の読み込み。新規の保存には使わない。
     static bool readJson(const std::string& path, nlohmann::json& doc,
                          std::string& reason);
@@ -305,12 +371,15 @@ private:
 
     std::atomic<int> selKind_{0};    // SelKind
     std::atomic<int> selIndex_{-1};
+    std::atomic<int> selSub_{-1};    // Canvas の要素の id（-1 = Canvas そのもの）
 
     mutable std::mutex mutex_;
     std::vector<Op> pending_;
     std::atomic<int> pendingCount_{0};
     std::vector<wizengine::editor::JointDesc> joints_;
     std::vector<wizengine::editor::CableDesc> cables_;  // 同上（mutex_ の下）
+    std::vector<wizengine::editor::EmitterDesc> emitters_;  // 同上
+    std::atomic<std::uint64_t> emitterVersion_{0};
     // イベントアセット（mutex_ の下）。nextNodeId はアセットごとの採番、
     // fireCounts_ は（アセット名, ノード id）-> 発火回数。
     struct EventAssetState {
@@ -321,14 +390,22 @@ private:
     };
     std::vector<EventAssetState> events_;
     std::vector<std::string> eventLibrary_;  // mutex_ の下
+    std::vector<std::string> formulaLibrary_, prefabLibrary_, meshLibrary_,
+        uiLibrary_;  // mutex_ の下
     std::vector<std::string> worldEvents_;
     // 計算式アセット（mutex_ の下）。
     struct FormulaAssetState {
-        wizengine::vehicle::FormulaGraphDesc desc;
+        wizengine::formula::FormulaGraphDesc desc;
         int nextNodeId = 1;
     };
     std::vector<FormulaAssetState> formulas_;
     std::atomic<std::uint64_t> formulaVersion_{0};
+    std::atomic<std::uint64_t> vehicleVersion_{0};
+    std::vector<wizengine::editor::ControllerDesc> controllers_;
+    std::atomic<std::uint64_t> controlVersion_{0};
+    std::vector<wizengine::editor::ParamDesc> params_;
+    std::atomic<std::uint64_t> paramVersion_{0};
+    std::vector<wizengine::editor::ChartDesc> charts_;
     // プレハブ（mutex_ の下）。
     std::vector<wizengine::editor::PrefabDesc> prefabs_;
     std::atomic<std::uint64_t> prefabVersion_{0};

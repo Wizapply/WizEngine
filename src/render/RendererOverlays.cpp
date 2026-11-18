@@ -18,11 +18,7 @@ const char* overlayMeshProblem(const std::vector<float3>& positions,
                                const std::vector<uint16_t>& indices) {
     if (colors.size() != positions.size()) return "colors and positions differ in count";
     if (positions.size() > kMaxOverlayVertices) return "too many vertices for 16-bit indices";
-    if (indices.size() % 3 != 0) return "index count is not a multiple of 3";
-    for (uint16_t i : indices) {
-        if (i >= positions.size()) return "an index is out of range";
-    }
-    return nullptr;
+    return triangleIndexProblem(indices, positions.size());
 }
 
 }  // namespace

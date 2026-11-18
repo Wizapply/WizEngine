@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 
-#include "vehicle/TireFormula.h"
 
 namespace wizengine {
 namespace vehicle {
@@ -199,13 +198,16 @@ SoftTire::SoftTire(const TireDesc& tire) : tire_(tire) {
 
 void SoftTire::reset() {
     placed_ = false;
-    if (pressureFormula_) pressureFormula_->reset();
 }
 
-void SoftTire::setPressureFormula(std::unique_ptr<FormulaInstance> formula) {
-    pressureFormula_ = std::move(formula);
-    formulaFailures_ = 0;
+namespace {
+// 空気圧の増分（等温変化）: p = p0 (V0/V − 1)、下限 −p0。
+double isothermalPressure(double ratio, double p0) {
+    if (ratio <= 1e-6) ratio = 1e-6;
+    const double p = p0 * (1.0 / ratio - 1.0);
+    return p < -p0 ? -p0 : p;
 }
+}  // namespace
 
 // 閉じた面が囲む体積（発散定理: 三角形ごとの a·(b×c)/6 の和。巻きが
 // 外向きなので正）。
@@ -233,7 +235,7 @@ void SoftTire::areaVectorsOf(const std::vector<Vec3>& p, std::vector<Vec3>& out)
     }
 }
 
-// 空気圧: 体積比から圧力の増分 p を出す（式 or 組み込みの等温変化）。
+// 空気圧: 体積比から圧力の増分 p を出す（等温変化）。
 //
 // 力そのもの（p × 面積ベクトル）を陽解法で足すと、圧力の「全体が同時に
 // 膨らむ / 縮む」モードの結合剛性 K = p_abs A_i A_tot / V が大きく（高圧・
@@ -245,32 +247,21 @@ void SoftTire::areaVectorsOf(const std::vector<Vec3>& p, std::vector<Vec3>& out)
 // 反復（solve の中）で 1 本ずつ implicit Euler なので無条件に安定。局所的な
 // へこみにも K_i が効く（本物の空気圧は一様にしか押さないので、その分だけ
 // へこみに硬い近似）。
-void SoftTire::computePressure(double load, double deflection, double dt) {
+void SoftTire::computePressure() {
+
     const double p0 = tire_.pressure;
     pressureK_ = 0.0;
     pressureOffset_ = 0.0;
-    if (p0 <= 0.0 && !pressureFormula_) {
+    if (p0 <= 0.0) {
         ratio_ = 1.0;
         pressure_ = 0.0;
         return;
     }
     if (restVolume_ <= 1e-12 || totalArea_ <= 1e-12) return;
     const double volume = volumeOf(pos_);
-    const double prevRatio = ratio_;
     ratio_ = clampd(volume / restVolume_, 1e-3, 100.0);
-    const double rate = (ratio_ - prevRatio) / dt;
-
-    double p = 0.0;
-    bool ok = false;
-    if (pressureFormula_) {
-        const double in[6] = {ratio_, rate, p0, load, deflection, tire_.radius};
-        double out[1] = {0.0};
-        ok = pressureFormula_->eval(in, out, dt) && std::isfinite(out[0]);
-        if (ok) p = out[0];
-        else ++formulaFailures_;
-    }
-    if (!ok) p = builtinTirePressure(ratio_, p0);
-    // 安全のため上限を掛ける（式がどんな数字を出しても輪が壊れない）。
+    double p = isothermalPressure(ratio_, p0);
+    // 安全のため上限を掛ける（極端な潰れでも輪が壊れない）。
     const double pRef = std::max(p0, 1.0e4);
     p = clampd(p, -10.0 * pRef, 10.0 * pRef);
     pressure_ = p;
@@ -288,8 +279,7 @@ void SoftTire::computePressure(double load, double deflection, double dt) {
 // ローカルならリムは動かず、地面の平面だけがタイヤの周りを回るので、
 // 接地面の潰れがそのまま「転がりながら戻る変形」になる。
 void SoftTire::step(const Vec3& center, const Quat& rotIn, bool grounded,
-                    const Vec3& groundPoint, const Vec3& groundNormalIn, double load,
-                    double deflection, double dt) {
+                    const Vec3& groundPoint, const Vec3& groundNormalIn, double dt) {
     const Quat rot = rotIn.normalized();
     const std::size_t count = rest_.size();
     if (!placed_ || dt <= 0.0) {
@@ -303,7 +293,7 @@ void SoftTire::step(const Vec3& center, const Quat& rotIn, bool grounded,
     }
     if (dt > 0.0) {
         // ---- 空気圧（体積 → 圧力。ばねの反復の中で径方向のばねとして掛ける）
-        computePressure(load, deflection, dt);
+        computePressure();
 
         // ---- ばね（陰解法・ガウス・ザイデル。PhysicsWorld::solveSoftSprings と同じ式）
         const double invM = 1.0 / mass_;

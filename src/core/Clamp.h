@@ -1,0 +1,39 @@
+#pragma once
+
+// 数値を範囲に収める・整数へ丸める（どの層からも使える小さな部品）。
+
+#include <climits>
+#include <cmath>
+
+namespace wizengine {
+
+// 範囲へ丸める。有限でない値（NaN と ±∞）は fallback へ戻す（XML の strtod は "nan" や
+// "inf" も読むので、比較だけの丸めでは NaN が素通りし、∞ が範囲の端になってしまう）。
+// テレインの値・UI の性質の値などが共用する。
+inline double clampOrFallback(double v, double lo, double hi, double fallback) {
+    if (!std::isfinite(v)) return fallback;
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// float の欄の clampOrFallback（規則は同じ。double 版の多重定義にしないのは、float と
+// double の混ざった呼び出しが曖昧になり、`auto cl = clampOrFallback;` も書けなくなるため）。
+inline float clampFloatOrFallback(float v, float lo, float hi, float fallback) {
+    return float(clampOrFallback(v, lo, hi, fallback));
+}
+
+// 整数へ丸める（0.5 は 0 から遠い方）。int に入らない値と NaN は fallback（double から
+// int への変換は範囲外で未定義）。XML の整数属性と UI の整数の値が共用する唯一の定義。
+inline int roundToInt(double v, int fallback) {
+    const double r = std::round(v);
+    const bool inRange = r >= double(INT_MIN) && r <= double(INT_MAX);  // NaN は偽
+    return inRange ? int(r) : fallback;
+}
+
+// 置き場所の角度（度）。有限でない値（NaN と ±∞）と ±1e9 を超える値は 0、±360 の外は
+// 1 周ぶん畳む（地面・テレイン・UI の板の rotation。オイラー角の意味は変えない）。
+inline double clampAngleDegrees(double v) {
+    if (!std::isfinite(v) || v > 1e9 || v < -1e9) return 0.0;
+    return std::fmod(v, 360.0);
+}
+
+}  // namespace wizengine

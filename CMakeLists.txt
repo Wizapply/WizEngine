@@ -204,6 +204,17 @@ else()
         "files there and they will be copied next to the executable")
 endif()
 
+# 起動設定（config.json）: 実行フォルダ（assets/ と同じ場所）に**無いときだけ**
+# 同梱の config.json を置く。編集されたビルド先のコピーは上書きしない（API キーを
+# 書くのはこちら = build/ はリポジトリの外）。同梱側の新しいキーを取り込みたい
+# ときはビルド先のファイルを消して configure し直すか、手で足す（書いていない
+# キーは既定値で動くので、古いコピーのままでも起動は止まらない）。
+if(NOT EXISTS ${CMAKE_CURRENT_BINARY_DIR}/config.json)
+    file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/config.json
+         DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+    message(STATUS "WizEngine: placed config.json -> ${CMAKE_CURRENT_BINARY_DIR}/config.json")
+endif()
+
 # Web UI: the browser page and its assets are served from disk at runtime, so
 # they are copied next to the binary. Editing a file under web/ and reloading
 # the browser is enough - no rebuild needed.
@@ -285,6 +296,7 @@ endif()
 
 # stb_image: decodes PNG/JPEG/TGA/BMP for the ground texture.
 # stb_perlin: テレインの高さのノイズ（src/terrain/TerrainNoise.cpp）。
+# stb_truetype / stb_rect_pack: UI の字の置き場（src/ui/FontAtlas.cpp）。
 if(EXISTS "${THIRD_PARTIES_DIR}/stb/stb_image.h")
     list(APPEND WIZ_DEP_INCLUDE_DIRS "${THIRD_PARTIES_DIR}/stb")
     message(STATUS "WizEngine: stb_image -> submodule")
@@ -295,6 +307,12 @@ else()
     wiz_download_header(
         "https://raw.githubusercontent.com/nothings/stb/master/stb_perlin.h"
         "${DEPS_INC}/stb_perlin.h")
+    wiz_download_header(
+        "https://raw.githubusercontent.com/nothings/stb/master/stb_truetype.h"
+        "${DEPS_INC}/stb_truetype.h")
+    wiz_download_header(
+        "https://raw.githubusercontent.com/nothings/stb/master/stb_rect_pack.h"
+        "${DEPS_INC}/stb_rect_pack.h")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -302,22 +320,32 @@ endif()
 # ---------------------------------------------------------------------------
 # ソースは担当ごとのフォルダに分けてある（src/ が include のルートで、
 # #include "core/Log.h" のようにフォルダ名から書く）:
-#   core/       ログ・例外・版・計測・CPU ピン留めなど、エンジン非依存の土台
+#   core/       ログ・例外・版・計測・CPU ピン留め・XML の読み書きなど、エンジン非依存の土台
 #   physics/    Chrono のラッパと glTF 凸包（当たり判定）
 #   render/     Filament のラッパと画像 / HDR / glTF の読み込み
 #   streaming/  HTTP・WebRTC・GStreamer の出力
 #   document/   シーン文書の値型と MuJoCo 風 XML（エンジン非依存）
 #   scene/      Scene の実体管理・エディタ状態・カメラ・数学の橋渡し
 #   components/ ブラウザのコマンドを受ける SceneComponent 群
-#   vehicle/    車両モデルとノード式（純粋な数値ライブラリ。tests/vehicle が使う）
+#   vehicle/    車両モデル（純粋な数値ライブラリ。tests/vehicle が使う）
+#   formula/    ノード式（計算式アセット）の検証・実行（C++ / LuaJIT）・XML・数式テキスト
+#   control/    制御器の信号名とセンサの計算（ノード式をブロック線図として回す。純粋）
 #   terrain/    テレインの高さ格子（純粋な計算。tests/terrain が使う）
+#   app/        起動設定（config.json）の読み込み
+#   autogen/    AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換 Text to 3D。
+#               Chrono も Filament も知らない）
+#   ui/         UI の性質・矩形・文書の形（純粋な計算。tests/ui が使う）
+set(WIZ_APP_SOURCES
+    src/app/AppConfig.cpp)
 set(WIZ_CORE_SOURCES
     src/core/AssetError.cpp
     src/core/CpuAffinity.cpp
+    src/core/FileBytes.cpp
     src/core/Log.cpp
     src/core/PortScan.cpp
     src/core/Trash.cpp
-    src/core/Versions.cpp)
+    src/core/Versions.cpp
+    src/core/Xml.cpp)
 set(WIZ_PHYSICS_SOURCES
     src/physics/BodyFactory.cpp
     src/physics/BodyLoads.cpp
@@ -354,24 +382,28 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererMeshes.cpp
     src/render/RendererLines.cpp
     src/render/RendererOverlays.cpp
+    src/render/RendererParticles.cpp
     src/render/RendererGround.cpp
     src/render/RendererTerrain.cpp
     src/render/RendererTerrainSurface.cpp
-    src/render/RendererTextures.cpp)
+    src/render/RendererTextures.cpp
+    src/render/RendererUiMeshes.cpp
+    src/render/RendererUiViews.cpp)
 set(WIZ_STREAMING_SOURCES
     src/streaming/HttpServer.cpp
     src/streaming/VideoStreamer.cpp
     src/streaming/WebRtcStreamer.cpp)
 set(WIZ_DOCUMENT_SOURCES
-    src/document/SceneDocument.cpp
-    src/document/SceneXml.cpp)
+    src/document/SceneDocument.cpp)
 set(WIZ_SCENE_SOURCES
     src/scene/CameraObject.cpp
     src/scene/EditorState.cpp
+    src/scene/LibraryFlow.cpp
     src/scene/PrefabDefaults.cpp
     src/scene/Scene.cpp
     src/scene/SceneEdit.cpp
     src/scene/SceneEvents.cpp
+    src/scene/SceneLibrary.cpp
     src/scene/SceneSerialize.cpp
     src/scene/SceneTerrain.cpp
     src/scene/SceneTerrainEdit.cpp
@@ -381,21 +413,36 @@ set(WIZ_SCENE_SOURCES
     src/scene/SceneTerrainScatter.cpp
     src/scene/SceneTerrainScatterBody.cpp
     src/scene/SceneTerrainSculpt.cpp
-    src/scene/SoftLattice.cpp)
+    src/scene/SharedAssetFile.cpp
+    src/scene/SoftLattice.cpp
+    src/scene/UiFiles.cpp
+    src/scene/UiJson.cpp
+    src/scene/UiLibraryOps.cpp
+    src/scene/UiOps.cpp
+    src/scene/UiState.cpp)
 set(WIZ_COMPONENT_SOURCES
+    src/components/AutoGenComponent.cpp
     src/components/EditorComponent.cpp
+    src/components/EffectsComponent.cpp
     src/components/GizmoComponent.cpp
     src/components/PrefabComponent.cpp
     src/components/ScatterComponent.cpp
+    src/components/ControlComponent.cpp
     src/components/TerrainComponent.cpp
+    src/components/UiInputComponent.cpp
+    src/components/UiRenderComponent.cpp
     src/components/VehicleComponent.cpp)
+set(WIZ_FORMULA_SOURCES
+    src/formula/Formula.cpp
+    src/formula/FormulaText.cpp
+    src/formula/FormulaXml.cpp
+    src/formula/LuaFormula.cpp)
+set(WIZ_CONTROL_SOURCES
+    src/control/ControlSignals.cpp
+    src/control/ControlTemplates.cpp)
 set(WIZ_VEHICLE_SOURCES
-    src/vehicle/Formula.cpp
-    src/vehicle/FormulaXml.cpp
-    src/vehicle/LuaFormula.cpp
     src/vehicle/Powertrain.cpp
     src/vehicle/SoftTire.cpp
-    src/vehicle/TireFormula.cpp
     src/vehicle/VehicleModel.cpp
     src/vehicle/VehicleTypes.cpp
     src/vehicle/VehicleXml.cpp
@@ -412,9 +459,29 @@ set(WIZ_TERRAIN_SOURCES
     src/terrain/TerrainNoise.cpp
     src/terrain/TerrainScatter.cpp
     src/terrain/TerrainUndo.cpp)
+set(WIZ_AUTOGEN_SOURCES
+    src/autogen/AiClients.cpp
+    src/autogen/AiConfig.cpp
+    src/autogen/GlbBounds.cpp
+    src/autogen/HttpClient.cpp
+    src/autogen/ScenePrompt.cpp
+    src/autogen/SceneGenerator.cpp
+    src/autogen/SceneLayout.cpp)
+set(WIZ_UI_SOURCES
+    src/ui/FontAtlas.cpp
+    src/ui/UiImage.cpp
+    src/ui/UiKinds.cpp
+    src/ui/UiLayout.cpp
+    src/ui/UiMesh.cpp
+    src/ui/UiProps.cpp
+    src/ui/UiSdf.cpp
+    src/ui/UiText.cpp
+    src/ui/UiValue.cpp
+    src/ui/UiXml.cpp)
 
 add_executable(wizengine
     src/main.cpp
+    ${WIZ_APP_SOURCES}
     ${WIZ_CORE_SOURCES}
     ${WIZ_PHYSICS_SOURCES}
     ${WIZ_RENDER_SOURCES}
@@ -423,7 +490,11 @@ add_executable(wizengine
     ${WIZ_SCENE_SOURCES}
     ${WIZ_COMPONENT_SOURCES}
     ${WIZ_VEHICLE_SOURCES}
-    ${WIZ_TERRAIN_SOURCES})
+    ${WIZ_FORMULA_SOURCES}
+    ${WIZ_CONTROL_SOURCES}
+    ${WIZ_TERRAIN_SOURCES}
+    ${WIZ_AUTOGEN_SOURCES}
+    ${WIZ_UI_SOURCES})
 # ノード式の実行エンジン（LuaJIT）。無ければ C++ の参照インタプリタに落ちる。
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/LuaJIT.cmake)
 wiz_link_luajit(wizengine)
@@ -645,6 +716,30 @@ target_link_libraries(wizengine PRIVATE
 find_package(Threads REQUIRED)
 target_link_libraries(wizengine PRIVATE Threads::Threads)
 
+# HTTPS（AI のシーン自動構築が OpenAI / Meshy を呼ぶ）。cpp-httplib は
+# OpenSSL 3.x があれば HTTPS クライアントになる。CPPHTTPLIB_OPENSSL_SUPPORT は
+# httplib の class の中身を変えるので、**ターゲット全体に**立てる（TU ごとに
+# 立て分けると ODR 違反）。見つからなければ http:// の接続先（ローカルの
+# Ollama / LM Studio など）だけ使える。Windows は -DOPENSSL_ROOT_DIR=... で
+# OpenSSL（Shining Light の Win64 OpenSSL、vcpkg、GStreamer の同梱品など）を指す。
+option(WIZ_WITH_OPENSSL "Enable HTTPS for AI scene generation (cpp-httplib + OpenSSL)" ON)
+if(WIZ_WITH_OPENSSL)
+    find_package(OpenSSL 3.0 COMPONENTS SSL Crypto)
+endif()
+if(WIZ_WITH_OPENSSL AND OpenSSL_FOUND)
+    target_compile_definitions(wizengine PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+    target_link_libraries(wizengine PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    if(WIN32)
+        # httplib が Windows の証明書ストアを読む（CertOpenSystemStore）。
+        target_link_libraries(wizengine PRIVATE crypt32)
+    endif()
+    message(STATUS "WizEngine: HTTPS for AI scene generation -> OpenSSL ${OPENSSL_VERSION}")
+else()
+    message(STATUS
+        "WizEngine: no OpenSSL 3 - AI scene generation can only reach http:// "
+        "endpoints (set OPENSSL_ROOT_DIR to enable https)")
+endif()
+
 if(UNIX AND NOT APPLE)
     target_link_libraries(wizengine PRIVATE ${CMAKE_DL_LIBS})
 endif()
@@ -661,13 +756,13 @@ endif()
 # configure できる（tests/vehicle/CMakeLists.txt 参照）。本体と一緒に回すなら
 #   cmake -B build -DWIZ_BUILD_TESTS=ON && cmake --build build && ctest --test-dir build
 # ---------------------------------------------------------------------------
-option(WIZ_BUILD_TESTS "Build the unit tests (vehicle, soft body, document, terrain) alongside the engine" OFF)
+option(WIZ_BUILD_TESTS "Build the unit tests (vehicle, soft body, document, terrain, ui) alongside the engine" OFF)
 if(WIZ_BUILD_TESTS)
     enable_testing()
     # テストは単独でも configure できる（tests/<名前>/CMakeLists.txt）。
     # ここでは「あるものだけ」取り込む - 片方だけ持っているクローンでも
     # -DWIZ_BUILD_TESTS=ON が configure エラーにならないように。
-    foreach(_test vehicle softbody document terrain)
+    foreach(_test vehicle softbody document terrain ui)
         if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/${_test}/CMakeLists.txt)
             add_subdirectory(tests/${_test})
         endif()

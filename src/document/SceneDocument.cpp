@@ -1,7 +1,10 @@
 #include "document/SceneDocument.h"
 
+#include "core/Clamp.h"
 #include "core/MathConstants.h"
-#include "vehicle/FormulaXml.h"
+#include "document/XmlValues.h"
+#include "formula/FormulaXml.h"
+#include "ui/UiXml.h"
 #include "vehicle/VehicleXml.h"
 
 #include <algorithm>
@@ -10,6 +13,7 @@
 #include <cstdlib>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -20,74 +24,12 @@ namespace {
 double toDegrees(double radians) { return radians * 180.0 / kPi; }
 double toRadians(double degrees) { return degrees * kPi / 180.0; }
 
-// ---- 警告の集積 -------------------------------------------------------------
-// 「読めるけれど意図と違うかもしれない」内容を文で集める。読み取りを止めない
-// （既定値へ落として続行する）ので、代わりにここへ痕跡を残す。out が無ければ
-// 何もしない。壊れた文書ほど警告が湧くので、件数に上限を置く。
-class Warn {
-public:
-    explicit Warn(std::vector<std::string>* out) : out_(out) {}
-    void operator()(std::string msg) {
-        if (!out_) return;
-        if (out_->size() >= kMax) {
-            if (!overflowNoted_) {
-                out_->push_back("(further warnings omitted)");
-                overflowNoted_ = true;
-            }
-            return;
-        }
-        out_->push_back(std::move(msg));
-    }
+// 警告の集積（Warn）・語彙の照合（unknownName / warnUnknownChildren）・
+// Vec3 の読み書きは document/XmlValues.h（UI の文書と共用）。
 
-private:
-    static constexpr std::size_t kMax = 40;
-    std::vector<std::string>* out_;
-    bool overflowNoted_ = false;
-};
-
-// 名前が語彙に無いか。FromName 系は未知の名前で fallback をそのまま返すので、
-// 別々の fallback で 2 回呼んで結果が食い違えば「知らない名前」と分かる
-// （語彙の文字列一覧をここへ複製して同期漏れを作らないための判定）。
-template <typename T, typename F>
-bool unknownName(const F& fromName, const std::string& s, T a, T b) {
-    return fromName(s, a) != fromName(s, b);
-}
-
-// 親の子要素のうち「知らない名前」を警告する。節を増やしたら known へ足す
-// （SceneDocument.h の「拡張の手順」）。
-void warnUnknownChildren(const xml::Element& parent,
-                         std::initializer_list<const char*> known,
-                         const char* where, Warn& warn) {
-    for (const auto& c : parent.children()) {
-        bool ok = false;
-        for (const char* k : known) {
-            if (c.name() == k) { ok = true; break; }
-        }
-        if (!ok) {
-            warn(std::string("unsupported <") + c.name() + "> in " + where +
-                 " - ignored");
-        }
-    }
-}
-
-// ---- 属性の読み書き（Vec3 と色）--------------------------------------------
-void setVec3(xml::Element& e, const char* key, const Vec3d& v) {
-    const double a[3] = {v.x, v.y, v.z};
-    e.setNumbers(key, a, 3);
-}
-Vec3d getVec3(const xml::Element& e, const char* key, const Vec3d& fallback) {
-    double a[3] = {fallback.x, fallback.y, fallback.z};
-    e.numbers(key, a, 3);
-    return Vec3d{a[0], a[1], a[2]};
-}
 // 零ベクトルか（既定値と同じ置き場所・回転を書かないため）。
 bool isZero(const Vec3d& v) { return v.x == 0.0 && v.y == 0.0 && v.z == 0.0; }
-// 色は MuJoCo と同じ rgba="r g b a"（リニア値）。a は今は使わないが、
-// MJCF を見慣れた目に自然な形にしておく。
-void setColor(xml::Element& e, const char* key, const Color3& c) {
-    const double a[4] = {c.r, c.g, c.b, 1.0};
-    e.setNumbers(key, a, 4, 6);  // float 由来なので 6 桁で十分
-}
+// 色の読み書き（setColor / getColor）は document/XmlValues.h。
 // 材質（PBR）。**既定値と同じ値は書かない** - 全部書くと、材質を触って
 // いないシーンの保存ファイルまで 6 属性ぶん太って差分が読めなくなる。
 // 読む側は既定値付きなので、書いていない属性は従来の見た目になる。
@@ -113,21 +55,6 @@ MaterialDesc getMaterial(const xml::Element& e, const MaterialDesc& base) {
     m.clearCoatRoughness = e.number("clearcoatRoughness", m.clearCoatRoughness);
     m.emissive = e.number("emissive", m.emissive);
     return clampMaterial(m);
-}
-
-Color3 getColor(const xml::Element& e, const char* key, const Color3& fallback) {
-    double a[4] = {fallback.r, fallback.g, fallback.b, 1.0};
-    if (e.numbers(key, a, 4) < 3) {
-        // ブラウザ API と同じ "#rrggbb" 表記も受ける（手書きしやすい）。
-        const std::string s = e.attr(key);
-        if (s.size() == 7 && s[0] == '#') return colorFromHex(s, fallback);
-        return fallback;
-    }
-    Color3 c;
-    c.r = float(a[0]);
-    c.g = float(a[1]);
-    c.b = float(a[2]);
-    return c;
 }
 
 // ---- 種類の名前（MJCF の語彙に寄せる）--------------------------------------
@@ -378,7 +305,7 @@ SimSettings optionFromXml(const xml::Element& o, SimSettings base, Warn& warn) {
     } else if (o.has("timestep")) {
         // MuJoCo 流の timestep（秒）で書かれていたら Hz に直す。
         const double dt = o.number("timestep", 1.0 / double(base.hz));
-        if (dt > 1e-6) base.hz = int(1.0 / dt + 0.5);
+        if (std::isfinite(dt) && dt > 1e-6) base.hz = roundToInt(1.0 / dt, base.hz);
     }
     base.substeps = o.integer("substeps", base.substeps);
     base.iterations = o.integer("iterations", base.iterations);
@@ -612,12 +539,10 @@ BodyDesc bodyFromXml(const xml::Element& e,
                 warn("<body name=\"" + label +
                      "\">: extra <vehicle> elements are ignored");
             } else {
-                std::vector<std::string> vw;
-                b.vehicle = vehicle::vehicleFromXml(c, &vw);
+                // 警告の上限は文書全体で 1 つ（子の Warn は親の一覧へ流す）。
+                Warn vw(warn, "<body name=\"" + label + "\"> ");
+                b.vehicle = vehicle::vehicleFromXml(c, vw);
                 b.hasVehicle = true;
-                for (const auto& m : vw) {
-                    warn("<body name=\"" + label + "\"> " + m);
-                }
             }
         } else if (c.name() == "soft") {
             // ソフトボディ。属性は全部既定値付き（<soft/> だけでも有効になる）。
@@ -994,6 +919,59 @@ CableDesc cableFromXml(const xml::Element& e, const std::vector<BodyDesc>& bodie
     return clampCable(c);
 }
 
+// ---- パーティクルのエミッタ（WizEngine の拡張。見た目だけ）------------------
+// 付け先は body（名前・番号・world）。既定と同じ値は書かない。
+xml::Element emitterElement(const EmitterDesc& m, const std::vector<BodyDesc>& bodies) {
+    xml::Element e("emitter");
+    const EmitterDesc d;
+    if (!m.name.empty()) e.set("name", m.name);
+    e.set("body", bodyRefText(bodies, m.body));
+    if (!isZero(m.position)) setVec3(e, "pos", m.position);
+    if (!isZero(m.rotation)) setVec3(e, "euler", m.rotation);
+    e.setNumber("radius", m.radius);
+    if (m.height != d.height) e.setNumber("height", m.height);
+    if (m.rate != d.rate) e.setNumber("rate", m.rate);
+    if (m.life != d.life) e.setNumber("life", m.life);
+    if (m.size != d.size) e.setNumber("size", m.size);
+    if (m.grow != d.grow) e.setNumber("grow", m.grow);
+    if (m.speed != d.speed) e.setNumber("speed", m.speed);
+    if (m.inherit != d.inherit) e.setNumber("inherit", m.inherit);
+    setColor(e, "rgba", m.color);
+    setColor(e, "rgba2", m.color2);
+    if (m.intensity != d.intensity) e.setNumber("intensity", m.intensity);
+    if (m.light != d.light) e.setNumber("light", m.light);
+    if (m.lightRange != d.lightRange) e.setNumber("lightrange", m.lightRange);
+    if (m.max != d.max) e.setInt("max", m.max);
+    return e;
+}
+EmitterDesc emitterFromXml(const xml::Element& e, const std::vector<BodyDesc>& bodies,
+                           Warn& warn) {
+    EmitterDesc m;
+    m.name = e.attr("name");
+    m.body = bodyRefIndex(bodies, e.attr("body", "world"), "body", warn);
+    m.position = getVec3(e, "pos", m.position);
+    m.rotation = getVec3(e, "euler", m.rotation);
+    m.radius = e.number("radius", m.radius);
+    m.height = e.number("height", m.height);
+    m.rate = e.number("rate", m.rate);
+    m.life = e.number("life", m.life);
+    m.size = e.number("size", m.size);
+    m.grow = e.number("grow", m.grow);
+    m.speed = e.number("speed", m.speed);
+    m.inherit = e.number("inherit", m.inherit);
+    m.color = getColor(e, "rgba", m.color);
+    m.color2 = getColor(e, "rgba2", m.color2);
+    m.intensity = e.number("intensity", m.intensity);
+    m.light = e.number("light", m.light);
+    m.lightRange = e.number("lightrange", m.lightRange);
+    m.max = e.integer("max", m.max);
+    if (m.name.empty()) {
+        warn("<emitter>: no name - controllers can only drive it by name "
+             "(emitter:<name>.rate), so it only uses its own rate");
+    }
+    return clampEmitter(m);
+}
+
 // イベントグラフ（MuJoCo には無い WizEngine の拡張）。種類ごとに意味のある
 // 属性だけを書く - 使わない欄まで並べると、手で読むときに嘘の情報になる。
 xml::Element nodeElement(const NodeDesc& n) {
@@ -1237,9 +1215,15 @@ PartDesc partFromXml(const xml::Element& e, const std::vector<MeshAssetDesc>& me
     }
     return clampPart(p);
 }
-xml::Element prefabElement(const PrefabDesc& d) {
+// プレハブを書き出す（<asset> の中）。グローバル（file あり）は参照だけ。
+// withContents = true はライブラリのファイルそのもの（prefabToLibraryXmlText）。
+xml::Element prefabElement(const PrefabDesc& d, bool withContents = false) {
     xml::Element e("prefab");
     e.set("name", d.name);
+    if (!d.file.empty() && !withContents) {
+        e.set("file", d.file);
+        return e;
+    }
     for (const auto& p : d.parts) e.append(partElement(p));
     return e;
 }
@@ -1387,7 +1371,7 @@ xml::Element toXml(const SceneDocument& doc) {
     // <asset>: メッシュ（glTF）とイベントアセット（ノードの中身）。どちらも
     // 「名前で参照される素材」なので MJCF と同じくこの節にまとめる。
     if (!doc.meshes.empty() || !doc.eventAssets.empty() || !doc.formulas.empty() ||
-        !doc.prefabs.empty()) {
+        !doc.prefabs.empty() || !doc.fonts.empty() || !doc.uiAssets.empty()) {
         xml::Element asset("asset");
         for (const auto& m : doc.meshes) {
             xml::Element e("mesh");
@@ -1399,8 +1383,10 @@ xml::Element toXml(const SceneDocument& doc) {
         for (const auto& a : doc.eventAssets) {
             asset.append(eventAssetElement(a));
         }
-        for (const auto& f : doc.formulas) asset.append(vehicle::formulaElement(f));
+        for (const auto& f : doc.formulas) asset.append(formula::formulaElement(f));
         for (const auto& pf : doc.prefabs) asset.append(prefabElement(pf));
+        for (const auto& f : doc.fonts) asset.append(ui::fontElement(f));
+        for (const auto& u : doc.uiAssets) asset.append(ui::uiAssetElement(u));
         root.append(std::move(asset));
     }
 
@@ -1437,6 +1423,8 @@ xml::Element toXml(const SceneDocument& doc) {
     }
     for (const auto& b : doc.bodies) world.append(bodyElement(b));
     for (const auto& c : doc.cables) world.append(cableElement(c, doc.bodies));
+    for (const auto& m : doc.emitters) world.append(emitterElement(m, doc.bodies));
+    for (const auto& c : doc.canvases) world.append(ui::canvasElement(c));
     root.append(std::move(world));
 
     if (!doc.joints.empty()) {
@@ -1457,6 +1445,39 @@ xml::Element toXml(const SceneDocument& doc) {
             ev.append(std::move(e));
         }
         root.append(std::move(ev));
+    }
+
+    // 制御器。持っているときだけ書く（無い文書を太らせない）。
+    if (!doc.controllers.empty() || !doc.params.empty() || !doc.charts.empty()) {
+        xml::Element ctl("control");
+        for (const auto& c : doc.controllers) {
+            xml::Element e("controller");
+            e.set("formula", c.formula);
+            e.setNumber("period", c.period);
+            if (!c.enabled) e.setBool("enabled", false);
+            ctl.append(std::move(e));
+        }
+        for (const auto& p : doc.params) {
+            xml::Element e("param");
+            e.set("name", p.name);
+            e.setNumber("value", p.value);
+            e.setNumber("min", p.min);
+            e.setNumber("max", p.max);
+            if (p.step > 0.0) e.setNumber("step", p.step);
+            if (!p.label.empty()) e.set("label", p.label);
+            if (!p.options.empty()) e.set("options", p.options);
+            ctl.append(std::move(e));
+        }
+        for (const auto& c : doc.charts) {
+            xml::Element e("chart");
+            e.set("title", c.title);
+            std::string sig;
+            for (const auto& x : c.signals) sig += (sig.empty() ? "" : " ") + x;
+            e.set("signals", sig);
+            e.setNumber("span", c.span);
+            ctl.append(std::move(e));
+        }
+        root.append(std::move(ctl));
     }
     return root;
 }
@@ -1482,7 +1503,7 @@ SceneDocument fromXml(const xml::Element& root,
     }
 
     warnUnknownChildren(
-        root, {"option", "visual", "asset", "worldbody", "equality", "events"},
+        root, {"option", "visual", "asset", "worldbody", "equality", "events", "control"},
         "<wizengine>", warn);
 
     if (const xml::Element* o = root.first("option")) {
@@ -1499,12 +1520,16 @@ SceneDocument fromXml(const xml::Element& root,
         // <event>（イベントアセット）はここでは名前だけ見て、中身は
         // worldbody を読んだあとで取り込む（ノードの対象番号をオブジェクト
         // 一覧と突き合わせて検証するため）。
-        warnUnknownChildren(*asset, {"mesh", "event", "formula", "prefab"}, "<asset>", warn);
+        warnUnknownChildren(*asset,
+                            {"mesh", "event", "formula", "prefab", ui::kFontTag,
+                             ui::kUiAssetTag},
+                            "<asset>", warn);
+        // UI のフォントと UI アセット（ui/UiXml.h。フォントを先に読む）。
+        ui::readUiAssets(*asset, doc.fonts, doc.uiAssets, warn);
         // 計算式アセット。名前はイベントと同じ規則（英数字と _ -）。
         for (const xml::Element* fe : asset->all("formula")) {
-            std::vector<std::string> fw;
-            vehicle::FormulaGraphDesc g = vehicle::formulaFromXml(*fe, &fw);
-            for (const auto& m : fw) warn("<asset>: " + m);
+            Warn fw(warn, "<asset>: ");  // 上限は文書全体で 1 つ
+            formula::FormulaGraphDesc g = formula::formulaFromXml(*fe, fw);
             const std::string name = sanitizeEventName(g.name);
             if (name.empty()) {
                 warn("<asset>: <formula> needs name=\"...\" (letters, digits, "
@@ -1521,6 +1546,11 @@ SceneDocument fromXml(const xml::Element& root,
                 continue;
             }
             g.name = name;
+            if (!g.file.empty() && !assetFileAllowed(g.file)) {
+                warn("<asset>: <formula name=\"" + name + "\"> file=\"" + g.file +
+                     "\" is not allowed (assets-relative paths only) - ignored");
+                continue;
+            }
             doc.formulas.push_back(std::move(g));
         }
         for (const xml::Element* me : asset->all("mesh")) {
@@ -1567,9 +1597,24 @@ SceneDocument fromXml(const xml::Element& root,
                 continue;
             }
             const std::string label = "<prefab name=\"" + name + "\">";
-            warnUnknownChildren(*pe, {"part"}, label.c_str(), warn);
             PrefabDesc d;
             d.name = name;
+            // 参照（グローバルのプレハブ）。中身はファイルから入れる（Scene）。
+            if (pe->has("file")) {
+                d.file = pe->attr("file");
+                if (!assetFileAllowed(d.file)) {
+                    warn("<asset>: " + label + " file=\"" + d.file +
+                         "\" is not allowed (assets-relative paths only) - ignored");
+                    continue;
+                }
+                if (!pe->children().empty()) {
+                    warn("<asset>: " + label + " file=\"" + d.file +
+                         "\" - the <part> written here are ignored (the file holds them)");
+                }
+                doc.prefabs.push_back(std::move(d));
+                continue;
+            }
+            warnUnknownChildren(*pe, {"part"}, label.c_str(), warn);
             for (const xml::Element* part : pe->all("part")) {
                 d.parts.push_back(partFromXml(*part, doc.meshes, label, warn));
             }
@@ -1580,7 +1625,7 @@ SceneDocument fromXml(const xml::Element& root,
     if (const xml::Element* world = root.first("worldbody")) {
         warnUnknownChildren(*world,
                             {"environment", "ground", "terrain", "light", "camera",
-                             "body", "cable"},
+                             "body", "cable", "emitter", ui::kCanvasTag},
                             "<worldbody>", warn);
 
         // 環境光と地面は worldbody 直下の単一要素。2 個目以降は警告して無視。
@@ -1667,6 +1712,12 @@ SceneDocument fromXml(const xml::Element& root,
         for (const xml::Element* c : world->all("cable")) {
             doc.cables.push_back(cableFromXml(*c, doc.bodies, warn));
         }
+        // パーティクルのエミッタ（見た目だけ）。付け先も body を全部読んだ後で解く。
+        for (const xml::Element* m : world->all("emitter")) {
+            doc.emitters.push_back(emitterFromXml(*m, doc.bodies, warn));
+        }
+        // UI の Canvas（ui/UiXml.h）。フォントと UI アセットの宣言は <asset> で読んだ。
+        ui::readCanvases(*world, doc.fonts, doc.uiAssets, doc.canvases, warn);
     }
 
     if (const xml::Element* eq = root.first("equality")) {
@@ -1686,31 +1737,6 @@ SceneDocument fromXml(const xml::Element& root,
                  "\">: <prefab name=\"" + b.prefab +
                  "\"> is not declared in <asset> - ignored");
             b.prefab.clear();
-        }
-    }
-
-    // ---- 車両のタイヤ式の参照（<asset> の <formula> か <vehicle> 内）------
-    for (const auto& b : doc.bodies) {
-        if (!b.hasVehicle) continue;
-        auto exists = [&](const std::string& name) {
-            bool found = false;
-            for (const auto& f : doc.formulas) found = found || f.name == name;
-            for (const auto& f : b.vehicle.formulas) found = found || f.name == name;
-            return found;
-        };
-        for (const auto& a : b.vehicle.axles) {
-            if (!a.tire.formula.empty() && !exists(a.tire.formula)) {
-                warn("<body name=\"" + (b.name.empty() ? std::string("(unnamed)") : b.name) +
-                     "\">: <tire formula=\"" + a.tire.formula +
-                     "\"> names a <formula> that does not exist - using the built-in "
-                     "tire model");
-            }
-            if (!a.tire.pressureFormula.empty() && !exists(a.tire.pressureFormula)) {
-                warn("<body name=\"" + (b.name.empty() ? std::string("(unnamed)") : b.name) +
-                     "\">: <tire pressureFormula=\"" + a.tire.pressureFormula +
-                     "\"> names a <formula> that does not exist - using the built-in "
-                     "isothermal pressure");
-            }
         }
     }
 
@@ -1827,6 +1853,77 @@ SceneDocument fromXml(const xml::Element& root,
                                        "\">");
     }
 
+    // 制御器。参照する計算式が <asset> に無いものは残す（警告だけ）: 式を
+    // 後から足せば動き出す。センサ名の検査は実行時（ControlComponent）。
+    if (const xml::Element* ctl = root.first("control")) {
+        warnUnknownChildren(*ctl, {"controller", "param", "chart"}, "<control>", warn);
+        for (const xml::Element* e : ctl->all("controller")) {
+            ControllerDesc c;
+            c.formula = e->attr("formula");
+            c.period = e->number("period", c.period);
+            c.enabled = e->boolean("enabled", c.enabled);
+            if (sanitizeEventName(c.formula) != c.formula || c.formula.empty()) {
+                warn("<controller formula=\"" + c.formula +
+                     "\">: the name must be letters, digits, _ and - - ignored");
+                continue;
+            }
+            if (c.period < 0.0) {
+                warn("<controller formula=\"" + c.formula +
+                     "\">: period must be >= 0 - using 0 (every step)");
+            }
+            bool found = false;
+            for (const auto& f : doc.formulas) found = found || f.name == c.formula;
+            if (!found) {
+                warn("<controller formula=\"" + c.formula +
+                     "\">: no <formula> with that name in <asset>");
+            }
+            doc.controllers.push_back(clampController(c));
+        }
+        for (const xml::Element* e : ctl->all("param")) {
+            ParamDesc p;
+            p.name = e->attr("name");
+            p.min = e->number("min", p.min);
+            p.max = e->number("max", p.max);
+            p.value = e->number("value", p.min);
+            p.step = e->number("step", 0.0);
+            p.label = e->attr("label");
+            p.options = e->attr("options");
+            if (sanitizeEventName(p.name) != p.name || p.name.empty()) {
+                warn("<param name=\"" + p.name +
+                     "\">: the name must be letters, digits, _ and - - ignored");
+                continue;
+            }
+            bool dup = false;
+            for (const auto& q : doc.params) dup = dup || q.name == p.name;
+            if (dup) {
+                warn("<param name=\"" + p.name + "\">: duplicate name - ignored");
+                continue;
+            }
+            const ParamDesc c = clampParam(p);
+            if (c.options.empty() && (c.value != p.value || c.min != p.min || c.max != p.max)) {
+                warn("<param name=\"" + p.name + "\">: value outside min..max (or min > max) "
+                     "- clamped");
+            }
+            doc.params.push_back(c);
+        }
+        for (const xml::Element* e : ctl->all("chart")) {
+            ChartDesc c;
+            c.title = e->attr("title");
+            c.span = e->number("span", c.span);
+            std::istringstream in(e->attr("signals"));
+            std::string tok;
+            while (in >> tok) {
+                if (sanitizeChartSignal(tok) != tok) {
+                    warn("<chart title=\"" + c.title + "\">: signal \"" + tok +
+                         "\" must be <formula>/<name> - ignored");
+                    continue;
+                }
+                c.signals.push_back(tok);
+            }
+            doc.charts.push_back(clampChart(c));
+        }
+    }
+
     return doc;
 }
 
@@ -1835,6 +1932,92 @@ bool parseXml(const std::string& text, SceneDocument& out, std::string& error,
     xml::Element root;
     if (!xml::parse(text, root, error)) return false;
     out = fromXml(root, warnings);
+    return true;
+}
+
+// ---- 計算式・プレハブのライブラリのファイル ------------------------------------
+std::string formulaToLibraryXmlText(const formula::FormulaGraphDesc& graph) {
+    formula::FormulaGraphDesc g = graph;
+    g.file.clear();  // ファイルの中は中身そのもの
+    return xml::write(formula::formulaElement(g));
+}
+
+bool parseFormulaLibraryXml(const std::string& text, formula::FormulaGraphDesc& out,
+                            std::string& error, std::vector<std::string>* warnings) {
+    xml::Element root;
+    if (!xml::parse(text, root, error)) return false;
+    Warn warn(warnings);
+    if (root.name() != "formula") {
+        warn("formula file: the root element is <" + root.name() +
+             ">, expected <formula> - reading it anyway");
+    }
+    xml::Element body = root;
+    body.erase("file");  // ファイルの中で自分を参照していても中身として読む
+    out = formula::formulaFromXml(body, warn);
+    out.name = sanitizeEventName(out.name);
+    out.file.clear();
+    return true;
+}
+
+std::string prefabToLibraryXmlText(const PrefabDesc& prefab,
+                                   const std::vector<MeshAssetDesc>& sceneMeshes) {
+    PrefabDesc d = prefab;
+    d.file.clear();
+    xml::Element e = prefabElement(d, true);
+    // メッシュの部品が使う宣言も入れる = どのシーンで読んでも同じ見た目
+    // （読む側は同じ名前の宣言が無ければ足す）。
+    std::vector<xml::Element> decls;
+    std::set<std::string> done;
+    for (const auto& p : d.parts) {
+        if (p.kind != PartKind::Mesh || p.mesh.empty() || done.count(p.mesh)) continue;
+        done.insert(p.mesh);
+        for (const auto& m : sceneMeshes) {
+            if (m.name != p.mesh) continue;
+            xml::Element me("mesh");
+            me.set("name", m.name);
+            me.set("file", m.file);
+            if (m.scale != 1.0) me.setNumber("scale", m.scale);
+            decls.push_back(std::move(me));
+        }
+    }
+    xml::Element out("prefab");
+    out.set("name", d.name);
+    for (auto& m : decls) out.append(std::move(m));
+    for (const auto& c : e.children()) out.append(c);
+    return xml::write(out);
+}
+
+bool parsePrefabLibraryXml(const std::string& text, PrefabDesc& out,
+                           std::vector<MeshAssetDesc>& meshes, std::string& error,
+                           std::vector<std::string>* warnings) {
+    xml::Element root;
+    if (!xml::parse(text, root, error)) return false;
+    Warn warn(warnings);
+    if (root.name() != "prefab") {
+        warn("prefab file: the root element is <" + root.name() +
+             ">, expected <prefab> - reading its <part> anyway");
+    }
+    warnUnknownChildren(root, {"mesh", "part"}, "<prefab>", warn);
+    meshes.clear();
+    for (const xml::Element* me : root.all("mesh")) {
+        MeshAssetDesc m;
+        m.name = me->attr("name");
+        m.file = me->attr("file");
+        m.scale = me->number("scale", 1.0);
+        if (m.scale <= 1e-9) m.scale = 1.0;
+        if (m.name.empty() || !assetFileAllowed(m.file)) {
+            warn("prefab file: <mesh name=\"" + m.name + "\" file=\"" + m.file +
+                 "\"> needs a name and an assets-relative file - ignored");
+            continue;
+        }
+        meshes.push_back(std::move(m));
+    }
+    out = PrefabDesc{};
+    out.name = sanitizeEventName(root.attr("name"));
+    const std::string label = "<prefab name=\"" + out.name + "\">";
+    for (const xml::Element* part : root.all("part")) {
+        out.parts.push_back(partFromXml(*part, meshes, label, warn));
+    }
     return true;
 }
 

@@ -3,7 +3,6 @@
 #include <functional>
 #include <memory>
 
-#include "vehicle/Formula.h"
 #include "vehicle/VehicleMath.h"
 #include "vehicle/VehicleTypes.h"
 
@@ -57,13 +56,6 @@ public:
                     const Vec3& localAttach);
 
     void reset();
-
-    // 「スリップ → 力」をノード式で置き換える（nullptr = 組み込み）。入出力の
-    // 約束は TireFormula.h。式が失敗（NaN・実行時エラー）したティックは
-    // 組み込みで代用し、回数を formulaFailures() に数える。
-    void setTireFormula(std::unique_ptr<FormulaInstance> formula);
-    const FormulaInstance* tireFormula() const { return formula_.get(); }
-    int formulaFailures() const { return formulaFailures_; }
 
     // ステップの先頭: 接地検出とサス力。steerRad は舵角（+ = 左）、
     // massShare はこの車輪が受け持つ車体質量（力の上限に使う）。
@@ -136,9 +128,6 @@ private:
     double slipRatio_ = 0.0, slipAngle_ = 0.0;
     double omega_ = 0.0;
     double spinAngle_ = 0.0;
-
-    std::unique_ptr<FormulaInstance> formula_;
-    int formulaFailures_ = 0;
 };
 
 }  // namespace vehicle

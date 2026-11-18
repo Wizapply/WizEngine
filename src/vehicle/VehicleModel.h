@@ -4,7 +4,6 @@
 #include <string>
 #include <vector>
 
-#include "vehicle/LuaFormula.h"
 #include "vehicle/Powertrain.h"
 #include "vehicle/SoftTire.h"
 #include "vehicle/VehicleMath.h"
@@ -60,18 +59,10 @@ struct WheelLocalPose {
 
 class VehicleModel {
 public:
-    // lua があればノード式（<tire formula>）を LuaJIT で回す。無ければ C++ の
-    // 参照インタプリタ。どちらも同じ命令列なので結果は同じ（速さが違う）。
-    // library はシーンの計算式アセット（名前で引く。desc.formulas より優先）。
-    // 生成時にコンパイルするので、生成後は参照しない。
-    explicit VehicleModel(const VehicleDesc& desc, LuaRuntime* lua = nullptr,
-                          const std::vector<FormulaGraphDesc>* library = nullptr);
+    explicit VehicleModel(const VehicleDesc& desc);
 
-    // 生成時の診断（式のコンパイル結果・警告・どのバックエンドか）。
-    // 呼び出し側（VehicleComponent）がログへ出す。
+    // 生成時の診断。呼び出し側（VehicleComponent）がログへ出す。
     const std::vector<std::string>& diagnostics() const { return diagnostics_; }
-    // 式が失敗して組み込みで代用したティックの総数（全輪）。
-    int formulaFailures() const;
 
     void reset();
     void setInput(const VehicleInput& input) { target_ = input; }
