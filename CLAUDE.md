@@ -1038,7 +1038,7 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 | `log` | `level`（debug / info / warn / error。環境変数 `WIZENGINE_LOG` が優先） |
 | `scene` | `startupScene`・`startMode`・`maxCameras`・`editorCamera`・`idleWhenUnwatched` |
 | `physics` | `backend`・`multicoreForSoftBodies`・`multicoreMinBodies`・`terrainForcesCore` |
-| `ai` | `llm`（url / model / apiKey / temperature / timeoutSec / repairs / maxSceneKB）・`meshy`（url / apiKey / refine / artStyle / aiModel / targetPolycount / pollSec / timeoutSec / maxDownloadMB）・`maxMeshes`・`caFile`・`generatedDir` |
+| `ai` | `llm`（url / model / apiKey / temperature / timeoutSec / repairs / maxSceneKB）・`meshy`（url / apiKey / refine / artStyle / aiModel / targetPolycount / pollSec / timeoutSec / maxDownloadMB）・`vision`（rounds / width / detail / quality）・`maxMeshes`・`caFile`・`generatedDir` |
 
 - **優先順位は「既定値 < config.json < exe 引数」**。既定値の定義はコードに
   1 か所ずつ（`AppConfig.h` の構造体・`scene/SceneSystemConfig.h`・
@@ -1073,12 +1073,16 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 モード × エディタカメラのページ専用、判定はサーバー）。状態は `/scene` の `ai`。
 
 ```
-依頼文 ─► LLM ─► XML（壊れていれば・文書の警告が出れば LLM に直させる = llmRepairs 回）
+依頼文 ─► （編集 / 追加なら）今のシーンの XML + 要約（SceneDigest）+ 選択中の物・@名前
+       ─► LLM ─► XML（壊れていれば・文書の警告が出れば LLM に直させる = llmRepairs 回）
           <mesh name generate="英語の説明" height="m">  ← 生成の依頼（WizEngine 内部の印）
        ─► Meshy: 作成を全部先に投げて並行に待つ ─► assets/generated/*.glb
           倍率 = 頼んだ高さ ÷ モデルの高さ（GlbBounds: POSITION の min/max × ノード変換）
        ─► SceneLayout: 動く物の重なり・床へのめり込みを真上へ載せ直す
        ─► toXmlText ─► EditorState の Op "xml"（置き換え）/ "xml.append"（appendDocument）
+       ─► 見た目の見直し（ai.vision.rounds 回）: 適用後のシーンを低解像度で 4 枚撮り
+          （エディタカメラ・正面 +Z・横 +X・上）、JPEG の data URL で LLM へ
+          ─► NO_CHANGES なら終わり / 直した全文なら Op "xml" で置き換えてもう一度
 ```
 
 - **`src/autogen/` は Chrono も Filament も知らない**（文書層 + HTTP だけ）。
@@ -1152,6 +1156,52 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   確認用 PNG の右は関節を range の 70% まで動かした姿勢（開く向き = range の符号の確認）。
   文書は `fromXml` で警告 0 件まで確認済み、Chrono での動きは実機待ち。**まだエンジンの
   生成経路（`<mesh generate>`）にはつながっていない**。
+- **今のシーンの要約と名指し**（`src/autogen/SceneDigest.{h,cpp}`、編集 / 追加 /
+  見直しの往復）: XML だけでは「左の赤い箱」「テーブルの上のコップ」「これ」がどれかを
+  LLM が座標から推理しきれないので、エンジンが文書から決まった計算で出せることを
+  英文にして XML の後ろに添える（`describeScene`）: 物ごとの形・実寸（回転込みの外接箱）・
+  色の名前（`colorName`、リニア → 表示値の HSV）・中心と底 / 上面の高さ・固定 / 質量、
+  何の上に載っているか（底が相手の上面に 3 cm 以内 + 水平に重なる）・めり込み・宙に
+  浮いている（固定でもジョイントでもなく何にも載っていない = 落ちる）、**エディタ
+  カメラから見て左 / 中央 / 右・上下・距離**（ユーザーは画面の左右で話すので）と
+  「画面の右 ≒ +X」のような軸の対応、ジョイントの相手、ライト。**選択中の物**:
+  ブラウザの 🤖 の「選択中の ○○ を「これ」として渡す」（`useSelection`、既定 on）で、
+  AutoGenComponent がエディタカメラの選択を文書の番号（削除済みを詰めた番号）に直して
+  `GenRequest::focus` に入れる → 要約に「SELECTED BY THE USER」と「これ・それ = この物」。
+  **@名前**: 依頼文の `@table` のような名指し（body・ジョイント・ライト・ケーブル・cam<N>）。
+  照合は「シーンにある名前のうち最も長く一致するもの」（`resolveMentions`。日本語の名前の
+  後ろに助詞が続いても切れる、`@box10` を `box1` と取り違えない、英数字の直後の @ =
+  メールアドレスは名指しではない）。**無い名前はサーバーが送らずに断る**（ステータスに
+  名前、「新規」での @ も断る）。名前の無い物は送る前の写しに `body<番号>` を付ける
+  （`nameUnnamedBodies`。編集モードでは返ってきた文書に残る = 適用後は名前付き）。
+  ブラウザ（`web/autogen.js`）は `@` で候補を出す補完（↑↓・Enter / Tab・Esc は一覧だけ
+  閉じる）、欄の下に ✓ / ✗ の確認、オブジェクトの右クリック「🤖 AI の依頼で名指し」
+  （@名前 を入れて 🤖 を開く。「新規」なら「編集」に切り替える）。名前の一覧と照合は
+  サーバーと同じ規則を JS に写してある（`aiObjectNames` / `aiResolveMentions`）。
+  開始のステータスに「選択中 cup、@table」と受け取った指し示しを出す。
+- **見た目の見直し（スクリーンショット）**: 文書だけでは LLM に「大きさ・浮き・
+  色・カメラの構図が依頼どおりか」が見えないので、適用の後に画面を撮って送る。
+  設定は config.json の `ai.vision`（`rounds` 既定 1・0 で切る、`width` 既定 512 =
+  16:9 で 512×288、`detail` = OpenAI の image_url.detail で既定 low = 1 枚 85 トークン
+  ほど、`quality` = JPEG の品質）。流れ: SceneGenerator のワーカーが `SnapshotFn`
+  （AutoGenComponent が渡す）を呼んで待つ → **RENDER スレッドの
+  `AutoGenComponent::onRenderUnlocked`** が、依頼から 1.5 s 経ち EditorState に積み
+  残しの Op が無くなったフレームで `Renderer::captureSnapshot` を 4 回呼ぶ（視点は
+  `planShots`: 文書のエディタカメラと、全 body の外接球に合わせた正面・横・上。
+  画像の向きを英文で添える）→ 撮ったときの文書（`toXmlText(document())`）と一緒に
+  返す → `buildReviewPrompt`（ScenePrompt.cpp）+ 画像で LLM へ。返答が `NO_CHANGES`
+  なら終わり、`<wizengine>` の全文なら通常と同じ検査・修正・配置の後始末を通して
+  Op "xml" で置き換え、`rounds` まで繰り返す。撮影に失敗・20 s で撮れない
+  （視聴者がいなくて描画が止まっている等）・画像を受けないモデルで断られた、は
+  見直しを省くだけ（シーンは適用済みのまま）。**撮影は専用のビュー**
+  （`Renderer::snapshot_`、`src/render/RendererSnapshot.cpp`）: views_ に入れない =
+  カメラのページの番号をずらさず映像にも映らない、エディタ専用レイヤ（ギズモ）と
+  UI は映さない、描画設定はカメラのビューと同じ（TAA だけ切る）。1 枚ごとに
+  flushAndWait で待つ同期の読み戻し（毎フレームではなく生成の後に数枚なので）。
+  撮った絵は `assets/generated/last_shots/shot1..4.jpg` に残る（毎回上書き。
+  last_chat.txt と並べて「LLM が何を見て直したか」を確かめる）。JPEG は
+  stb_image_write（`src/autogen/ImageEncode.cpp`、Filament 同梱の stb と衝突しない
+  ように STB_IMAGE_WRITE_STATIC）。
 - **LLM との往復は `assets/generated/last_chat.txt` に残る**（system / user /
   assistant の全文と、エンジンの検査で見つかった問題。返答のたびに上書き、
   キーは入らない）。「なぜこのシーンになったか」はまずこれを見る。
@@ -1170,12 +1220,17 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 - **できないこと / 効率の悪いこと**（実装しない判断）: 生成中の LLM 通信の
   中断（キャンセルは今の通信が終わってから効く。Meshy 側で走り始めたタスクは
   止まらず課金される）、生成モデルの凹形状の当たり判定（凸包のまま。器の中に
-  物は入らない）、レンダリング結果を見て直す視覚フィードバック（画像を LLM に
-  渡す往復は 1 回ごとに重い）、物理的に妥当な配置の保証（外接箱での後始末まで）。
+  物は入らない）、物理的に妥当な配置の保証（外接箱での後始末まで）。
 - **確認**: 文書層とパイプラインはモックの OpenAI / Meshy サーバーで結合テスト
   済み（修正の往復・生成・リダイレクト付きダウンロード・倍率・重なり・
   キャッシュ・追加モードの改名・Meshy 無しの代役・スレッド経由の適用）。
-  エンジン側（AutoGenComponent / main / SceneEdit の `xml.append`）は Chrono /
+  要約と名指しは単体テスト（載っている・浮いている・めり込み・選択・名指しの印、
+  @ の照合 = 日本語名 + 助詞・box1 / box10・メール・無い名前）と、モックで編集モードの
+  user メッセージに要約・選択・名指しが入ることを確認済み（ブラウザの照合は Node で
+  サーバーと同じ結果）。見た目の見直しも同じモックで確認済み（画像 4 枚が data URL + detail で届く・
+  直した全文の適用 → 次の往復で NO_CHANGES・1 回目で NO_CHANGES）。撮影
+  （RendererSnapshot.cpp / AutoGenComponent の onRenderUnlocked）は Filament 1.74 の
+  ヘッダで構文検査まで = 実機で絵が撮れるかは未確認。エンジン側（AutoGenComponent / main / SceneEdit の `xml.append`）は Chrono /
   Filament の無い環境で書いたので実機でのビルド確認待ち。本物の OpenAI /
   Meshy への接続も未確認。
 

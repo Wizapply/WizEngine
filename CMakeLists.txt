@@ -297,6 +297,7 @@ endif()
 # stb_image: decodes PNG/JPEG/TGA/BMP for the ground texture.
 # stb_perlin: テレインの高さのノイズ（src/terrain/TerrainNoise.cpp）。
 # stb_truetype / stb_rect_pack: UI の字の置き場（src/ui/FontAtlas.cpp）。
+# stb_image_write: AI の見直しのスクリーンショット（src/autogen/ImageEncode.cpp）。
 if(EXISTS "${THIRD_PARTIES_DIR}/stb/stb_image.h")
     list(APPEND WIZ_DEP_INCLUDE_DIRS "${THIRD_PARTIES_DIR}/stb")
     message(STATUS "WizEngine: stb_image -> submodule")
@@ -313,6 +314,10 @@ else()
     wiz_download_header(
         "https://raw.githubusercontent.com/nothings/stb/master/stb_rect_pack.h"
         "${DEPS_INC}/stb_rect_pack.h")
+    # stb_image_write: AI の見直しで送るスクリーンショットの JPEG（src/autogen/ImageEncode.cpp）。
+    wiz_download_header(
+        "https://raw.githubusercontent.com/nothings/stb/master/stb_image_write.h"
+        "${DEPS_INC}/stb_image_write.h")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -388,7 +393,8 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererTerrainSurface.cpp
     src/render/RendererTextures.cpp
     src/render/RendererUiMeshes.cpp
-    src/render/RendererUiViews.cpp)
+    src/render/RendererUiViews.cpp
+    src/render/RendererSnapshot.cpp)
 set(WIZ_STREAMING_SOURCES
     src/streaming/HttpServer.cpp
     src/streaming/VideoStreamer.cpp
@@ -464,6 +470,8 @@ set(WIZ_AUTOGEN_SOURCES
     src/autogen/AiConfig.cpp
     src/autogen/GlbBounds.cpp
     src/autogen/HttpClient.cpp
+    src/autogen/ImageEncode.cpp
+    src/autogen/SceneDigest.cpp
     src/autogen/ScenePrompt.cpp
     src/autogen/SceneGenerator.cpp
     src/autogen/SceneLayout.cpp)

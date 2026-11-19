@@ -1775,8 +1775,16 @@
           <label id="aiMeshesLbl"><input type="checkbox" id="aiMeshes" checked>
             3D モデルを生成する（Meshy 互換。1 個あたり数分・有料）</label>
         </div>
-        <textarea id="aiPrompt" spellcheck="false" rows="5"
-                  placeholder="例: 木のテーブルの上にリンゴとマグカップ。テーブルの横に椅子を 2 脚。夕方の光で。"></textarea>
+        <div class="aiPromptWrap">
+          <textarea id="aiPrompt" spellcheck="false" rows="5"
+                    placeholder="例: 木のテーブルの上にリンゴとマグカップ。テーブルの横に椅子を 2 脚。夕方の光で。&#10;編集・追加では @ でシーンの物を名指しできます（例: @table の上に花瓶を置いて）。"></textarea>
+          <div id="aiAc" class="aiAc" hidden></div>
+        </div>
+        <div class="aiRow" id="aiPointRow">
+          <label id="aiSelLbl" hidden><input type="checkbox" id="aiUseSel" checked>
+            選択中の <b id="aiSelName"></b> を「これ」として渡す</label>
+          <span id="aiMentions" class="aiSub"></span>
+        </div>
         <div class="aiRow">
           <button id="aiGo" onclick="aiGenerate()">▶ 生成</button>
           <button id="aiStop" onclick="aiCancel()" disabled>■ キャンセル</button>

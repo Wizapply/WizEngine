@@ -296,6 +296,11 @@ bool parseAppConfig(const std::string& text, AppConfig& cfg,
     r.integer("ai.meshy.maxDownloadMB", downloadMB, 1, 2048);
     ai.meshyMaxDownloadBytes = std::size_t(downloadMB) * 1024 * 1024;
 
+    r.integer("ai.vision.rounds", ai.visionRounds, 0, 3);
+    r.integer("ai.vision.width", ai.visionWidth, 128, 1024);
+    r.str("ai.vision.detail", ai.visionDetail, {"low", "high", "auto"});
+    r.integer("ai.vision.quality", ai.visionQuality, 10, 95);
+
     r.integer("ai.maxMeshes", ai.maxMeshes, 0, 16);
     r.str("ai.caFile", ai.caFile);
     r.str("ai.generatedDir", ai.generatedDir);

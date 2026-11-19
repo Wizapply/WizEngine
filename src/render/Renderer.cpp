@@ -357,6 +357,7 @@ Renderer::~Renderer() {
     if (cylinderIb_) engine_->destroy(cylinderIb_);
     // UI（Canvas・テクスチャ・材質・UI のビュー）。ビューより先に壊す。
     destroyUi();
+    destroySnapshot();  // スクリーンショット用のビュー（作っていれば）
     for (auto& slot : views_) {
         engine_->destroyCameraComponent(slot.cameraEntity);
         engine_->destroy(slot.cameraEntity);

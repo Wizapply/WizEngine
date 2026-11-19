@@ -497,6 +497,18 @@ public:
     // shutdown, so no buffer is freed while the GPU still owns it.
     void finishPendingReadbacks();
 
+    // ---- スクリーンショット（RendererSnapshot.cpp）-----------------------------
+    // eye から target を見た絵を width × height で 1 枚撮って rgba（上の行から、
+    // 1 行 width * 4 バイト）へ返す。AI の見直し用（低解像度の数枚を、生成の
+    // 後に 1 回だけ撮る）。カメラのビューとは別の専用ビューで描くので、どのページの
+    // 映像にも映らない・ビュー番号もずらさない。ギズモ（エディタ専用レイヤ）と
+    // UI は映らない。描画設定（後処理・露出）はカメラのビューと同じ（TAA だけは
+    // 1 枚きりなので切る）。**撮り終わるまで待つ**（GPU を flushAndWait）ので
+    // 毎フレームは呼ばないこと。RENDER スレッド。失敗（描けない・大きさが不正）は false。
+    bool captureSnapshot(const filament::math::double3& eye,
+                         const filament::math::double3& target, int width, int height,
+                         std::vector<uint8_t>& rgba);
+
     // そのビューの今の出力の大きさ（画素。リサイズの要求は適用されてから変わる）。
     // 範囲外の番号は {0, 0}。UI の Canvas の大きさ（縦横比）を決めるのに使う。
     filament::math::int2 viewSize(std::size_t viewIndex) const;
@@ -633,6 +645,10 @@ private:
         utils::Entity uiCameraEntity;
     };
     std::vector<ViewSlot> views_;
+    // スクリーンショット用の専用ビュー（最初の captureSnapshot で作る。captures は
+    // 使わない）。views_ には入れない = カメラのビューの番号をずらさない。
+    ViewSlot snapshot_;
+    void destroySnapshot();
 
     // ---- UI（RendererUiViews.cpp / RendererUiMeshes.cpp）----------------------
     // テクスチャ 1 枚と、それを使う材質インスタンス（画像用と字用。テクスチャを

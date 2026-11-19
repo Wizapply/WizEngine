@@ -1,7 +1,11 @@
 #pragma once
 
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <memory>
+#include <mutex>
+#include <string>
 
 #include <nlohmann/json.hpp>
 
@@ -22,6 +26,13 @@
 //
 // 状態（進み・ログ・設定済みか）は /scene の "ai" で返す（main が
 // statusJson() を差し込む）。API キーはブラウザへ出さない。
+//
+// **見た目の見直し**（config.json の ai.vision）: 適用の後、ワーカースレッドが
+// 撮影を頼んで待ち（SnapshotFn）、RENDER スレッドの onRenderUnlocked が
+// Renderer::captureSnapshot で数枚撮って渡す（Filament を触るのはそのスレッド
+// だけ）。撮るのは Op が物理スレッドで適用され、レンダラブルとモデルが
+// 揃うまで少し待ってから（kSettle）。視点はエディタカメラと、シーンの物を
+// 囲む正面・横・上の 3 方向。
 class AutoGenComponent : public SceneComponent {
 public:
     explicit AutoGenComponent(wizengine::autogen::AiConfig cfg);
@@ -29,10 +40,28 @@ public:
     bool onCommand(Scene& scene, std::size_t camIndex,
                    const nlohmann::json& msg) override;
 
+    // RENDER スレッド: 撮影の依頼が来ていれば撮って渡す。
+    void onRenderUnlocked(Scene& scene) override;
+
     nlohmann::json statusJson() const { return generator_.statusJson(); }
     // 終了時に main が Scene より先に呼ぶ（以後、結果を Scene へ渡さない）。
-    void shutdown() { generator_.shutdown(); }
+    void shutdown();
+
+    // 撮影の受け渡し（ワーカー ⇄ RENDER）。ワーカーのラムダが shared_ptr で
+    // 持つので、係が先に壊れても待っている側は closed で抜けられる。
+    struct SnapshotQueue {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool requested = false;   // ワーカーが頼んだ（RENDER が撮ると false）
+        bool done = false;        // 撮り終えた（result / error が入っている）
+        bool closed = false;      // 終了（以後は撮らない・待たない）
+        std::chrono::steady_clock::time_point notBefore{};
+        int width = 512, height = 288;
+        wizengine::autogen::SnapshotSet result;
+        std::string error;
+    };
 
 private:
     wizengine::autogen::SceneGenerator generator_;
+    std::shared_ptr<SnapshotQueue> snap_ = std::make_shared<SnapshotQueue>();
 };

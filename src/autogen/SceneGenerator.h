@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -13,7 +14,9 @@
 
 // AI によるシーンの自動構築（パイプライン + ワーカースレッド）。
 //
-//   依頼文 ──► LLM（OpenAI 互換）── シーン文書の XML
+//   依頼文 + （編集 / 追加なら）今のシーンの XML と要約（SceneDigest: 大きさ・色・
+//            何の上に載っているか・ユーザーの視点での位置・選択中の物・@名前）
+//          ──► LLM（OpenAI 互換）── シーン文書の XML
 //                │  壊れた XML・文書の警告は LLM に直させる（cfg.llmRepairs 回）
 //                ▼
 //   <mesh generate="..." height="..."> ──► Meshy 互換 Text to 3D ── .glb
@@ -24,6 +27,10 @@
 //   倍率（頼んだ高さ ÷ モデルの高さ）── 重なりの後始末（SceneLayout）
 //                ▼
 //   正規化した XML ──► apply（エンジン側: EditorState の Op で物理スレッドへ）
+//                ▼  （cfg.visionRounds 回。snapshot を渡したときだけ）
+//   見た目の見直し: 適用後のシーンを低解像度で撮る（エディタカメラ・正面・横・上。
+//                撮るのは RENDER スレッド）──► 画像付きで LLM へ「依頼どおりか」
+//                ──► NO_CHANGES なら終わり、直した全文なら上と同じ道で置き換え
 //
 // **Chrono も Filament も知らない**（文書層と HTTP だけ）。エンジンとの接続は
 // components/AutoGenComponent。ネットワークの待ちは分単位なので、どの
@@ -36,6 +43,17 @@ struct GenRequest {
     std::string prompt;
     bool allowMeshes = true;   // ブラウザのチェック（Meshy を使ってよいか）
     std::string currentXml;    // Edit / Append のとき今のシーン
+    // ユーザーの指し示し（Edit / Append のとき、要約 SceneDigest に入る）。
+    // focus = エディタで選んでいる物の名前（currentXml の中の名前）、
+    // editorCamera = 文書の cameras の何番がユーザーの見ている視点か。
+    // 依頼文の @名前 はここではなく依頼文から拾う（resolveMentions）。
+    std::vector<std::string> focus;
+    int editorCamera = 0;
+    // 見た目の見直し（2 回目以降の往復）。空でなければ「適用済みのシーンの画像
+    // （data URL）を添えて、直す所があれば直した全文を返させる」往復になる
+    // （mode は Edit、currentXml は適用後のシーン全体）。reviewViews は画像の順の説明。
+    std::vector<std::string> reviewImages;
+    std::vector<std::string> reviewViews;
 };
 
 struct GenOutcome {
@@ -48,7 +66,21 @@ struct GenOutcome {
     int meshesCached = 0;
     int meshesFailed = 0;
     int warnings = 0;
+    bool unchanged = false;     // 見直しで「直す所なし」と答えた（xml は空）
 };
+
+// 適用したシーンの撮影（見直し用）。SceneGenerator のワーカースレッドから呼ばれ、
+// 撮り終わるまで待つ（RENDER スレッドが撮る。AutoGenComponent が用意する）。
+struct Snapshot {
+    std::string view;          // どこから見た絵か（英語。LLM へそのまま渡す）
+    int width = 0, height = 0;
+    std::vector<uint8_t> rgba;  // 上の行から
+};
+struct SnapshotSet {
+    std::vector<Snapshot> shots;
+    std::string sceneXml;       // 撮ったときのシーン全体（見直しの元にする）
+};
+using SnapshotFn = std::function<bool(SnapshotSet& out, std::string& error)>;
 
 // パイプライン本体（同期）。テストはこれを直接呼ぶ。
 struct GenHooks {
@@ -74,8 +106,10 @@ public:
     SceneGenerator(const SceneGenerator&) = delete;
     SceneGenerator& operator=(const SceneGenerator&) = delete;
 
-    // 走っていれば false（whyNot に日本語の理由）。
-    bool start(GenRequest req, ApplyFn apply, std::string& whyNot);
+    // 走っていれば false（whyNot に日本語の理由）。snapshot を渡すと、適用の後に
+    // 見た目の見直し（cfg.visionRounds 回）をする。空なら見直さない。
+    bool start(GenRequest req, ApplyFn apply, std::string& whyNot,
+               SnapshotFn snapshot = {});
     void cancel();
     // 以後 apply を呼ばない。走っている通信は待たない（スレッドは切り離し
     // てあり、終わり次第自分で消える）- 終了時に LLM の応答を最大数分

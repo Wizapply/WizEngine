@@ -1079,6 +1079,20 @@
     background: #101216; color: #dfe2e7; font: 13px/1.5 system-ui, sans-serif;
   }
   #aiPrompt:focus { border-color: #4a70ad; }
+  /* @ の補完（依頼文の欄のすぐ下に出す一覧。カーソル位置には追従しない）。 */
+  .aiPromptWrap { position: relative; }
+  .aiAc {
+    position: absolute; left: 8px; top: 100%; z-index: 5; margin-top: 2px;
+    min-width: 220px; max-width: 70%; max-height: 220px; overflow: auto;
+    background: #1b1e24; border: 1px solid #3a3d45; border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.45); font-size: 12px;
+  }
+  .aiAc div { padding: 4px 10px; cursor: pointer; white-space: nowrap; display: flex; gap: 8px; }
+  .aiAc div.on, .aiAc div:hover { background: #2f5ea8; color: #fff; }
+  .aiAc .aiAcKind { color: #8a909b; font-size: 11px; margin-left: auto; }
+  .aiAc div.on .aiAcKind, .aiAc div:hover .aiAcKind { color: #dfe6f3; }
+  #aiMentions .ok { color: #7fc48a; }
+  #aiMentions .bad { color: #e0a060; }
   .aiRow button {
     padding: 5px 14px; font-size: 12px; border-radius: 4px;
     background: #2f5ea8; color: #fff; border: 1px solid #3d6fc0;

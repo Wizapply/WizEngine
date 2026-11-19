@@ -1373,6 +1373,9 @@
       { label: o.index === myCameraSelection() ? '選択を解除' : '選択',
         onClick: () => selectObject(index) },
       { label: '⧉ 複製', onClick: () => send('edit.duplicate', { index: index }) },
+      // AI の依頼文にこの物を @名前 で入れて 🤖 を開く（autogen.js）。
+      typeof aiMentionObject === 'function' &&
+        { label: '🤖 AI の依頼で名指し', onClick: () => aiMentionObject(index) },
       { sep: true },
       { label: '🗑 削除', hint: 'Delete', danger: true,
         onClick: () => send('edit.remove', { index: index }) },

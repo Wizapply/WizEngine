@@ -100,7 +100,20 @@ ChatResult chatComplete(const AiConfig& cfg, const std::vector<ChatMessage>& mes
     body["stream"] = false;
     if (cfg.llmTemperature >= 0.0) body["temperature"] = cfg.llmTemperature;
     for (const auto& m : messages) {
-        body["messages"].push_back({{"role", m.role}, {"content", m.content}});
+        if (m.images.empty()) {
+            body["messages"].push_back({{"role", m.role}, {"content", m.content}});
+            continue;
+        }
+        // 画像付き: [{type:text}, {type:image_url, image_url:{url, detail}}...]
+        // （OpenAI の形。Ollama など互換のサーバーも同じ形を受ける）。
+        nlohmann::json parts = nlohmann::json::array();
+        parts.push_back({{"type", "text"}, {"text", m.content}});
+        for (const auto& url : m.images) {
+            nlohmann::json img = {{"url", url}};
+            if (!cfg.visionDetail.empty()) img["detail"] = cfg.visionDetail;
+            parts.push_back({{"type", "image_url"}, {"image_url", img}});
+        }
+        body["messages"].push_back({{"role", m.role}, {"content", parts}});
     }
     const auto res = net::request("POST", net::joinUrl(cfg.llmUrl, "/chat/completions"),
                                   bearer(cfg.llmKey), body.dump(), "application/json",

@@ -18,6 +18,8 @@
 #include "autogen/AiClients.h"
 #include "autogen/GlbBounds.h"
 #include "autogen/HttpClient.h"
+#include "autogen/ImageEncode.h"
+#include "autogen/SceneDigest.h"
 #include "autogen/SceneLayout.h"
 #include "core/Log.h"
 #include "core/SafeName.h"
@@ -223,10 +225,34 @@ void saveChatTranscript(const AiConfig& cfg, const std::vector<ChatMessage>& mes
         f << "\n======== " << role << " (" << text.size() << " chars) ========\n" << text
           << "\n";
     };
-    for (const auto& m : messages) write(m.role, m.content);
+    for (const auto& m : messages) {
+        write(m.role, m.content);
+        // 画像そのもの（base64）は書かない（巨大になる）。中身は last_shots/ に残る。
+        if (!m.images.empty()) {
+            f << "(+ " << m.images.size() << " images, saved in "
+              << cfg.generatedDir << "/last_shots/)\n";
+        }
+    }
     write("assistant", lastReply);
     f << "\n======== engine check: " << problems.size() << " problem(s) ========\n";
     for (const auto& p : problems) f << "- " << p << "\n";
+}
+
+// 見直しに使った画像を <generatedDir>/last_shots/ に残す（last_chat.txt と同じく
+// 「LLM が何を見て直したか」を後から確かめるため。毎回上書き）。
+void saveShots(const AiConfig& cfg, const std::vector<std::vector<uint8_t>>& jpegs) {
+    const fs::path dir = fs::path(joinPath(cfg.assetRoot, cfg.generatedDir + "/last_shots"));
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        if (e.path().extension() == ".jpg") fs::remove(e.path(), ec);
+    }
+    for (std::size_t i = 0; i < jpegs.size(); ++i) {
+        std::ofstream f(dir / ("shot" + std::to_string(i + 1) + ".jpg"),
+                        std::ios::binary | std::ios::trunc);
+        if (f) f.write(reinterpret_cast<const char*>(jpegs[i].data()),
+                       std::streamsize(jpegs[i].size()));
+    }
 }
 
 std::string cacheKey(const AiConfig& cfg, const std::string& prompt) {
@@ -597,9 +623,30 @@ GenOutcome generateScene(const AiConfig& cfg, const GenRequest& req, const GenHo
     LOGI("ai", "prompt inventory: %zu hdr, %zu textures, %zu models",
          po.assets.hdrs.size(), po.assets.textures.size(), po.assets.models.size());
 
+    // 今のシーンの要約（編集 / 追加 / 見直し）。XML だけでは「左の赤い箱」
+    // 「これ」がどれかを LLM が推理しきれないので、エンジンが計算して添える。
+    std::string digest;
+    if (req.mode != GenMode::New) {
+        DigestOptions dopt;
+        dopt.editorCamera = req.editorCamera;
+        dopt.focus = req.focus;
+        dopt.mentioned = resolveMentions(req.prompt, mentionableNames(current)).found;
+        digest = describeScene(current, dopt);
+        LOGI("ai", "scene summary: %zu bytes, %zu selected, %zu mentioned", digest.size(),
+             dopt.focus.size(), dopt.mentioned.size());
+    }
+
+    const bool review = !req.reviewImages.empty();
     std::vector<ChatMessage> messages;
     messages.push_back({"system", buildSystemPrompt(po)});
-    messages.push_back({"user", buildUserPrompt(req.mode, req.prompt, req.currentXml)});
+    if (review) {
+        ChatMessage m{"user",
+                      buildReviewPrompt(req.prompt, req.currentXml, req.reviewViews, digest)};
+        m.images = req.reviewImages;
+        messages.push_back(std::move(m));
+    } else {
+        messages.push_back({"user", buildUserPrompt(req.mode, req.prompt, req.currentXml, digest)});
+    }
 
     // ---- 1. LLM（壊れていれば直させる）----------------------------------
     xml::Element root;
@@ -628,6 +675,14 @@ GenOutcome generateScene(const AiConfig& cfg, const GenRequest& req, const GenHo
              res.content.size(), secs, res.promptTokens, res.completionTokens);
         note(hooks, "LLM の応答: " + std::to_string(res.content.size()) + " 文字 / " +
                         fmt(secs, "%.1f") + " 秒");
+
+        // 見直しの 1 回目で「直す所なし」。
+        if (review && attempt == 0 && replySaysNoChanges(res.content)) {
+            saveChatTranscript(cfg, messages, res.content, {});
+            out.ok = true;
+            out.unchanged = true;
+            return out;
+        }
 
         std::string xmlText, err;
         lastProblems.clear();
@@ -825,6 +880,7 @@ struct SceneGenerator::Shared {
     bool lastOk = false;
     std::string lastMessage;
     std::string mode;
+    bool reviewing = false;  // 見た目の見直しの往復の最中（段を "review" に寄せる）
 
     void addLog(const std::string& line) {
         std::lock_guard<std::mutex> lk(m);
@@ -854,7 +910,8 @@ void SceneGenerator::cancel() {
     ++st_->seq;
 }
 
-bool SceneGenerator::start(GenRequest req, ApplyFn apply, std::string& whyNot) {
+bool SceneGenerator::start(GenRequest req, ApplyFn apply, std::string& whyNot,
+                           SnapshotFn snapshot) {
     {
         std::lock_guard<std::mutex> lk(st_->m);
         if (!st_->alive) {
@@ -881,12 +938,21 @@ bool SceneGenerator::start(GenRequest req, ApplyFn apply, std::string& whyNot) {
     // SceneGenerator が消えても、状態はスレッドが終わるまで生きている。
     std::shared_ptr<Shared> st = st_;
     AiConfig cfg = cfg_;
-    std::thread([st, cfg, req = std::move(req), apply = std::move(apply)]() {
+    std::thread([st, cfg, req = std::move(req), apply = std::move(apply),
+                 snapshot = std::move(snapshot)]() {
         GenHooks hooks;
         hooks.cancel = &st->cancel;
         hooks.stage = [st](const std::string& s, double p) {
             std::lock_guard<std::mutex> lk(st->m);
-            if (st->stage != "cancelling") st->stage = s;
+            if (st->stage == "cancelling") return;
+            // 見直しの往復の間は段の名前を "review" に寄せ、進みは 95〜100% の中で動かす
+            // （LLM の段の 0〜30% へ戻って見えないように）。
+            if (st->reviewing) {
+                st->stage = "review";
+                st->progress = std::max(st->progress, 0.95 + 0.05 * p);
+                return;
+            }
+            st->stage = s;
             // 段ごとの区間を全体の進みへ（LLM 0〜30%、モデル 30〜95%、後始末 95〜100%）。
             if (s == "llm") st->progress = 0.3 * p;
             else if (s == "meshes") st->progress = 0.3 + 0.65 * p;
@@ -894,24 +960,107 @@ bool SceneGenerator::start(GenRequest req, ApplyFn apply, std::string& whyNot) {
         };
         hooks.note = [st](const std::string& line) { st->addLog(line); };
 
-        GenOutcome res;
-        try {
-            res = generateScene(cfg, req, hooks);
-        } catch (const std::exception& e) {
-            res.ok = false;
-            res.error = std::string("内部エラー: ") + e.what();
-            LOGE("ai", "scene generation threw: %s", e.what());
+        auto run = [&](const GenRequest& r) {
+            GenOutcome res;
+            try {
+                res = generateScene(cfg, r, hooks);
+            } catch (const std::exception& e) {
+                res.ok = false;
+                res.error = std::string("内部エラー: ") + e.what();
+                LOGE("ai", "scene generation threw: %s", e.what());
+            }
+            return res;
+        };
+        // 適用（ロックの中 = shutdown と入れ違わない）。適用できたら true。
+        auto applyLocked = [&](const GenOutcome& res) {
+            std::lock_guard<std::mutex> lk(st->m);
+            if (!st->alive || !res.ok || st->cancel.load()) return false;
+            apply(res);
+            return true;
+        };
+
+        GenOutcome res = run(req);
+        const bool applied = applyLocked(res);
+        int revisions = 0;
+
+        // ---- 見た目の見直し -------------------------------------------------
+        // 適用したシーンを撮って、画像付きで LLM に見せる。失敗しても（画像を受けない
+        // モデル・撮れない）適用済みのシーンはそのまま残す = 見直しは「おまけ」。
+        for (int round = 0; applied && snapshot && round < cfg.visionRounds; ++round) {
+            if (st->cancel.load()) break;
+            {
+                std::lock_guard<std::mutex> lk(st->m);
+                st->reviewing = true;
+                st->stage = "review";
+            }
+            hooks.note("見た目を確認しています（画面を撮影: " + std::to_string(round + 1) + " 回目）...");
+            SnapshotSet set;
+            std::string err;
+            if (!snapshot(set, err) || set.shots.empty()) {
+                hooks.note("撮影できなかったので見た目の確認を省きます（" + err + "）");
+                LOGW("ai", "vision review skipped: %s", err.c_str());
+                break;
+            }
+            GenRequest r2;
+            r2.mode = GenMode::Edit;
+            r2.prompt = req.prompt;
+            r2.allowMeshes = req.allowMeshes;
+            r2.currentXml = set.sceneXml;
+            r2.focus = req.focus;  // 要約の「選択中の物」も同じ物を指し続ける
+            r2.editorCamera = req.editorCamera;
+            std::vector<std::vector<uint8_t>> jpegs;
+            std::size_t bytes = 0;
+            for (const auto& shot : set.shots) {
+                auto jpg = encodeJpeg(shot.rgba.data(), shot.width, shot.height,
+                                      cfg.visionQuality);
+                if (jpg.empty()) continue;
+                bytes += jpg.size();
+                r2.reviewImages.push_back(jpegDataUrl(jpg));
+                r2.reviewViews.push_back(shot.view);
+                jpegs.push_back(std::move(jpg));
+            }
+            saveShots(cfg, jpegs);
+            if (r2.reviewImages.empty()) {
+                hooks.note("画像を作れなかったので見た目の確認を省きます");
+                break;
+            }
+            LOGI("ai", "vision review %d: %zu images, %zu KB", round + 1,
+                 r2.reviewImages.size(), bytes / 1024);
+            hooks.note("画像 " + std::to_string(r2.reviewImages.size()) + " 枚（" +
+                       std::to_string(bytes / 1024) + " KB）を LLM に見せています...");
+            GenOutcome r = run(r2);
+            if (!r.ok) {
+                // 画像を受けないモデルはここで 400 になる。シーンは適用済みのまま。
+                hooks.note("見た目の確認はできませんでした（" + r.error + "）");
+                LOGW("ai", "vision review failed: %s", r.error.c_str());
+                break;
+            }
+            if (r.unchanged) {
+                hooks.note("見た目の確認: 直す所はありません");
+                break;
+            }
+            if (!applyLocked(r)) break;
+            ++revisions;
+            res.bodies = r.bodies;
+            res.meshesGenerated += r.meshesGenerated;
+            res.meshesCached += r.meshesCached;
+            res.meshesFailed = r.meshesFailed;
+            res.warnings = r.warnings;
+            hooks.note("見た目の確認で直したシーンを適用しました（" +
+                       std::to_string(round + 1) + " 回目）");
         }
 
         std::lock_guard<std::mutex> lk(st->m);
-        if (st->alive && res.ok && !st->cancel.load()) {
-            apply(res);  // ロックの中 = shutdown と入れ違わない
+        st->reviewing = false;
+        if (applied && st->alive) {
             st->lastOk = true;
             st->lastMessage = "AI シーンを適用しました（物体 " + std::to_string(res.bodies) +
                               "、生成 " + std::to_string(res.meshesGenerated) +
                               "、キャッシュ " + std::to_string(res.meshesCached) +
                               "、代役 " + std::to_string(res.meshesFailed) +
                               (res.warnings ? "、警告 " + std::to_string(res.warnings) : "") +
+                              (revisions ? "、見た目で修正 " + std::to_string(revisions) + " 回"
+                                         : "") +
                               "）";
         } else {
             st->lastOk = false;

@@ -90,6 +90,11 @@ HOW THE ENGINE USES YOUR DOCUMENT
 - The browser shows the scene through camera cam0 (the editor camera).
 - The engine reads your document strictly. If something is wrong (unknown element, missing body name,
   bad attribute value), it sends you the list of problems and asks for a corrected document.
+- When you edit or extend an existing scene you also get a SCENE SUMMARY computed by the engine: sizes,
+  colours, what rests on what, what floats or intersects, and where each body appears in the user's view.
+  Use it to identify what the user is talking about ("the red box on the left", "the cup on the table").
+  "@name" in a request names the element with exactly that name; the summary also tells you which body
+  the user has SELECTED ("this", "it", "これ" mean that body). Keep existing names unchanged.
 
 WORLD CONVENTIONS
 - Units are meters, kilograms, seconds, newtons. Y is up, gravity is -Y. The floor is the plane y = 0.
@@ -227,17 +232,18 @@ OUTPUT
 }
 
 std::string buildUserPrompt(GenMode mode, const std::string& request,
-                            const std::string& currentXml) {
+                            const std::string& currentXml, const std::string& digest) {
+    const std::string summary = digest.empty() ? std::string() : "\n\n" + digest;
     switch (mode) {
         case GenMode::Edit:
-            return "Here is the CURRENT scene:\n\n" + currentXml +
+            return "Here is the CURRENT scene:\n\n" + currentXml + summary +
                    "\n\nModify it according to this request and return the COMPLETE updated "
                    "document. Keep everything the request does not mention exactly as it is "
                    "(including <terrain>, <vehicle>, <event>, <formula>, <prefab> and any "
                    "attributes you do not understand).\n\nREQUEST:\n" +
                    request;
         case GenMode::Append:
-            return "Here is the CURRENT scene, for reference only:\n\n" + currentXml +
+            return "Here is the CURRENT scene, for reference only:\n\n" + currentXml + summary +
                    "\n\nWrite a document that contains ONLY THE NEW things to add to it (new "
                    "<mesh> assets, new <body> elements and joints between new bodies). Place "
                    "them in free space so they do not intersect the existing bodies. Use new, "
@@ -247,6 +253,39 @@ std::string buildUserPrompt(GenMode mode, const std::string& request,
         default:
             return "Create a new scene for this request:\n\n" + request;
     }
+}
+
+const char* const kNoChanges = "NO_CHANGES";
+
+std::string buildReviewPrompt(const std::string& request, const std::string& currentXml,
+                              const std::vector<std::string>& views, const std::string& digest) {
+    std::string s =
+        "VISUAL CHECK. Your document has been applied to the engine. The attached images are "
+        "LOW-RESOLUTION renders of the scene as it is now (editor mode: nothing has moved yet, "
+        "physics has not started). Images, in order:\n";
+    for (std::size_t i = 0; i < views.size(); ++i) {
+        s += "  " + std::to_string(i + 1) + ". " + views[i] + "\n";
+    }
+    s += "\nThe original request was:\n" + request +
+         "\n\nThe complete current scene document is:\n\n" + currentXml +
+         (digest.empty() ? std::string() : "\n\n" + digest) +
+         "\n\nCompare the images with the request. Look for: missing or extra objects, wrong "
+         "sizes or proportions, objects floating in the air or sunk into the floor or into each "
+         "other, wrong colours or materials, objects outside the editor camera view, and a scene "
+         "that is too dark or too bright. Small details do not matter at this resolution.\n"
+         "- If the scene already matches the request well, reply with exactly " +
+         std::string(kNoChanges) +
+         " and nothing else.\n"
+         "- Otherwise reply with the COMPLETE corrected document (same rules as before). Change "
+         "only what is needed and keep every other element and attribute exactly as it is "
+         "(including <terrain>, <vehicle>, <event>, <formula>, <prefab> and attributes you do "
+         "not understand).";
+    return s;
+}
+
+bool replySaysNoChanges(const std::string& reply) {
+    return reply.find("<wizengine") == std::string::npos &&
+           reply.find(kNoChanges) != std::string::npos;
 }
 
 bool extractSceneXml(const std::string& reply, std::string& xml, std::string& error) {
