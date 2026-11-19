@@ -121,12 +121,68 @@
                  Math.round(ai.progress * 100) + '%')
               : (ai.message || '');
     renderAiPointing();
+    renderAiHistory(ai);
     if (ai.seq !== aiLogSeq) {
       aiLogSeq = ai.seq;
       const log = document.getElementById('aiLog');
       log.textContent = (ai.log || []).join('\n');
       log.scrollTop = log.scrollHeight;
     }
+  }
+
+  // ---- これまでの流れ ----------------------------------------------------------
+  // サーバー（src/autogen/SceneHistory）がシーンごとに記録する「AI の依頼と結果」と
+  // 「その間にユーザーが手で変えた所」。次の依頼で直近 historyLimit 件が LLM に渡る。
+  // 中身が変わったときだけ組み直す（開いている <details> と選択を保つ）。
+  let aiHistKey = '';
+  function renderAiHistory(ai) {
+    const list = ai.history || [];
+    const limit = ai.historyLimit || 0;
+    const key = JSON.stringify([list, limit]);
+    if (key === aiHistKey) return;
+    aiHistKey = key;
+    document.getElementById('aiHistHead').textContent =
+      'これまでの流れ（' + list.length + ' 件' +
+      (limit > 0 ? '。LLM に渡すのは直近 ' + Math.min(limit, list.length) + ' 件）'
+                 : '。LLM には渡さない設定）');
+    document.getElementById('aiHistClear').disabled = list.length === 0;
+    const ol = document.getElementById('aiHistList');
+    ol.innerHTML = '';
+    list.forEach((e, i) => {
+      const li = document.createElement('li');
+      if (limit <= 0 || i < list.length - limit) li.className = 'old';
+      const who = document.createElement('span');
+      who.className = 'who' + (e.source === 'user' ? ' user' : '');
+      who.textContent = e.source === 'user'
+        ? '✋ 手で変更'
+        : '🤖 ' + ({ new: '新規', edit: '編集', append: '追加' }[e.mode] || e.mode || 'AI') +
+          '「' + (e.request || '') + '」';
+      const when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = (e.time || '') + (e.source === 'user' ? '' : ' ' + (e.outcome || ''));
+      li.append(who, when);
+      if (e.changes && e.changes.length) {
+        const ul = document.createElement('ul');
+        e.changes.slice(0, 12).forEach((c) => {
+          const it = document.createElement('li');
+          it.textContent = c;
+          ul.appendChild(it);
+        });
+        if (e.changes.length > 12) {
+          const it = document.createElement('li');
+          it.textContent = '... ほか ' + (e.changes.length - 12) + ' 件';
+          ul.appendChild(it);
+        }
+        li.appendChild(ul);
+      }
+      ol.appendChild(li);
+    });
+    ol.scrollTop = ol.scrollHeight;
+  }
+  function aiHistoryClear(ev) {
+    if (ev) { ev.preventDefault(); ev.stopPropagation(); }  // <summary> の開閉にしない
+    if (!confirm('このシーンの AI の履歴（これまでの流れ）を消します。よろしいですか？')) return;
+    send('ai.history.clear');
   }
 
   // ---- 名指し（@名前）と選択中の物 --------------------------------------------

@@ -1,12 +1,16 @@
 #include "components/AutoGenComponent.h"
 
 #include <algorithm>
+#include <atomic>
+#include <filesystem>
+#include <thread>
 #include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "autogen/SceneDigest.h"
+#include "autogen/SceneHistory.h"
 #include "core/Log.h"
 #include "document/SceneDocument.h"
 #include "render/Renderer.h"
@@ -96,7 +100,10 @@ std::vector<ShotPlan> planShots(const wizengine::editor::SceneDocument& doc,
 
 }  // namespace
 
-AutoGenComponent::AutoGenComponent(ag::AiConfig cfg) : generator_(std::move(cfg)) {
+AutoGenComponent::AutoGenComponent(ag::AiConfig cfg)
+    : generator_(cfg),
+      history_(std::make_shared<ag::SceneHistoryStore>(
+          (std::filesystem::path(cfg.assetRoot) / cfg.generatedDir / "history").string())) {
     const auto& c = generator_.config();
     if (c.llmConfigured()) {
         LOGI("ai", "scene generation: LLM %s (%s), text-to-3d %s",
@@ -110,7 +117,7 @@ AutoGenComponent::AutoGenComponent(ag::AiConfig cfg) : generator_(std::move(cfg)
 bool AutoGenComponent::onCommand(Scene& scene, std::size_t camIndex,
                                  const nlohmann::json& msg) {
     const std::string cmd = msg.value("cmd", "");
-    if (cmd != "ai.generate" && cmd != "ai.cancel") return false;
+    if (cmd != "ai.generate" && cmd != "ai.cancel" && cmd != "ai.history.clear") return false;
     EditorState& state = scene.editor();
     // シーンを書き換える操作 = エディタモード × エディタカメラのページだけ。
     if (camIndex != scene.editorCamera() || !state.isEditor()) {
@@ -120,6 +127,11 @@ bool AutoGenComponent::onCommand(Scene& scene, std::size_t camIndex,
 
     if (cmd == "ai.cancel") {
         generator_.cancel();
+        return true;
+    }
+    if (cmd == "ai.history.clear") {
+        history_->clear(state.sceneFile());
+        state.setStatus("AI: このシーンの履歴を消しました");
         return true;
     }
 
@@ -163,6 +175,8 @@ bool AutoGenComponent::onCommand(Scene& scene, std::size_t camIndex,
     // 返ってきた文書にそのまま残る = 適用後は名前付きになる）。
     namespace ed = wizengine::editor;
     ed::SceneDocument doc = scene.document();
+    // 名前を付ける前の今のシーン（ユーザーの変更の記録と、その基準に使う）。
+    const ed::SceneDocument raw = doc;
     if (req.mode != ag::GenMode::New) ag::nameUnnamedBodies(doc);
 
     // 依頼文の @名前 を確かめる（無い名前のまま LLM へ送ると、似た名前の別の物を
@@ -181,12 +195,39 @@ bool AutoGenComponent::onCommand(Scene& scene, std::size_t camIndex,
                         "（オブジェクト・ジョイント・ライトの名前を @ の後に書いてください）");
         return true;
     }
+    req.editorCamera = int(editorCam);
+    req.currentCameras = doc.cameras;  // 「新規」で LLM が書かなかったスロットを埋める
     if (req.mode != ag::GenMode::New) {
         req.currentXml = ed::toXmlText(doc);
-        req.editorCamera = int(editorCam);
         if (selectedDocIndex >= 0 && std::size_t(selectedDocIndex) < doc.bodies.size()) {
             req.focus.push_back(doc.bodies[std::size_t(selectedDocIndex)].name);
         }
+    }
+
+    // ---- これまでの流れ（SceneHistory.h）--------------------------------------
+    // 前回 AI が適用し終えたシーン（基準）から今までに変わった所 = ユーザーが手で
+    // 変えた所を 1 件として記録し、基準を今へ進める（同じ変更を 2 回書かない）。
+    const std::string sceneName = state.sceneFile();
+    {
+        const std::string baseXml = history_->baseline(sceneName);
+        ed::SceneDocument base;
+        std::string err;
+        if (!baseXml.empty() && ed::parseXml(baseXml, base, err)) {
+            const std::vector<std::string> changes = ag::diffScenes(base, raw);
+            if (!changes.empty()) {
+                ag::HistoryEntry e;
+                e.time = ag::historyTimestamp();
+                e.source = "user";
+                e.changes = changes;
+                history_->addWithBaseline(sceneName, std::move(e), ed::toXmlText(raw));
+                LOGI("ai", "history: recorded %zu hand edits for scene '%s'", changes.size(),
+                     sceneName.c_str());
+            }
+        }
+    }
+    if (generator_.config().historyEntries > 0) {
+        req.history = ag::formatHistory(
+            history_->entries(sceneName, std::size_t(generator_.config().historyEntries)));
     }
 
     // 見直しの撮影（ai.vision.rounds が 0 なら渡さない = 見直さない）。ワーカー
@@ -227,20 +268,79 @@ bool AutoGenComponent::onCommand(Scene& scene, std::size_t camIndex,
         };
     }
     const ag::GenMode mode = req.mode;  // req は start へ渡す（move）ので先に写す
+
+    // 終わったときの履歴の記録。AI が変えた所 = 依頼の直前のシーン（LLM に見せた
+    // 写し）と、適用し終えた直後のシーン（物理スレッドが EditorState の aiBaseline に
+    // 置く）の差。積んだ Op の数だけ基準の番号が進むのを待ってから読む（見直しで
+    // 直したぶんも含めた最後の姿）。
+    auto pushed = std::make_shared<std::atomic<int>>(0);
+    const std::uint64_t seq0 = state.aiBaselineSeq();
+    auto hist = history_;
+    auto q = snap_;
+    const std::string prompt = req.prompt;
+    auto pre = std::make_shared<const ed::SceneDocument>(doc);
+    ag::SceneGenerator::DoneFn done = [hist, q, &state, sceneName, mode, prompt, pre, pushed,
+                                       seq0](const ag::GenOutcome& res, bool applied,
+                                             int revisions) {
+        ag::HistoryEntry e;
+        e.time = ag::historyTimestamp();
+        e.source = "ai";
+        e.mode = ag::genModeName(mode);
+        e.request = prompt;
+        if (!applied) {
+            e.outcome = res.ok ? "cancelled - nothing was applied" : "failed - nothing was applied";
+            hist->add(sceneName, std::move(e));
+            return;
+        }
+        // 適用の完了を待つ（物理スレッドが Op を drain して適用するまで。ふつうは
+        // 数十 ms）。終了処理が始まったら EditorState に触らず抜ける。
+        std::string after;
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        for (;;) {
+            {
+                std::lock_guard<std::mutex> lk(q->mutex);
+                if (q->closed) return;
+                if (state.aiBaselineSeq() >= seq0 + std::uint64_t(pushed->load())) {
+                    after = state.aiBaseline();
+                    break;
+                }
+            }
+            if (std::chrono::steady_clock::now() > until) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        e.outcome = "applied";
+        if (revisions > 0) {
+            e.outcome += "; revised " + std::to_string(revisions) +
+                         "x after looking at screenshots";
+        }
+        ed::SceneDocument post;
+        std::string err;
+        if (after.empty() || !ed::parseXml(after, post, err)) {
+            e.outcome += " (the resulting changes are unknown)";
+            hist->add(sceneName, std::move(e));
+            return;
+        }
+        e.changes = mode == ag::GenMode::New ? ag::describeNewScene(post)
+                                             : ag::diffScenes(*pre, post);
+        hist->addWithBaseline(sceneName, std::move(e), std::move(after));
+    };
+
     std::string whyNot;
     const bool started = generator_.start(
         std::move(req),
         // ワーカースレッドから。物理スレッドへ Op を積むだけ（EditorState の
         // キューはスレッド安全）。適用の結果（警告の件数）は物理スレッドが
-        // ステータスに出す。
-        [&state, editorCam](const ag::GenOutcome& res) {
+        // ステータスに出す。"ai" の印 = 適用し終えたシーンを AI の基準として
+        // 覚えさせる（SceneEdit の xml / xml.append）。
+        [&state, editorCam, pushed](const ag::GenOutcome& res) {
             EditorState::Op op;
             op.kind = res.mode == ag::GenMode::Append ? "xml.append" : "xml";
-            op.args = {{"text", res.xml}};
+            op.args = {{"text", res.xml}, {"ai", true}};
             op.camera = editorCam;
+            pushed->fetch_add(1);
             state.push(std::move(op));
         },
-        whyNot, std::move(snapshot));
+        whyNot, std::move(snapshot), std::move(done));
     if (started) {
         std::string what = "AI: シーンを生成しています...";
         if (mode != ag::GenMode::New) {
@@ -305,6 +405,16 @@ void AutoGenComponent::onRenderUnlocked(Scene& scene) {
     snap_->error = error;
     snap_->result = std::move(set);
     snap_->cv.notify_all();
+}
+
+nlohmann::json AutoGenComponent::statusJson(const std::string& sceneFile) const {
+    nlohmann::json j = generator_.statusJson();
+    // このシーンの履歴（🤖 の画面の「これまでの流れ」）。LLM に渡すのは直近 history 件。
+    const int n = generator_.config().historyEntries;
+    j["historyLimit"] = n;
+    j["history"] = nlohmann::json::array();
+    for (const auto& e : history_->entries(sceneFile, 30)) j["history"].push_back(ag::toJson(e));
+    return j;
 }
 
 void AutoGenComponent::shutdown() {

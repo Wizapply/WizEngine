@@ -300,6 +300,7 @@ bool parseAppConfig(const std::string& text, AppConfig& cfg,
     r.integer("ai.vision.width", ai.visionWidth, 128, 1024);
     r.str("ai.vision.detail", ai.visionDetail, {"low", "high", "auto"});
     r.integer("ai.vision.quality", ai.visionQuality, 10, 95);
+    r.integer("ai.history", ai.historyEntries, 0, 50);
 
     r.integer("ai.maxMeshes", ai.maxMeshes, 0, 16);
     r.str("ai.caFile", ai.caFile);

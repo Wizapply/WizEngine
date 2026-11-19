@@ -922,6 +922,19 @@ std::string EditorState::sceneFile() const {
     return sceneFile_;
 }
 
+void EditorState::setAiBaseline(std::string xml) {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        aiBaseline_ = std::move(xml);
+    }
+    aiBaselineSeq_.fetch_add(1);  // 中身を書いてから進める（番号が新しいのに中身が古い、を起こさない）
+}
+
+std::string EditorState::aiBaseline() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return aiBaseline_;
+}
+
 std::vector<std::string> EditorState::sceneFiles() const {
     std::lock_guard<std::mutex> lk(mutex_);
     return files_;

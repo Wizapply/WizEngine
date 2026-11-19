@@ -11,6 +11,7 @@
 
 #include "autogen/AiConfig.h"
 #include "autogen/ScenePrompt.h"
+#include "document/EditorTypes.h"
 
 // AI によるシーンの自動構築（パイプライン + ワーカースレッド）。
 //
@@ -49,6 +50,11 @@ struct GenRequest {
     // 依頼文の @名前 はここではなく依頼文から拾う（resolveMentions）。
     std::vector<std::string> focus;
     int editorCamera = 0;
+    // 「新規」でカメラを並べ直すとき、LLM が書かなかったスロットを埋める今の
+    // カメラ（編集モードは currentXml のカメラを使う）。
+    std::vector<editor::CameraPose> currentCameras;
+    // これまでの流れ（SceneHistory.h の formatHistory。空なら付けない）。
+    std::string history;
     // 見た目の見直し（2 回目以降の往復）。空でなければ「適用済みのシーンの画像
     // （data URL）を添えて、直す所があれば直した全文を返させる」往復になる
     // （mode は Edit、currentXml は適用後のシーン全体）。reviewViews は画像の順の説明。
@@ -99,6 +105,9 @@ std::string hashHex(const std::string& text);
 class SceneGenerator {
 public:
     using ApplyFn = std::function<void(const GenOutcome&)>;
+    // 1 件の生成が終わったとき（適用できたか・見た目の見直しで直した回数）。
+    // ワーカースレッドから、busy のうちに呼ばれる。終了処理の後は呼ばれない。
+    using DoneFn = std::function<void(const GenOutcome&, bool applied, int revisions)>;
 
     explicit SceneGenerator(AiConfig cfg);
     ~SceneGenerator();  // shutdown() と同じ
@@ -109,7 +118,7 @@ public:
     // 走っていれば false（whyNot に日本語の理由）。snapshot を渡すと、適用の後に
     // 見た目の見直し（cfg.visionRounds 回）をする。空なら見直さない。
     bool start(GenRequest req, ApplyFn apply, std::string& whyNot,
-               SnapshotFn snapshot = {});
+               SnapshotFn snapshot = {}, DoneFn done = {});
     void cancel();
     // 以後 apply を呼ばない。走っている通信は待たない（スレッドは切り離し
     // てあり、終わり次第自分で消える）- 終了時に LLM の応答を最大数分

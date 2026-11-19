@@ -613,7 +613,7 @@ int run(int argc, char** argv) {
                     j["busy"].push_back(e->http->hasViewer());
                 }
                 // AI のシーン自動構築の状態（🤖 AI モーダルが描く）。
-                j["ai"] = aiComp->statusJson();
+                j["ai"] = aiComp->statusJson(scene.editor().sceneFile());
                 // 制御器の実行状態（コンパイルの成否・警告・評価回数）。
                 j["control"] = controlComp->statusJson();
                 return j.dump();

@@ -86,6 +86,8 @@
       "detail": "low",           // low / high / auto（OpenAI の画像の細かさ。low は 1 枚あたり少ないトークン）
       "quality": 70              // JPEG の品質
     },
+    "history": 10,               // LLM に渡す「これまでの流れ」の件数（AI の依頼と、その間にユーザーが
+                                 // 手で変えた所。シーンごとに assets/generated/history/ に保存。0 = 渡さない）
     "maxMeshes": 4,              // 1 回の生成で新しく作るモデルの上限（0〜16）
     "caFile": "",                // HTTPS の検証に使う CA 束（社内プロキシ等）。空 = OS の既定
     "generatedDir": "generated"  // 生成したモデルの置き場（assets/ の中）

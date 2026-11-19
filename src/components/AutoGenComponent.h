@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "autogen/SceneGenerator.h"
+#include "autogen/SceneHistory.h"
 #include "scene/SceneComponent.h"
 
 // ブラウザの「🤖 AI」モーダルを受ける係（src/autogen/ とエンジンの継ぎ目）。
@@ -43,7 +44,8 @@ public:
     // RENDER スレッド: 撮影の依頼が来ていれば撮って渡す。
     void onRenderUnlocked(Scene& scene) override;
 
-    nlohmann::json statusJson() const { return generator_.statusJson(); }
+    // /scene の "ai"。sceneFile = 今のシーン名（その履歴を足す）。
+    nlohmann::json statusJson(const std::string& sceneFile) const;
     // 終了時に main が Scene より先に呼ぶ（以後、結果を Scene へ渡さない）。
     void shutdown();
 
@@ -63,5 +65,8 @@ public:
 
 private:
     wizengine::autogen::SceneGenerator generator_;
+    // シーンごとの「これまでの流れ」（assets/generated/history/）。ワーカーの
+    // 終わりの知らせ（DoneFn）も持つので shared_ptr。
+    std::shared_ptr<wizengine::autogen::SceneHistoryStore> history_;
     std::shared_ptr<SnapshotQueue> snap_ = std::make_shared<SnapshotQueue>();
 };

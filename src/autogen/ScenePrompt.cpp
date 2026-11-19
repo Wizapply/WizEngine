@@ -87,7 +87,8 @@ HOW THE ENGINE USES YOUR DOCUMENT
   automatically). Light and mass-realistic objects are fun to push around; make heavy furniture fixed.
 - One body = exactly ONE <geom> (one box, one sphere or one model). Build complex objects from several bodies:
   make them all fixed, or connect moving parts with joints (weld = glued together).
-- The browser shows the scene through camera cam0 (the editor camera).
+- The user looks at the scene through the EDITOR CAMERA, written as <camera name="@CAM@">. Other cameras
+  (cam0, cam1, ...) are extra viewpoints shown on other browser pages.
 - The engine reads your document strictly. If something is wrong (unknown element, missing body name,
   bad attribute value), it sends you the list of problems and asks for a corrected document.
 - When you edit or extend an existing scene you also get a SCENE SUMMARY computed by the engine: sizes,
@@ -107,7 +108,15 @@ WORLD CONVENTIONS
 
 EXAMPLE DOCUMENT (MuJoCo MJCF-like; this exact text is valid)
 )";
-    s += systemPromptExample();
+    // 見本のカメラもエディタカメラの名前で見せる（cam0 のままだと N ≠ 0 のとき
+    // LLM がそれを真似て別のスロットに書く）。
+    {
+        std::string ex = systemPromptExample();
+        const std::string from = "name=\"cam0\"";
+        const auto at = ex.find(from);
+        if (at != std::string::npos) ex.replace(at, from.size(), "name=\"@CAM@\"");
+        s += ex;
+    }
     s += R"(
 
 ELEMENT NOTES (omitted attributes take engine defaults, so write only what matters)
@@ -124,10 +133,11 @@ ELEMENT NOTES (omitted attributes take engine defaults, so write only what matte
   Intensity: sun 50000-110000 (lux), point/spot 20000-150000 (lumen); falloff = reach in m (point/spot);
   spot also takes inner and cutoff (cone angles in degrees, inner < cutoff < 89).
   Use 1-3 lights; exactly one sun with castshadow="true" is usually best.
-- <camera name="cam0" target azimuth elevation radius>: an orbit camera around target. azimuth = degrees
+- <camera name="camN" target azimuth elevation radius>: an orbit camera around target. azimuth = degrees
   around Y, elevation = degrees above the horizon (15-35 looks good), radius = distance in m (about 1.5x the
-  scene width so everything is visible). Write only cam0 unless the request asks for more viewpoints
-  (then cam1, cam2, ... in order).
+  scene width so everything is visible). The number in the name is the camera slot. @CAM@ is the editor
+  camera (what the user sees); always write it. Write other slots only if the request asks for more
+  viewpoints, and keep existing cameras unchanged in edit mode.
 - <ground size visual rgba roughness texture tile>: size = half-width of the physical floor, visual =
   half-width of the visible floor (<= size). rgba tints the floor texture. Write at most one <ground>.
 - <option gravity="x y z">: change only for space / moon scenes (moon: "0 -1.62 0").
@@ -223,17 +233,26 @@ CHECK BEFORE ANSWERING
 2. Every joint's body1/body2 names a body you wrote (or "world"); no joint has both range and motor.
 3. Every geom type="mesh" refers to a <mesh name> declared in <asset>.
 4. Nothing intersects the floor or another body at the start (check y = half height, stacked heights).
-5. cam0 sees the whole scene; there is one shadow-casting sun.
+5. @CAM@ sees the whole scene; there is one shadow-casting sun.
 
 OUTPUT
 - Reply with the XML document only. Start with <wizengine and end with </wizengine>.
 )";
+    // エディタカメラの名前を差し込む（config.json の scene.editorCamera）。
+    const std::string cam = "cam" + std::to_string(opt.editorCamera < 0 ? 0 : opt.editorCamera);
+    for (std::size_t at = s.find("@CAM@"); at != std::string::npos; at = s.find("@CAM@", at)) {
+        s.replace(at, 5, cam);
+        at += cam.size();
+    }
     return s;
 }
 
 std::string buildUserPrompt(GenMode mode, const std::string& request,
-                            const std::string& currentXml, const std::string& digest) {
-    const std::string summary = digest.empty() ? std::string() : "\n\n" + digest;
+                            const std::string& currentXml, const std::string& digest,
+                            const std::string& history) {
+    // 履歴は依頼の前に置く（今のシーンと要約の後 = 「流れ → 今 → 依頼」の順に読める）。
+    const std::string summary = (digest.empty() ? std::string() : "\n\n" + digest) +
+                                (history.empty() ? std::string() : "\n\n" + history);
     switch (mode) {
         case GenMode::Edit:
             return "Here is the CURRENT scene:\n\n" + currentXml + summary +
@@ -251,7 +270,11 @@ std::string buildUserPrompt(GenMode mode, const std::string& request,
                    "mode.\n\nREQUEST:\n" +
                    request;
         default:
-            return "Create a new scene for this request:\n\n" + request;
+            return (history.empty() ? std::string()
+                                    : history +
+                                          "\n(The new scene REPLACES the current one; use the "
+                                          "history only to understand the request.)\n\n") +
+                   "Create a new scene for this request:\n\n" + request;
     }
 }
 

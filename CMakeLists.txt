@@ -472,6 +472,7 @@ set(WIZ_AUTOGEN_SOURCES
     src/autogen/HttpClient.cpp
     src/autogen/ImageEncode.cpp
     src/autogen/SceneDigest.cpp
+    src/autogen/SceneHistory.cpp
     src/autogen/ScenePrompt.cpp
     src/autogen/SceneGenerator.cpp
     src/autogen/SceneLayout.cpp)

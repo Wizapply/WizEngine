@@ -336,6 +336,14 @@ public:
     void setSceneFile(std::string name);
     std::string sceneFile() const;
 
+    // AI が適用し終えた直後のシーン（XML）。AI の履歴（AutoGenComponent）が
+    // 「AI が変えた所」と「その後ユーザーが手で変えた所」を出す基準。書くのは
+    // 物理スレッド（AI の Op = "ai" の印付きの xml / xml.append を適用した直後）、
+    // 読むのはワーカー / INPUT スレッド。番号は書くたびに 1 進む。
+    void setAiBaseline(std::string xml);
+    std::string aiBaseline() const;
+    std::uint64_t aiBaselineSeq() const { return aiBaselineSeq_.load(); }
+
     // assets/scenes/ にあるシーンの一覧（拡張子を落とした名前。キャッシュ）。
     // *.xml（今の形式）と *.json（旧形式）の両方を拾い、同じ名前があれば
     // 1 つにまとめる。保存・読込のたびに refresh する。HTTP スレッドが毎回
@@ -418,4 +426,6 @@ private:
     std::atomic<std::uint64_t> statusSeq_{0};
     std::string sceneFile_;
     std::vector<std::string> files_;
+    std::string aiBaseline_;  // mutex_ の下
+    std::atomic<std::uint64_t> aiBaselineSeq_{0};
 };

@@ -1,6 +1,7 @@
 #include "autogen/SceneGenerator.h"
 
 #include <algorithm>
+#include <optional>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -583,6 +584,65 @@ std::string hashHex(const std::string& text) {
     return buf;
 }
 
+// 文書の <camera> を名前 camK でスロット K へ並べ直す（文書の並び順 = スロット番号）。
+//   * 名前が camK の物はスロット K（K は 0..15。同じ K が 2 つなら先の物）
+//   * 名前が無い / 読めない物は空いたスロットへ順に入れる。エディタカメラの
+//     スロットが空いていれば最初の 1 つをそこへ（「視点を 1 つ書いた」= 見せたい絵）
+//   * それでも空いたスロット（エディタカメラより前）は今のシーンのカメラ
+//     （fallback）で埋める。無ければ既定の姿勢で active = false
+// カメラを 1 つも書いていない文書は触らない（読込側が今のカメラを残す）。
+static void arrangeCameras(const xml::Element& root, ed::SceneDocument& doc, int editorCam,
+                    const std::vector<ed::CameraPose>& fallback) {
+    if (!doc.hasCameras || doc.cameras.empty()) return;
+    constexpr int kMaxSlots = 16;
+    const int ec = std::clamp(editorCam, 0, kMaxSlots - 1);
+    std::vector<std::string> names;
+    for (const auto& c : root.children()) {
+        if (c.name() != "worldbody") continue;
+        for (const xml::Element* cam : c.all("camera")) names.push_back(cam->attr("name"));
+        break;
+    }
+    names.resize(doc.cameras.size());
+    std::vector<std::optional<ed::CameraPose>> slots(static_cast<std::size_t>(kMaxSlots));
+    std::vector<ed::CameraPose> loose;
+    for (std::size_t i = 0; i < doc.cameras.size(); ++i) {
+        const std::string& n = names[i];
+        int k = -1;
+        if (n.size() > 3 && n.compare(0, 3, "cam") == 0 &&
+            n.find_first_not_of("0123456789", 3) == std::string::npos && n.size() <= 5) {
+            k = std::stoi(n.substr(3));
+        }
+        if (k >= 0 && k < kMaxSlots && !slots[std::size_t(k)]) {
+            slots[std::size_t(k)] = doc.cameras[i];
+        } else {
+            loose.push_back(doc.cameras[i]);
+        }
+    }
+    std::size_t li = 0;
+    if (!slots[std::size_t(ec)] && li < loose.size()) slots[std::size_t(ec)] = loose[li++];
+    for (int k = 0; k < kMaxSlots && li < loose.size(); ++k) {
+        if (!slots[std::size_t(k)]) slots[std::size_t(k)] = loose[li++];
+    }
+    int last = ec;
+    for (int k = 0; k < kMaxSlots; ++k) {
+        if (slots[std::size_t(k)]) last = std::max(last, k);
+    }
+    std::vector<ed::CameraPose> out;
+    for (int k = 0; k <= last; ++k) {
+        if (slots[std::size_t(k)]) {
+            out.push_back(*slots[std::size_t(k)]);
+        } else if (std::size_t(k) < fallback.size()) {
+            out.push_back(fallback[std::size_t(k)]);
+        } else {
+            ed::CameraPose p;
+            p.active = false;
+            out.push_back(p);
+        }
+    }
+    out[std::size_t(ec)].active = true;  // エディタカメラは常に居る
+    doc.cameras = std::move(out);
+}
+
 GenOutcome generateScene(const AiConfig& cfg, const GenRequest& req, const GenHooks& hooks) {
     GenOutcome out;
     out.mode = req.mode;
@@ -620,6 +680,7 @@ GenOutcome generateScene(const AiConfig& cfg, const GenRequest& req, const GenHo
     po.maxMeshes = cfg.maxMeshes;
     if (meshAllowed) po.library = libraryForPrompt(lib, cfg);
     po.assets = scanAssetInventory(cfg);
+    po.editorCamera = req.editorCamera;
     LOGI("ai", "prompt inventory: %zu hdr, %zu textures, %zu models",
          po.assets.hdrs.size(), po.assets.textures.size(), po.assets.models.size());
 
@@ -645,7 +706,8 @@ GenOutcome generateScene(const AiConfig& cfg, const GenRequest& req, const GenHo
         m.images = req.reviewImages;
         messages.push_back(std::move(m));
     } else {
-        messages.push_back({"user", buildUserPrompt(req.mode, req.prompt, req.currentXml, digest)});
+        messages.push_back(
+            {"user", buildUserPrompt(req.mode, req.prompt, req.currentXml, digest, req.history)});
     }
 
     // ---- 1. LLM（壊れていれば直させる）----------------------------------
@@ -810,6 +872,12 @@ GenOutcome generateScene(const AiConfig& cfg, const GenRequest& req, const GenHo
     std::vector<std::string> warnings;
     ed::SceneDocument doc = ed::fromXml(root, &warnings);
     for (const auto& w : warnings) LOGW("ai", "document: %s", w.c_str());
+    // カメラは並び順がスロット番号なので、名前 camN でスロットへ並べ直す（LLM は
+    // エディタカメラを camN と書く。cam0 だけ書いても N 番の視点にならない）。
+    if (req.mode != GenMode::Append) {
+        arrangeCameras(root, doc, req.editorCamera,
+                       req.mode == GenMode::Edit ? current.cameras : req.currentCameras);
+    }
 
     // 既存のモデル（生成したもの以外）も、ファイルが読めれば大きさを測る。
     auto measure = [&](const std::vector<ed::MeshAssetDesc>& list) {
@@ -911,7 +979,7 @@ void SceneGenerator::cancel() {
 }
 
 bool SceneGenerator::start(GenRequest req, ApplyFn apply, std::string& whyNot,
-                           SnapshotFn snapshot) {
+                           SnapshotFn snapshot, DoneFn done) {
     {
         std::lock_guard<std::mutex> lk(st_->m);
         if (!st_->alive) {
@@ -939,7 +1007,7 @@ bool SceneGenerator::start(GenRequest req, ApplyFn apply, std::string& whyNot,
     std::shared_ptr<Shared> st = st_;
     AiConfig cfg = cfg_;
     std::thread([st, cfg, req = std::move(req), apply = std::move(apply),
-                 snapshot = std::move(snapshot)]() {
+                 snapshot = std::move(snapshot), done = std::move(done)]() {
         GenHooks hooks;
         hooks.cancel = &st->cancel;
         hooks.stage = [st](const std::string& s, double p) {
@@ -1008,6 +1076,7 @@ bool SceneGenerator::start(GenRequest req, ApplyFn apply, std::string& whyNot,
             r2.currentXml = set.sceneXml;
             r2.focus = req.focus;  // 要約の「選択中の物」も同じ物を指し続ける
             r2.editorCamera = req.editorCamera;
+            r2.currentCameras = req.currentCameras;
             std::vector<std::vector<uint8_t>> jpegs;
             std::size_t bytes = 0;
             for (const auto& shot : set.shots) {
@@ -1048,6 +1117,23 @@ bool SceneGenerator::start(GenRequest req, ApplyFn apply, std::string& whyNot,
             res.warnings = r.warnings;
             hooks.note("見た目の確認で直したシーンを適用しました（" +
                        std::to_string(round + 1) + " 回目）");
+        }
+
+        // 終わりの知らせ（履歴の記録）。busy のうちに呼ぶ = 記録が済む前に次の
+        // 生成が始まらない。終了処理の後は呼ばない（呼び手が Scene を触るため）。
+        if (done) {
+            bool alive = false;
+            {
+                std::lock_guard<std::mutex> lk(st->m);
+                alive = st->alive;
+            }
+            if (alive) {
+                try {
+                    done(res, applied, revisions);
+                } catch (const std::exception& e) {
+                    LOGW("ai", "history: %s", e.what());
+                }
+            }
         }
 
         std::lock_guard<std::mutex> lk(st->m);

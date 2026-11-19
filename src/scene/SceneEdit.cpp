@@ -581,6 +581,14 @@ void Scene::applyPendingEdits() {
     for (const auto& op : editor_.drain()) applyEditorOp(op);
 }
 
+namespace {
+// AI のシーン生成が積んだ Op か（AutoGenComponent が args に "ai": true を付ける。
+// ブラウザの edit.xml は EditorComponent が {text} だけで組むので付かない）。
+bool isAiOp(const nlohmann::json& a) {
+    return a.is_object() && a.contains("ai") && a["ai"].is_boolean() && a["ai"].get<bool>();
+}
+}  // namespace
+
 void Scene::applyEditorOp(const EditorState::Op& op) {
     const nlohmann::json& a = op.args;
 
@@ -1576,6 +1584,8 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         // 同じテレインなら手元の格子を保つ（/scene.xml を貼り直しても未保存の
         // 編集を捨てない）。
         loadDocument(doc, true);
+        // AI の適用なら、適用し終えたシーンを AI の履歴の基準として覚える。
+        if (isAiOp(a)) editor_.setAiBaseline(documentXml());
         // 保存名は触らない: 適用はファイルにしていない編集で、💾 保存して
         // 初めてファイルになる（モーダルの見出しにもそう書いてある）。
         editor_.setStatus("XML を適用しました" + loadStatusSuffix(warnings.size()));
@@ -1595,6 +1605,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         }
         for (const auto& w : warnings) LOGW("editor", "xml append: %s", w.c_str());
         appendDocument(doc);
+        if (isAiOp(a)) editor_.setAiBaseline(documentXml());
         editor_.setStatus("AI: " + std::to_string(doc.bodies.size()) + " 個を追加しました" +
                           warningCountCaveat("警告", warnings.size()));
         return;

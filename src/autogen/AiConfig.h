@@ -13,6 +13,7 @@
 //     "llm":   { "url", "model", "apiKey", "temperature", "timeoutSec",
 //                "repairs", "maxSceneKB" },      ... OpenAI 互換 Chat Completions
 //     "vision": { "rounds", "width", "detail", "quality" },
+//     "history": 10,
 //                                                ... 適用したシーンの画像で見直す往復
 //                                                   （OpenAI / Ollama / LM Studio /
 //                                                   vLLM / llama.cpp server など）
@@ -62,6 +63,11 @@ struct AiConfig {
     int visionWidth = 512;           // 1 枚の大きさ（画素。高さは 16:9 で決まる）
     std::string visionDetail = "low";  // OpenAI の image_url.detail（low / high / auto）
     int visionQuality = 70;          // JPEG の品質（1..100）
+
+    // ---- これまでの流れ（SceneHistory.h）----
+    // LLM に渡す履歴の件数（AI の依頼と結果・その間にユーザーが手で変えた所）。
+    // 0 = 渡さない（記録はする）。
+    int historyEntries = 10;
 
     // ---- 共通 ----
     int maxMeshes = 4;               // 1 回の生成で新しく作るモデルの上限

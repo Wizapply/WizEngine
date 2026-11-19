@@ -1792,6 +1792,11 @@
           <span id="aiStage" class="aiSub"></span>
         </div>
         <pre id="aiLog" class="aiLog"></pre>
+        <details id="aiHist" class="aiHist">
+          <summary><span id="aiHistHead">これまでの流れ</span>
+            <button id="aiHistClear" onclick="aiHistoryClear(event)" title="このシーンの履歴を消す（LLM に渡さなくなる）">🧹 消す</button></summary>
+          <ol id="aiHistList"></ol>
+        </details>
         <div class="ndHint">結果は「✓ 適用」と同じく現在のシーンへ反映されます（ファイルには書きません。残すなら 💾 保存）。生成したモデルは assets/generated/ に保存され、同じ説明文なら次回は再生成しません。LLM が数値を誤ることがあるので、重なった物は自動で上へ載せ直します。接続先とキーはサーバーの config.json の "ai" 節で設定します（キーは環境変数でも可）。</div>
       </div>
     </div>

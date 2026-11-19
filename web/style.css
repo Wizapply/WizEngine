@@ -1111,6 +1111,23 @@
     white-space: pre-wrap; word-break: break-word;
   }
   #aiGen .ndHint { padding: 0; }
+  /* これまでの流れ（AI の依頼と、その間にユーザーが手で変えた所）。 */
+  .aiHist { font-size: 12px; color: #c9ced6; }
+  .aiHist summary { cursor: pointer; display: flex; align-items: center; gap: 8px; }
+  .aiHist summary button {
+    margin-left: auto; padding: 2px 8px; font-size: 11px; border-radius: 4px;
+    background: #2a2d34; color: #dfe2e7; border: 1px solid #3a3d45;
+  }
+  .aiHist ol {
+    margin: 6px 0 0; padding: 6px 10px 6px 28px; max-height: 220px; overflow: auto;
+    background: #101216; border-radius: 6px;
+  }
+  .aiHist li { margin: 0 0 6px; }
+  .aiHist li.old { opacity: .5; }           /* LLM に渡さない古いぶん */
+  .aiHist .who { font-weight: 600; }
+  .aiHist .who.user { color: #e0b060; }
+  .aiHist .when { color: #7b7f88; font-size: 11px; margin-left: 6px; }
+  .aiHist ul { margin: 2px 0 0; padding-left: 16px; color: #9aa3b2; font-size: 11px; }
 
   /* ---- スコープ（制御器の時系列。control.js）---------------------------- */
   #scopeWin {

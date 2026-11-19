@@ -1038,7 +1038,7 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 | `log` | `level`（debug / info / warn / error。環境変数 `WIZENGINE_LOG` が優先） |
 | `scene` | `startupScene`・`startMode`・`maxCameras`・`editorCamera`・`idleWhenUnwatched` |
 | `physics` | `backend`・`multicoreForSoftBodies`・`multicoreMinBodies`・`terrainForcesCore` |
-| `ai` | `llm`（url / model / apiKey / temperature / timeoutSec / repairs / maxSceneKB）・`meshy`（url / apiKey / refine / artStyle / aiModel / targetPolycount / pollSec / timeoutSec / maxDownloadMB）・`vision`（rounds / width / detail / quality）・`maxMeshes`・`caFile`・`generatedDir` |
+| `ai` | `llm`（url / model / apiKey / temperature / timeoutSec / repairs / maxSceneKB）・`meshy`（url / apiKey / refine / artStyle / aiModel / targetPolycount / pollSec / timeoutSec / maxDownloadMB）・`vision`（rounds / width / detail / quality）・`history`・`maxMeshes`・`caFile`・`generatedDir` |
 
 - **優先順位は「既定値 < config.json < exe 引数」**。既定値の定義はコードに
   1 か所ずつ（`AppConfig.h` の構造体・`scene/SceneSystemConfig.h`・
@@ -1074,6 +1074,7 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 
 ```
 依頼文 ─► （編集 / 追加なら）今のシーンの XML + 要約（SceneDigest）+ 選択中の物・@名前
+          + これまでの流れ（SceneHistory: AI の依頼と結果・その間にユーザーが手で変えた所）
        ─► LLM ─► XML（壊れていれば・文書の警告が出れば LLM に直させる = llmRepairs 回）
           <mesh name generate="英語の説明" height="m">  ← 生成の依頼（WizEngine 内部の印）
        ─► Meshy: 作成を全部先に投げて並行に待つ ─► assets/generated/*.glb
@@ -1179,6 +1180,32 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   （@名前 を入れて 🤖 を開く。「新規」なら「編集」に切り替える）。名前の一覧と照合は
   サーバーと同じ規則を JS に写してある（`aiObjectNames` / `aiResolveMentions`）。
   開始のステータスに「選択中 cup、@table」と受け取った指し示しを出す。
+- **これまでの流れ（履歴）**（`src/autogen/SceneHistory.{h,cpp}`）: LLM は依頼ごとに今の
+  シーンしか見ないので、「さっき足した物」「元に戻して」が通じず、ユーザーが手で直した所を
+  次の生成で黙って戻すこともある。そこで**シーンごと**に「AI の依頼・モード・結果・AI が
+  変えた所」と「その間にユーザーが手で変えた所」を 1 件ずつ記録し、直近 `ai.history` 件
+  （config.json、既定 10、0 = 渡さない）を英文（`formatHistory`）にして user メッセージに
+  添える（全モード。XML の全文は持ち回らない = 毎回送る今のシーンが唯一の正。最後が手の
+  変更なら「意図した変更なので戻すな」と言う）。**変わった所は 2 つの文書の差**
+  （`diffScenes`: body・ジョイント・ライトを名前で突き合わせ、追加 / 削除 / 移動 / 回転 /
+  大きさ / 色 / 固定 / 質量 / プレハブなど。カメラは見ない = 視点を回すたびに変わるため）。
+  基準は **AI が適用し終えた直後のシーン**: AutoGenComponent が積む Op に `"ai": true` を
+  付け、SceneEdit の xml / xml.append がそれを適用した後に `EditorState::setAiBaseline
+  (documentXml())`（番号付き）。生成の終わりの知らせ（`SceneGenerator::DoneFn`、busy の
+  うちにワーカーから）が積んだ Op の数だけ番号が進むのを待って読み、「依頼の直前の写し →
+  直後」の差を AI の 1 件に（新規は中身の一覧 `describeNewScene`）、基準もそれに進める。
+  次の依頼のとき INPUT スレッドが「基準 → 今」の差をユーザーの 1 件として記録し、基準を
+  今へ進める（同じ変更を 2 回書かない）。保存は `assets/generated/history/<シーン名>.json`
+  （無題は `_untitled`、50 件まで、基準の XML も入る = 再起動しても続く。シーン名ごと =
+  別のシーンを開くと別の流れ）。ブラウザは 🤖 の「これまでの流れ」（`/scene` の
+  `ai.history` / `historyLimit`、LLM に渡らない古いぶんは薄く）と 🧹 消す
+  （`ai.history.clear`）。
+- **エディタカメラは cam0 と決め打ちしない**: 文書の `<camera>` は**並び順がスロット番号**
+  なので、指示文は `scene.editorCamera` の N で「エディタの視点 = `<camera name="camN">`」と
+  言い（`PromptOptions::editorCamera`、見本・点検表も camN）、生成側が返ってきた文書を
+  **名前 camK でスロット K へ並べ直す**（`arrangeCameras`。名前の無いカメラは最初の 1 つを
+  エディタカメラのスロットへ、残りは空きへ。書かれなかったスロットは今のシーンのカメラで
+  埋める = `GenRequest::currentCameras`）。
 - **見た目の見直し（スクリーンショット）**: 文書だけでは LLM に「大きさ・浮き・
   色・カメラの構図が依頼どおりか」が見えないので、適用の後に画面を撮って送る。
   設定は config.json の `ai.vision`（`rounds` 既定 1・0 で切る、`width` 既定 512 =
@@ -1224,7 +1251,9 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 - **確認**: 文書層とパイプラインはモックの OpenAI / Meshy サーバーで結合テスト
   済み（修正の往復・生成・リダイレクト付きダウンロード・倍率・重なり・
   キャッシュ・追加モードの改名・Meshy 無しの代役・スレッド経由の適用）。
-  要約と名指しは単体テスト（載っている・浮いている・めり込み・選択・名指しの印、
+  履歴は単体テスト（差の行・保存と読み直し・50 件で切る・消す・文章）とモック（履歴が
+  user メッセージに入る、エディタカメラ 2 番で cam2 / 名前なし / cam0 を返したときの
+  スロットの並べ直し、終わりの知らせ）で確認済み。要約と名指しは単体テスト（載っている・浮いている・めり込み・選択・名指しの印、
   @ の照合 = 日本語名 + 助詞・box1 / box10・メール・無い名前）と、モックで編集モードの
   user メッセージに要約・選択・名指しが入ることを確認済み（ブラウザの照合は Node で
   サーバーと同じ結果）。見た目の見直しも同じモックで確認済み（画像 4 枚が data URL + detail で届く・
