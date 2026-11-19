@@ -1100,7 +1100,21 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 - **HTTPS は OpenSSL 付きのビルドだけ**（CMake が OpenSSL 3 を見つけたら
   `CPPHTTPLIB_OPENSSL_SUPPORT` を**ターゲット全体**に立てる。httplib はこの
   定義で class の中身が変わるので TU ごとに立て分けると ODR 違反）。無ければ
-  http:// の接続先だけ。プロキシは `HTTPS_PROXY` / `NO_PROXY`、CA は
+  http:// の接続先だけ（ブラウザの 🤖 の見出しが「https ですが、このビルドは
+  OpenSSL 無し」と理由を出す = `/scene` の `ai.llmIssue`）。**Windows**: Win64
+  OpenSSL の**完全版**（Light は DLL だけでヘッダもライブラリも無い = ビルドに
+  使えない）を入れれば `OPENSSL_ROOT_DIR` 無しでも見つかる。FindOpenSSL が見落とす
+  配置（3.2 以降 / 4.x のインポートライブラリ `lib/VC/x64/MD/`、FireDaemon などの
+  zip の `x64/{include,lib,bin}`、PATH の openssl.exe の親）は CMake が先に探して
+  `OPENSSL_ROOT_DIR` と `LIB_EAY_RELEASE` / `SSL_EAY_RELEASE` を渡す。見つからない
+  ときは configure に見た場所と理由（「DLL だけ = Light では」「ヘッダはあるが
+  .lib が無い」）を出す。実行時の DLL（3.x は `libssl-3-x64.dll` /
+  `libcrypto-3-x64.dll`、4.x は `-4-`。名前にメジャー版が入るので見つけた版で探す）は
+  ビルド後に exe の隣へコピーする（PATH にある GStreamer 同梱の別の版を拾わない
+  ため）。**OpenSSL 4.x も可**: httplib が使う API は 4.1.0 のヘッダと照合済み
+  （`X509_get_subject_name` が const を返す・`ASN1_STRING` が不透明になった・
+  `X509_NAME_get_text_by_NID` が非推奨、のどれも httplib 0.15.3 の書き方で通る。
+  非推奨の警告 C4996 は出る）。プロキシは `HTTPS_PROXY` / `NO_PROXY`、CA は
   `ai.caFile`。送るのは `model` と `messages` だけ（`max_tokens` /
   `temperature` / `response_format` は提供元とモデルの世代で可否が違うので
   送らない）。

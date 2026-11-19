@@ -72,11 +72,19 @@
     }
     const editable = sceneData.mode === 'editor' && isEditorCam();
     const parts = [];
+    // 使えない理由はサーバーが言い分ける（llmIssue / meshyIssue）。古いサーバーは
+    // 理由を返さないので、そのときは従来の「未設定」の文面に落とす。
+    const why = (issue, host, unset) => {
+      if (issue === 'https') return host + ' は https ですが、このビルドは OpenSSL 無し（https 不可）';
+      if (issue === 'url') return '接続先の URL が読めません（config.json の ai.llm.url / ai.meshy.url）';
+      return unset;
+    };
     parts.push(ai.llm ? ('LLM: ' + ai.llmModel + ' @ ' + ai.llmHost)
-                      : 'LLM: 未設定（config.json の ai.llm.model）');
+                      : 'LLM: ' + why(ai.llmIssue, (ai.llmModel ? ai.llmModel + ' @ ' : '') + ai.llmHost,
+                                      '未設定（config.json の ai.llm.model）'));
     parts.push(ai.meshy ? ('3D: ' + ai.meshyHost + (ai.meshyRefine ? '（テクスチャ付き）' : '（形のみ）'))
-                        : '3D: 未設定（config.json の ai.meshy.apiKey）');
-    if (!ai.https) parts.push('https 不可のビルド');
+                        : '3D: ' + why(ai.meshyIssue, ai.meshyHost, '未設定（config.json の ai.meshy.apiKey）'));
+    if (!ai.https && ai.llmIssue !== 'https' && ai.meshyIssue !== 'https') parts.push('https 不可のビルド');
     conf.textContent = parts.join(' ／ ');
     conf.classList.toggle('bad', !ai.llm);
 

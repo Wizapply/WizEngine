@@ -937,10 +937,22 @@ nlohmann::json SceneGenerator::statusJson() const {
     const bool llmOk = cfg_.llmConfigured() && llm.valid && (llm.scheme == "http" || https);
     const bool meshyOk =
         cfg_.meshyConfigured() && meshy.valid && (meshy.scheme == "http" || https);
+    // 使えないときの理由（ブラウザが言い分ける）。以前は理由を問わず「未設定」と
+    // 出していたので、モデル名を書いても https 不可のビルドでは「model が未設定」に
+    // 見えた。"model" = 空、"url" = 読めない URL、"https" = https の接続先なのに
+    // OpenSSL 無しのビルド。
+    auto issue = [&](bool configured, const net::Url& u) -> const char* {
+        if (!configured) return "config";
+        if (!u.valid) return "url";
+        if (u.scheme != "http" && !https) return "https";
+        return "";
+    };
     j["llm"] = llmOk;
+    j["llmIssue"] = cfg_.llmModel.empty() ? "model" : issue(cfg_.llmConfigured(), llm);
     j["llmModel"] = cfg_.llmModel;
     j["llmHost"] = llm.valid ? llm.host : std::string();
     j["meshy"] = meshyOk;
+    j["meshyIssue"] = cfg_.meshyKey.empty() ? "key" : issue(cfg_.meshyConfigured(), meshy);
     j["meshyHost"] = meshy.valid ? meshy.host : std::string();
     j["meshyRefine"] = cfg_.meshyRefine;
     j["maxMeshes"] = cfg_.maxMeshes;

@@ -25,7 +25,7 @@ Charon（旧コードネーム WizEngine）が使っている外部ソフトウ�
 | [stb](https://github.com/nothings/stb)（`stb_truetype.h` / `stb_rect_pack.h`） | v1.26 / v1.01 | MIT または Public Domain（Unlicense）の選択 | ヘッダのみ。UI の字の SDF と字の置き場（アトラス）の詰め込み |
 | [Noto Sans JP](https://github.com/notofonts/noto-cjk)（`assets/fonts/NotoSansJP-Regular.otf`） | noto-cjk main（Sans/SubsetOTF/JP） | SIL Open Font License 1.1（`assets/fonts/OFL.txt`） | 同梱のフォント。UI の文字の既定のフォント |
 | [Google Filament](https://github.com/google/filament) | 1.74.0 | Apache-2.0 | 描画エンジン。公式プレビルド（`filament` / `gltfio` / `ibl` など）をリンク |
-| [OpenSSL](https://www.openssl.org/) | 3.x（システムの版。任意） | Apache-2.0 | AI のシーン生成が HTTPS の API（OpenAI 互換 / Meshy 互換）を呼ぶため。見つかったときだけ動的リンク（`-DWIZ_WITH_OPENSSL=OFF` で外せる） |
+| [OpenSSL](https://www.openssl.org/) | 3.x 以降（4.x も可。システムの版。任意） | Apache-2.0 | AI のシーン生成が HTTPS の API（OpenAI 互換 / Meshy 互換）を呼ぶため。見つかったときだけ動的リンク（`-DWIZ_WITH_OPENSSL=OFF` で外せる） |
 | [GStreamer](https://gstreamer.freedesktop.org/) | 1.x（システムの版） | LGPL-2.1-or-later | 映像のエンコードと配信。動的リンク（core / base / app / webrtc / sdp / video） |
 | [manifold3d](https://github.com/elalish/manifold) / [trimesh](https://github.com/mikedh/trimesh)（+ NumPy / SciPy / NetworkX） | 3.x / 4.x 以降 | Apache-2.0 / MIT（NumPy・SciPy・NetworkX は BSD-3-Clause） | `samples/v6_engine/` の Python スクリプトが V6 の部品メッシュ（`assets/models/v6/*.glb`）を作るときと、`samples/meshgen/`（手元の Text to 3D）が .glb を作るときだけ使う。実行ファイルには入らない |
 | [Matplotlib](https://matplotlib.org/) | 3.x（任意） | Matplotlib License（PSF 系、BSD 互換） | `samples/meshgen/` が確認用の PNG を描くときだけ使う（無ければ PNG を出さない）。実行ファイルには入らない |
