@@ -124,6 +124,9 @@ static_assert(sizeof(kCanvasModeNames) / sizeof(kCanvasModeNames[0]) - 1 ==
 inline constexpr const char* kCanvasCamerasAttr = "cameras";
 // ui 属性（共用の UI の名前）の名前（表の行と canvasAttrEditable が共用する）。
 inline constexpr const char* kCanvasUiAttr = "ui";
+// world の板の置き場所の属性の名前（表の行と、ギズモ・追加の置き場所を書く uiops が共用する）。
+inline constexpr const char* kCanvasPosAttr = "pos";
+inline constexpr const char* kCanvasEulerAttr = "euler";
 
 // Canvas の既定値（CanvasDesc の初期値と kCanvasAttrs の既定値が同じ値を使う）。
 inline constexpr double kCanvasDefaultHeight = 1080.0;
@@ -175,6 +178,18 @@ inline std::string canvasLabel(const CanvasDesc& c, int index) {
     return c.name.empty() ? "Canvas " + std::to_string(index) : c.name;
 }
 
+// 表示方法の集合（ビット = CanvasMode の番号）。
+using CanvasModeMask = unsigned;
+inline constexpr CanvasModeMask canvasModeBit(CanvasMode m) { return 1u << unsigned(m); }
+inline constexpr CanvasModeMask kAllCanvasModes = canvasModeBit(CanvasMode::Overlay) |
+                                                  canvasModeBit(CanvasMode::Camera) |
+                                                  canvasModeBit(CanvasMode::World);
+// 板（主のシーンに置く）の表示方法（唯一の定義。isPlateCanvas と属性の表が使う）。残りが
+// 映像に重ねる overlay。
+inline constexpr CanvasModeMask kPlateCanvasModes =
+    canvasModeBit(CanvasMode::Camera) | canvasModeBit(CanvasMode::World);
+inline constexpr CanvasModeMask kOverlayCanvasModes = kAllCanvasModes & ~kPlateCanvasModes;
+
 // Canvas 専用の属性の表（mode / cameras / height / order / distance / pos /
 // euler / size / ui）。値の型・既定値・範囲は性質と同じ ValueSpec で持つので、
 // 文字列 / JSON の変換と丸めは性質の表と同じ関数（parseValue など）で行う。
@@ -185,6 +200,9 @@ struct CanvasAttrInfo {
     const char* label;  // Inspector の表示名（日本語）
     PropValue (*get)(const CanvasDesc&);
     void (*set)(CanvasDesc&, const PropValue&);
+    // その属性が効く表示方法（唯一の定義。Inspector は今の表示方法に効く欄だけを出す。
+    // 効かない表示方法でも値は持ち、保存もする = 表示方法を戻せば元の値で出る）。
+    CanvasModeMask modes = kAllCanvasModes;
 };
 
 // 名前 → Canvas の属性（無ければ nullptr。定義は表の後ろ）。表の set が自分の
@@ -223,25 +241,30 @@ inline const CanvasAttrInfo kCanvasAttrs[] = {
      [](CanvasDesc& c, const PropValue& v) { c.height = v.v[0]; }},
     {"order", {PropType::Int, numberValue(0), -10000.0, 10000.0}, "重なり順",
      [](const CanvasDesc& c) { return numberValue(double(c.order)); },
-     [](CanvasDesc& c, const PropValue& v) { c.order = roundToInt(v.v[0], 0); }},
+     [](CanvasDesc& c, const PropValue& v) { c.order = roundToInt(v.v[0], 0); },
+     kOverlayCanvasModes},  // 板どうしはカメラからの距離で並ぶ
     {"distance", {PropType::Number, numberValue(kCanvasDefaultDistance), 0.01, 10000.0}, "カメラからの距離",
      [](const CanvasDesc& c) { return numberValue(c.distance); },
-     [](CanvasDesc& c, const PropValue& v) { c.distance = v.v[0]; }},
-    {"pos",
+     [](CanvasDesc& c, const PropValue& v) { c.distance = v.v[0]; },
+     canvasModeBit(CanvasMode::Camera)},
+    {kCanvasPosAttr,
      {PropType::Vec3, numberValue(0, 0, 0), -kPlacementMaxMeters,
       kPlacementMaxMeters},
      "位置",
      [](const CanvasDesc& c) { return numberValue(c.pos.x, c.pos.y, c.pos.z); },
-     [](CanvasDesc& c, const PropValue& v) { c.pos = {v.v[0], v.v[1], v.v[2]}; }},
-    {"euler", {PropType::Euler, numberValue(0, 0, 0)}, "回転",
+     [](CanvasDesc& c, const PropValue& v) { c.pos = {v.v[0], v.v[1], v.v[2]}; },
+     canvasModeBit(CanvasMode::World)},
+    {kCanvasEulerAttr, {PropType::Euler, numberValue(0, 0, 0)}, "回転",
      [](const CanvasDesc& c) { return numberValue(c.rot.x, c.rot.y, c.rot.z); },
-     [](CanvasDesc& c, const PropValue& v) { c.rot = {v.v[0], v.v[1], v.v[2]}; }},
+     [](CanvasDesc& c, const PropValue& v) { c.rot = {v.v[0], v.v[1], v.v[2]}; },
+     canvasModeBit(CanvasMode::World)},
     {"size", {PropType::Vec2, numberValue(kCanvasDefaultSizeX, kCanvasDefaultSizeY), 0.01, 10000.0}, "板の大きさ",
      [](const CanvasDesc& c) { return numberValue(c.sizeX, c.sizeY); },
      [](CanvasDesc& c, const PropValue& v) {
          c.sizeX = v.v[0];
          c.sizeY = v.v[1];
-     }},
+     },
+     kPlateCanvasModes},
     {kCanvasUiAttr, {PropType::Name, textValue(""), 0.0, 0.0}, "共用の UI",
      [](const CanvasDesc& c) { return textValue(c.ui); },
      [](CanvasDesc& c, const PropValue& v) { c.ui = v.s; }},
@@ -259,11 +282,16 @@ inline bool canvasShownOnCamera(const CanvasDesc& c, int camera) {
     return false;
 }
 
+// 板（camera / world = 主のシーンの板）として描く・当てる表示方法か（唯一の判定。それ以外は
+// 映像に重ねる overlay）。集合は kPlateCanvasModes（属性の表の size の行も同じ集合）。
+inline bool isPlateCanvasMode(CanvasMode m) { return (kPlateCanvasModes & canvasModeBit(m)) != 0; }
+inline bool isPlateCanvas(const CanvasDesc& c) { return isPlateCanvasMode(c.mode); }
+
 // 映像に重ねる overlay で、そのカメラに出ている Canvas か（唯一の定義）。映像の位置を
 // そのまま Canvas の画素に写せるのはこの Canvas だけ（camera / world は板の上の座標）なので、
-// 映像の上の選択枠・ドラッグが使う（ボタンの当たり・クリックの確かめは板も見る = canvasShownOnCamera）。
+// ボタンの当たりで overlay を先に見るのに使う（板も見る判定は canvasShownOnCamera）。
 inline bool overlayShownOnCamera(const CanvasDesc& c, int camera) {
-    return c.mode == CanvasMode::Overlay && canvasShownOnCamera(c, camera);
+    return !isPlateCanvas(c) && canvasShownOnCamera(c, camera);
 }
 
 // Canvas どうしの前後（唯一の定義）: a（order, 番号）が b より奥か。order の小さい方が奥、

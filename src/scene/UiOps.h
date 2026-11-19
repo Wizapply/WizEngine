@@ -52,8 +52,14 @@ struct Result {
 
 // kind が UI の編集の操作か（上の一覧の唯一の定義。INPUT が積む前の確かめにも使う）。
 bool isUiOp(const std::string& kind);
-// 操作を当てる（PHYSICS スレッド）。args は型を信じない。
-Result apply(UiState& state, const std::string& kind, const nlohmann::json& args);
+// 足す world の Canvas の置き場所を決める口（呼び手 = Scene がカメラから決める。sizeY = 表で
+// 丸めた板の高さ。決められなければ false = 既定の置き場所のまま）。
+using WorldPlacement = std::function<bool(double sizeY, Vec3d& pos, Vec3d& euler)>;
+// 操作を当てる（PHYSICS スレッド）。args は型を信じない。placeWorld は ui.add が world の
+// Canvas を足し、attrs に pos も euler も書いていないときだけ呼ぶ（アセットパネルの World
+// Canvas。空なら呼ばない）。
+Result apply(UiState& state, const std::string& kind, const nlohmann::json& args,
+             const WorldPlacement& placeWorld = {});
 // Canvas の要素をエディタで編集してよいか（唯一の定義。Inspector の操作・映像の上の
 // ドラッグ・選択枠のつまみ・ブラウザの editable が引く）: 自分の中身と、読めている UI の
 // 中身は編集する。宣言の無い UI・ファイルが読めなかった共用 UI の中身は編集しない
@@ -82,6 +88,9 @@ NameArg readNameArg(const nlohmann::json& args,
 // Canvas の属性の部分更新。attrs の中の、表にあって書き換えてよい属性だけを丸めて
 // 書く。戻り値 = 書かなかった名前（型が合わない・知らない・書き換えられない）。
 std::vector<std::string> setCanvasAttrs(const nlohmann::json& attrs, ui::CanvasDesc& desc);
+// world の板の置き場所（pos / euler。nullptr = 変えない）を書く（ギズモ。Inspector の欄と
+// 同じ表の丸めを通す。ステータスは出さない）。Canvas が無ければ false。
+bool setCanvasPlacement(UiState& state, int canvas, const Vec3d* pos, const Vec3d* euler);
 // 要素の性質の部分更新。props の中の、その種類が持つ性質だけを丸めて書き、reset の
 // 名前の性質を既定値へ戻す（書いていない状態にする）。戻り値 = 書かなかった名前。
 std::vector<std::string> setElementProps(const nlohmann::json& props,

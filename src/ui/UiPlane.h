@@ -101,5 +101,20 @@ inline void designPointOnPlane(const CanvasPlane& p, double designHeight, const 
     y = -dot(rel, p.up) * perMetre;
 }
 
+// designPointOnPlane の逆: Canvas の設計の座標 (x, y) → 板の面の上のワールドの点。
+inline Vec3d worldPointOnPlane(const CanvasPlane& p, double designHeight, double x, double y) {
+    using namespace planedetail;
+    const double metresPer = designHeight > 0.0 ? p.height / designHeight : 0.0;
+    return add(planeTopLeft(p),
+               sub(scale(p.right, x * metresPer), scale(p.up, y * metresPer)));
+}
+
+// Canvas 全体の矩形（設計の画素。唯一の使い分け）: 板（camera / world）は板の縦横比
+// （plateCanvasRect）、overlay はビューの縦横比（canvasRect）。
+inline Rect designCanvasRect(const CanvasDesc& c, int viewWidth, int viewHeight) {
+    if (isPlateCanvas(c)) return plateCanvasRect(c);
+    return canvasRect(c.height, viewWidth, viewHeight);
+}
+
 }  // namespace ui
 }  // namespace wizengine

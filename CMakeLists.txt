@@ -435,6 +435,7 @@ set(WIZ_COMPONENT_SOURCES
     src/components/UiInputComponent.cpp
     src/components/UiPointerInput.cpp
     src/components/UiRenderComponent.cpp
+    src/components/UiSelectionFrame.cpp
     src/components/VehicleComponent.cpp)
 set(WIZ_FORMULA_SOURCES
     src/formula/Formula.cpp

@@ -589,7 +589,12 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     // 切替は drain より先 = applyPendingEdits）。
     if (wizengine::uiops::isUiOp(op.kind)) {
         if (!editsUiFrom(op.camera)) return;
-        const wizengine::uiops::Result r = wizengine::uiops::apply(ui_, op.kind, a);
+        // 足す world の Canvas は、置き場所を書いていなければ送ってきたエディタカメラの前に立てる。
+        const auto placeWorld = [this, &op](double sizeY, wizengine::Vec3d& pos,
+                                            wizengine::Vec3d& euler) {
+            return newWorldCanvasPlacement(op.camera, sizeY, pos, euler);
+        };
+        const wizengine::uiops::Result r = wizengine::uiops::apply(ui_, op.kind, a, placeWorld);
         // 消した Canvas を番号で指すノードを掃除する（ライト・カメラの削除と同じ判断）。
         if (r.removedCanvas >= 0) {
             pruneGraphForRemoved(ed::NodeTargetKind::Canvas, r.removedCanvas);

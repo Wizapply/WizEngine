@@ -9,6 +9,7 @@
 #include "render/Renderer.h"
 #include "scene/Scene.h"
 #include "scene/SceneMath.h"
+#include "scene/UiOps.h"
 
 namespace ed = wizengine::editor;
 using scenemath::Vec3;
@@ -419,7 +420,9 @@ void buildCameraIcon(Sink out, std::size_t batch, const CameraObject& cam,
 // 相手が違うだけで、ハンドルの見た目・当たり判定・ドラッグの計算は共通。
 struct Target {
     bool valid = false;
-    int type = 0;  // 0=オブジェクト 1=ライト 2=カメラ 3=プレハブの部品 4=地面 5=テレイン
+    // 0=オブジェクト 1=ライト 2=カメラ 3=プレハブの部品 4=地面 5=テレイン
+    // 6=UI の Canvas（world の板）
+    int type = 0;
     std::size_t index = 0;
     ed::Vec3d pos, rot, size;
     bool uniformScale = false;  // 球・モデル・球の部品: 軸を掴んでも一様に
@@ -436,6 +439,20 @@ ed::GizmoMode effectiveMode(const Target& t, ed::GizmoMode mode) {
         return ed::GizmoMode::Translate;
     }
     return mode;
+}
+
+// UI の world の板の置き場所を書く（PHYSICS。Inspector の欄と同じ表の丸めを通す =
+// uiops::setCanvasPlacement。ステータスは出さない = ドラッグの間に毎フレーム出さない）。Canvas の
+// 設計値の書き手は PHYSICS だけ（UiState の約束）。今の値 current と同じなら書かない（掴んだまま
+// 止めている間に版を進めて板を組み直さない）。rotate = true なら euler、false なら pos。
+void setCanvasPlacement(Scene& scene, std::size_t canvas, bool rotate, const ed::Vec3d& current,
+                        const ed::Vec3d& v) {
+    constexpr double kSame = 1e-9;
+    const bool same = std::abs(v.x - current.x) < kSame && std::abs(v.y - current.y) < kSame &&
+                      std::abs(v.z - current.z) < kSame;
+    if (same) return;
+    wizengine::uiops::setCanvasPlacement(scene.ui(), int(canvas), rotate ? nullptr : &v,
+                                         rotate ? &v : nullptr);
 }
 
 // 現在の対象の設計値を読む。lockLists は INPUT スレッドからだけ true
@@ -489,6 +506,22 @@ Target currentTarget(Scene& scene, std::size_t camIndex, bool lockLists) {
             t.type = 5;
             t.pos = scene.terrainHandlePoint();  // 中心の地表（Scene::moveTerrain の約束）
             t.rot = scene.terrainRotation();
+        }
+        return t;
+    }
+    // UI の world の板（Canvas そのものを選んでいるとき。要素を選んでいる間は映像の上の
+    // 枠とつまみで動かす = UiInputComponent）。原点は板の中心 = pos、向きは euler。大きさは
+    // Inspector の欄で決める（拡縮は移動に丸める）。camera の板はカメラに付くので出さない。
+    if (selKind == EditorState::SelKind::Canvas) {
+        wizengine::ui::CanvasDesc desc;
+        const bool canvasItself = scene.editor().selSub() < 0;
+        const bool copied = canvasItself && scene.ui().copyCanvas(selIndex, desc);
+        if (copied && desc.mode == wizengine::ui::CanvasMode::World) {
+            t.valid = true;
+            t.type = 6;
+            t.index = std::size_t(selIndex);
+            t.pos = desc.pos;
+            t.rot = desc.rot;
         }
         return t;
     }
@@ -1000,6 +1033,8 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
                 scene.moveGround(nx, ny, nz);
             } else if (t.type == 5) {
                 scene.moveTerrain(nx, ny, nz);
+            } else if (t.type == 6) {
+                setCanvasPlacement(scene, t.index, false, t.pos, {nx, ny, nz});
             } else {
                 scene.moveObject(t.index, nx, ny, nz);
             }
@@ -1049,6 +1084,8 @@ void GizmoComponent::onEditorStep(Scene& scene, double dt) {
                 scene.rotateGround(euler.x(), euler.y(), euler.z());
             } else if (t.type == 5) {
                 scene.rotateTerrain(euler.x(), euler.y(), euler.z());
+            } else if (t.type == 6) {
+                setCanvasPlacement(scene, t.index, true, t.rot, {euler.x(), euler.y(), euler.z()});
             } else {
                 scene.rotateObject(t.index, euler.x(), euler.y(), euler.z());
             }

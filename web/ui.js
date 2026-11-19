@@ -121,8 +121,10 @@
 
   // ---- 編集（サーバーが受けるのはエディタモード × エディタカメラのページだけ）--------
   // アセットパネルの Canvas タイル: overlay の Canvas を足す（サーバーが選択にする）。
-  function uiAddCanvas() {
-    send('edit.ui.add', {});
+  // mode = 'world' なら空間に立てる板（置き場所はサーバーがエディタカメラの前に決める）。
+  // 省略なら映像の上に重ねる Canvas。
+  function uiAddCanvas(mode) {
+    send('edit.ui.add', mode ? { attrs: { mode: mode } } : {});
   }
   // 要素を足す（parent = 親の要素の id。-1 = Canvas の直下。サーバーが選択にする）。
   function uiAddElement(canvas, kind, parent) {

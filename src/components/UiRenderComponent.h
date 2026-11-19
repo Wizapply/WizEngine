@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "components/UiSelectionFrame.h"
 #include "scene/SceneComponent.h"
 #include "scene/UiState.h"
 #include "ui/FontAtlas.h"
@@ -38,9 +39,8 @@ class Renderer;
 // カメラごとなので、そのカメラのビューの中身だけが変わる（組み直しの条件にもビューごとに入る）。
 // ノード（SetUiProp）の上書きは「ノード」の段（ui::resolveElements）で、上書きの版が変わった
 // Canvas だけを組み直す。
-// エディタの選択枠（選んでいる要素の枠とつまみ、ui/UiHandles.h の形）も、エディタ
-// カメラのビューにだけ出す専用の Canvas として描く（どの UI よりも手前。後処理なし）。
-// onRender が選択とエディタカメラを写し、組み立ては onRenderUnlocked。
+// エディタの選択枠は UiSelectionFrame（components/UiSelectionFrame.h）が受け持ち、ここは
+// onRender で対象を写させ、onRenderUnlocked で組ませるだけ。
 class UiRenderComponent : public SceneComponent {
 public:
     UiRenderComponent();
@@ -118,19 +118,6 @@ private:
     // 無し）。
     wizengine::UiState::Pointer pointerOn(std::size_t view, int index) const;
     void uploadAtlas(wizengine::Renderer& renderer);
-    // 選択枠: 出すときは専用の Canvas をエディタカメラのビューに置いてメッシュを送り、
-    // 出さないときはどのビューにも置かない。条件が前回と同じなら何もしない。
-    void updateFrame(wizengine::Renderer& renderer);
-
-    // 選択枠を最後に送った条件（全部同じなら組み直さない。出さないときは既定値のまま）。
-    struct FrameKey {
-        std::uint64_t revision = 0;  // その Canvas の材料の版（Snapshot::contentsRevision）
-        int canvas = -1, element = -1, view = -1, viewWidth = 0, viewHeight = 0;
-        bool operator==(const FrameKey& o) const {
-            return revision == o.revision && canvas == o.canvas && element == o.element &&
-                   view == o.view && viewWidth == o.viewWidth && viewHeight == o.viewHeight;
-        }
-    };
 
     std::uint64_t version_ = 0;         // 最後に写した UiState の版
     std::uint64_t fontsRevision_ = 0;   // 最後に読んだフォントの宣言の版
@@ -152,12 +139,5 @@ private:
     std::uint64_t pointersVersion_ = 0;
     wizengine::UiState::NodeOverrideSet overrides_;
     std::uint64_t overridesVersion_ = 0;
-    // 選択枠の対象（onRender が写す。-1 = 出さない = 選択が無い・エディタモードでない・
-    // プレハブ編集中）とエディタカメラのスロット番号。
-    int frameCanvas_ = -1, frameElement_ = -1;
-    int frameCamera_ = 0;
-    // 選択枠の Canvas（Renderer の番号。最初に出すときに作る）。
-    bool frameCreated_ = false;
-    std::size_t frameRendererId_ = 0;
-    FrameKey frameSent_;
+    UiSelectionFrame frame_;  // エディタの選択枠
 };

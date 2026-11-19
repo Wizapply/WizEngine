@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <climits>
 #include <tuple>
 #include <unordered_map>
 
@@ -10,8 +9,6 @@
 #include "render/Renderer.h"
 #include "scene/Scene.h"
 #include "scene/SharedAssetFile.h"
-#include "scene/UiOps.h"
-#include "ui/UiHandles.h"
 #include "ui/UiLayout.h"
 #include "ui/UiMesh.h"
 #include "ui/UiPlane.h"
@@ -29,9 +26,6 @@ constexpr const char* kDefaultFontFile = "fonts/NotoSansJP-Regular.otf";
 // フォントのファイルの大きさの上限（壊れた・別の大きなファイルを丸ごと読まない
 // 安全弁。同梱の Noto Sans JP は約 4.5 MB、CJK 全部入りでも 20 MB 前後）。
 constexpr std::uintmax_t kMaxFontBytes = 32u * 1024u * 1024u;
-
-// 板（camera / world = 主のシーンの板）として描く Canvas か（唯一の判定）。それ以外は overlay。
-bool drawnAsPlate(const ui::CanvasDesc& desc) { return desc.mode != ui::CanvasMode::Overlay; }
 
 // 板の中身は全ビューで 1 つ（ui/UiPlane.h）なので、送った条件はこの番号 1 つに覚える。
 constexpr std::size_t kPlateBuildKey = std::size_t(-1);
@@ -158,7 +152,7 @@ void UiRenderComponent::syncCanvases(wizengine::Renderer& renderer, bool designC
     // 入れ物は壊す（Renderer の作りが違う。この後で作り直す）。
     auto keeps = [this](std::size_t i, const CanvasSlot& slot) {
         const bool exists = i < snap_.canvases.size() && snap_.canvases[i].alive;
-        return exists && drawnAsPlate(snap_.canvases[i].desc) == slot.plate;
+        return exists && ui::isPlateCanvas(snap_.canvases[i].desc) == slot.plate;
     };
     for (auto it = canvases_.begin(); it != canvases_.end();) {
         if (keeps(it->first, it->second)) {
@@ -174,7 +168,7 @@ void UiRenderComponent::syncCanvases(wizengine::Renderer& renderer, bool designC
         auto found = canvases_.find(i);
         if (found == canvases_.end()) {
             CanvasSlot slot;
-            slot.plate = drawnAsPlate(item.desc);
+            slot.plate = ui::isPlateCanvas(item.desc);
             using Placement = wizengine::Renderer::UiCanvasPlacement;
             slot.rendererId =
                 renderer.addUiCanvas(slot.plate ? Placement::Plate : Placement::Overlay);
@@ -379,16 +373,7 @@ void UiRenderComponent::onRender(Scene& scene) {
     for (std::size_t cam = 0; cam < cameraViews_.size(); ++cam) {
         cameraViews_[cam] = scene.cameraViewIndex(cam);
     }
-    // 選択枠の対象: UI の編集を受け付けるとき（editsUiFrom = エディタモード × エディタ
-    // カメラ × プレハブ編集中でない）に、要素を選んでいれば。今もあるかは組むときに
-    // 写しで確かめる。
-    const std::size_t editorCam = scene.editorCamera();
-    const EditorState& editor = scene.editor();
-    const bool element = editor.selKind() == EditorState::SelKind::Canvas && editor.selSub() >= 0;
-    const bool wanted = element && scene.editsUiFrom(editorCam);
-    frameCanvas_ = wanted ? editor.selIndex() : -1;
-    frameElement_ = wanted ? editor.selSub() : -1;
-    frameCamera_ = int(editorCam);
+    frame_.copyTarget(scene);  // 選択枠の対象（今もあるかは組むときに写しで確かめる）
 }
 
 void UiRenderComponent::onRenderUnlocked(Scene& scene) {
@@ -401,53 +386,7 @@ void UiRenderComponent::onRenderUnlocked(Scene& scene) {
         return scene.canvasPlane(desc, cam, out);
     };
     update(scene.renderer(), scene.ui(), planeOf);
-    updateFrame(scene.renderer());
-}
-
-void UiRenderComponent::updateFrame(wizengine::Renderer& renderer) {
-    // 出す条件: 対象があり、エディタカメラのビューが決まっていて、その Canvas が映像の
-    // 上で枠を出せる物（overlayShownOnCamera）で、要素が今もある。
-    const bool camKnown = frameCamera_ >= 0 && std::size_t(frameCamera_) < cameraViews_.size();
-    const int view = frameCanvas_ >= 0 && camKnown ? cameraViews_[std::size_t(frameCamera_)] : -1;
-    const ui::CanvasDesc* desc = view >= 0 ? snap_.liveCanvas(frameCanvas_) : nullptr;
-    const bool canvasOk = desc && ui::overlayShownOnCamera(*desc, frameCamera_);
-    const std::vector<ui::ElementDesc>* elements = canvasOk ? &snap_.elementsOf(*desc) : nullptr;
-    const std::size_t at = elements ? ui::elementIndex(*elements, frameElement_) : 0;
-    const bool shown = elements && at < elements->size();
-
-    FrameKey key;
-    if (shown) {
-        const auto size = renderer.viewSize(std::size_t(view));
-        key = {snap_.contentsRevision(frameCanvas_), frameCanvas_, frameElement_, view, size.x,
-               size.y};
-    }
-    if (key == frameSent_) return;
-    frameSent_ = key;
-    if (!shown) {
-        if (frameCreated_) renderer.setUiCanvasViews(frameRendererId_, {});
-        return;
-    }
-    if (!frameCreated_) {
-        frameRendererId_ = renderer.addUiCanvas();
-        // どの Canvas よりも手前（ほかの Canvas の順位は 0 から数えた個数までなので、常に
-        // いちばん手前）。
-        renderer.setUiCanvasOrder(frameRendererId_, INT_MAX);
-        frameCreated_ = true;
-    }
-    renderer.setUiCanvasDesignHeight(frameRendererId_, float(desc->height));
-    renderer.setUiCanvasViews(frameRendererId_, {std::size_t(view)});
-    // 要素の矩形は描く側（buildOne）と同じく設計値で解く（重ね順の後の段は後の PR）。
-    const ui::Rect canvas{0.0, 0.0, canvasWidthOn(renderer, *desc, std::size_t(view)),
-                          desc->height};
-    const std::vector<ui::LayoutNode> nodes = ui::layoutTree(*elements, {}, canvas);
-    // 掴めない要素（読めなかった共用 UI の中身・見えない要素）は枠の線だけ（つまみを出さない。
-    // 当たりの規則は ui::frameGrabbable = UiInputComponent と同じ）。
-    const bool editable = wizengine::uiops::elementsEditable(snap_.contentsInfo(frameCanvas_));
-    const bool handles = ui::frameGrabbable(editable, nodes[at]);
-    renderer.setUiCanvasMesh(
-        frameRendererId_, std::size_t(view),
-        ui::buildFrameMesh(nodes[at].rect, ui::designPerScreenPx(desc->height, key.viewHeight),
-                           handles));
+    frame_.update(scene.renderer(), snap_, cameraViews_, UiSelectionFrame::projectionOf(scene));
 }
 
 void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::UiState& state,

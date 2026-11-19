@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -329,9 +330,44 @@ public:
     // Canvas の設計の座標 (px, py) とレイの距離 distance（m。手前の板を選ぶのに使う）。
     // 板の外でも面に当たれば true（矩形の判定は呼び手）。面と平行・後ろ・板でなければ false。
     // 手前の物に隠れているかは見ない（計画の「今回やらないこと」）。
+    // plane があれば、交点を求めた板（同じカメラの読みから作った物）もそこへ入れる
+    // （映像の上のドラッグが開始時の板を覚える）。
     bool canvasPointAt(const wizengine::ui::CanvasDesc& desc, std::size_t cameraIndex,
-                       double ndcX, double ndcY, double& px, double& py,
-                       double& distance) const;
+                       double ndcX, double ndcY, double& px, double& py, double& distance,
+                       wizengine::ui::CanvasPlane* plane = nullptr) const;
+    // canvasPointAt の、決まった板 plane（designHeight = その Canvas の基準の高さ）版。
+    // 面と平行・後ろなら false。
+    bool planePointAt(const wizengine::ui::CanvasPlane& plane, double designHeight,
+                      std::size_t cameraIndex, double ndcX, double ndcY, double& px,
+                      double& py, double& distance) const;
+    // カーソルの下（板の矩形の中）でカメラにいちばん近い板（そのカメラに出ている camera /
+    // world の Canvas。唯一の決め方 = ボタンの当たりと映像の上の編集が使う。手前の板は
+    // 後ろの板をふさぐ）。canvas = -1 なら無し。手前の物に隠れているかは見ない。
+    struct UiPlatePoint {
+        int canvas = -1;
+        double x = 0.0, y = 0.0;  // 板の上の設計の座標
+        double distance = 0.0;    // レイの距離（m）
+    };
+    UiPlatePoint plateUnderCursor(const wizengine::UiState::Snapshot& snap,
+                                  std::size_t cameraIndex, double ndcX, double ndcY) const;
+    // 板の Canvas の設計の点（points、その場で書き換える）を、カメラ cameraIndex の映像の
+    // 上の overlay の座標（overlay = canvasRect の結果の Canvas。左上が原点・y 下）へ写す
+    // （板の上の選択枠を映像に重ねて描く）。どれかがカメラの後ろ・板が作れなければ false。
+    bool plateToOverlay(const wizengine::ui::CanvasDesc& desc, std::size_t cameraIndex,
+                        const wizengine::ui::Rect& overlay,
+                        std::vector<std::array<double, 2>>& points) const;
+    // 板の Canvas の設計の点 (px, py) の辺りで、映像の 1 画素が設計の何画素か
+    // （ui::designPerScreenPx の板版。選択枠のつまみの大きさ = 描く側と当たりが同じ値を
+    // 使う）。ビューの大きさは viewWidth × viewHeight。求められなければ false。
+    bool plateDesignPerScreenPx(const wizengine::ui::CanvasDesc& desc, std::size_t cameraIndex,
+                                int viewWidth, int viewHeight, double px, double py,
+                                double& scale) const;
+    // アセットパネルから足す world の Canvas の置き場所（唯一の決め方。uiops::apply の
+    // placeWorld に渡す）: カメラ cameraIndex（送ってきたエディタカメラ）の注視点に、カメラの
+    // 方を向けて立てる（傾けない = 回転は Y だけ。板の下が地面 y = 0 に埋まらないよう、中心は
+    // 板の高さ sizeY の半分より下げない）。カメラが無ければ false。
+    bool newWorldCanvasPlacement(std::size_t cameraIndex, double sizeY, wizengine::Vec3d& pos,
+                                 wizengine::Vec3d& euler) const;
 
     // ---- Component & object access (for SceneComponent / ObjectAction) ----
     void addComponent(std::unique_ptr<SceneComponent> component);

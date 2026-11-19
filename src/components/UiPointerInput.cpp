@@ -62,13 +62,11 @@ UiPointerInput::ButtonHit UiPointerInput::buttonAt(const Scene& scene,
                                                    int viewW, int viewH) const {
     ButtonHit hit;
     if (viewW <= 0 || viewH <= 0) return hit;  // まだビューが無い
-    // このカメラに出ている Canvas を overlay と板に分ける。
-    std::vector<int> overlays, plateCanvases;
+    // このカメラに出ている overlay の Canvas。
+    std::vector<int> overlays;
     for (std::size_t i = 0; i < snap.canvases.size(); ++i) {
         const ui::CanvasDesc* desc = snap.liveCanvas(int(i));
-        if (!desc || !ui::canvasShownOnCamera(*desc, int(camIndex))) continue;
-        const bool overlay = desc->mode == ui::CanvasMode::Overlay;
-        (overlay ? overlays : plateCanvases).push_back(int(i));
+        if (desc && ui::overlayShownOnCamera(*desc, int(camIndex))) overlays.push_back(int(i));
     }
     // 1. overlay を手前から（描く順と同じ規則 ui::canvasBehind の逆）。overlay は板より
     //    必ず手前に描かれるので、先に見る。
@@ -82,26 +80,13 @@ UiPointerInput::ButtonHit UiPointerInput::buttonAt(const Scene& scene,
         if (buttonOnCanvas(snap, index, canvas, px, py, hit)) return hit;
     }
     // 2. 板（camera / world）。レイの交点は overlay に当たらなかったときだけ求める。
-    //    カーソルの下にある板（枠の中）のうち、カメラにいちばん近い板だけを見る = 手前の板は
-    //    そこにボタンが無くても後ろの板をふさぐ。手前の物に隠れていても当たる（計画の
+    //    カーソルの下でカメラにいちばん近い板だけを見る（Scene::plateUnderCursor = 手前の板は
+    //    そこにボタンが無くても後ろの板をふさぐ）。手前の物に隠れていても当たる（計画の
     //    「今回やらないこと」= 隠れた板の当たりの判定は持たない）。
-    int nearest = -1;
-    double nearestDistance = 0.0, nearestX = 0.0, nearestY = 0.0;
-    for (const int index : plateCanvases) {
-        const ui::CanvasDesc& desc = *snap.liveCanvas(index);
-        double px = 0.0, py = 0.0, distance = 0.0;
-        if (!scene.canvasPointAt(desc, camIndex, x, y, px, py, distance)) continue;
-        const bool onPlate = ui::plateCanvasRect(desc).contains(px, py);
-        const bool nearer = nearest < 0 || distance < nearestDistance;
-        if (!onPlate || !nearer) continue;
-        nearest = index;
-        nearestDistance = distance;
-        nearestX = px;
-        nearestY = py;
-    }
-    if (nearest < 0) return hit;
-    const ui::Rect canvas = ui::plateCanvasRect(*snap.liveCanvas(nearest));
-    buttonOnCanvas(snap, nearest, canvas, nearestX, nearestY, hit);
+    const Scene::UiPlatePoint plate = scene.plateUnderCursor(snap, camIndex, x, y);
+    if (plate.canvas < 0) return hit;
+    const ui::Rect canvas = ui::plateCanvasRect(*snap.liveCanvas(plate.canvas));
+    buttonOnCanvas(snap, plate.canvas, canvas, plate.x, plate.y, hit);
     return hit;
 }
 

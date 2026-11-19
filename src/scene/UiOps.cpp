@@ -125,10 +125,26 @@ nlohmann::json member(const nlohmann::json& args, const char* key) {
     return args.is_object() && args.contains(key) ? args[key] : nlohmann::json();
 }
 
+// 属性 name に v を表の決まりで丸めて書く（唯一の手順。setCanvasAttrs と置き場所の書き込みが
+// 通る）。
+void writeCanvasAttr(const char* name, ui::CanvasDesc& desc, ui::PropValue v) {
+    const ui::CanvasAttrInfo* a = ui::canvasAttrFromName(name);
+    a->set(desc, ui::clampValue(a->spec, std::move(v)));
+}
+
+// world の板の置き場所（pos / euler）を書く（nullptr = 変えない）。
+void writePlacement(ui::CanvasDesc& desc, const Vec3d* pos, const Vec3d* euler) {
+    if (pos) writeCanvasAttr(ui::kCanvasPosAttr, desc, ui::numberValue(pos->x, pos->y, pos->z));
+    if (euler) {
+        writeCanvasAttr(ui::kCanvasEulerAttr, desc,
+                        ui::numberValue(euler->x, euler->y, euler->z));
+    }
+}
+
 // ---- Canvas の操作 -------------------------------------------------------------
 // 確かめ（名前の重なり・宣言の有無）は UiState がロックの下で答える（全体を写さない）。
 // 書くのは PHYSICS だけなので、確かめと書き込みの間に他の書き手は入らない。
-Result addCanvas(UiState& state, const nlohmann::json& args) {
+Result addCanvas(UiState& state, const nlohmann::json& args, const WorldPlacement& placeWorld) {
     auto taken = [&state](const std::string& n) { return state.canvasNameTaken(n, -1); };
     ui::CanvasDesc desc;
     std::string name;
@@ -137,7 +153,16 @@ Result addCanvas(UiState& state, const nlohmann::json& args) {
     desc.name = firstFreeName(named ? name : kNewCanvasName, kSafeNameMaxLength, taken);
     // 正規化で全部落ちた名前は既定の名前で作り、理由を出す（setCanvas と同じ文）。
     const std::string caveat = given == NameArg::Unusable ? unusableNameCaveat() : "";
-    const std::vector<std::string> rejected = setCanvasAttrs(member(args, "attrs"), desc);
+    const nlohmann::json attrs = member(args, "attrs");
+    const std::vector<std::string> rejected = setCanvasAttrs(attrs, desc);
+    // 置き場所を書いていない world の板は、呼び手の決める場所へ（表で丸めた mode と size で判断）。
+    const bool placed = attrs.is_object() &&
+                        (attrs.contains(ui::kCanvasPosAttr) || attrs.contains(ui::kCanvasEulerAttr));
+    const bool world = desc.mode == ui::CanvasMode::World;
+    Vec3d pos, euler;
+    if (world && !placed && placeWorld && placeWorld(desc.sizeY, pos, euler)) {
+        writePlacement(desc, &pos, &euler);
+    }
     // 宣言した UI を表示する Canvas（アセットパネルの UI のタイル）。宣言が無ければ空の
     // Canvas にして知らせる。
     const std::string uiName = jsonString(args, "ui", "");
@@ -371,8 +396,9 @@ bool isUiOp(const std::string& kind) {
                        [&kind](const char* op) { return kind == op; });
 }
 
-Result apply(UiState& state, const std::string& kind, const nlohmann::json& args) {
-    if (kind == kAdd) return addCanvas(state, args);
+Result apply(UiState& state, const std::string& kind, const nlohmann::json& args,
+             const WorldPlacement& placeWorld) {
+    if (kind == kAdd) return addCanvas(state, args, placeWorld);
     if (kind == kRemove) return removeCanvas(state, args);
     if (kind == kSet) return setCanvas(state, args);
     if (kind == kElementAdd) return addElementOp(state, args);
@@ -393,9 +419,16 @@ std::vector<std::string> setCanvasAttrs(const nlohmann::json& attrs, ui::CanvasD
             rejected.push_back(it.key());
             continue;
         }
-        a->set(desc, ui::clampValue(a->spec, std::move(v)));
+        writeCanvasAttr(a->name, desc, std::move(v));
     }
     return rejected;
+}
+
+bool setCanvasPlacement(UiState& state, int canvas, const Vec3d* pos, const Vec3d* euler) {
+    ui::CanvasDesc desc;
+    if (!state.copyCanvas(canvas, desc)) return false;  // 行き違い（もう無い）
+    writePlacement(desc, pos, euler);
+    return state.replaceCanvas(canvas, std::move(desc));
 }
 
 std::vector<std::string> setElementProps(const nlohmann::json& props,
