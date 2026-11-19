@@ -566,6 +566,9 @@ public:
     // まだ受けていないビューには映さない。overlay の Canvas では何もしない。
     void setUiCanvasTransform(std::size_t id, std::size_t viewIndex,
                               const filament::math::mat4f& transform);
+    // 板の、そのビューでの姿勢を忘れる（次に姿勢を受けるまでそのビューに映さない。
+    // 姿勢を出せないカメラのビュー用）。overlay の Canvas・一覧に無いビューでは何もしない。
+    void clearUiCanvasTransform(std::size_t id, std::size_t viewIndex);
     // Canvas どうしの重なり順（大きいほど手前）。前後の規則は呼び手が持ち（ui::canvasBehind の
     // 順位）、Canvas ごとに違う値を渡す（同じ値が来たときだけ番号の小さい方が奥）。
     // 板には効かない（板どうし・他の半透明の物とはカメラからの距離で並ぶ。板の

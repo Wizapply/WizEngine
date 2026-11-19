@@ -25,6 +25,7 @@
 #include "scene/LibraryFlow.h"  // LibraryBaseline / LibraryKind
 #include "scene/UiJson.h"      // uijson::Cache
 #include "scene/UiState.h"
+#include "ui/UiPlane.h"     // canvasPlane の CanvasPlane
 #include "document/SceneDocument.h"
 #include "physics/MeshCollision.h"  // CollisionTriangles
 #include "physics/PhysicsWorld.h"  // for BodyTransform
@@ -317,6 +318,20 @@ public:
     // pickBoxAt と同じくどのスレッドからでも呼べる。
     bool cameraRay(std::size_t cameraIndex, double ndcX, double ndcY,
                    scenemath::Basis& basis, scenemath::Vec3& dir) const;
+    // 板の Canvas（camera / world）の、カメラ cameraIndex から見た板（ui/UiPlane.h）。
+    // world はどのカメラでも同じ板（euler → 向きは SceneMath）、camera はそのカメラの今の
+    // 視点の正面。overlay・番号が範囲外・カメラが退化・板の大きさが 0 なら false。
+    // 描画（その時点のカメラ = 描くフレームの視点）と当たり（cameraRay と同じカメラ）が
+    // 同じ板を使うための 1 か所。カメラの値は atomic なので、どのスレッドからでも呼べる。
+    bool canvasPlane(const wizengine::ui::CanvasDesc& desc, std::size_t cameraIndex,
+                     wizengine::ui::CanvasPlane& out) const;
+    // カメラ cameraIndex の画面の点（NDC）を通るレイが板の Canvas の面に当たる所の、
+    // Canvas の設計の座標 (px, py) とレイの距離 distance（m。手前の板を選ぶのに使う）。
+    // 板の外でも面に当たれば true（矩形の判定は呼び手）。面と平行・後ろ・板でなければ false。
+    // 手前の物に隠れているかは見ない（計画の「今回やらないこと」）。
+    bool canvasPointAt(const wizengine::ui::CanvasDesc& desc, std::size_t cameraIndex,
+                       double ndcX, double ndcY, double& px, double& py,
+                       double& distance) const;
 
     // ---- Component & object access (for SceneComponent / ObjectAction) ----
     void addComponent(std::unique_ptr<SceneComponent> component);

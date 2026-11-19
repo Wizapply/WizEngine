@@ -1,6 +1,7 @@
 #include "components/UiRenderComponent.h"
 
 #include <algorithm>
+#include <array>
 #include <climits>
 #include <tuple>
 #include <unordered_map>
@@ -13,6 +14,7 @@
 #include "ui/UiHandles.h"
 #include "ui/UiLayout.h"
 #include "ui/UiMesh.h"
+#include "ui/UiPlane.h"
 #include "ui/UiProps.h"
 #include "ui/UiValue.h"
 
@@ -28,9 +30,19 @@ constexpr const char* kDefaultFontFile = "fonts/NotoSansJP-Regular.otf";
 // 安全弁。同梱の Noto Sans JP は約 4.5 MB、CJK 全部入りでも 20 MB 前後）。
 constexpr std::uintmax_t kMaxFontBytes = 32u * 1024u * 1024u;
 
-// この部品が描く Canvas か（唯一の判定）。今は overlay だけ。world / camera
-// （3D の板）は PR5 で足すまで描かない。
-bool drawnHere(const ui::CanvasDesc& desc) { return desc.mode == ui::CanvasMode::Overlay; }
+// 板（camera / world = 主のシーンの板）として描く Canvas か（唯一の判定）。それ以外は overlay。
+bool drawnAsPlate(const ui::CanvasDesc& desc) { return desc.mode != ui::CanvasMode::Overlay; }
+
+// 板の中身は全ビューで 1 つ（ui/UiPlane.h）なので、送った条件はこの番号 1 つに覚える。
+constexpr std::size_t kPlateBuildKey = std::size_t(-1);
+
+// ui::plateUnitToWorld（列優先の 16 個）→ Renderer の行列。
+filament::math::mat4f toMat4(const std::array<float, 16>& m) {
+    using filament::math::float4;
+    return filament::math::mat4f(float4{m[0], m[1], m[2], m[3]}, float4{m[4], m[5], m[6], m[7]},
+                                 float4{m[8], m[9], m[10], m[11]},
+                                 float4{m[12], m[13], m[14], m[15]});
+}
 
 // 文書の Path 型の決まり（assets/ 相対・長さ）で正規化したパス。通らなければ空。
 std::string checkedPath(const std::string& file) {
@@ -106,7 +118,7 @@ void UiRenderComponent::syncFonts(bool reloaded) {
 void UiRenderComponent::releaseUnusedImages(wizengine::Renderer& renderer, bool reloaded) {
     std::set<std::string> used;
     for (const auto& item : snap_.canvases) {
-        if (!item.alive || !drawnHere(item.desc)) continue;
+        if (!item.alive) continue;
         for (const auto& e : snap_.elementsOf(item.desc)) {
             const std::string& file = e.props.text(ui::Prop::File);
             if (!file.empty()) used.insert(file);
@@ -142,13 +154,14 @@ int UiRenderComponent::imageTexture(wizengine::Renderer& renderer, const std::st
 }
 
 void UiRenderComponent::syncCanvases(wizengine::Renderer& renderer, bool designChanged) {
-    auto draws = [this](std::size_t i) {
-        const bool exists = i < snap_.canvases.size();
-        return exists && snap_.canvases[i].alive && drawnHere(snap_.canvases[i].desc);
+    // 描かない（生きていない・無くなった）Canvas と、overlay ⇄ 板が変わった Canvas の
+    // 入れ物は壊す（Renderer の作りが違う。この後で作り直す）。
+    auto keeps = [this](std::size_t i, const CanvasSlot& slot) {
+        const bool exists = i < snap_.canvases.size() && snap_.canvases[i].alive;
+        return exists && drawnAsPlate(snap_.canvases[i].desc) == slot.plate;
     };
-    // 描かない（生きていない・無くなった・描かない mode の）Canvas の入れ物は壊す。
     for (auto it = canvases_.begin(); it != canvases_.end();) {
-        if (draws(it->first)) {
+        if (keeps(it->first, it->second)) {
             ++it;
             continue;
         }
@@ -157,26 +170,14 @@ void UiRenderComponent::syncCanvases(wizengine::Renderer& renderer, bool designC
     }
     for (std::size_t i = 0; i < snap_.canvases.size(); ++i) {
         const auto& item = snap_.canvases[i];
-        if (!item.alive) {  // 生きていない枠は作らない
-            notDrawnWarned_.erase(i);
-            continue;
-        }
-        if (!drawnHere(item.desc)) {
-            // 同じ Canvas は mode が変わったときだけ知らせ直す（編集のたびに出さない）。
-            const auto warned = notDrawnWarned_.find(i);
-            const bool known = warned != notDrawnWarned_.end() && warned->second == item.desc.mode;
-            if (!known) {
-                LOGW("ui", "canvas '%s': mode is not drawn yet (only overlay) - skipped",
-                     item.desc.name.c_str());
-                notDrawnWarned_[i] = item.desc.mode;
-            }
-            continue;
-        }
-        notDrawnWarned_.erase(i);
+        if (!item.alive) continue;  // 生きていない枠は作らない
         auto found = canvases_.find(i);
         if (found == canvases_.end()) {
             CanvasSlot slot;
-            slot.rendererId = renderer.addUiCanvas();
+            slot.plate = drawnAsPlate(item.desc);
+            using Placement = wizengine::Renderer::UiCanvasPlacement;
+            slot.rendererId =
+                renderer.addUiCanvas(slot.plate ? Placement::Plate : Placement::Overlay);
             found = canvases_.emplace(i, std::move(slot)).first;
             designChanged = true;
         }
@@ -195,8 +196,8 @@ void UiRenderComponent::syncCanvases(wizengine::Renderer& renderer, bool designC
         if (views != slot.views) {
             renderer.setUiCanvasViews(slot.rendererId, views);
             slot.views = views;
-            // 外れたビューの条件は捨てる（戻ってきたら組み直す）。
-            for (auto b = slot.built.begin(); b != slot.built.end();) {
+            // 外れたビューの条件は捨てる（戻ってきたら組み直す）。板の中身はビューに依らない。
+            for (auto b = slot.built.begin(); b != slot.built.end() && !slot.plate;) {
                 const bool kept = std::find(views.begin(), views.end(), b->first) != views.end();
                 b = kept ? std::next(b) : slot.built.erase(b);
             }
@@ -219,6 +220,17 @@ void UiRenderComponent::syncRanks(wizengine::Renderer& renderer) {
         slot.rank = int(rank);
         renderer.setUiCanvasOrder(slot.rendererId, slot.rank);
     }
+}
+
+wizengine::UiState::Pointer UiRenderComponent::plateCanvasPointer(const CanvasSlot& slot,
+                                                                int index) const {
+    // 板の中身は全ビューで 1 つなので、どれかのビューのカメラが上に居ればその見た目にする
+    // （先に見つかったビュー）。
+    for (const std::size_t view : slot.views) {
+        const wizengine::UiState::Pointer p = pointerOn(view, index);
+        if (p.hover >= 0 || p.pressed >= 0) return p;
+    }
+    return wizengine::UiState::Pointer{};
 }
 
 wizengine::UiState::Pointer UiRenderComponent::pointerOn(std::size_t view, int index) const {
@@ -259,6 +271,10 @@ void UiRenderComponent::buildMeshes(wizengine::Renderer& renderer, bool all) {
         const std::uint64_t revision = snap_.contentsRevision(int(index));
         // ノードの上書き（実行時の状態）の版。変わった Canvas だけ組み直す。
         const std::uint64_t overrides = overrides_.revision(int(index));
+        if (slot.plate) {
+            buildPlate(renderer, int(index), slot, {revision, overrides, generation}, all);
+            continue;
+        }
         // 同じ縦横比で同じポインタのビューは同じ中身（組むのはその組ごとに 1 回）。
         using Key = std::tuple<double, int, int>;  // 幅・ポインタの上・押下
         struct Pending {
@@ -296,6 +312,56 @@ void UiRenderComponent::buildMeshes(wizengine::Renderer& renderer, bool all) {
     }
 }
 
+void UiRenderComponent::buildPlate(wizengine::Renderer& renderer, int index, CanvasSlot& slot,
+                                   const Material& material, bool all) {
+    const ui::CanvasDesc& desc = snap_.canvases[std::size_t(index)].desc;
+    const double width = ui::plateCanvasWidth(desc);
+    const wizengine::UiState::Pointer pointer = plateCanvasPointer(slot, index);
+    const ViewBuild& b = slot.built[kPlateBuildKey];
+    const bool sameMaterial = b.revision == material.revision &&
+                              b.generation == material.generation &&
+                              b.overrides == material.overrides;
+    const bool samePointer = b.hover == pointer.hover && b.pressed == pointer.pressed;
+    const bool upToDate = sameMaterial && b.canvasWidth == width && samePointer;
+    if (upToDate && !all) return;
+    // 板の Renderer はビュー番号を見ない（Renderer.h の setUiCanvasMesh）。
+    renderer.setUiCanvasMesh(slot.rendererId, 0, buildOne(renderer, index, desc, width, pointer));
+    slot.built[kPlateBuildKey] = {material.revision, width,          material.generation,
+                                  pointer.hover,     pointer.pressed, material.overrides};
+}
+
+void UiRenderComponent::placePlates(wizengine::Renderer& renderer, const PlaneFn& planeOf) {
+    // 板の姿勢を出すビューごとに毎フレーム送る（camera の板は描くフレームのカメラに付く）。
+    // world の板はカメラに依らないので 1 回だけ組んで全ビューへ。姿勢を出せない（camera の
+    // 板でカメラの基底が作れない・板の大きさが 0）ビューは姿勢を忘れさせる = そのビューに
+    // 映さない（前の姿勢のまま残さない）。
+    for (const auto& [index, slot] : canvases_) {
+        if (!slot.plate || cameraViews_.empty()) continue;
+        const ui::CanvasDesc& desc = snap_.canvases[index].desc;
+        const bool world = desc.mode == ui::CanvasMode::World;
+        ui::CanvasPlane worldPlane;
+        const bool worldPosed = world && planeOf(desc, 0, worldPlane);  // カメラは見ない
+        const filament::math::mat4f worldMatrix =
+            worldPosed ? toMat4(ui::plateUnitToWorld(worldPlane)) : filament::math::mat4f{};
+        for (std::size_t cam = 0; cam < cameraViews_.size(); ++cam) {
+            const int view = cameraViews_[cam];
+            if (view < 0) continue;
+            const bool listed = std::find(slot.views.begin(), slot.views.end(),
+                                          std::size_t(view)) != slot.views.end();
+            if (!listed) continue;
+            ui::CanvasPlane plane;
+            const bool posed = world ? worldPosed : planeOf(desc, cam, plane);
+            if (!posed) {
+                renderer.clearUiCanvasTransform(slot.rendererId, std::size_t(view));
+                continue;
+            }
+            renderer.setUiCanvasTransform(slot.rendererId, std::size_t(view),
+                                          world ? worldMatrix
+                                                : toMat4(ui::plateUnitToWorld(plane)));
+        }
+    }
+}
+
 void UiRenderComponent::uploadAtlas(wizengine::Renderer& renderer) {
     ui::AtlasRect r;
     while (atlas_->takeDirtyRect(r)) {
@@ -328,7 +394,13 @@ void UiRenderComponent::onRender(Scene& scene) {
 void UiRenderComponent::onRenderUnlocked(Scene& scene) {
     // ロックの外で使うのは Renderer と UI の状態だけ（下の関数は Scene を受けない =
     // オブジェクト一覧を読むコードが書けない）。
-    update(scene.renderer(), scene.ui());
+    // 板の姿勢はこの時点のカメラから出す（applyToRenderer がイベントのカメラの注文を
+    // 当てた後 = main がこの後ビューへ当てる視点）。カメラの値は atomic（Scene::canvasPlane）。
+    const PlaneFn planeOf = [&scene](const ui::CanvasDesc& desc, std::size_t cam,
+                                     ui::CanvasPlane& out) {
+        return scene.canvasPlane(desc, cam, out);
+    };
+    update(scene.renderer(), scene.ui(), planeOf);
     updateFrame(scene.renderer());
 }
 
@@ -378,7 +450,8 @@ void UiRenderComponent::updateFrame(wizengine::Renderer& renderer) {
                            handles));
 }
 
-void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::UiState& state) {
+void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::UiState& state,
+                               const PlaneFn& planeOf) {
     const bool changed = state.copyIfChanged(version_, snap_);
     // 実行時の状態（ポインタ・ノードの上書き）は別の版。変わったビュー・Canvas だけを
     // buildMeshes が組み直す。
@@ -386,10 +459,6 @@ void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::U
     state.copyOverridesIfChanged(overridesVersion_, overrides_);
     if (changed) {
         anyAlive_ = anyAliveCanvas();  // 写したときに 1 回だけ数える
-        // 一覧が縮んだ（全消し・読込）ら、外になった番号の警告の記録を捨てる（次に同じ
-        // 番号で来た Canvas をまた知らせる）。
-        notDrawnWarned_.erase(notDrawnWarned_.lower_bound(snap_.canvases.size()),
-                              notDrawnWarned_.end());
     }
     // UI の無いシーンは何もしない（字の置き場もフォントも作らない。作った物は残す）。
     if (canvases_.empty() && !anyAlive_) return;
@@ -413,6 +482,7 @@ void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::U
         rebuildAtlas(renderer);
         buildMeshes(renderer, true);
     }
+    placePlates(renderer, planeOf);
     uploadAtlas(renderer);
 }
 
@@ -422,8 +492,9 @@ void UiRenderComponent::rebuildAtlas(wizengine::Renderer& renderer) {
         const ui::CanvasDesc& desc = snap_.canvases[index].desc;
         // 同じ縦横比のビューは同じ字を使う（buildMeshes と同じく幅ごとに 1 回）。
         std::set<double> widths;
+        if (slot.plate) widths.insert(ui::plateCanvasWidth(desc));  // 板はビューに依らない
         for (const std::size_t view : slot.views) {
-            widths.insert(canvasWidthOn(renderer, desc, view));
+            if (!slot.plate) widths.insert(canvasWidthOn(renderer, desc, view));
         }
         // 字は色だけが変わるポインタの段に依らないので、ポインタ無しで組む。
         for (const double width : widths) {

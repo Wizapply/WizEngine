@@ -323,6 +323,14 @@ void Renderer::setUiCanvasTransform(std::size_t id, std::size_t viewIndex,
     }
 }
 
+void Renderer::clearUiCanvasTransform(std::size_t id, std::size_t viewIndex) {
+    UiCanvas* canvas = uiCanvasAt(id);
+    if (!canvas) return;
+    for (auto& pv : canvas->plateViews) {  // overlay の一覧は空 = 何もしない
+        if (pv.view == viewIndex) pv.posed = false;
+    }
+}
+
 void Renderer::setUiCanvasOrder(std::size_t id, int order) {
     UiCanvas* canvas = uiCanvasAt(id);
     if (!canvas || canvas->order == order) return;

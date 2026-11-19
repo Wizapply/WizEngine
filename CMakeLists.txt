@@ -415,6 +415,7 @@ set(WIZ_SCENE_SOURCES
     src/scene/SceneTerrainScatterBody.cpp
     src/scene/SceneTerrainSculpt.cpp
     src/scene/SceneUiEvents.cpp
+    src/scene/SceneUiPlane.cpp
     src/scene/SharedAssetFile.cpp
     src/scene/SoftLattice.cpp
     src/scene/UiFiles.cpp

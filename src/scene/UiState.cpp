@@ -459,7 +459,7 @@ void UiState::setPaused(bool paused) {
 bool UiState::clickableOnCamera(int camera) const {
     std::lock_guard<std::mutex> lk(mutex_);
     for (const CanvasItem& c : canvases_) {
-        if (!c.alive || !ui::overlayShownOnCamera(c.desc, camera)) continue;
+        if (!c.alive || !ui::canvasShownOnCamera(c.desc, camera)) continue;
         const std::vector<ui::ElementDesc>& elements = elementsIn(c.desc, uiAssets_);
         if (std::any_of(elements.begin(), elements.end(), ui::catchesPointer)) return true;
     }
@@ -559,7 +559,7 @@ bool UiState::clickValidLocked(const PendingClick& c, Click& out) const {
     if (c.generations.pause != pauseGeneration_) return false;  // 一時停止をまたいだ・中の押下
     if (!refValidLocked(c.ref)) return false;  // 消えた・読み直した・入れ替えた
     const ui::CanvasDesc& desc = canvases_[std::size_t(c.ref.canvas)].desc;
-    if (!ui::overlayShownOnCamera(desc, int(c.camera))) return false;  // 他のカメラ向け
+    if (!ui::canvasShownOnCamera(desc, int(c.camera))) return false;  // 他のカメラ向け
     const std::vector<ui::ElementDesc>& elements = elementsIn(desc, uiAssets_);
     const std::size_t at = ui::elementIndex(elements, c.ref.element);
     // 性質はノードの上書きまで重ねた値（描く側・当たりと同じ口 ui::resolveElements）。

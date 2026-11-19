@@ -261,7 +261,7 @@ inline bool canvasShownOnCamera(const CanvasDesc& c, int camera) {
 
 // 映像に重ねる overlay で、そのカメラに出ている Canvas か（唯一の定義）。映像の位置を
 // そのまま Canvas の画素に写せるのはこの Canvas だけ（camera / world は板の上の座標）なので、
-// 映像の上の選択枠・ドラッグ、ボタンの当たり・クリックの確かめが使う。
+// 映像の上の選択枠・ドラッグが使う（ボタンの当たり・クリックの確かめは板も見る = canvasShownOnCamera）。
 inline bool overlayShownOnCamera(const CanvasDesc& c, int camera) {
     return c.mode == CanvasMode::Overlay && canvasShownOnCamera(c, camera);
 }

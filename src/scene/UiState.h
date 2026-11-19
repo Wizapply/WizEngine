@@ -301,7 +301,7 @@ public:
     // 出されず、再開した瞬間にまとめて発火させない）。止まっている間の pushClick も捨てる。
     // ポインタ（hover / pressed の見た目）は触らない。
     void setPaused(bool paused);
-    // このカメラのページに押せる UI があるか（そのカメラに出ている overlay の Canvas に、
+    // このカメラのページに押せる UI があるか（そのカメラに出ている Canvas = overlay と板に、
     // 押下を受け止める要素がある。ブラウザがホバーを送るかの判断 = /scene の uiClickable）。
     bool clickableOnCamera(int camera) const;
     // カメラ camera のポインタを置く（INPUT。変わったときだけ版を進める）。スロットの範囲
@@ -327,7 +327,7 @@ public:
     void pushClick(const PendingClick& click);
     // 積まれたクリックを全部取り出し、今も有効な物だけを返す（PHYSICS。唯一の確かめ）:
     // 押したときのモードの世代が modeEpoch と同じ・実行時と一時停止の世代が今と同じ・参照が今も同じ
-    // 要素（refValid）・そのカメラの映像に重なる Canvas（ui::overlayShownOnCamera）・クリックを
+    // 要素（refValid）・そのカメラに出ている Canvas（ui::canvasShownOnCamera。overlay と板）・クリックを
     // 受け付ける（ui::acceptsClick。性質はノードの上書きまで重ねた値 = ui::resolveElements）。
     std::vector<Click> takeClicks(std::uint64_t modeEpoch);
     // 実行時の状態を全部捨てる（シミュレートの開始・停止・Reset。Scene::resetGraphRuntime）。
