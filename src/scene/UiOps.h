@@ -55,9 +55,10 @@ bool isUiOp(const std::string& kind);
 // 足す world の Canvas の置き場所を決める口（呼び手 = Scene がカメラから決める。sizeY = 表で
 // 丸めた板の高さ。決められなければ false = 既定の置き場所のまま）。
 using WorldPlacement = std::function<bool(double sizeY, Vec3d& pos, Vec3d& euler)>;
-// 操作を当てる（PHYSICS スレッド）。args は型を信じない。placeWorld は ui.add が world の
-// Canvas を足し、attrs に pos も euler も書いていないときだけ呼ぶ（アセットパネルの World
-// Canvas。空なら呼ばない）。
+// 操作を当てる（PHYSICS スレッド）。args は型を信じない。placeWorld を呼ぶのは ui.add と
+// ui.set だけで、Canvas が overlay から world になり（追加は overlay から数える = アセット
+// パネルの World Canvas）、同じ attrs に pos も euler も書いていないとき（空なら呼ばない。
+// ほかの操作には渡しても使わない = どの操作が置き場所を決めるかはここの 1 か所）。
 Result apply(UiState& state, const std::string& kind, const nlohmann::json& args,
              const WorldPlacement& placeWorld = {});
 // Canvas の要素をエディタで編集してよいか（唯一の定義。Inspector の操作・映像の上の
@@ -89,7 +90,8 @@ NameArg readNameArg(const nlohmann::json& args,
 // 書く。戻り値 = 書かなかった名前（型が合わない・知らない・書き換えられない）。
 std::vector<std::string> setCanvasAttrs(const nlohmann::json& attrs, ui::CanvasDesc& desc);
 // world の板の置き場所（pos / euler。nullptr = 変えない）を書く（ギズモ。Inspector の欄と
-// 同じ表の丸めを通す。ステータスは出さない）。Canvas が無ければ false。
+// 同じ表の丸めを通す。ステータスは出さない）。中身の版は進めない（UiState::setCanvasPlacement
+// = 板の中身を組み直さない）。Canvas が無い・丸めた値が今と同じなら false。
 bool setCanvasPlacement(UiState& state, int canvas, const Vec3d* pos, const Vec3d* euler);
 // 要素の性質の部分更新。props の中の、その種類が持つ性質だけを丸めて書き、reset の
 // 名前の性質を既定値へ戻す（書いていない状態にする）。戻り値 = 書かなかった名前。

@@ -26,6 +26,7 @@
 #include "scene/LibraryFlow.h"  // LibraryBaseline / LibraryKind
 #include "scene/UiJson.h"      // uijson::Cache
 #include "scene/UiState.h"
+#include "ui/UiMeshFormat.h"  // plateMeshToOverlay の UiMeshData
 #include "ui/UiPlane.h"     // canvasPlane の CanvasPlane
 #include "document/SceneDocument.h"
 #include "physics/MeshCollision.h"  // CollisionTriangles
@@ -330,19 +331,13 @@ public:
     // Canvas の設計の座標 (px, py) とレイの距離 distance（m。手前の板を選ぶのに使う）。
     // 板の外でも面に当たれば true（矩形の判定は呼び手）。面と平行・後ろ・板でなければ false。
     // 手前の物に隠れているかは見ない（計画の「今回やらないこと」）。
-    // plane があれば、交点を求めた板（同じカメラの読みから作った物）もそこへ入れる
-    // （映像の上のドラッグが開始時の板を覚える）。
     bool canvasPointAt(const wizengine::ui::CanvasDesc& desc, std::size_t cameraIndex,
-                       double ndcX, double ndcY, double& px, double& py, double& distance,
-                       wizengine::ui::CanvasPlane* plane = nullptr) const;
-    // canvasPointAt の、決まった板 plane（designHeight = その Canvas の基準の高さ）版。
-    // 面と平行・後ろなら false。
-    bool planePointAt(const wizengine::ui::CanvasPlane& plane, double designHeight,
-                      std::size_t cameraIndex, double ndcX, double ndcY, double& px,
-                      double& py, double& distance) const;
+                       double ndcX, double ndcY, double& px, double& py,
+                       double& distance) const;
     // カーソルの下（板の矩形の中）でカメラにいちばん近い板（そのカメラに出ている camera /
-    // world の Canvas。唯一の決め方 = ボタンの当たりと映像の上の編集が使う。手前の板は
-    // 後ろの板をふさぐ）。canvas = -1 なら無し。手前の物に隠れているかは見ない。
+    // world の Canvas。唯一の決め方）。使い手は、シミュレート中のボタンの当たり（手前の板は
+    // 後ろの板をふさぐ）と、エディタの選択枠の「枠の中の移動」（手前に別の板があれば当てない。
+    // つまみはふさがない）。canvas = -1 なら無し。手前の物に隠れているかは見ない。
     struct UiPlatePoint {
         int canvas = -1;
         double x = 0.0, y = 0.0;  // 板の上の設計の座標
@@ -350,18 +345,25 @@ public:
     };
     UiPlatePoint plateUnderCursor(const wizengine::UiState::Snapshot& snap,
                                   std::size_t cameraIndex, double ndcX, double ndcY) const;
-    // 板の Canvas の設計の点（points、その場で書き換える）を、カメラ cameraIndex の映像の
-    // 上の overlay の座標（overlay = canvasRect の結果の Canvas。左上が原点・y 下）へ写す
-    // （板の上の選択枠を映像に重ねて描く）。どれかがカメラの後ろ・板が作れなければ false。
-    bool plateToOverlay(const wizengine::ui::CanvasDesc& desc, std::size_t cameraIndex,
-                        const wizengine::ui::Rect& overlay,
-                        std::vector<std::array<double, 2>>& points) const;
-    // 板の Canvas の設計の点 (px, py) の辺りで、映像の 1 画素が設計の何画素か
+    // 板の Canvas の設計の画素で組んだメッシュ mesh（その場で書き換える）を、カメラ
+    // cameraIndex の映像の上の overlay の座標（overlay = canvasRect の結果の Canvas。左上が
+    // 原点・y 下。投影の縦横比はカーソルのレイ cameraRay と同じ）へ写す（板の上の選択枠を
+    // 映像に重ねて描く）。
+    // カメラの後ろに回った部分は切って捨てる（ui::clipMeshToHalfPlane）。何も残らない・板が
+    // 作れなければ false。
+    bool plateMeshToOverlay(const wizengine::ui::CanvasDesc& desc, std::size_t cameraIndex,
+                            const wizengine::ui::Rect& overlay,
+                            wizengine::ui::UiMeshData& mesh) const;
+    // 板の Canvas の要素の矩形 rect（設計の画素）の辺りで、映像の 1 画素が設計の何画素か
     // （ui::designPerScreenPx の板版。選択枠のつまみの大きさ = 描く側と当たりが同じ値を
-    // 使う）。ビューの大きさは viewWidth × viewHeight。求められなければ false。
+    // 使う）。測る点は矩形の中心、それがカメラの後ろなら見えている角。ビューの大きさは
+    // viewWidth × viewHeight。どこも見えなければ false。
     bool plateDesignPerScreenPx(const wizengine::ui::CanvasDesc& desc, std::size_t cameraIndex,
-                                int viewWidth, int viewHeight, double px, double py,
+                                int viewWidth, int viewHeight, const wizengine::ui::Rect& rect,
                                 double& scale) const;
+    // カメラ cameraIndex の視点と注視点（eye xyz, target xyz。選択枠を組み直すかの目印）。
+    // 範囲外は全部 0。
+    std::array<double, 6> cameraEyeTarget(std::size_t cameraIndex) const;
     // アセットパネルから足す world の Canvas の置き場所（唯一の決め方。uiops::apply の
     // placeWorld に渡す）: カメラ cameraIndex（送ってきたエディタカメラ）の注視点に、カメラの
     // 方を向けて立てる（傾けない = 回転は Y だけ。板の下が地面 y = 0 に埋まらないよう、中心は
@@ -533,6 +535,23 @@ public:
     void applyToRenderer();
 
 private:
+    // 板 1 枚をカメラ 1 台の 1 回の読みから見た物（板の上の設計の座標 → 映像の上の overlay の
+    // 座標・奥行き。SceneUiPlane.cpp の選択枠の写しとつまみの大きさが使う）。
+    struct PlateView {
+        scenemath::Basis basis;
+        wizengine::ui::CanvasPlane plane;
+        double designHeight = 0.0, fov = 0.0, aspect = 1.0;
+        wizengine::ui::Rect overlay;
+        // 設計の点 (x, y) → overlay の座標。カメラの後ろなら false。
+        bool toOverlay(double x, double y, double& ox, double& oy) const;
+        // 設計の点 (x, y) のカメラからの奥行き（m。前向きが正）。
+        double depth(double x, double y) const;
+    };
+    // overlay = 写す先の overlay の Canvas（投影の縦横比は cameraRay と同じ renderer_.aspect()）。
+    // カメラが退化・板が作れなければ false。
+    bool plateView(const wizengine::ui::CanvasDesc& desc, std::size_t cameraIndex,
+                   const wizengine::ui::Rect& overlay, PlateView& out) const;
+
     // copy body poses into latestPoses_ (thread-safe)。cut = true は「連続した
     // 動きではない」更新（置き直し・読込・モード切替・Reset など、物理の
     // ステップ以外から呼ぶもの全部）で、描画はそこを補間でつながない。

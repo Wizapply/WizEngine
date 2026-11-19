@@ -123,11 +123,12 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     // シミュレート中にこれが立っている間だけホバーを送る）。
     j["uiClickable"] = ui_.clickableOnCamera(int(cameraIndex));
 
-    // エディタ選択（種類・番号・UI の要素）は続けて読む（別々の atomic なので、間を
-    // 空けるほど食い違いやすい。読む側は対象が今もあるかを必ず確かめる）。
-    const auto selKind = editor_.selKind();
-    const int selIndex = editor_.selIndex();
-    const int selSub = editor_.selSub();
+    // エディタ選択（種類・番号・UI の要素）は組で 1 回だけ読む（EditorState::selection。読む側は
+    // 対象が今もあるかを必ず確かめる）。
+    const EditorState::Selection editorSel = editor_.selection();
+    const auto selKind = editorSel.kind;
+    const int selIndex = editorSel.index;
+    const int selSub = editorSel.sub;
     // UI の一覧と選択中の設計値はロックの前に取る（UiState の mutex_ は末端で、オブジェクトの
     // 一覧とは別の持ち主）。版と選択が前回と同じなら組み直さない（uijson::Cache）。選択が
     // 今もあるかの確かめは中で 1 回だけ（無ければ selected が null）。書き出した文字列を

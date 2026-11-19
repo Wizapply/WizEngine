@@ -16,6 +16,8 @@
 // （Filament は render(view) の時点のレイヤと変換で描く物を選ぶ）。
 #include "render/RendererInternal.h"
 
+#include <cstring>
+
 using namespace filament;
 using namespace filament::math;
 using utils::EntityManager;
@@ -56,18 +58,29 @@ void Renderer::applyUiVisibility(std::size_t viewIndex) {
         for (const auto& pv : canvas.plateViews) {
             if (pv.view == viewIndex && pv.posed) pose = &pv;
         }
+        // 前のビュー（前のフレーム）と同じ変換・可視なら当て直さない（world の板を全ビューに
+        // 出すと、同じ値を毎フレーム N 回送ることになるため）。
         if (pose) {
-            setEntityTransform(*engine_, part.entity,
-                               pose->transform * uiDesignScale(canvas.designHeight));
+            const mat4f m = pose->transform * uiDesignScale(canvas.designHeight);
+            const bool sameTransform =
+                part.appliedTransformKnown &&
+                std::memcmp(&m, &part.appliedTransform, sizeof(mat4f)) == 0;
+            if (!sameTransform) {
+                setEntityTransform(*engine_, part.entity, m);
+                part.appliedTransform = m;
+                part.appliedTransformKnown = true;
+            }
         }
-        setUiPlateShown(part.entity, pose != nullptr);
+        const bool shown = pose != nullptr;
+        if (shown != part.appliedShown) setUiPlateShown(part, shown);
     }
 }
 
-void Renderer::setUiPlateShown(utils::Entity entity, bool shown) {
+void Renderer::setUiPlateShown(UiCanvasPart& part, bool shown) {
     auto& rm = engine_->getRenderableManager();
-    rm.setLayerMask(rm.getInstance(entity), kLayerScene | kLayerUiHidden,
+    rm.setLayerMask(rm.getInstance(part.entity), kLayerScene | kLayerUiHidden,
                     shown ? kLayerScene : kLayerUiHidden);
+    part.appliedShown = shown;
 }
 
 int2 Renderer::viewSize(std::size_t viewIndex) const {

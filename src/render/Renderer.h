@@ -680,8 +680,12 @@ private:
     // ビューごとに 1 個で、そのビューの uiScene にだけ入る。約束: overlay の入れ物は
     // setUiCanvasViews が ensureUiView の後にだけ作る = 入れ物があれば uiScene もある。
     // 板は 1 個（addUiCanvas が作る）で、主のシーンに入る。
+    // 板の入れ物の view（どのビューの番号とも一致しない = ビューで探す処理に板は当たらない）。
+    static constexpr std::size_t kUiPlateNoView = std::size_t(-1);
     struct UiCanvasPart {
-        std::size_t view = 0;              // overlay: そのビュー（板は使わない）
+        // overlay: そのビュー。板はビューに依らない 1 つなので kUiPlateNoView（ビューごとの
+        // 姿勢と可視は UiCanvas::plateViews と、下の applied* が持つ）。
+        std::size_t view = kUiPlateNoView;
         filament::Scene* scene = nullptr;  // 入るシーン（uiScene か主のシーン）
         utils::Entity entity;
         filament::VertexBuffer* vb = nullptr;
@@ -690,6 +694,11 @@ private:
         // run ごとに解決した材質インスタンス（テクスチャが後から用意されたら
         // 同じ中身でも解決し直して差し替える）。
         std::vector<filament::MaterialInstance*> instances;
+        // 板だけ: 最後に当てた変換と可視（applyUiVisibility が前回と同じなら当て直さない。
+        // レンダラブルを作り直したら appliedKnown = false）。
+        filament::math::mat4f appliedTransform;
+        bool appliedTransformKnown = false;
+        bool appliedShown = false;
     };
     // 板を出すビューと、そのビューでの姿勢（setUiCanvasTransform の値）。
     struct UiPlateView {
@@ -733,8 +742,9 @@ private:
     // kLayerUiHidden）を当てる（renderFrame がビューを描く直前に呼ぶ）。
     void applyUiVisibility(std::size_t viewIndex);
     // 板を映すか（kLayerScene）/ どのビューにも映さないか（kLayerUiHidden）。
-    // 板のレイヤのビットを決めるのはここだけ（作った直後と applyUiVisibility）。
-    void setUiPlateShown(utils::Entity entity, bool shown);
+    // 板のレイヤのビットを決めるのはここだけ（作った直後と applyUiVisibility）。当てた値は
+    // part.appliedShown に覚える。
+    void setUiPlateShown(UiCanvasPart& part, bool shown);
     // 板の材質の srgbOut（主のビューの後処理が切れていれば true）。判断はここだけ。
     bool uiPlateSrgbOut() const;
     // 後処理の有無が変わったとき、作り置きの板の材質インスタンスへ当て直す。

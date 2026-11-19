@@ -14,14 +14,14 @@ namespace ui = wizengine::ui;
 UiSelectionFrame::Projection UiSelectionFrame::projectionOf(const Scene& scene) {
     Projection project;
     project.toOverlay = [&scene](const ui::CanvasDesc& desc, std::size_t cam,
-                                 const ui::Rect& overlay,
-                                 std::vector<std::array<double, 2>>& points) {
-        return scene.plateToOverlay(desc, cam, overlay, points);
+                                 const ui::Rect& overlay, ui::UiMeshData& mesh) {
+        return scene.plateMeshToOverlay(desc, cam, overlay, mesh);
     };
     project.scale = [&scene](const ui::CanvasDesc& desc, std::size_t cam, int w, int h,
-                             double px, double py, double& scale) {
-        return scene.plateDesignPerScreenPx(desc, cam, w, h, px, py, scale);
+                             const ui::Rect& rect, double& scale) {
+        return scene.plateDesignPerScreenPx(desc, cam, w, h, rect, scale);
     };
+    project.cameraPose = [&scene](std::size_t cam) { return scene.cameraEyeTarget(cam); };
     return project;
 }
 
@@ -29,11 +29,11 @@ void UiSelectionFrame::copyTarget(Scene& scene) {
     // UI の編集を受け付けるとき（editsUiFrom = エディタモード × エディタカメラ × プレハブ
     // 編集中でない）に、要素を選んでいれば。
     const std::size_t editorCam = scene.editorCamera();
-    const EditorState& editor = scene.editor();
-    const bool element = editor.selKind() == EditorState::SelKind::Canvas && editor.selSub() >= 0;
+    const EditorState::Selection sel = scene.editor().selection();  // 組で 1 回だけ読む
+    const bool element = sel.kind == EditorState::SelKind::Canvas && sel.sub >= 0;
     const bool wanted = element && scene.editsUiFrom(editorCam);
-    canvas_ = wanted ? editor.selIndex() : -1;
-    element_ = wanted ? editor.selSub() : -1;
+    canvas_ = wanted ? sel.index : -1;
+    element_ = wanted ? sel.sub : -1;
     camera_ = int(editorCam);
 }
 
@@ -54,10 +54,17 @@ void UiSelectionFrame::update(wizengine::Renderer& renderer,
     Key key;
     if (shown) {
         const auto size = renderer.viewSize(std::size_t(view));
-        key = {snap.contentsRevision(canvas_), canvas_, element_, view, size.x, size.y};
+        key.revision = snap.contentsRevision(canvas_);
+        key.placement = snap.canvases[std::size_t(canvas_)].placementRevision;
+        key.canvas = canvas_;
+        key.element = element_;
+        key.view = view;
+        key.viewWidth = size.x;
+        key.viewHeight = size.y;
+        // 板の枠はカメラが動くと映像の上の位置が変わる。
+        if (plate) key.camera = project.cameraPose(std::size_t(camera_));
     }
-    // 板の枠はカメラが動くと映像の上の位置が変わるので、条件が同じでも組む。
-    if (!plate && key == sent_) return;
+    if (key == sent_) return;
     sent_ = key;
     ui::UiMeshData mesh;
     double designHeight = 0.0;
@@ -106,25 +113,16 @@ bool UiSelectionFrame::build(wizengine::Renderer& renderer,
         mesh = ui::buildFrameMesh(rect, ui::designPerScreenPx(desc.height, size.y), handles);
         return true;
     }
-    // 板: 板の設計の画素で枠を組み（つまみと線の太さは要素の中心での映像の 1 画素ぶん =
-    // 当たりの UiInputComponent と同じ求め方）、頂点を映像の画素（この Canvas の基準の高さ =
-    // ビューの高さの画素）へ写す。
+    // 板: 板の設計の画素で枠を組み（つまみと線の太さは要素の見えている所での映像の 1 画素
+    // ぶん = 当たりの UiInputComponent と同じ求め方）、映像の画素（この Canvas の基準の高さ =
+    // ビューの高さの画素）へ写す（カメラの後ろの部分は切る）。
     const std::size_t cam = std::size_t(camera_);
     double scale = 0.0;
-    const double cx = rect.x + rect.w * 0.5, cy = rect.y + rect.h * 0.5;
-    if (!project.scale(desc, cam, size.x, size.y, cx, cy, scale)) return false;
+    if (!project.scale(desc, cam, size.x, size.y, rect, scale)) return false;
     mesh = ui::buildFrameMesh(rect, scale, handles);
-    std::vector<std::array<double, 2>> points;
-    points.reserve(mesh.vertices.size());
-    for (const ui::UiVertex& v : mesh.vertices) points.push_back({double(v.x), double(v.y)});
     designHeight = double(size.y);
     const ui::Rect screen = ui::canvasRect(designHeight, size.x, size.y);
-    if (!project.toOverlay(desc, cam, screen, points)) return false;
-    for (std::size_t i = 0; i < points.size(); ++i) {
-        mesh.vertices[i].x = float(points[i][0]);
-        mesh.vertices[i].y = float(points[i][1]);
-    }
-    return true;
+    return project.toOverlay(desc, cam, screen, mesh);
 }
 
 void UiSelectionFrame::hide(wizengine::Renderer& renderer) {

@@ -172,7 +172,9 @@ void Renderer::buildUiCanvasPart(const UiCanvas& canvas, UiCanvasPart& part) {
     builder.build(*engine_, part.entity);
     if (plate) {
         // 板は姿勢を当てるまで映さない（applyUiVisibility が描くビューごとに当てる）。
-        setUiPlateShown(part.entity, false);
+        // 新しいレンダラブルなので、前に当てた変換の覚えは捨てる。
+        part.appliedTransformKnown = false;
+        setUiPlateShown(part, false);
         warnBlendOrderRange(uiBlendWarned_, m.runs.size(), "canvas",
                             std::size_t(&canvas - uiCanvases_.data()));
     }

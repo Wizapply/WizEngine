@@ -57,6 +57,10 @@ public:
         // この枠が最後に変わったときの版（version()。1 より大きい = 0 は「写していない」）。
         // 写し（copyIfChanged）と描く側（contentsRevision）が、変わった物だけを扱う目印。
         std::uint64_t revision = 0;
+        // 置き場所（pos / euler）だけを変えた版（setCanvasPlacement。0 = 変えていない）。
+        // 写しは revision かこれが変われば写し直す。描く側の中身の組み直し（contentsRevision）
+        // には入らない = 板を動かしても中身のメッシュも字の並べ方も組み直さない。
+        std::uint64_t placementRevision = 0;
     };
     // シーンが宣言する UI（<asset> の <ui>。file があれば共用 = 中身は読込でファイルから
     // 入れる）。ファイルへ書く変更の目印は持たない（保存は読んだとき・書いたときの中身と
@@ -155,6 +159,9 @@ public:
     // out は触らない）。全体の写し（snapshot）より軽い = 映像の上のドラッグのように、
     // 1 枚を何度も読み書きする口。
     bool copyCanvas(int index, ui::CanvasDesc& out) const;
+    // 生きている Canvas index の属性だけ（ui::copyCanvasAttrs。要素とアニメは写さない）を
+    // out へ写す（ギズモの対象・板のドラッグが毎フレーム読む軽い口）。無ければ false。
+    bool copyCanvasAttrs(int index, ui::CanvasDesc& out) const;
     // 写さずにロックの下で答える口（PHYSICS の編集の確かめ。規則は Snapshot の同じ名前の
     // 関数と同じ）。
     bool selectionExists(int canvas, int element) const;
@@ -196,6 +203,10 @@ public:
     // 生きている Canvas の設計値を置き換える。無ければ false（何もしない）。次の要素の
     // id は下がらない（置き換えた中身の最大の次までは上がる）。
     bool replaceCanvas(int index, ui::CanvasDesc desc);
+    // 生きている Canvas の置き場所（pos / euler。値は呼び手が表で丸めた物 =
+    // uiops::setCanvasPlacement）だけを書く。中身の版（revision）は進めず placementRevision を
+    // 進める。無い・同じ値なら false（何もしない）。
+    bool setCanvasPlacement(int index, const Vec3d& pos, const Vec3d& euler);
     // 生きている Canvas の設計値を写し、要素とアニメ（elements / anims）は持ち主から
     // 入れる: 自分の物か、<canvas ui> なら使っている UI の中身（宣言が無ければ空）。
     // info に持ち主の様子。消えた物は false（out は触らない）。

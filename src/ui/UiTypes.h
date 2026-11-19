@@ -271,6 +271,12 @@ inline const CanvasAttrInfo kCanvasAttrs[] = {
 };
 inline constexpr std::size_t kCanvasAttrCount = sizeof(kCanvasAttrs) / sizeof(kCanvasAttrs[0]);
 
+// Canvas の属性だけ（表の全部の行。名前・要素・アニメは写さない）を from から to へ写す
+// （属性の欄の一覧は表の 1 か所 = 属性を足しても直さなくてよい）。
+inline void copyCanvasAttrs(const CanvasDesc& from, CanvasDesc& to) {
+    for (const auto& a : kCanvasAttrs) a.set(to, a.get(from));
+}
+
 // この Canvas をカメラ（スロット番号）camera に出すか（唯一の定義）。cameras が
 // 正しくなければどこにも出さない（Q20）、書いていなければ全カメラ（Q8）。
 inline bool canvasShownOnCamera(const CanvasDesc& c, int camera) {

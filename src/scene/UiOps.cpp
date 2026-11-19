@@ -1,6 +1,7 @@
 #include "scene/UiOps.h"
 
 #include <algorithm>
+#include <cassert>
 #include <iterator>
 #include <set>
 #include <utility>
@@ -125,20 +126,51 @@ nlohmann::json member(const nlohmann::json& args, const char* key) {
     return args.is_object() && args.contains(key) ? args[key] : nlohmann::json();
 }
 
-// 属性 name に v を表の決まりで丸めて書く（唯一の手順。setCanvasAttrs と置き場所の書き込みが
-// 通る）。
-void writeCanvasAttr(const char* name, ui::CanvasDesc& desc, ui::PropValue v) {
+// 表の行 a の属性に v を表の決まりで丸めて書く（唯一の手順。setCanvasAttrs と置き場所の
+// 書き込みが通る）。
+void writeCanvasAttr(const ui::CanvasAttrInfo& a, ui::CanvasDesc& desc, ui::PropValue v) {
+    a.set(desc, ui::clampValue(a.spec, std::move(v)));
+}
+
+// 名前 name の表の行（このファイルが書く属性は表にある = 無ければ作りの誤り）。
+const ui::CanvasAttrInfo& canvasAttrRow(const char* name) {
     const ui::CanvasAttrInfo* a = ui::canvasAttrFromName(name);
-    a->set(desc, ui::clampValue(a->spec, std::move(v)));
+    assert(a && "canvas attribute missing from kCanvasAttrs");
+    return *a;
 }
 
 // world の板の置き場所（pos / euler）を書く（nullptr = 変えない）。
 void writePlacement(ui::CanvasDesc& desc, const Vec3d* pos, const Vec3d* euler) {
-    if (pos) writeCanvasAttr(ui::kCanvasPosAttr, desc, ui::numberValue(pos->x, pos->y, pos->z));
+    if (pos) {
+        writeCanvasAttr(canvasAttrRow(ui::kCanvasPosAttr), desc,
+                        ui::numberValue(pos->x, pos->y, pos->z));
+    }
     if (euler) {
-        writeCanvasAttr(ui::kCanvasEulerAttr, desc,
+        writeCanvasAttr(canvasAttrRow(ui::kCanvasEulerAttr), desc,
                         ui::numberValue(euler->x, euler->y, euler->z));
     }
+}
+
+// world の板になったばかりの Canvas（before = 書く前の表示方法。追加は既定の overlay）で、
+// 同じ操作で pos も euler も受け付けていなければ（attrs にあっても型違いで書かなかった物 =
+// rejected は数えない）、呼び手の決める場所へ置く（唯一の
+// 決め所。ui.add と ui.set が通る）。overlay から world になったときだけ（camera から world・
+// world のままは今の pos / euler を残す = 前に置いた場所を覚えている）。表で丸めた mode と
+// size で判断する。
+void placeIfBecameWorld(const nlohmann::json& attrs, const std::vector<std::string>& rejected,
+                        ui::CanvasMode before, ui::CanvasDesc& desc,
+                        const WorldPlacement& placeWorld) {
+    // attrs の name を受け付けて書いたか（setCanvasAttrs が書かなかった名前は rejected）。
+    auto written = [&attrs, &rejected](const char* name) {
+        const bool given = attrs.is_object() && attrs.contains(name);
+        return given && std::find(rejected.begin(), rejected.end(), name) == rejected.end();
+    };
+    const bool placed = written(ui::kCanvasPosAttr) || written(ui::kCanvasEulerAttr);
+    const bool becameWorld =
+        desc.mode == ui::CanvasMode::World && before == ui::CanvasMode::Overlay;
+    if (!becameWorld || placed || !placeWorld) return;
+    Vec3d pos, euler;
+    if (placeWorld(desc.sizeY, pos, euler)) writePlacement(desc, &pos, &euler);
 }
 
 // ---- Canvas の操作 -------------------------------------------------------------
@@ -154,15 +186,9 @@ Result addCanvas(UiState& state, const nlohmann::json& args, const WorldPlacemen
     // 正規化で全部落ちた名前は既定の名前で作り、理由を出す（setCanvas と同じ文）。
     const std::string caveat = given == NameArg::Unusable ? unusableNameCaveat() : "";
     const nlohmann::json attrs = member(args, "attrs");
+    const ui::CanvasMode before = desc.mode;  // 既定（overlay）
     const std::vector<std::string> rejected = setCanvasAttrs(attrs, desc);
-    // 置き場所を書いていない world の板は、呼び手の決める場所へ（表で丸めた mode と size で判断）。
-    const bool placed = attrs.is_object() &&
-                        (attrs.contains(ui::kCanvasPosAttr) || attrs.contains(ui::kCanvasEulerAttr));
-    const bool world = desc.mode == ui::CanvasMode::World;
-    Vec3d pos, euler;
-    if (world && !placed && placeWorld && placeWorld(desc.sizeY, pos, euler)) {
-        writePlacement(desc, &pos, &euler);
-    }
+    placeIfBecameWorld(attrs, rejected, before, desc, placeWorld);
     // 宣言した UI を表示する Canvas（アセットパネルの UI のタイル）。宣言が無ければ空の
     // Canvas にして知らせる。
     const std::string uiName = jsonString(args, "ui", "");
@@ -189,14 +215,17 @@ Result removeCanvas(UiState& state, const nlohmann::json& args) {
     return r;
 }
 
-Result setCanvas(UiState& state, const nlohmann::json& args) {
+Result setCanvas(UiState& state, const nlohmann::json& args, const WorldPlacement& placeWorld) {
     const int index = jsonInt(args, "canvas", -1);
     ui::CanvasDesc desc;
     Result r;
     if (!state.copyCanvas(index, desc)) return r;  // 行き違い（もう無い）
     auto taken = [&state, index](const std::string& n) { return state.canvasNameTaken(n, index); };
     const std::string caveat = applyName(args, desc.name, taken, " Canvas ");
-    const std::vector<std::string> rejected = setCanvasAttrs(member(args, "attrs"), desc);
+    const nlohmann::json attrs = member(args, "attrs");
+    const ui::CanvasMode before = desc.mode;
+    const std::vector<std::string> rejected = setCanvasAttrs(attrs, desc);
+    placeIfBecameWorld(attrs, rejected, before, desc, placeWorld);
     r.status = "UI: " + ui::canvasLabel(desc, index) + " を更新しました" + caveat +
                rejectedCaveat(rejected) + camerasCaveat(desc);
     state.replaceCanvas(index, std::move(desc));
@@ -400,7 +429,7 @@ Result apply(UiState& state, const std::string& kind, const nlohmann::json& args
              const WorldPlacement& placeWorld) {
     if (kind == kAdd) return addCanvas(state, args, placeWorld);
     if (kind == kRemove) return removeCanvas(state, args);
-    if (kind == kSet) return setCanvas(state, args);
+    if (kind == kSet) return setCanvas(state, args, placeWorld);
     if (kind == kElementAdd) return addElementOp(state, args);
     if (kind == kElementRemove) return removeElementOp(state, args);
     if (kind == kElementSet) return setElementOp(state, args);
@@ -419,16 +448,18 @@ std::vector<std::string> setCanvasAttrs(const nlohmann::json& attrs, ui::CanvasD
             rejected.push_back(it.key());
             continue;
         }
-        writeCanvasAttr(a->name, desc, std::move(v));
+        writeCanvasAttr(*a, desc, std::move(v));
     }
     return rejected;
 }
 
 bool setCanvasPlacement(UiState& state, int canvas, const Vec3d* pos, const Vec3d* euler) {
+    // 属性だけを写し（要素は写さない）、表で丸めてから置き場所だけを書く。丸めた後の値が
+    // 今と同じなら UiState が書かない（範囲の端で止めている間に版を進め続けない）。
     ui::CanvasDesc desc;
-    if (!state.copyCanvas(canvas, desc)) return false;  // 行き違い（もう無い）
+    if (!state.copyCanvasAttrs(canvas, desc)) return false;  // 行き違い（もう無い）
     writePlacement(desc, pos, euler);
-    return state.replaceCanvas(canvas, std::move(desc));
+    return state.setCanvasPlacement(canvas, desc.pos, desc.rot);
 }
 
 std::vector<std::string> setElementProps(const nlohmann::json& props,

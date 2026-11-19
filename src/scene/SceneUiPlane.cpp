@@ -7,7 +7,8 @@
 #include <algorithm>
 #include <cmath>
 
-#include "render/Renderer.h"  // 画角と縦横比（投影）
+#include "render/Renderer.h"  // 画角（投影）
+#include "ui/UiMeshClip.h"
 
 namespace ui = wizengine::ui;
 
@@ -52,6 +53,9 @@ bool hitPlane(const scenemath::Basis& basis, const scenemath::Vec3& dir,
 // 板の選択枠のつまみの大きさを測る、設計の画素での小さな刻み（Canvas の基準の高さに対する
 // 割合。投影した 2 点の間の画面の長さから「映像の 1 画素 = 設計の何画素」を出す）。
 constexpr double kScaleProbeFraction = 0.01;
+// 選択枠を映像へ写すときに残すカメラの前の奥行き（m）。これより手前（とカメラの後ろ）の
+// 部分は切る（投影が発散しない範囲。ビューの near クリップとは別 = 枠は overlay に描く）。
+constexpr double kFrameMinDepth = 0.01;
 
 }  // namespace
 
@@ -66,27 +70,15 @@ bool Scene::canvasPlane(const ui::CanvasDesc& desc, std::size_t cameraIndex,
 }
 
 bool Scene::canvasPointAt(const ui::CanvasDesc& desc, std::size_t cameraIndex, double ndcX,
-                          double ndcY, double& px, double& py, double& distance,
-                          ui::CanvasPlane* plane) const {
+                          double ndcY, double& px, double& py, double& distance) const {
     // カメラの基底は 1 回だけ読み（cameraRay）、レイと camera の板の両方をそれから作る
     // （別々に読むと、間でカメラが動いたときに板とレイが別の視点になる）。
     scenemath::Basis basis;
     scenemath::Vec3 dir;
     if (!cameraRay(cameraIndex, ndcX, ndcY, basis, dir)) return false;
-    ui::CanvasPlane made;
-    if (!planeFrom(desc, basis, made)) return false;
-    if (!hitPlane(basis, dir, made, desc.height, px, py, distance)) return false;
-    if (plane) *plane = made;
-    return true;
-}
-
-bool Scene::planePointAt(const ui::CanvasPlane& plane, double designHeight,
-                         std::size_t cameraIndex, double ndcX, double ndcY, double& px,
-                         double& py, double& distance) const {
-    scenemath::Basis basis;
-    scenemath::Vec3 dir;
-    if (!cameraRay(cameraIndex, ndcX, ndcY, basis, dir)) return false;
-    return hitPlane(basis, dir, plane, designHeight, px, py, distance);
+    ui::CanvasPlane plane;
+    if (!planeFrom(desc, basis, plane)) return false;
+    return hitPlane(basis, dir, plane, desc.height, px, py, distance);
 }
 
 Scene::UiPlatePoint Scene::plateUnderCursor(const wizengine::UiState::Snapshot& snap,
@@ -109,43 +101,90 @@ Scene::UiPlatePoint Scene::plateUnderCursor(const wizengine::UiState::Snapshot& 
     return nearest;
 }
 
-bool Scene::plateToOverlay(const ui::CanvasDesc& desc, std::size_t cameraIndex,
-                           const ui::Rect& overlay,
-                           std::vector<std::array<double, 2>>& points) const {
-    if (cameraIndex >= cameras_.size()) return false;
+bool Scene::plateView(const ui::CanvasDesc& desc, std::size_t cameraIndex,
+                      const ui::Rect& overlay, PlateView& out) const {
+    if (cameraIndex >= cameras_.size() || !(overlay.h > 0.0)) return false;
     // 板と投影は同じカメラの読みから（canvasPointAt と同じ理由）。
-    const scenemath::Basis basis = scenemath::cameraBasis(*cameras_[cameraIndex]);
-    if (!basis.valid) return false;
-    ui::CanvasPlane plane;
-    if (!planeFrom(desc, basis, plane)) return false;
-    const double fov = renderer_.verticalFovDegrees();
-    const double aspect = renderer_.aspect();
-    for (auto& p : points) {
-        const wizengine::Vec3d world = ui::worldPointOnPlane(plane, desc.height, p[0], p[1]);
-        double ndcX = 0.0, ndcY = 0.0;
-        if (!scenemath::projectToNdc(basis, fromVec(world), fov, aspect, ndcX, ndcY)) return false;
-        ui::ndcToCanvas(overlay, ndcX, ndcY, p[0], p[1]);
+    out.basis = scenemath::cameraBasis(*cameras_[cameraIndex]);
+    if (!out.basis.valid || !planeFrom(desc, out.basis, out.plane)) return false;
+    out.designHeight = desc.height;
+    out.fov = renderer_.verticalFovDegrees();
+    // 縦横比はカーソルのレイ（cameraRay）と同じ 1 か所（renderer_.aspect()）から = 描く枠と
+    // 掴める所が同じ投影になる。
+    out.aspect = renderer_.aspect();
+    out.overlay = overlay;
+    return true;
+}
+
+bool Scene::PlateView::toOverlay(double x, double y, double& ox, double& oy) const {
+    const wizengine::Vec3d world = ui::worldPointOnPlane(plane, designHeight, x, y);
+    double ndcX = 0.0, ndcY = 0.0;
+    if (!scenemath::projectToNdc(basis, fromVec(world), fov, aspect, ndcX, ndcY)) return false;
+    ui::ndcToCanvas(overlay, ndcX, ndcY, ox, oy);
+    return true;
+}
+
+double Scene::PlateView::depth(double x, double y) const {
+    const wizengine::Vec3d world = ui::worldPointOnPlane(plane, designHeight, x, y);
+    return (fromVec(world) - basis.eye).dot(basis.forward);
+}
+
+bool Scene::plateMeshToOverlay(const ui::CanvasDesc& desc, std::size_t cameraIndex,
+                               const ui::Rect& overlay, ui::UiMeshData& mesh) const {
+    PlateView view;
+    if (!plateView(desc, cameraIndex, overlay, view)) return false;
+    // カメラの前（奥行き kFrameMinDepth より先）を、設計の座標の半平面 a x + b y + c >= 0 に
+    // 直す（板の上の点の奥行きは設計の座標の 1 次式なので、3 点の奥行きから出せる）。
+    const double z0 = view.depth(0.0, 0.0);
+    const double a = view.depth(1.0, 0.0) - z0;
+    const double b = view.depth(0.0, 1.0) - z0;
+    ui::clipMeshToHalfPlane(mesh, a, b, z0 - kFrameMinDepth);
+    if (mesh.runs.empty()) return false;
+    for (ui::UiVertex& v : mesh.vertices) {
+        double ox = 0.0, oy = 0.0;
+        if (!view.toOverlay(v.x, v.y, ox, oy)) return false;  // 切った後なので起きない（念のため）
+        v.x = float(ox);
+        v.y = float(oy);
     }
     return true;
 }
 
 bool Scene::plateDesignPerScreenPx(const ui::CanvasDesc& desc, std::size_t cameraIndex,
-                                   int viewWidth, int viewHeight, double px, double py,
+                                   int viewWidth, int viewHeight, const ui::Rect& rect,
                                    double& scale) const {
     if (viewWidth <= 0 || viewHeight <= 0) return false;
     // 映像の画素の座標（overlay の Canvas の高さ = ビューの高さの画素）へ、点と、そこから
     // 設計の画素で横・縦に少し離れた 2 点を写し、画面の上で長く見える方で割る（板を斜めから
     // 見ても、つまみが画面で小さくなりすぎない）。
     const ui::Rect screen = ui::canvasRect(double(viewHeight), viewWidth, viewHeight);
+    PlateView view;
+    if (!plateView(desc, cameraIndex, screen, view)) return false;
     const double step = desc.height * kScaleProbeFraction;
-    std::vector<std::array<double, 2>> pts = {{px, py}, {px + step, py}, {px, py + step}};
-    if (!plateToOverlay(desc, cameraIndex, screen, pts)) return false;
-    const double alongX = std::hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]);
-    const double alongY = std::hypot(pts[2][0] - pts[0][0], pts[2][1] - pts[0][1]);
-    const double longest = std::max(alongX, alongY);
-    if (!(longest > 0.0)) return false;
-    scale = step / longest;
-    return true;
+    // 測る点: 中心、それがカメラの後ろなら見えている角（要素の一部でも見えていれば測れる）。
+    const double samples[5][2] = {{rect.x + rect.w * 0.5, rect.y + rect.h * 0.5},
+                                  {rect.x, rect.y},
+                                  {rect.x + rect.w, rect.y},
+                                  {rect.x, rect.y + rect.h},
+                                  {rect.x + rect.w, rect.y + rect.h}};
+    for (const auto& s : samples) {
+        double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0, x2 = 0.0, y2 = 0.0;
+        const bool seen = view.toOverlay(s[0], s[1], x0, y0) &&
+                          view.toOverlay(s[0] + step, s[1], x1, y1) &&
+                          view.toOverlay(s[0], s[1] + step, x2, y2);
+        if (!seen) continue;
+        const double longest = std::max(std::hypot(x1 - x0, y1 - y0), std::hypot(x2 - x0, y2 - y0));
+        if (!(longest > 0.0)) continue;
+        scale = step / longest;
+        return true;
+    }
+    return false;
+}
+
+std::array<double, 6> Scene::cameraEyeTarget(std::size_t cameraIndex) const {
+    if (cameraIndex >= cameras_.size()) return {};
+    const auto eye = cameras_[cameraIndex]->eye();
+    const auto target = cameras_[cameraIndex]->target();
+    return {eye.x, eye.y, eye.z, target.x, target.y, target.z};
 }
 
 bool Scene::newWorldCanvasPlacement(std::size_t cameraIndex, double sizeY, wizengine::Vec3d& pos,
