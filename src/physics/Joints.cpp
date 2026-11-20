@@ -12,7 +12,7 @@
 #include <chrono/physics/ChLinkDistance.h>
 #include <chrono/physics/ChLinkLock.h>
 #include <chrono/physics/ChSystem.h>
-// ジョイントの拡張（A の導入）: モータ・自在継手・歯車・ねじ・ばね。
+// 基本 5 種より後に足したジョイント: モータ・自在継手・歯車・ねじ・ばね。
 #include <chrono/physics/ChLinkMotorRotationSpeed.h>
 #include <chrono/physics/ChLinkMotorRotationAngle.h>
 #include <chrono/physics/ChLinkMotorRotationTorque.h>
@@ -31,14 +31,22 @@
 #ifdef WIZ_HAVE_LOADS
 #include <chrono/physics/ChLoadContainer.h>
 #include <chrono/physics/ChLoadsBody.h>
+#endif
 #if __has_include(<chrono/ChVersion.h>)
 #include <chrono/ChVersion.h>  // CH_VERSION（直動モータの軸の向きが版で違う）
 #endif
+#ifdef WIZ_HAVE_FUNCTIONS_DIR
+#include <chrono/functions/ChFunctionConst.h>
+#include <chrono/functions/ChFunctionRamp.h>
+#else
+#include <chrono/motion_functions/ChFunction_Const.h>
+#include <chrono/motion_functions/ChFunction_Ramp.h>
 #endif
 
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <utility>
 #include <vector>
 
 using namespace chrono;
@@ -49,6 +57,15 @@ namespace physics {
 
 namespace {
 
+// モータの目標値の関数（定数とランプ）。Chrono 9 は ChFunctionConst、旧版は ChFunction_Const。
+#ifdef WIZ_HAVE_FUNCTIONS_DIR
+using WizConstFunction = chrono::ChFunctionConst;
+using WizRampFunction = chrono::ChFunctionRamp;
+#else
+using WizConstFunction = chrono::ChFunction_Const;
+using WizRampFunction = chrono::ChFunction_Ramp;
+#endif
+
 // ワールド座標の座標系をボディのローカルへ（歯車のシャフト座標系用）。
 // Chrono の TransformParentToLocal は版で引数が違うので四元数で手計算。
 chrono::ChFrame<> worldToBodyLocal(const chrono::ChBody& body, const chrono::ChVector3d& pos,
@@ -57,26 +74,6 @@ chrono::ChFrame<> worldToBodyLocal(const chrono::ChBody& body, const chrono::ChV
     const chrono::ChVector3d lp = q.RotateBack(pos - body.GetPos());
     const chrono::ChQuaternion<> lr = q.GetConjugate() * rot;
     return chrono::ChFrame<>(lp, lr);
-}
-
-// +X をこの向きに合わせる回転。ChLinkLockPointLine の線は X 軸なのでこちら
-// （ChLinkLockPrismatic は Z）。直動モータ ChLinkMotorLinear* は Chrono 8 まで X、
-// 9.0 から Z（Prismatic の motor の分岐を参照）。
-chrono::ChQuaternion<> quatFromXAxis(const chrono::ChVector3d& axis) {
-    double ax = axis.x(), ay = axis.y(), az = axis.z();
-    const double n = std::sqrt(ax * ax + ay * ay + az * az);
-    if (n < 1e-9) return chrono::ChQuaternion<>(1, 0, 0, 0);
-    ax /= n;
-    ay /= n;
-    az /= n;
-    const double c = ax;  // dot((1,0,0), axis)
-    if (c < -0.999999) {  // 真後ろ: Y 軸まわりに 180 度
-        return chrono::ChQuaternion<>(0, 0, 1, 0);
-    }
-    // 最短回転。cross((1,0,0), axis) = (0, -az, ay)
-    chrono::ChQuaternion<> q(1.0 + c, 0.0, -az, ay);
-    q.Normalize();
-    return q;
 }
 
 // 零ベクトルでない軸か。
@@ -112,7 +109,7 @@ std::size_t Joints::add(const JointSpec& spec) {
     const ChVector3d axis = axisUsable(spec.axis) ? spec.axis : ChVector3d(0, 1, 0);
     // リンク座標系。Revolute は Z 軸まわりに回り、Prismatic は Z 軸方向へ
     // スライドするので、指定されたワールド軸を Z に合わせる。
-    const ChQuaternion<> frameRot = quatFromZAxis(axis);
+    const ChQuaternion<> frameRot = quatFromAxis(Axis::Z, axis);
 
     // 2 点間のばね（Spring 種類、または Prismatic に添えるばね）。地面側は
     // アンカー、それ以外はボディの中心を取り付け点にする。
@@ -267,9 +264,9 @@ std::size_t Joints::add(const JointSpec& spec) {
                 // frame"）。X のまま渡すと 9 では軸方向がガイドで固まり、モータは
                 // 横へ押す（位置モータが動かない、で実機の検証中に見つかった）。
 #if defined(CH_VERSION) && CH_VERSION >= 0x00090000
-                const ChQuaternion<> xRot = quatFromZAxis(axis);
+                const ChQuaternion<> xRot = quatFromAxis(Axis::Z, axis);
 #else
-                const ChQuaternion<> xRot = quatFromXAxis(axis);
+                const ChQuaternion<> xRot = quatFromAxis(Axis::X, axis);
 #endif
                 std::shared_ptr<chrono::ChLinkMotorLinear> m;
                 std::shared_ptr<chrono::ChFunction> fn;
@@ -388,7 +385,7 @@ std::size_t Joints::add(const JointSpec& spec) {
         case JointType::PointLine: {
             // 線はリンク座標系の X 軸なので、指定した軸を X に合わせる。
             auto l = chrono_types::make_shared<ChLinkLockPointLine>();
-            initLink(l.get(), a, b, anchor, quatFromXAxis(axis), 0);
+            initLink(l.get(), a, b, anchor, quatFromAxis(Axis::X, axis), 0);
             link = l;
             break;
         }
@@ -409,7 +406,7 @@ std::size_t Joints::add(const JointSpec& spec) {
             auto l = chrono_types::make_shared<ChLinkLockGear>();
             initLink(l.get(), a, b, anchor, frameRot, 0);
             const ChFrame<> s1 = worldToBodyLocal(*a, anchor, frameRot);
-            const ChFrame<> s2 = worldToBodyLocal(*b, anchor2, quatFromZAxis(axis2));
+            const ChFrame<> s2 = worldToBodyLocal(*b, anchor2, quatFromAxis(Axis::Z, axis2));
             if (!setGearParams(l.get(), spec.ratio, s1, s2, 0)) {
                 LOGW("physics", "gear joint: this Chrono has a different ChLinkLockGear "
                                 "API - skipped");
@@ -461,7 +458,7 @@ std::size_t Joints::add(const JointSpec& spec) {
             break;
         }
         case JointType::Bushing: {
-            // ゴムブッシュ（B の 19）: 拘束ではなく荷重コンテナの力。並進 3 軸は
+            // ゴムブッシュ（ChLoad の荷重）: 拘束ではなく荷重コンテナの力。並進 3 軸は
             // stiffness / damping、回転 3 軸は rotStiffness / rotDamping。
             // 取り付け座標系はアンカー + 指定軸を Z にした向き。
 #ifdef WIZ_HAVE_LOADS
@@ -512,12 +509,13 @@ void Joints::removeAll() {
     // 暖機は先にやり直しにする（途中の RemoveLink が例外を投げても、次の走行は
     // 暖機から始まる）。
     breakSteps_ = 0;
+    brokenPending_.clear();
     bool anyLoad = false;
     for (auto& j : joints_) {
         // 破断したリンクも無効化されて系に残っている（走行中の RemoveLink は
         // Multicore を壊す）ので、ここでまとめて外す。
-        if (j.link) system_.sys()->RemoveLink(j.link);
-        if (j.extra) system_.sys()->RemoveLink(j.extra);
+        system_.removeLink(j.link);
+        system_.removeLink(j.extra);
         if (j.load) anyLoad = true;
     }
 #ifdef WIZ_HAVE_LOADS
@@ -527,10 +525,8 @@ void Joints::removeAll() {
     (void)anyLoad;
 #endif
     joints_.clear();
-    brokenPending_.clear();
-    // 拘束の増減はソルバの構成を変えるので、Setup で作り直させる
-    // （wakeAll と同じ理由）。
-    system_.sys()->Setup();
+    // 拘束が減ったのでソルバの配置を組み直す（理由は PhysicsSystem::setup）。
+    system_.setup();
 }
 
 bool Joints::setMotorTarget(std::size_t joint, double target) {

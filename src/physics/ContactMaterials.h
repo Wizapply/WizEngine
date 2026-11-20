@@ -45,6 +45,7 @@ public:
     bool setBodySurface(std::size_t id, const BodyOptions& options);
 
     void onSystemRecreated() override;
+    void onBodiesCleared() override;
     void onBodyAdded(std::size_t id, const BodyAddInfo& info) override;
 
 private:

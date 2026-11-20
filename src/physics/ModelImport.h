@@ -6,7 +6,7 @@
 #include "document/SceneDocument.h"
 
 // 外部のモデル記述（URDF / OpenSim / ADAMS）をシーン文書へ取り込む
-// （Chrono::Parsers。B の 21）。パーサは Chrono の系にボディ・当たり形状・
+// （Chrono::Parsers）。パーサは Chrono の系にボディ・当たり形状・
 // リンクを作るので、一時的な ChSystemNSC に読ませてから歩いて SceneDocument
 // （<body> / <geom> / <prefab> / <joint>）へ直す。読めた文書は
 // Scene::appendDocument で今のシーンに**足す**。

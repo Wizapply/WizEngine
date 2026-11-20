@@ -39,11 +39,14 @@ public:
 
     // 新しい系へコールバックを登録する（Core のみ。Multicore では登録しない）。
     void attach();
-    // 系の作り直し: 形の記録・ゴースト・コールバックを捨てる。フレームは残す。
+    // 系の作り直し: ゴースト・コールバックを捨てる。フレームは残す（形の記録は
+    // onBodiesCleared が捨てる）。
     void clear();
 
     // field を張る / 差し替える。戻り値 = ゴーストの physId（Multicore では kInvalidId）。
     // field は null でないこと。成功したら呼び出し側が眠っている物を起こす。
+    // set / setFrame / clearField は接触の印を捨てない。捨てるのは窓口の wakeAll
+    // （onWakeAll → forgetContacts）に任せる。
     std::size_t set(std::shared_ptr<const terrain::HeightField> field, const BodyOptions& options);
     // 起こす必要があるときだけ true。
     bool setFrame(const chrono::ChVector3d& origin, const chrono::ChQuaternion<>& rot);
@@ -56,6 +59,7 @@ public:
     bool hasProxy(std::size_t id) const;
     TerrainContactShape contactShape(std::size_t id) const;
 
+    void onBodiesCleared() override;
     void onBodyAdded(std::size_t id, const BodyAddInfo& info) override;
     void onBodyPlaced(std::size_t id) override;
     void onWakeAll() override;

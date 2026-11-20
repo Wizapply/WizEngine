@@ -53,6 +53,8 @@ void BodyRegistry::clear() {
     groupOf_.clear();
     alias_.clear();
     groups_.clear();
+    // 名簿が空になってから配る（受け手は番号と並ぶ配列を捨てる）。
+    events_.bodiesCleared();
 }
 
 void BodyRegistry::setAlias(std::size_t id, std::size_t owner) {

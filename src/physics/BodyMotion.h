@@ -7,6 +7,10 @@
 
 #include "physics/PhysicsTypes.h"
 
+namespace chrono {
+class ChBody;
+}
+
 namespace wizengine {
 namespace physics {
 
@@ -34,10 +38,11 @@ public:
     BodyTransform rigidTransform(std::size_t id) const;
     // その場に静止させて置く（落下速度を与えない）。
     void place(std::size_t id, const chrono::ChVector3d& pos, const chrono::ChQuaternion<>& rot);
-    // 置いて落とし始める（眠らないよう下向きの速度を与える）。
-    void drop(std::size_t id, const chrono::ChVector3d& pos, const chrono::ChQuaternion<>& rot);
 
 private:
+    // 1 個の剛体の角速度に角力積（ワールド座標）を足す（起こす・固定の判定は呼び出し側）。
+    static void addAngularImpulse(chrono::ChBody& b, const chrono::ChVector3d& impulseW);
+
     BodyRegistry& bodies_;
     Sleeping& sleeping_;
 };
