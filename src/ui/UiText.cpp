@@ -167,19 +167,20 @@ TextStyle textStyleOf(const PropSet& props, double width, FontProvider& fonts) {
     return style;
 }
 
-namespace {
-
-void buildText(const ResolvedElement& e, FontProvider& fonts, MeshSink& sink) {
+void addTextQuads(const ResolvedElement& e, Prop colorProp, bool centerVertically,
+                  FontProvider& fonts, MeshSink& sink) {
     const TextStyle style = textStyleOf(e.props, e.rect.w, fonts);
     const TextLayout layout = layoutText(e.props.text(Prop::Text), style, fonts);
+    // 縦に中央へ寄せるときは、行の塊を矩形の高さの真ん中に置く（はみ出すときも中央）。
+    const double top = e.rect.y + (centerVertically ? (e.rect.h - layout.height) * 0.5 : 0.0);
     UiQuad q;
-    elementColor(e, Prop::Color, q.color);
+    elementColor(e, colorProp, q.color);
     q.materialId = kUiMaterialSdf;
     // 縁取りの幅（em に対する割合）→ にじみ幅に対する割合（頂点の outline）と色。
     q.outline = float(std::clamp(e.props.number(Prop::Outline) / kSdfOutlineMaxEm, 0.0, 1.0));
     elementColor(e, Prop::OutlineColor, q.outlineColor);
     for (const PlacedGlyph& p : layout.glyphs) {
-        q.rect = {e.rect.x + p.rect.x, e.rect.y + p.rect.y, p.rect.w, p.rect.h};
+        q.rect = {e.rect.x + p.rect.x, top + p.rect.y, p.rect.w, p.rect.h};
         q.u0 = p.glyph.u0;
         q.v0 = p.glyph.v0;
         q.u1 = p.glyph.u1;
@@ -187,6 +188,12 @@ void buildText(const ResolvedElement& e, FontProvider& fonts, MeshSink& sink) {
         q.textureId = sink.fontPageTexture(p.glyph.page);
         sink.quad(q, e.rect);
     }
+}
+
+namespace {
+
+void buildText(const ResolvedElement& e, FontProvider& fonts, MeshSink& sink) {
+    addTextQuads(e, Prop::Color, false, fonts, sink);
 }
 
 }  // namespace

@@ -229,3 +229,137 @@
       ...libraryMenuItems('ui', name, file),
     ];
   }
+
+  // ---- UI のノード（イベントのノードエディタ。app.js の ndNodeHtml が呼ぶ）--------------
+  // onUiClick（ボタンが押されたら）と setUiProp（要素の性質を書き換える）の本文。対象は Canvas の
+  // 番号（target）、要素は名前（element）。setUiProp の値は性質の型で決まる欄（schema の
+  // nodeField = サーバーの ui::nodeField: value / vec / color / text）に置く。候補（Canvas・
+  // 要素の名前・性質）は /scene の ui から引く（性質の表はブラウザに持たない）。
+  function uiNodeCanvasItems() {
+    const u = uiData();
+    return ((u && u.canvases) || []).map((c) => ({ v: c.index, t: c.label }));
+  }
+  // そのノードが指す Canvas の要素（target = -1 なら全 Canvas の要素）。
+  // clickOnly = 押下を受け止める種類だけ（schema の kinds の click = サーバーの
+  // ui::kindCatchesPointer）。「押されたら」の候補に使う。
+  function uiNodeElements(n, clickOnly) {
+    const u = uiData();
+    const kinds = (u && u.schema && u.schema.kinds) || [];
+    const clickable = (e) => kinds.some((k) => k.name === e.kind && k.click);
+    const list = [];
+    for (const c of ((u && u.canvases) || [])) {
+      if (n.target >= 0 && c.index !== n.target) continue;
+      for (const e of (c.elements || [])) {
+        if (!clickOnly || clickable(e)) list.push(e);
+      }
+    }
+    return list;
+  }
+  // SetUiProp が動かない理由（判定はサーバー = /scene の events のノードの unset。規則は
+  // editor::uiPropNodeUnset で、実行と同じ）の表示の文。設定済み・知らない理由なら空。
+  const UI_NODE_UNSET_TEXT = {
+    prop: '性質を選んでください',
+    canvas: 'Canvas を選ぶか「ボタンが押されたら」から繋いでください',
+    element: '要素の名前を入れるか「ボタンが押されたら」から繋いでください',
+  };
+  function uiNodeUnsetReason(n) {
+    return (n.unset && UI_NODE_UNSET_TEXT[n.unset]) || '';
+  }
+  function uiSchemaProp(name) {
+    const u = uiData();
+    return ((u && u.schema && u.schema.props) || []).find((p) => p.name === name) || null;
+  }
+  // 性質の候補: 名前で指した要素の種類が持つもの（引けなければ全部）。
+  function uiNodePropNames(n) {
+    const u = uiData();
+    const schema = (u && u.schema) || {};
+    const e = n.element ? uiNodeElements(n).find((x) => x.name === n.element) : null;
+    const kind = e && (schema.kinds || []).find((k) => k.name === e.kind);
+    if (kind) return kind.props || [];
+    return (schema.props || []).map((p) => p.name);
+  }
+  // 組み直しの目印（Canvas と要素の名前が変わったらノードエディタを組み直す）。
+  function uiNodeOptKey() {
+    const u = uiData();
+    return ((u && u.canvases) || []).map((c) => c.index + ':' + c.label + ':' +
+      (c.elements || []).map((e) => e.name + '/' + e.kind).join(',')).join(';');
+  }
+  // 性質を選び直したら、その性質の型の欄に既定値を入れて送る（前の性質の値を持ち越さない）。
+  function uiNodePropChange(id, name) {
+    // 欄の既定値はサーバーが欄の形で送る（schema の nodeDef = ui::nodeFieldsFromValue）。
+    const p = uiSchemaProp(name);
+    ndPatch(id, Object.assign({ prop: name }, (p && p.nodeDef) || {}));
+  }
+  // 値の欄（性質の型で決まる 1 つ）。
+  function uiNodeValueHtml(n, p) {
+    const id = n.id;
+    if (!p) return '';  // 性質を選んでいない（未設定の印は uiNodeBody）
+    if (p.nodeField === 'value' && p.type === 'bool') {
+      return ndRow('値', '<input type="checkbox"' + (n.value ? ' checked' : '') +
+                   ' onchange="ndPatch(' + id + ',{value:this.checked?1:0})">');
+    }
+    if (p.nodeField === 'value') {
+      return ndRow('値', '<input class="num" type="number" step="any" value="' + (n.value || 0) +
+                   '" onchange="ndPatch(' + id + ',{value:parseFloat(this.value)||0})">');
+    }
+    if (p.nodeField === 'vec') {
+      // 欄の並びは app.js の ndVecChange が読む形（x y z。2 成分の型の z は隠した 0）。
+      const count = p.components || 3;
+      let h = '<span class="ndVec">';
+      for (const ax of ['x', 'y', 'z']) {
+        const shown = ax !== 'z' || count === 3;
+        h += '<input class="num" type="' + (shown ? 'number' : 'hidden') + '" step="any" value="' +
+             (shown ? n.vec[ax] : 0) + '" title="' + ax.toUpperCase() + '" data-vec="' + ax +
+             '" onchange="ndVecChange(' + id + ',this)">';
+      }
+      return ndRow('値', h + '</span>');
+    }
+    if (p.nodeField === 'color') {
+      return ndRow('色', '<input class="col" type="color" value="' + n.color +
+                   '" onchange="ndPatch(' + id + ',{color:this.value})">');
+    }
+    if (p.type === 'enum' && Array.isArray(p.enum)) {
+      let h = '<select class="strSel" onchange="ndPatch(' + id + ',{text:this.value})">';
+      for (const name of p.enum) {
+        h += '<option value="' + ndEsc(name) + '"' + (n.text === name ? ' selected' : '') + '>' +
+             ndEsc(name) + '</option>';
+      }
+      return ndRow('値', h + '</select>');
+    }
+    return ndRow('値', '<input type="text" value="' + ndEsc(n.text || '') +
+                 '" title="' + ndEsc(p.label || p.name) + '" onchange="ndPatch(' + id +
+                 ',{text:this.value})">');
+  }
+  // ノードの本文（ndNodeHtml の def.target === 'canvas'）。
+  function uiNodeBody(n) {
+    const click = n.kind === 'onUiClick';
+    let h = ndRow('Canvas', ndSelHtml(n.id, 'target', uiNodeCanvasItems(), n.target,
+                                      [[-1, click ? '(どれでも)' : '(押された Canvas)']]));
+    const listId = 'uiNodeEl' + n.id;
+    let options = '';
+    for (const e of uiNodeElements(n, click)) {
+      if (e.name) options += '<option value="' + ndEsc(e.name) + '">';
+    }
+    h += ndRow('要素', '<input type="text" list="' + listId + '" value="' + ndEsc(n.element || '') +
+               '" placeholder="' + (click ? '(どれでも)' : '(押された要素)') +
+               '" onchange="ndPatch(' + n.id + ',{element:this.value})">' +
+               '<datalist id="' + listId + '">' + options + '</datalist>');
+    if (click) return h;
+    let sel = '<select class="strSel" onchange="uiNodePropChange(' + n.id + ',this.value)">';
+    const names = uiNodePropNames(n);
+    if (!names.includes(n.prop)) {
+      sel += '<option value="' + ndEsc(n.prop || '') + '" selected>' +
+             (n.prop ? '? ' + ndEsc(n.prop) : '(選んでください)') + '</option>';
+    }
+    for (const name of names) {
+      const p = uiSchemaProp(name);
+      sel += '<option value="' + ndEsc(name) + '"' + (n.prop === name ? ' selected' : '') + '>' +
+             ndEsc(p && p.label ? p.label + ' (' + name + ')' : name) + '</option>';
+    }
+    h += ndRow('性質', sel + '</select>');
+    h += uiNodeValueHtml(n, uiSchemaProp(n.prop));
+    const unset = uiNodeUnsetReason(n);
+    if (unset) h += ndRow('', '<span class="ndUnset" title="' + ndEsc(unset) + '">⚠ 未設定: ' +
+                          ndEsc(unset) + '</span>');
+    return h;
+  }

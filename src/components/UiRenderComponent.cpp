@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <tuple>
 #include <unordered_map>
 
 #include "core/Log.h"
@@ -181,7 +182,6 @@ void UiRenderComponent::syncCanvases(wizengine::Renderer& renderer, bool designC
         }
         CanvasSlot& slot = found->second;
         if (designChanged) {
-            renderer.setUiCanvasOrder(slot.rendererId, item.desc.order);
             renderer.setUiCanvasDesignHeight(slot.rendererId, float(item.desc.height));
         }
         // 出すビュー: その Canvas を出すカメラ（canvasShownOnCamera）のうち、
@@ -202,16 +202,44 @@ void UiRenderComponent::syncCanvases(wizengine::Renderer& renderer, bool designC
             }
         }
     }
+    syncRanks(renderer);
 }
 
-ui::UiMeshData UiRenderComponent::buildOne(wizengine::Renderer& renderer,
-                                           const ui::CanvasDesc& desc, double canvasWidth) {
+void UiRenderComponent::syncRanks(wizengine::Renderer& renderer) {
+    std::vector<std::size_t> order;
+    order.reserve(canvases_.size());
+    for (const auto& entry : canvases_) order.push_back(entry.first);
+    std::sort(order.begin(), order.end(), [this](std::size_t a, std::size_t b) {
+        return ui::canvasBehind(snap_.canvases[a].desc.order, int(a),
+                                snap_.canvases[b].desc.order, int(b));
+    });
+    for (std::size_t rank = 0; rank < order.size(); ++rank) {
+        CanvasSlot& slot = canvases_[order[rank]];
+        if (slot.rank == int(rank)) continue;
+        slot.rank = int(rank);
+        renderer.setUiCanvasOrder(slot.rendererId, slot.rank);
+    }
+}
+
+wizengine::UiState::Pointer UiRenderComponent::pointerOn(std::size_t view, int index) const {
+    wizengine::UiState::Pointer none;
+    if (!simulating_) return none;
+    for (std::size_t cam = 0; cam < cameraViews_.size() && cam < pointers_.size(); ++cam) {
+        const bool onView = cameraViews_[cam] >= 0 && std::size_t(cameraViews_[cam]) == view;
+        if (onView) return pointers_[cam].canvas == index ? pointers_[cam] : none;
+    }
+    return none;
+}
+
+ui::UiMeshData UiRenderComponent::buildOne(wizengine::Renderer& renderer, int index,
+                                           const ui::CanvasDesc& desc, double canvasWidth,
+                                           const wizengine::UiState::Pointer& pointer) {
     const std::vector<ui::ElementDesc>& elements = snap_.elementsOf(desc);
-    // 重ね順（設計値 → アニメ → ノード → ポインタ）。今は設計値だけ（後の段は後の PR）。
-    const ui::PropSet none;
-    std::vector<ui::PropSet> resolved;
-    resolved.reserve(elements.size());
-    for (const auto& e : elements) resolved.push_back(ui::resolve(e.props, none, none, none));
+    // 重ね順（設計値 → アニメ → ノード → ポインタ。重ね方は ui::resolveElements の 1 か所）。
+    // アニメの段は後の PR。
+    const std::vector<ui::PropSet> resolved = ui::resolveElements(
+        elements, overrides_.of(index),
+        [&pointer, index](int id) { return pointer.phaseOf(index, id); });
 
     ui::UiTextureLookup lookup;
     lookup.fontPage = [this](int /*page*/) { return atlasTexture_; };
@@ -229,23 +257,40 @@ void UiRenderComponent::buildMeshes(wizengine::Renderer& renderer, bool all) {
         // 組み直すのは、この Canvas の材料（自分・使っている UI・フォント）が変わったときだけ
         // （ほかの Canvas の編集やドラッグでは組まない）。
         const std::uint64_t revision = snap_.contentsRevision(int(index));
-        // 同じ縦横比のビューは同じ中身（組むのは幅ごとに 1 回）。
-        std::map<double, std::vector<std::size_t>> pending;  // 幅 → 組み直すビュー
+        // ノードの上書き（実行時の状態）の版。変わった Canvas だけ組み直す。
+        const std::uint64_t overrides = overrides_.revision(int(index));
+        // 同じ縦横比で同じポインタのビューは同じ中身（組むのはその組ごとに 1 回）。
+        using Key = std::tuple<double, int, int>;  // 幅・ポインタの上・押下
+        struct Pending {
+            wizengine::UiState::Pointer pointer;
+            std::vector<std::size_t> views;
+        };
+        std::map<Key, Pending> pending;  // 組 → そのポインタと組み直すビュー
         for (const std::size_t view : slot.views) {
             const double width = canvasWidthOn(renderer, desc, view);
+            const wizengine::UiState::Pointer pointer = pointerOn(view, int(index));
             const ViewBuild& b = slot.built[view];
-            const bool upToDate =
-                b.revision == revision && b.canvasWidth == width && b.generation == generation;
-            if (!upToDate || all) pending[width].push_back(view);
+            const bool sameMaterial = b.revision == revision && b.generation == generation &&
+                                      b.overrides == overrides;
+            const bool samePointer = b.hover == pointer.hover && b.pressed == pointer.pressed;
+            const bool upToDate = sameMaterial && b.canvasWidth == width && samePointer;
+            if (upToDate && !all) continue;
+            Pending& p = pending[{width, pointer.hover, pointer.pressed}];
+            p.pointer = pointer;
+            p.views.push_back(view);
         }
-        for (const auto& [width, views] : pending) {
-            ui::UiMeshData mesh = buildOne(renderer, desc, width);
+        for (const auto& [key, p] : pending) {
+            const double width = std::get<0>(key);
+            const wizengine::UiState::Pointer& pointer = p.pointer;
+            const std::vector<std::size_t>& views = p.views;
+            ui::UiMeshData mesh = buildOne(renderer, int(index), desc, width, pointer);
             for (std::size_t k = 0; k < views.size(); ++k) {
                 // 最後のビューへは渡し切る（それより前は写す）。
                 const bool last = k + 1 == views.size();
                 renderer.setUiCanvasMesh(slot.rendererId, views[k],
                                          last ? std::move(mesh) : ui::UiMeshData(mesh));
-                slot.built[views[k]] = {revision, width, generation};
+                slot.built[views[k]] = {revision, width, generation, pointer.hover,
+                                        pointer.pressed, overrides};
             }
         }
     }
@@ -263,6 +308,7 @@ void UiRenderComponent::onRender(Scene& scene) {
     // オブジェクトのロックの中: カメラの有効フラグ（構造はこのロックが守る）と
     // ビュー番号を写すだけ（数個の int なので UI の無いシーンでも毎フレーム写す =
     // 写しが古いまま残らない）。
+    simulating_ = !scene.editor().isEditor();
     cameraViews_.resize(scene.cameraCount());
     for (std::size_t cam = 0; cam < cameraViews_.size(); ++cam) {
         cameraViews_[cam] = scene.cameraViewIndex(cam);
@@ -288,11 +334,11 @@ void UiRenderComponent::onRenderUnlocked(Scene& scene) {
 
 void UiRenderComponent::updateFrame(wizengine::Renderer& renderer) {
     // 出す条件: 対象があり、エディタカメラのビューが決まっていて、その Canvas が映像の
-    // 上で枠を出せる物（frameShownOnCamera）で、要素が今もある。
+    // 上で枠を出せる物（overlayShownOnCamera）で、要素が今もある。
     const bool camKnown = frameCamera_ >= 0 && std::size_t(frameCamera_) < cameraViews_.size();
     const int view = frameCanvas_ >= 0 && camKnown ? cameraViews_[std::size_t(frameCamera_)] : -1;
     const ui::CanvasDesc* desc = view >= 0 ? snap_.liveCanvas(frameCanvas_) : nullptr;
-    const bool canvasOk = desc && ui::frameShownOnCamera(*desc, frameCamera_);
+    const bool canvasOk = desc && ui::overlayShownOnCamera(*desc, frameCamera_);
     const std::vector<ui::ElementDesc>* elements = canvasOk ? &snap_.elementsOf(*desc) : nullptr;
     const std::size_t at = elements ? ui::elementIndex(*elements, frameElement_) : 0;
     const bool shown = elements && at < elements->size();
@@ -311,7 +357,8 @@ void UiRenderComponent::updateFrame(wizengine::Renderer& renderer) {
     }
     if (!frameCreated_) {
         frameRendererId_ = renderer.addUiCanvas();
-        // どの Canvas よりも手前（文書の order は ±10000 までなので、常にいちばん手前）。
+        // どの Canvas よりも手前（ほかの Canvas の順位は 0 から数えた個数までなので、常に
+        // いちばん手前）。
         renderer.setUiCanvasOrder(frameRendererId_, INT_MAX);
         frameCreated_ = true;
     }
@@ -333,6 +380,10 @@ void UiRenderComponent::updateFrame(wizengine::Renderer& renderer) {
 
 void UiRenderComponent::update(wizengine::Renderer& renderer, const wizengine::UiState& state) {
     const bool changed = state.copyIfChanged(version_, snap_);
+    // 実行時の状態（ポインタ・ノードの上書き）は別の版。変わったビュー・Canvas だけを
+    // buildMeshes が組み直す。
+    state.copyPointersIfChanged(pointersVersion_, pointers_);
+    state.copyOverridesIfChanged(overridesVersion_, overrides_);
     if (changed) {
         anyAlive_ = anyAliveCanvas();  // 写したときに 1 回だけ数える
         // 一覧が縮んだ（全消し・読込）ら、外になった番号の警告の記録を捨てる（次に同じ
@@ -374,7 +425,10 @@ void UiRenderComponent::rebuildAtlas(wizengine::Renderer& renderer) {
         for (const std::size_t view : slot.views) {
             widths.insert(canvasWidthOn(renderer, desc, view));
         }
-        for (const double width : widths) buildOne(renderer, desc, width);
+        // 字は色だけが変わるポインタの段に依らないので、ポインタ無しで組む。
+        for (const double width : widths) {
+            buildOne(renderer, int(index), desc, width, wizengine::UiState::Pointer{});
+        }
     }
     const ui::AtlasRebuildResult result = atlas_->rebuild();
     if (result.missing > 0) {

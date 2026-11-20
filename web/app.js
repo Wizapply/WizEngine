@@ -1841,7 +1841,7 @@
   // どのハンドルを掴めるかは押してみるまで分からない、では使いづらいので、
   // 選択中はカーソル位置を控えめな間隔で送ってサーバーに光らせてもらう。
   // ドラッグ中は drag が同じ情報を運ぶので送らない。ギズモはエディタカメラ
-  // にしか出ないので、送るのもそのページだけ。
+  // にしか出ないので、エディタ中に送るのもそのページだけ（シミュレート中のボタンは下）。
   // hoverNdc は映像の上の最後のポインタ位置（映像の外・ウィンドウを離れた
   // 間は null）で、テレインの筆（terrain-brush.js）も同じ値を読む。
   const HOVER_MS = 70;
@@ -1856,9 +1856,26 @@
     if (brushToolActive()) sendBrushHover();
     else send('hover', NDC_OFFSCREEN);
   }
+  // シミュレート中は、このページに押せる UI（ボタン）があれば（サーバーが /scene の
+  // uiClickable で送る = そのカメラに出ている overlay の Canvas にボタンがある）、どのカメラの
+  // ページからでもカーソルの位置を送る（サーバーがボタンの上の見た目にする）。同じ位置は送り直さないが、物を
+  // 掴んだ後・モードの切替や Reset で見た目が消えた後のために、1 秒ごとには送り直す。
+  const SIM_HOVER_RESEND_MS = 1000;
+  let simHoverSent = null;  // { x, y, at }
+  function sendSimHover() {
+    if (!sceneData || !sceneData.uiClickable) { simHoverSent = null; return; }
+    const at = hoverNdc || NDC_OFFSCREEN;
+    const now = Date.now();
+    const same = simHoverSent && simHoverSent.x === at.x && simHoverSent.y === at.y;
+    if (same && now - simHoverSent.at < SIM_HOVER_RESEND_MS) return;
+    simHoverSent = { x: at.x, y: at.y, at: now };
+    send('hover', at);
+  }
   setInterval(() => {
     if (!owner || grabbing || dragMode) return;
-    if (!sceneData || sceneData.mode !== 'editor' || !isEditorCam()) return;
+    if (!sceneData) return;
+    if (sceneData.mode !== 'editor') { sendSimHover(); return; }
+    if (!isEditorCam()) return;
     // 筆の道具を選んでいる間はギズモを掴めないので光らせず、筆の輪を送る
     // （terrain-brush.js）。
     if (brushToolActive()) { if (hoverNdc) sendBrushHover(); return; }
@@ -3468,6 +3485,9 @@
     onJointBreak:   { icon: '💥', label: 'ジョイントが切れたら', trigger: true, target: 'joint' },
     setVelocity:    { icon: '💨', label: '速度を与える', trigger: false, target: 'object' },
     setMotor:       { icon: '⚙️', label: 'モータの目標', trigger: false, target: 'joint' },
+    // UI のノード（本文は ui.js の uiNodeBody）。
+    onUiClick:      { icon: '🔘', label: 'ボタンが押されたら', trigger: true, target: 'canvas' },
+    setUiProp:      { icon: '🖼', label: 'UI の性質を変える', trigger: false, target: 'canvas' },
   };
   let nodeEdOpen = false;
   let ndGraphKey = '';   // 前回組み立てたグラフ+選択肢のキー（変化検知）
@@ -3953,10 +3973,10 @@
 
   // ノード追加メニューの並び（NODE_DEF から見出しとラベルを作る）。
   const NODE_MENU_TRIGGERS = ['onCollision', 'onStart', 'onUpdate', 'onTimer', 'onGrab',
-                              'onJointBreak'];
+                              'onJointBreak', 'onUiClick'];
   const NODE_MENU_ACTIONS = ['setColor', 'impulse', 'setVelocity', 'setFixed', 'grabPull',
                              'setMotor', 'lightColor', 'lightIntensity', 'cameraLookAt',
-                             'cameraBehind', 'cameraOrbit'];
+                             'cameraBehind', 'cameraOrbit', 'setUiProp'];
   function nodeMenuItems(x, y) {
     const item = (kind) => {
       const def = NODE_DEF[kind];
@@ -4400,6 +4420,8 @@
       h += ndRow('ジョイント', ndSelHtml(n.id, 'target', ndJointItems(), n.target,
                                          n.kind === 'onJointBreak' ? [[-1, '(どれでも)']]
                                                                    : [[-1, '(選んでください)']]));
+    } else if (def.target === 'canvas') {
+      h += uiNodeBody(n);  // UI のノード（ui.js）
     }
     if (n.kind === 'onCollision') {
       h += ndRow('相手', ndSelHtml(n.id, 'other', ndObjItems(), n.other,
@@ -4567,7 +4589,7 @@
       (sceneData.objects || []).map((o) => o.index + ':' + (o.name || '')).join(',') +
       '|' + (sceneData.lights || []).map((l) => l.index + ':' + (l.name || '')).join(',') +
       '|' + (sceneData.cameras || []).filter((c) => c.active !== false)
-              .map((c) => c.index).join(',');
+              .map((c) => c.index).join(',') + '|' + uiNodeOptKey();
     const key = 'e@' + JSON.stringify(g) + '@' + optKey + '@' +
       eventAssets().map((a) => a.name).join(',') + '@' +
       formulaAssets().map((a) => a.name).join(',');

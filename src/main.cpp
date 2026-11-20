@@ -788,7 +788,10 @@ int run(int argc, char** argv) {
             if (!(timeScale >= 0.01)) timeScale = 0.01;  // NaN も弾く
             if (timeScale > 1.0) timeScale = 1.0;
             scene.setTimeScale(timeScale);
-            if (!tuning.paused.load()) {
+            // 一時停止は 1 回だけ読む（UI のクリックの扱いと積分の判定を同じ値で揃える）。
+            const bool paused = tuning.paused.load();
+            scene.setPaused(paused);
+            if (!paused) {
                 accumulator += elapsed * timeScale;
                 scaledWall += elapsed * timeScale;
             }

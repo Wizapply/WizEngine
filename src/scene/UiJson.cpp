@@ -36,6 +36,18 @@ nlohmann::json buildSchema() {
         const ui::PropInfo& p = ui::propInfo(static_cast<ui::Prop>(i));
         nlohmann::json j = specJson(p.name, p.spec, p.label);
         j["animatable"] = p.animatable;
+        // ノード（SetUiProp）がこの性質の値を置く欄（ui::nodeField）と、性質を選び直したときに
+        // 入れる欄の既定値（{欄の名前: 値} = ノードの JSON の形のまま。ブラウザはそのまま送る）
+        // と成分の数（ノードエディタの値の欄）。
+        const ui::NodeField field = ui::nodeField(p.spec.type);
+        const char* fieldName = ui::nodeFieldName(field);
+        editor::NodeDesc def;
+        editor::setUiNodeFields(def, ui::nodeFieldsFromValue(p.spec, p.spec.def));
+        j["nodeField"] = fieldName;
+        j["nodeDef"] = {{fieldName, editor::toJson(def)[fieldName]}};
+        j["components"] = ui::componentCount(p.spec.type);
+        // 既定が要素ごとに決まる性質は表の既定値を送らない（選択中の要素の defaults が既定）。
+        if (ui::defaultIsDerived(p.id)) j["def"] = nullptr;
         props.push_back(j);
     }
     nlohmann::json kinds = nlohmann::json::array();
@@ -47,7 +59,10 @@ nlohmann::json buildSchema() {
             const ui::Prop p = static_cast<ui::Prop>(i);
             if (mask & ui::propBit(p)) names.push_back(ui::propInfo(p).name);
         }
-        kinds.push_back({{"name", info.name}, {"icon", info.icon}, {"props", names}});
+        kinds.push_back({{"name", info.name},
+                         {"icon", info.icon},
+                         {"props", names},
+                         {"click", ui::kindCatchesPointer(info)}});
     }
     nlohmann::json canvas = nlohmann::json::array();
     for (const auto& a : ui::kCanvasAttrs) {
@@ -99,6 +114,17 @@ nlohmann::json selectedJson(const UiState::Snapshot& snap, int canvas, int eleme
         j["parent"] = e.parent;
         // 書いてある性質だけ（残りは schema の既定値。Inspector が「既定」と出す）。
         j["props"] = ui::toJson(e.props);
+        // 書いていないときの値が要素ごとに決まる性質（hover / pressed = 背景から作る色。
+        // ui::pointerColor）は、その値を「既定」として送る（schema の既定値より優先）。
+        nlohmann::json defaults = nlohmann::json::object();
+        const ui::ElementKindInfo* kind = ui::kindInfo(e.kind);
+        const ui::PropMask mask = kind ? ui::propsOfKind(kind->id) : 0;
+        for (const auto& c : ui::kPointerColorProps) {
+            if (!(mask & ui::propBit(c.prop))) continue;
+            const ui::PropInfo& info = ui::propInfo(c.prop);
+            defaults[info.name] = ui::valueToJson(info.spec, ui::pointerColor(e.props, c.phase));
+        }
+        j["defaults"] = defaults;
         break;
     }
     return j;

@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "components/UiPointerInput.h"
 #include "scene/SceneComponent.h"
 #include "scene/UiState.h"
 
@@ -28,9 +29,13 @@
 //                                 UiLibraryOps）。プレハブ編集中・知らない操作はステータスで
 //                                 知らせる。ほかの kind と refresh（一覧の取り直し。種類に
 //                                 よらない）はここでは取らない（EditorComponent へ）。
-//   pick / drag / release       … 選んでいる要素の枠の中とつまみ（ui/UiHandles.h）を掴んで
-//                                 動かす・大きさを変える。枠の外・見えない要素・編集できない
+//   pick / drag / release       … エディタ中: 選んでいる要素の枠の中とつまみ（ui/UiHandles.h）を
+//                                 掴んで動かす・大きさを変える。枠の外・見えない要素・編集できない
 //                                 中身の押下は素通し（ギズモ・カメラ・物の選択へ）。
+//                                 シミュレート中: ボタンの押下（UiPointerInput に任せる。
+//                                 ボタンに当たれば後ろの物を掴まない）。
+//   hover                       … シミュレート中: ポインタが上にあるボタン（UiPointerInput。
+//                                 ギズモのハイライトにも要るので取らない）。
 //
 // 選択の実体は EditorState の editorSel（SelKind::Canvas、index = Canvas の番号、
 // sub = 要素の id）。受け付けるページの判定（Scene::editsUiFrom = エディタモード ×
@@ -89,10 +94,14 @@ private:
     // 開始時の値 + 動かした量を当てる（PHYSICS）。続けられなければ false。serial = この
     // パスの初めに読んだ通し番号。
     bool applyDrag(Scene& scene, std::size_t camIndex, Cam& cam, std::uint64_t serial);
+    // 前の押下の印（held）が残っていれば下ろし、そのドラッグを止める（INPUT。届かなかった
+    // release の後始末。どの経路の pick でも最初に呼ぶ）。
+    static void lowerHeld(Cam& cam);
     // UiState の写し（INPUT スレッド専用。版が変わったときだけ取り直す）。
     const wizengine::UiState::Snapshot& snapshot(Scene& scene);
 
     std::vector<std::unique_ptr<Cam>> cams_;  // 数は作るときに決まり、以後変えない
+    UiPointerInput pointer_;                   // シミュレート中のボタン（状態は向こうが持つ）
     std::uint64_t known_ = 0;
     wizengine::UiState::Snapshot snap_;
 };

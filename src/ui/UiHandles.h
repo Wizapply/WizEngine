@@ -81,13 +81,6 @@ inline double handleHalfDesign(double scale) { return kHandleScreenPx * 0.5 * sc
 // 同じ）。
 inline double handleHitHalfDesign(double scale) { return kHandleHitScreenPx * 0.5 * scale; }
 
-// 映像の上で枠を出して動かせる Canvas か（唯一の定義）: 映像に重ねる overlay（camera /
-// world は板の上の座標になるので、映像の位置をそのまま Canvas の画素に写せない）で、
-// そのカメラに出ている。
-inline bool frameShownOnCamera(const CanvasDesc& desc, int camera) {
-    return desc.mode == CanvasMode::Overlay && canvasShownOnCamera(desc, camera);
-}
-
 // 選択枠のつまみを出して映像の上で掴めるか（唯一の定義。当たり = UiInputComponent、描く =
 // UiRenderComponent）: 中身を編集してよく（editable = uiops::elementsEditable の答え）、要素が
 // 見えている（自分と祖先が visible）。掴めない要素も枠の線は出す（Inspector の数字で直す）。

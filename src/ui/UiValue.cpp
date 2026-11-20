@@ -480,5 +480,78 @@ bool sameValue(const ValueSpec& spec, const PropValue& a, const PropValue& b) {
     return true;
 }
 
+// ---- ノードの欄 --------------------------------------------------------------
+NodeField nodeField(PropType type) {
+    switch (type) {
+        case PropType::Number:
+        case PropType::Int:
+        case PropType::Bool: return NodeField::Value;
+        case PropType::Vec2:
+        case PropType::Vec3:
+        case PropType::Euler: return NodeField::Vec;
+        case PropType::Color: return NodeField::Color;
+        case PropType::Rect:
+        case PropType::Enum:
+        case PropType::Text:
+        case PropType::Name:
+        case PropType::Path:
+        case PropType::IndexList: break;
+    }
+    return NodeField::Text;
+}
+
+const char* nodeFieldName(NodeField field) {
+    switch (field) {
+        case NodeField::Value: return "value";
+        case NodeField::Vec: return "vec";
+        case NodeField::Color: return "color";
+        case NodeField::Text: break;
+    }
+    return "text";
+}
+
+bool valueFromNodeFields(const ValueSpec& spec, const NodeFieldValues& in, PropValue& out) {
+    PropValue v = spec.def;
+    switch (nodeField(spec.type)) {
+        case NodeField::Value:
+            v.v[0] = spec.type == PropType::Bool ? (in.value != 0.0 ? 1.0 : 0.0)
+                     : spec.type == PropType::Int ? roundToInt(in.value, defaultInt(spec))
+                                                  : in.value;
+            break;
+        case NodeField::Vec:
+            for (std::size_t k = 0; k < componentCount(spec.type); ++k) v.v[k] = in.vec[k];
+            break;
+        case NodeField::Color:
+            for (std::size_t k = 0; k < 3; ++k) v.v[k] = in.color[k];
+            break;  // 不透明度は表の既定値のまま（withNodeValue が設計値へ）
+        case NodeField::Text:
+            return parseValue(spec, in.text, out);
+    }
+    out = std::move(v);
+    return true;
+}
+
+NodeFieldValues nodeFieldsFromValue(const ValueSpec& spec, const PropValue& value) {
+    NodeFieldValues out;
+    switch (nodeField(spec.type)) {
+        case NodeField::Value: out.value = value.v[0]; break;
+        case NodeField::Vec:
+            for (std::size_t k = 0; k < componentCount(spec.type); ++k) out.vec[k] = value.v[k];
+            break;
+        case NodeField::Color:
+            for (std::size_t k = 0; k < 3; ++k) out.color[k] = value.v[k];
+            break;
+        case NodeField::Text: out.text = formatValue(spec, value); break;
+    }
+    return out;
+}
+
+PropValue withNodeValue(const ValueSpec& spec, const PropValue& nodeValue,
+                        const PropValue& design) {
+    PropValue out = nodeValue;
+    if (nodeField(spec.type) == NodeField::Color) out.v[3] = design.v[3];
+    return out;
+}
+
 }  // namespace ui
 }  // namespace wizengine

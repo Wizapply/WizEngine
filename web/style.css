@@ -853,6 +853,8 @@
     border-radius: 4px;
   }
   .ndPalette button:hover:enabled, #ndClose:hover:enabled { background: #343841; }
+  /* 動かせない（番号も文脈も無い）ノードの印（UI のノード = ui.js の uiNodeBody）。 */
+  .ndUnset { font-size: 10.5px; color: #e0a050; line-height: 1.4; }
   .ndHint {
     flex: 0 0 auto; font-size: 10.5px; color: #7b7f88; line-height: 1.5;
     padding: 4px 8px; border-top: 1px solid #262930;

@@ -9,6 +9,7 @@
 #include "core/Xml.h"
 #include "document/EditorTypes.h"
 #include "ui/UiTypes.h"
+#include "ui/UiValue.h"  // NodeFieldValues
 
 // シーン文書（保存・読込・受け渡しの単位）と、その XML 表現。
 //
@@ -351,6 +352,13 @@ std::string prefabToLibraryXmlText(const PrefabDesc& prefab,
 bool parsePrefabLibraryXml(const std::string& text, PrefabDesc& out,
                            std::vector<MeshAssetDesc>& meshes, std::string& error,
                            std::vector<std::string>* warnings = nullptr);
+
+// ---- UI のノード（SetUiProp）の値の欄 ------------------------------------------
+// NodeDesc の欄 ⇄ ui::NodeFieldValues の詰め替え（唯一の定義。ui はノードの型を知らない）。
+// 読込の確かめ（SceneDocument）・実行（Scene）・ノードエディタの既定値（scene/UiJson）が使う。
+ui::NodeFieldValues uiNodeFields(const NodeDesc& n);
+// in の値を n の欄（value / vec / color / text）へ入れる（ほかの欄は触らない）。
+void setUiNodeFields(NodeDesc& n, const ui::NodeFieldValues& in);
 
 // ---- 旧 JSON 文書（version 1〜3）--------------------------------------------
 // 既に保存してある assets/scenes/*.json を読むための取り込み口。書き出しは

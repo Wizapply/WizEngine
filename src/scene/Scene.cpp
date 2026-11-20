@@ -241,7 +241,8 @@ Scene::Scene(PhysicsWorld& physics, wizengine::Renderer& renderer,
     ensureGrabState();
     // UI の入力が最初（選んでいる UI の枠・つまみを押したら、後ろのハンドルや物を
     // 掴まない。当たらなければ pick を素通し）。select.ui・edit.ui.*・pick / drag /
-    // release を取る。edit.ui.* は EditorComponent（main が後で登録する、edit.* を全部
+    // release を取る。シミュレート中はボタンの押下も取る（クリックの優先順位はボタンが
+    // 最初）。edit.ui.* は EditorComponent（main が後で登録する、edit.* を全部
     // 受け止める係）より先に取る必要があるので、ここで最初に登録する。
     addComponent(std::make_unique<UiInputComponent>(cameras_.size()));
     // 次がギズモ。pick / drag をカメラやグラブより先に見て、ハンドルに

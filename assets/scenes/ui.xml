@@ -7,7 +7,10 @@
        * 共用 UI（<canvas ui="hud"> = assets/ui/hud.xml）
        * cameras="1" の Canvas が Camera 1 のページにだけ出るか
        * 後処理（ブルーム・ビネット）が UI に掛からないか
-     番号の正しくない cameras（どこにも出ない + 警告 1 件）は ui_cameras_error.xml。
+       * ボタン（下の中央）: シミュレート中に上に乗せると hover の色、押している間は
+         pressed の色になり、ボタンの上で離すと左上の見出しの字が変わるか（イベント
+         start_heading = onUiClick → setUiProp。シミュレートを止めると元の字に戻る）。
+         エディタ中は押せず、Text / Image と同じく選んで動かせるか
      字は同梱の Noto Sans JP（assets/fonts/、<font> を書かなければこれ）。 -->
 <wizengine model="ui" version="4">
   <!-- 後処理を効かせる（ブルーム・ビネット・ACES）。UI はこれの影響を受けない
@@ -19,6 +22,21 @@
   </visual>
   <asset>
     <ui name="hud" file="ui/hud.xml"/>
+    <!-- マウスで掴んだ物をカーソルへ引き寄せる（イベントの節を書くと既定では付かないので
+         default.xml と同じものを書く）。 -->
+    <event name="pickup">
+      <node id="1" type="onGrab" pos="40 40" target="-1"/>
+      <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+      <wire from="1" to="2"/>
+    </event>
+    <!-- ボタン start（Canvas 4 = buttons）を押したら、左上の板（Canvas 0 = title）の
+         見出し heading の字を変える。値は性質の型で決まる欄（text の性質は text 属性）。 -->
+    <event name="start_heading">
+      <node id="1" type="onUiClick" pos="40 40" target="4" element="start"/>
+      <node id="2" type="setUiProp" pos="300 40" target="0" element="heading" prop="text"
+            text="スタート！"/>
+      <wire from="1" to="2"/>
+    </event>
   </asset>
   <worldbody>
     <environment hdr="studio.hdr" intensity="30000"/>
@@ -59,12 +77,21 @@
     <!-- 右下: 共用 UI（assets/ui/hud.xml） -->
     <canvas name="hud" ui="hud" order="2"/>
 
-    <!-- 中央の上寄り（左上の板の下 = 重ならない）: Camera 1 のページにだけ出る -->
+    <!-- 右上の隅: Camera 1 のページにだけ出る小さな字（カメラごとの出し分けの見本） -->
     <canvas name="camera1" cameras="1" order="3">
-      <image id="1" name="tag" anchor="0.5 0 0.5 0" pivot="0.5 0" pos="0 420" size="420 64"
-             color="0.6 0.1 0.1 0.7"/>
-      <text id="2" parent="1" name="label" anchor="0 0 1 1" pivot="0.5 0.5" size="0 0"
-            pos="0 10" text="Camera 1 だけに表示" fontSize="34" align="center"/>
+      <text id="1" name="label" anchor="1 0 1 0" pivot="1 0" pos="-24 20" size="240 32"
+            text="Camera 1" fontSize="22" align="right" color="1 1 1 0.45"/>
+    </canvas>
+
+    <!-- 下の中央: ボタン（字は縦横とも中央。色は背景、textColor が字） -->
+    <canvas name="buttons" order="4">
+      <button id="1" name="start" anchor="0.5 1 0.5 1" pivot="0.5 1" pos="0 -40" size="280 72"
+              text="押してみる" fontSize="30" align="center" color="0.18 0.42 0.85 1"
+              hover="0.3 0.55 0.95 1" pressed="0.1 0.28 0.6 1" textColor="1 1 1 1"/>
     </canvas>
   </worldbody>
+  <events>
+    <event name="pickup"/>
+    <event name="start_heading"/>
+  </events>
 </wizengine>

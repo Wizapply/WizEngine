@@ -46,6 +46,8 @@ struct Result {
     bool select = false;  // true = 下の物（追加した物）を選ぶ
     int canvas = -1;
     int element = -1;     // -1 = Canvas そのもの
+    // 消した Canvas の番号（-1 = 消していない）。呼び手（Scene）がそれを指すノードを掃除する。
+    int removedCanvas = -1;
 };
 
 // kind が UI の編集の操作か（上の一覧の唯一の定義。INPUT が積む前の確かめにも使う）。

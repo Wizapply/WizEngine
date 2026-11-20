@@ -60,9 +60,37 @@ std::vector<int> parentIndices(const std::vector<ElementDesc>& elements) {
     return out;
 }
 
+std::vector<PropSet> resolveElements(const std::vector<ElementDesc>& elements,
+                                     const NodeOverrides* node,
+                                     const std::function<PointerPhase(int id)>& phase) {
+    static const PropSet kNone;
+    std::vector<PropSet> out;
+    out.reserve(elements.size());
+    for (const auto& e : elements) {
+        const PropSet* upper = &kNone;
+        if (node) {
+            const auto it = node->find(e.id);
+            if (it != node->end()) upper = &it->second;
+        }
+        // アニメの段は後の PR（今は無し）。
+        out.push_back(resolve(e.props, kNone, *upper, phase ? phase(e.id) : PointerPhase::None));
+    }
+    return out;
+}
+
 const PropSet& elementProps(const std::vector<ElementDesc>& elements,
                             const std::vector<PropSet>& resolved, std::size_t i) {
     return i < resolved.size() ? resolved[i] : elements[i].props;
+}
+
+bool elementVisible(const std::vector<ElementDesc>& elements,
+                    const std::vector<PropSet>& resolved, const std::vector<int>& parents,
+                    std::size_t i) {
+    // 親は必ず前にある（parentIndices）ので、たどれば必ず根で止まる。
+    for (int k = int(i); k >= 0; k = parents[std::size_t(k)]) {
+        if (!elementProps(elements, resolved, std::size_t(k)).flag(Prop::Visible)) return false;
+    }
+    return true;
 }
 
 std::vector<LayoutNode> layoutTree(const std::vector<ElementDesc>& elements,
@@ -77,9 +105,8 @@ std::vector<LayoutNode> layoutTree(const std::vector<ElementDesc>& elements,
         // 親は必ず前にあるので、もう解けている。
         const bool hasParent = n.parent >= 0;
         const Rect& parentRect = hasParent ? out[std::size_t(n.parent)].rect : canvas;
-        const bool parentVisible = hasParent ? out[std::size_t(n.parent)].visible : true;
         n.rect = solveRect(parentRect, p);
-        n.visible = parentVisible && p.flag(Prop::Visible);
+        n.visible = elementVisible(elements, props, parents, i);
     }
     return out;
 }

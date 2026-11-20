@@ -598,6 +598,10 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     if (wizengine::uiops::isUiOp(op.kind)) {
         if (!editsUiFrom(op.camera)) return;
         const wizengine::uiops::Result r = wizengine::uiops::apply(ui_, op.kind, a);
+        // 消した Canvas を番号で指すノードを掃除する（ライト・カメラの削除と同じ判断）。
+        if (r.removedCanvas >= 0) {
+            pruneGraphForRemoved(ed::NodeTargetKind::Canvas, r.removedCanvas);
+        }
         if (r.select) {
             setEditorSel(op.camera, EditorState::SelKind::Canvas, r.canvas, r.element);
         } else if (editor_.selKind() == EditorState::SelKind::Canvas &&

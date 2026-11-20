@@ -44,6 +44,7 @@ struct ElementKindInfo {
 // 各 Ui<種類>.cpp が定義する。
 extern const ElementKindInfo kTextKind;
 extern const ElementKindInfo kImageKind;
+extern const ElementKindInfo kButtonKind;
 
 // 名前 → 種類（知らなければ nullptr）。
 const ElementKindInfo* kindInfo(const std::string& name);
@@ -54,6 +55,19 @@ const ElementKindInfo& kindAt(std::size_t index);
 // 要素の色の性質（Color / OutlineColor など Color 型）× 要素の不透明度。
 // 種類の組み立てが共通に使う。
 void elementColor(const ResolvedElement& e, Prop colorProp, float out[4]);
+
+// ポインタの押下を受け止める要素か（唯一の規則: 種類が Interaction::Click。知らない種類は
+// false）。
+// enabled = false でも受け止める（押下を後ろの物へ流さない）。映像の上の当たり（hitTest の
+// accept）が使う。
+bool catchesPointer(const ElementDesc& e);
+// その種類が押下を受け止めるか（catchesPointer の中身。ブラウザの schema が種類ごとに送る =
+// ノードエディタの「押されたら」の要素の候補）。
+bool kindCatchesPointer(const ElementKindInfo& kind);
+// クリックとして受け付けるか（唯一の規則。押したとき = INPUT と、確かめるとき = PHYSICS）:
+// 受け止める種類で、見えていて（visible = 自分と祖先が visible = LayoutNode::visible）、
+// props（重ね済みの性質）の enabled が立っている。
+bool acceptsClick(const ElementDesc& e, const PropSet& props, bool visible);
 
 }  // namespace ui
 }  // namespace wizengine

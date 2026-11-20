@@ -212,6 +212,7 @@ void Scene::runEventGraph(double dt) {
     // 引っぱり線は毎ステップ消してから、grabPull が引いたぶんだけ点ける
     // （スクリプトが無ければ線も出ない = 何も起きていないことが見える）。
     clearGrabLines();
+    collectUiClicks();  // このステップのボタンのクリック（付いたアセットが無くても取り出す）
 
     // グラフが変わっていたら一覧を取り直す。タイマー等は（アセット名, 付け先,
     // ノード id）で引くので、シミュレート中の編集でも残りの状態は保たれる。
@@ -220,6 +221,7 @@ void Scene::runEventGraph(double dt) {
         graphRt_.version = v;
         graphRt_.assets = editor_.eventAssets();
         rebuildGraphInstances();
+        compileUiNodes();  // SetUiProp の性質と値を解いて持つ（SceneUiEvents.cpp）
     }
     if (graphRt_.instances.empty()) {
         graphRt_.startFired = true;  // 後から足した OnSimStart を発火させない
@@ -417,6 +419,7 @@ void Scene::runEventGraph(double dt) {
                     }
                     break;
                 default:
+                    collectUiTriggers(n, base, fires);  // UI のトリガー（SceneUiEvents.cpp）
                     break;  // アクションは自分からは発火しない
             }
             if (fires.empty()) continue;
@@ -617,6 +620,7 @@ void Scene::runGraphAction(const ed::NodeDesc& n, const GraphContext& ctx,
             return;
         }
         default:
+            runUiAction(n, ctx);  // UI のアクション（SceneUiEvents.cpp）
             return;  // トリガーに in は無い（EditorState が張らせない）
     }
 }
@@ -638,6 +642,10 @@ void Scene::resetGraphRuntime() {
         cameraRigs_.clear();
         ++rigGeneration_;
     }
+    // UI の実行時の状態（ボタンの上・押下と、まだ取り出していないクリック・ノードの上書き）も
+    // 捨てる。
+    ui_.resetRuntime();
+    graphRt_.ui = {};
 
     // SetFixed が触ったオブジェクトだけ設計値の固定状態へ戻す。
     for (const std::size_t i : graphRt_.fixedTouched) {
@@ -762,13 +770,13 @@ bool Scene::saveSharedEvents(const ed::SceneDocument& doc, std::string& written,
 }
 
 namespace {
-// 番号で対象を指すノード（オブジェクト / ライト / ジョイント）があるか。
+// 番号で対象を指すノード（オブジェクト / ライト / ジョイント / Canvas）があるか。
 // 共通化すると、他のシーンでは同じ番号が別の物を指す。
 bool hasNumberedTargets(const ed::EventAssetDesc& a) {
     for (const auto& n : a.nodes) {
         const ed::NodeTargetKind tk = ed::nodeTargetKind(n.kind);
         if ((tk == ed::NodeTargetKind::Object || tk == ed::NodeTargetKind::Light ||
-             tk == ed::NodeTargetKind::Joint) &&
+             tk == ed::NodeTargetKind::Joint || tk == ed::NodeTargetKind::Canvas) &&
             n.target >= 0) {
             return true;
         }

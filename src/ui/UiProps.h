@@ -44,7 +44,7 @@ static_assert(sizeof(kAlignNames) / sizeof(kAlignNames[0]) - 1 ==
 // ---- 性質の表 ----------------------------------------------------------------
 enum class Prop : std::uint8_t {
     Anchor, Pivot, Pos, Size, Color, Alpha, Visible, Text, Font, FontSize,
-    Align, Outline, OutlineColor, Wrap, File, Hover, Pressed, Enabled, Count
+    Align, Outline, OutlineColor, Wrap, TextColor, File, Hover, Pressed, Enabled, Count
 };
 inline constexpr std::size_t kPropCount = static_cast<std::size_t>(Prop::Count);
 
@@ -119,10 +119,57 @@ PropSet clampProps(PropSet props);
 // a → b の補間（t は 0..1）。両方に立っている性質は lerpValue、片方だけの
 // 性質はその値のまま。
 PropSet lerpProps(const PropSet& a, const PropSet& b, double t);
+// 要素 1 個に対するポインタの様子（カメラごと。持ち主は UiState の実行時の状態）。
+enum class PointerPhase : std::uint8_t { None, Hover, Pressed };
+
+// ---- ノード（SetUiProp）の性質と値 ---------------------------------------------
+// 性質の名前とノードの欄から、書き換える性質と値を決める（唯一の確かめ。読込の警告 =
+// SceneDocument と、実行 = Scene が同じ答えを使う = 2 つの確かめが食い違わない）。
+struct NodePropValue {
+    enum class Problem : std::uint8_t {
+        None,         // 使える
+        NoProp,       // 性質を選んでいない（置いたばかりのノード。警告しない = 未設定）
+        UnknownProp,  // 表に無い名前
+        BadText,      // text の欄が性質の型に合わない
+    };
+    Problem problem = Problem::NoProp;
+    const PropInfo* prop = nullptr;  // UnknownProp / NoProp では nullptr
+    PropValue value;                 // None のとき: 表の範囲へ丸めた値
+    std::string message;             // UnknownProp / BadText の理由（英語。ログと警告の本文）
+};
+NodePropValue nodePropValue(const std::string& propName, const NodeFieldValues& in);
+
+// ポインタの段ごとの背景の色を持つ性質（唯一の対応）。pointerColor・ブラウザへ送る要素ごとの
+// 「既定」（scene/UiJson）・「既定は派生」の判断（defaultIsDerived）がこの表を引く。
+struct PointerColorProp {
+    PointerPhase phase;
+    Prop prop;
+};
+inline constexpr PointerColorProp kPointerColorProps[] = {
+    {PointerPhase::Hover, Prop::Hover},
+    {PointerPhase::Pressed, Prop::Pressed},
+};
+// 書いていないときの値が要素ごとに決まる（表の既定値を使わない）性質か: kPointerColorProps の
+// 性質（背景の color から作る = pointerColor）。保存は既定値と比べずに、立っていれば必ず書く
+// （白を書いても消えない）。ブラウザの schema の既定値も送らない（null）。
+bool defaultIsDerived(Prop p);
+
 // 重ね順の唯一の定義: 設計値 → アニメ → ノード → ポインタ（hover / pressed）。
-// 後の段ほど強い。
+// 後の段ほど強い。ポインタの段は pointer が Hover / Pressed のとき、ノードの段まで重ねた
+// 性質が enabled なら Color を pointerColor で上書きする（enabled でない要素は見た目を
+// 変えない = この判断はここだけ）。
 PropSet resolve(const PropSet& design, const PropSet& anim, const PropSet& node,
-                const PropSet& pointer);
+                PointerPhase pointer = PointerPhase::None);
+
+// ポインタが上にある間（Hover）・押している間（Pressed）の背景の色（唯一の定義）: hover /
+// pressed を書いてあればその色、無ければ背景の color を少し明るく / 暗くした色
+// （kHoverLighten / kPressedDarken）。None は color のまま。描く側（resolve）と、ブラウザに
+// 送る「既定」の値（scene/UiJson）が使う。
+PropValue pointerColor(const PropSet& props, PointerPhase phase);
+// 性質 p の、描く側が使う値（重ねる前）: 書いてあればその値、書いていなければ既定が派生する
+// 性質（defaultIsDerived = hover / pressed）は派生した値（pointerColor）、ほかは表の既定値。
+// ノードの上書きが持たない成分（色の不透明度 = withNodeValue）をここから取る。
+PropValue effectiveValue(const PropSet& props, Prop p);
 
 }  // namespace ui
 }  // namespace wizengine

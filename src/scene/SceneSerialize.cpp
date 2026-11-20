@@ -49,9 +49,10 @@ std::vector<Desc> newNamesOnly(const std::vector<Desc>& incoming, const std::vec
 // 今のシーンと重なった UI・フォントは入れず（今のシーンの物が勝つ）、同じ文書の中で 2 回
 // 出た UI は先のものを入れて、どちらも LOGW に出す。
 // 戻り値 = ステータスの末尾に足す注意（読めなかった件数・名前の重なった件数）。
+// canvasBase = 文書の Canvas 0 番が入った番号（Canvas を番号で指すノードをずらす = lightBase）。
 std::string loadUiFromDocument(wizengine::UiState& ui, const ed::SceneDocument& doc,
                                wizengine::UiState::LoadMode mode,
-                               wizengine::LibraryBaseline& baseline) {
+                               wizengine::LibraryBaseline& baseline, std::size_t& canvasBase) {
     // 書き換える（ファイルの中身を入れる）のは共用 UI だけなので、それだけを写す。
     std::vector<wizengine::ui::UiAssetDesc> uiAssets = doc.uiAssets;
     std::vector<bool> readOk(uiAssets.size(), true);
@@ -67,6 +68,7 @@ std::string loadUiFromDocument(wizengine::UiState& ui, const ed::SceneDocument& 
     }
     const wizengine::UiState::LoadResult got =
         ui.fromDocument(doc.canvases, uiAssets, doc.fonts, mode);
+    canvasBase = got.base;
     std::size_t missing = 0;  // 入ったうちの読めなかった物
     for (std::size_t i = 0; i < uiAssets.size(); ++i) {
         const auto& a = uiAssets[i];
@@ -117,6 +119,9 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     // このページから UI を選べる・編集できるか（判定の唯一の定義 editsUiFrom をそのまま送る。
     // カメラごとに違うので "ui" の写しの外に置く。ブラウザは理由の出し分けにだけ使う）。
     j["editsUi"] = editsUiFrom(cameraIndex);
+    // このページに押せる UI（ボタン）があるか（同じくカメラごと = "ui" の写しの外。ブラウザは
+    // シミュレート中にこれが立っている間だけホバーを送る）。
+    j["uiClickable"] = ui_.clickableOnCamera(int(cameraIndex));
 
     // エディタ選択（種類・番号・UI の要素）は続けて読む（別々の atomic なので、間を
     // 空けるほど食い違いやすい。読む側は対象が今もあるかを必ず確かめる）。
@@ -317,9 +322,14 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             nlohmann::json e = ed::toJson(a);
             // 共通化したものに、ファイルへ書いていない変更があるか（タイルの *）。
             e["dirty"] = !a.file.empty() && editor_.eventAssetDirty(a.name);
-            for (auto& n : e["nodes"]) {
-                const auto it = fires.find({a.name, ed::jsonInt(n, "id", -1)});
+            for (std::size_t k = 0; k < a.nodes.size(); ++k) {
+                nlohmann::json& n = e["nodes"][k];
+                const auto it = fires.find({a.name, a.nodes[k].id});
                 if (it != fires.end()) n["fired"] = it->second;
+                // SetUiProp が動かない理由（"" = 動く。規則は editor::uiPropNodeUnset = 実行と同じ）。
+                if (a.nodes[k].kind == ed::NodeKind::SetUiProp) {
+                    n["unset"] = ed::uiNodeUnsetName(ed::uiPropNodeUnset(a, a.nodes[k]));
+                }
             }
             ev["assets"].push_back(std::move(e));
         }
@@ -547,6 +557,15 @@ ed::SceneDocument Scene::document() {
         remap[i] = next++;
         doc.bodies.push_back(boxes_[i].desc);
     }
+    // 番号を詰めた先へ付け替える（唯一の手順。table = 詰めた対応表）。負の番号の意味
+    // （地面・自分・何でも・明示しない）は保ち、消えた物を指していれば false（呼び手がその
+    // ジョイント / ノードを書かない、または「何でも」などへ倒す）。
+    auto fixBy = [](const std::vector<int>& table, int& ref) {
+        if (ref < 0) return true;
+        if (std::size_t(ref) >= table.size() || table[std::size_t(ref)] < 0) return false;
+        ref = table[std::size_t(ref)];
+        return true;
+    };
 
     // ジョイントも番号で参照される（onJointBreak / setMotor）ので、端点が
     // 消えて落ちたぶんを詰めた対応表を作る。
@@ -554,14 +573,7 @@ ed::SceneDocument Scene::document() {
     std::vector<int> jointRemap(allJoints.size(), -1);
     for (std::size_t k = 0; k < allJoints.size(); ++k) {
         ed::JointDesc copy = allJoints[k];
-        auto fix = [&](int& ref) {
-            if (ref < 0) return true;  // 地面はそのまま
-            if (std::size_t(ref) >= remap.size() || remap[std::size_t(ref)] < 0)
-                return false;
-            ref = remap[std::size_t(ref)];
-            return true;
-        };
-        if (!fix(copy.bodyA) || !fix(copy.bodyB)) continue;
+        if (!fixBy(remap, copy.bodyA) || !fixBy(remap, copy.bodyB)) continue;
         jointRemap[k] = int(doc.joints.size());
         doc.joints.push_back(copy);
     }
@@ -595,13 +607,9 @@ ed::SceneDocument Scene::document() {
     // 消えているノードは pruneGraphForRemoved が落としているはずだが、二重の
     // 安全でここでも弾き、落ちたノードに繋がるワイヤーも書かない。
     {
-        auto fixObj = [&remap](int& ref) {
-            if (ref < 0) return true;  // -1 / -2 の意味（自分・何でも）は保つ
-            if (std::size_t(ref) >= remap.size() || remap[std::size_t(ref)] < 0)
-                return false;
-            ref = remap[std::size_t(ref)];
-            return true;
-        };
+        // UI（UiState のロックは末端 = objects → editor の後に取ってよい）。Canvas の番号の
+        // 付け替え表は、Canvas を番号で指すノード（OnUiClick / SetUiProp）が使う。
+        const std::vector<int> canvasRemap = ui_.toDocument(doc);
         for (const auto& assetIn : editor_.eventAssets()) {
             ed::EventAssetDesc asset;
             asset.name = assetIn.name;
@@ -611,27 +619,14 @@ ed::SceneDocument Scene::document() {
                 ed::NodeDesc n = nIn;
                 const ed::NodeTargetKind tk = ed::nodeTargetKind(n.kind);
                 bool ok = true;
-                if (tk == ed::NodeTargetKind::Object) ok = fixObj(n.target);
-                if (ok && tk == ed::NodeTargetKind::Light && n.target >= 0) {
-                    if (std::size_t(n.target) >= lightRemap.size() ||
-                        lightRemap[std::size_t(n.target)] < 0) {
-                        ok = false;
-                    } else {
-                        n.target = lightRemap[std::size_t(n.target)];
-                    }
-                }
-                if (ok && tk == ed::NodeTargetKind::Joint && n.target >= 0) {
-                    if (std::size_t(n.target) >= jointRemap.size() ||
-                        jointRemap[std::size_t(n.target)] < 0) {
-                        ok = false;
-                    } else {
-                        n.target = jointRemap[std::size_t(n.target)];
-                    }
-                }
+                if (tk == ed::NodeTargetKind::Object) ok = fixBy(remap, n.target);
+                if (tk == ed::NodeTargetKind::Light) ok = fixBy(lightRemap, n.target);
+                if (tk == ed::NodeTargetKind::Joint) ok = fixBy(jointRemap, n.target);
+                if (tk == ed::NodeTargetKind::Canvas) ok = fixBy(canvasRemap, n.target);
                 if (ok && ed::nodeOtherIsObject(n.kind)) {
                     if (n.kind == ed::NodeKind::OnCollision) {
-                        if (!fixObj(n.other)) n.other = -2;  // 相手だけ消: 何でも
-                    } else if (!fixObj(n.other)) {
+                        if (!fixBy(remap, n.other)) n.other = -2;  // 相手だけ消: 何でも
+                    } else if (!fixBy(remap, n.other)) {
                         n.other = -1;  // 注視先だけ消: 文脈の物を見る
                     }
                 }
@@ -654,11 +649,6 @@ ed::SceneDocument Scene::document() {
     doc.controllers = editor_.controllers();
     doc.params = editor_.params();
     doc.charts = editor_.charts();
-    // UI（UiState のロックは末端 = objects → editor の後に取ってよい）。共用 UI は
-    // 参照だけを書く（ファイルへ書くのは後の PR）。Canvas の番号の付け替え表は、
-    // Canvas を番号で指すノード（後の PR）が使う。
-    const std::vector<int> canvasRemap = ui_.toDocument(doc);
-    (void)canvasRemap;
     return doc;
 }
 
@@ -805,6 +795,11 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     // 始めさせないため。
     // 読めなかった共通イベントの件数（注意は下で共用 UI と並べて足す）。
     std::size_t sharedMissing = 0;
+    // UI（Canvas・共用 UI・フォント）。節の無い文書は UI 無し。イベントより先に入れる:
+    // Canvas を番号で指すノードは、入った先頭の番号（canvasBase）だけずらす。
+    std::size_t canvasBase = 0;
+    const std::string uiCaveat = loadUiFromDocument(
+        ui_, doc, wizengine::UiState::LoadMode::Replace, libBaseline_, canvasBase);
     if (doc.hasEvents) {
         std::vector<ed::EventAssetDesc> assets;
         for (const auto& assetDoc : doc.eventAssets) {
@@ -833,6 +828,9 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
                 if (tk == ed::NodeTargetKind::Light && n.target >= 0) {
                     n.target += int(lightBase);
                 }
+                if (tk == ed::NodeTargetKind::Canvas && n.target >= 0) {
+                    n.target += int(canvasBase);
+                }
                 if (ed::nodeOtherIsObject(n.kind) && n.other >= 0) {
                     n.other += int(base);
                 }
@@ -853,10 +851,6 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     // 二度作り直さないため。XML の適用（keepSameTerrain）で同じテレインなら
     // 格子も当たり判定も作り直さない。
     setTerrainFromDocument(doc, keepSameTerrain);
-
-    // UI（Canvas・共用 UI・フォント）。節の無い文書は UI 無し。
-    const std::string uiCaveat =
-        loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Replace, libBaseline_);
 
     // 読込の注意（ステータスの末尾に足す日本語）。並びは計算式 / プレハブ（上の
     // resolveLibraryAssets の後で足した）→ テレイン（setTerrainFromDocument が
@@ -964,8 +958,10 @@ std::string Scene::appendDocument(const ed::SceneDocument& doc) {
     }
     // UI は後ろへ足す（共用 UI とフォントは名前が重ならないものだけ）。読めない
     // 共用 UI と名前の重なった物は loadUiFromDocument が LOGW に出し、件数を注意に返す。
-    const std::string uiCaveat =
-        loadUiFromDocument(ui_, doc, wizengine::UiState::LoadMode::Append, libBaseline_);
+    // 取込はイベントを入れないので、Canvas の先頭の番号は使わない。
+    std::size_t canvasBase = 0;
+    const std::string uiCaveat = loadUiFromDocument(
+        ui_, doc, wizengine::UiState::LoadMode::Append, libBaseline_, canvasBase);
     editor_.bumpGraphVersion();
     syncBackend();
     if (editor_.mode() == ed::AppMode::Simulate) {

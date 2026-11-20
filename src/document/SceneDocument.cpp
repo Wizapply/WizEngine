@@ -4,6 +4,8 @@
 #include "core/MathConstants.h"
 #include "document/XmlValues.h"
 #include "formula/FormulaXml.h"
+#include "ui/UiProps.h"  // UI のノード（SetUiProp）の性質の名前と型
+#include "ui/UiValue.h"
 #include "ui/UiXml.h"
 #include "vehicle/VehicleXml.h"
 
@@ -972,6 +974,60 @@ EmitterDesc emitterFromXml(const xml::Element& e, const std::vector<BodyDesc>& b
     return clampEmitter(m);
 }
 
+// SetUiProp の値の欄（性質の型で決まる 1 つ = ui::nodeField）の属性名。
+const char* uiNodeValueAttr(ui::NodeField field) {
+    switch (field) {
+        case ui::NodeField::Value: return "value";
+        case ui::NodeField::Vec: return "vec";
+        case ui::NodeField::Color: return "rgba";
+        case ui::NodeField::Text: break;
+    }
+    return "text";
+}
+
+// SetUiProp の値の欄を 1 つ書く（ui::nodeField の欄 → 属性。Vec は型の成分の数だけ）。
+void setUiNodeField(xml::Element& e, const NodeDesc& n, ui::NodeField field,
+                    std::size_t vecCount) {
+    const char* attr = uiNodeValueAttr(field);
+    switch (field) {
+        case ui::NodeField::Value: e.setNumber(attr, n.value); break;
+        case ui::NodeField::Vec: {
+            const double v[3] = {n.vec.x, n.vec.y, n.vec.z};
+            e.setNumbers(attr, v, vecCount);
+            break;
+        }
+        case ui::NodeField::Color: setColor(e, attr, n.color); break;
+        case ui::NodeField::Text: e.set(attr, n.text); break;
+    }
+}
+
+// SetUiProp の値を書く: 性質の型で決まる欄だけ。性質を選んでいない・知らない性質は、書いて
+// ある欄（既定値でない欄）を全部残す（直したときに値が消えていない）。
+void setUiPropValue(xml::Element& e, const NodeDesc& n) {
+    if (const ui::PropInfo* p = ui::propFromName(n.prop)) {
+        setUiNodeField(e, n, ui::nodeField(p->spec.type), ui::componentCount(p->spec.type));
+        return;
+    }
+    const NodeDesc d;
+    const bool hasVec = n.vec.x != d.vec.x || n.vec.y != d.vec.y || n.vec.z != d.vec.z;
+    const bool hasColor = n.color.r != d.color.r || n.color.g != d.color.g ||
+                          n.color.b != d.color.b;
+    if (n.value != 0.0) setUiNodeField(e, n, ui::NodeField::Value, 3);
+    if (hasVec) setUiNodeField(e, n, ui::NodeField::Vec, 3);
+    if (hasColor) setUiNodeField(e, n, ui::NodeField::Color, 3);
+    if (!n.text.empty()) setUiNodeField(e, n, ui::NodeField::Text, 3);
+}
+
+// SetUiProp の性質の名前と値を確かめる（打ち間違い・型に合わない文字は警告。実行時は
+// そのノードを動かさない）。規則は ui::nodePropValue（実行と同じ）。性質を選んでいない
+// ノード（置いたばかり）は未設定で、警告しない（ノードエディタが印を出す）。その種類の
+// 要素が持つかは Canvas の中身を見る実行時に確かめる。
+void checkUiPropNode(const NodeDesc& n, Warn& warn) {
+    const ui::NodePropValue got = ui::nodePropValue(n.prop, uiNodeFields(n));
+    if (got.message.empty()) return;
+    warn("<node type=\"setUiProp\">: " + got.message + " - it does nothing");
+}
+
 // イベントグラフ（MuJoCo には無い WizEngine の拡張）。種類ごとに意味のある
 // 属性だけを書く - 使わない欄まで並べると、手で読むときに嘘の情報になる。
 xml::Element nodeElement(const NodeDesc& n) {
@@ -1018,6 +1074,13 @@ xml::Element nodeElement(const NodeDesc& n) {
         n.kind == NodeKind::SetMotor) {
         e.setNumber("value", n.value);
     }
+    // UI のノード: 要素の名前（空 = トリガーが渡した要素 / 何でも）と、SetUiProp の性質と値
+    // （性質を選んでいなければ prop は書かない）。
+    if (nodeIsUi(n.kind) && !n.element.empty()) e.set("element", n.element);
+    if (n.kind == NodeKind::SetUiProp) {
+        if (!n.prop.empty()) e.set("prop", n.prop);
+        setUiPropValue(e, n);
+    }
     return e;
 }
 
@@ -1051,11 +1114,24 @@ NodeDesc nodeFromXml(const xml::Element& e, Warn& warn) {
     } else if (n.kind == NodeKind::CameraOrbit) {
         n.vec = Vec3d{e.number("distance", kOrbitDistance),
                       e.number("elevation", kOrbitElevation), 0.0};
+    } else if (nodeIsUi(n.kind)) {
+        // 値の欄は全部読む（書くのは性質の型で決まる 1 つ = setUiPropValue）。
+        n.element = e.attr("element");
+        n.prop = e.attr("prop");
+        n.text = e.attr("text");
+        n.value = e.number("value", 0.0);
+        // 書いていない欄は NodeDesc の既定値（書き出しの「既定値でない欄」と同じ比べ方）。
+        double v[3] = {n.vec.x, n.vec.y, n.vec.z};
+        e.numbers("vec", v, 3);
+        n.vec = Vec3d{v[0], v[1], v[2]};
     } else {
         n.vec = getVec3(e, "velocity", n.vec);
         n.value = e.number("value", n.value);
     }
-    return clampNode(n);
+    // 確かめは丸めた後（警告の名前を実行時と同じ正規化した名前にする）。
+    const NodeDesc c = clampNode(n);
+    if (c.kind == NodeKind::SetUiProp) checkUiPropNode(c, warn);
+    return c;
 }
 
 // <event name="..."> 1 個ぶん（ノードとワイヤー）。ノード id はアセットの中
@@ -1068,7 +1144,7 @@ EventAssetDesc eventAssetFromXml(const xml::Element& e,
                                  const std::vector<BodyDesc>& bodies,
                                  const std::vector<LightDesc>& lights,
                                  bool hasLights, std::size_t jointCount,
-                                 const std::string& label, Warn& warn,
+                                 std::size_t canvasCount, const std::string& label, Warn& warn,
                                  bool checkRanges = true) {
     EventAssetDesc asset;
     warnUnknownChildren(e, {"node", "wire"}, label.c_str(), warn);
@@ -1103,6 +1179,12 @@ EventAssetDesc eventAssetFromXml(const xml::Element& e,
             std::size_t(nd.target) >= jointCount) {
             warn(nodeLabel + " target=" + std::to_string(nd.target) +
                  " is out of range (joints) - cleared");
+            nd.target = -1;
+        }
+        if (checkRanges && tk == NodeTargetKind::Canvas && nd.target >= 0 &&
+            std::size_t(nd.target) >= canvasCount) {
+            warn(nodeLabel + " target=" + std::to_string(nd.target) +
+                 " is out of range (canvases) - cleared");
             nd.target = -1;
         }
         if (checkRanges && nodeOtherIsObject(nd.kind) && nd.other >= 0 &&
@@ -1786,7 +1868,7 @@ SceneDocument fromXml(const xml::Element& root,
             }
             EventAssetDesc a =
                 eventAssetFromXml(*e, doc.bodies, doc.lights, doc.hasLights,
-                                  doc.joints.size(),
+                                  doc.joints.size(), doc.canvases.size(),
                                   "<event name=\"" + name + "\">", warn);
             a.name = name;
             doc.eventAssets.push_back(std::move(a));
@@ -1807,7 +1889,7 @@ SceneDocument fromXml(const xml::Element& root,
             }
             EventAssetDesc a = eventAssetFromXml(
                 *ev, doc.bodies, doc.lights, doc.hasLights, doc.joints.size(),
-                "<events>", warn);
+                doc.canvases.size(), "<events>", warn);
             a.name = name;
             warn("<events>: <node> / <wire> written directly here is the old "
                  "format - imported as event asset \"" + name +
@@ -2022,6 +2104,26 @@ bool parsePrefabLibraryXml(const std::string& text, PrefabDesc& out,
 }
 
 // ---- イベントライブラリのファイル（assets/events/<名前>.xml）----------------
+ui::NodeFieldValues uiNodeFields(const NodeDesc& n) {
+    ui::NodeFieldValues in;
+    in.value = n.value;
+    in.vec[0] = n.vec.x;
+    in.vec[1] = n.vec.y;
+    in.vec[2] = n.vec.z;
+    in.color[0] = n.color.r;
+    in.color[1] = n.color.g;
+    in.color[2] = n.color.b;
+    in.text = n.text;
+    return in;
+}
+
+void setUiNodeFields(NodeDesc& n, const ui::NodeFieldValues& in) {
+    n.value = in.value;
+    n.vec = Vec3d{in.vec[0], in.vec[1], in.vec[2]};
+    n.color = Color3{float(in.color[0]), float(in.color[1]), float(in.color[2])};
+    n.text = in.text;
+}
+
 std::string eventAssetToXmlText(const EventAssetDesc& asset) {
     EventAssetDesc a = asset;
     a.file.clear();  // ファイルの中は中身そのもの（自分を参照しない）
@@ -2040,7 +2142,7 @@ bool parseEventAssetXml(const std::string& text, EventAssetDesc& out, std::strin
     // 番号の範囲はどのシーンで使うかで決まるので見ない（読むシーンが見る）。
     const std::vector<BodyDesc> noBodies;
     const std::vector<LightDesc> noLights;
-    out = eventAssetFromXml(root, noBodies, noLights, false, 0, "<event>", warn, false);
+    out = eventAssetFromXml(root, noBodies, noLights, false, 0, 0, "<event>", warn, false);
     out.name = sanitizeEventName(root.attr("name"));
     out.file.clear();
     return true;

@@ -38,6 +38,11 @@ std::string eventAssetName(const nlohmann::json& msg) {
     return ed::sanitizeEventName(msg["asset"].get<std::string>());
 }
 
+// ノードの追加・更新（node.add / node.set）でブラウザから受けて積むノードの欄（NodeDesc の
+// JSON のキー。中身の読み方と丸めは nodeFromJson / clampNode）。
+constexpr const char* kNodeArgKeys[] = {"x",   "y",    "target",  "other", "seconds", "color",
+                                        "vec", "value", "element", "prop", "text"};
+
 // そのカメラが今つかんでいるオブジェクト番号（無ければ -1）。
 int selectionOf(Scene& scene, std::size_t camIndex) {
     const std::size_t sel = scene.boxController(camIndex).selected();
@@ -543,8 +548,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         const ed::NodeKind kind =
             ed::nodeKindFromName(kindName, ed::NodeKind::OnCollision);
         nlohmann::json args;
-        for (const char* key :
-             {"x", "y", "target", "other", "seconds", "color", "vec", "value"}) {
+        for (const char* key : kNodeArgKeys) {
             if (msg.contains(key)) args[key] = msg[key];
         }
         args["kind"] = ed::nodeKindName(kind);  // 名前の揺れはここで正規化
@@ -601,6 +605,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
                     break;
                 case ed::NodeTargetKind::Object:
                 case ed::NodeTargetKind::Joint:  // -1 = どのジョイントでも
+                case ed::NodeTargetKind::Canvas:  // -1 = 押された Canvas / どれでも
                 case ed::NodeTargetKind::None:
                     break;
             }
@@ -620,8 +625,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         nlohmann::json args;
         args["id"] = id;
         args["asset"] = eventAssetName(msg);
-        for (const char* key :
-             {"x", "y", "target", "other", "seconds", "color", "vec", "value"}) {
+        for (const char* key : kNodeArgKeys) {
             if (msg.contains(key)) args[key] = msg[key];
         }
         EditorState::Op op;

@@ -19,6 +19,7 @@
 #include "core/Json.h"
 #include "core/SafeName.h"
 #include "core/SceneLimits.h"
+#include "core/Utf8.h"
 #include "core/Vec3d.h"
 #include "formula/Formula.h"
 #include "vehicle/VehicleTypes.h"
@@ -908,6 +909,12 @@ enum class NodeKind {
     // 注視点からの距離と仰角（vec.x = 距離 m、vec.y = 仰角 度。どちらも
     // 0 = マウス操作のまま）。
     CameraOrbit,
+    // ---- UI（target = Canvas の番号。-1 = トリガーが渡した Canvas / 何でも）。
+    // 要素は element（名前。空 = トリガーが渡した要素 / 何でも）で指す。
+    OnUiClick,   // ボタンが押された（シミュレート中、押して離した 1 回）
+    // 要素の性質 prop（名前 = UI の性質の表）を書き換える（実行時のみ）。値は性質の型で
+    // 決まる欄に置く（ui::nodeField: value / vec / color / text）。
+    SetUiProp,
 };
 
 // カメラのアクションの注文が途切れてから手放すまでの秒数。物理が遅れて
@@ -938,6 +945,8 @@ inline const char* nodeKindName(NodeKind k) {
         case NodeKind::OnUpdate: return "onUpdate";
         case NodeKind::CameraBehind: return "cameraBehind";
         case NodeKind::CameraOrbit: return "cameraOrbit";
+        case NodeKind::OnUiClick: return "onUiClick";
+        case NodeKind::SetUiProp: return "setUiProp";
         case NodeKind::OnCollision: break;
     }
     return "onCollision";
@@ -960,6 +969,8 @@ inline NodeKind nodeKindFromName(const std::string& s, NodeKind fallback) {
     if (s == "onUpdate" || s == "update" || s == "everyFrame") return NodeKind::OnUpdate;
     if (s == "cameraBehind" || s == "behind") return NodeKind::CameraBehind;
     if (s == "cameraOrbit" || s == "orbit") return NodeKind::CameraOrbit;
+    if (s == "onUiClick" || s == "uiClick") return NodeKind::OnUiClick;
+    if (s == "setUiProp" || s == "uiProp") return NodeKind::SetUiProp;
     return fallback;
 }
 
@@ -967,13 +978,15 @@ inline NodeKind nodeKindFromName(const std::string& s, NodeKind fallback) {
 inline bool nodeIsTrigger(NodeKind k) {
     return k == NodeKind::OnCollision || k == NodeKind::OnSimStart ||
            k == NodeKind::OnTimer || k == NodeKind::OnGrab ||
-           k == NodeKind::OnJointBreak || k == NodeKind::OnUpdate;
+           k == NodeKind::OnJointBreak || k == NodeKind::OnUpdate ||
+           k == NodeKind::OnUiClick;
 }
 
 // ノードの target 欄が指す種別。番号の検証・削除時の掃除・保存時の詰め替えは
 // 全部これで分岐する（object と light は保存で番号が詰まるため。joint は
-// 端点の消えたものが保存で落ちるので、これも詰め替えが要る）。
-enum class NodeTargetKind { None, Object, Light, Camera, Joint };
+// 端点の消えたものが保存で落ちるので、これも詰め替えが要る。canvas は UI の Canvas の
+// 番号で、保存で詰まる）。
+enum class NodeTargetKind { None, Object, Light, Camera, Joint, Canvas };
 
 inline NodeTargetKind nodeTargetKind(NodeKind k) {
     switch (k) {
@@ -991,12 +1004,18 @@ inline NodeTargetKind nodeTargetKind(NodeKind k) {
         case NodeKind::SetVelocity: return NodeTargetKind::Object;
         case NodeKind::OnJointBreak:
         case NodeKind::SetMotor: return NodeTargetKind::Joint;
+        case NodeKind::OnUiClick:
+        case NodeKind::SetUiProp: return NodeTargetKind::Canvas;
         case NodeKind::OnSimStart:
         case NodeKind::OnTimer:
         case NodeKind::OnUpdate: break;
     }
     return NodeTargetKind::None;
 }
+
+// UI のノードか（Canvas を番号で指す種類。element / prop / text の欄を使う。XML の読み書きの
+// 分岐はこれで判定する = UI のノードを足しても分岐を直さない）。
+inline bool nodeIsUi(NodeKind k) { return nodeTargetKind(k) == NodeTargetKind::Canvas; }
 
 // other 欄がオブジェクト番号を指すか（OnCollision の相手フィルタと
 // CameraLookAt / CameraBehind の相手）。削除時の掃除と保存時の詰め替えに使う。
@@ -1030,9 +1049,67 @@ struct NodeDesc {
     Vec3d vec{0.0, 5.0, 0.0};
     // 種類ごとの数値: SetFixed(0/1) / SetLightIntensity / GrabPull(倍率) /
     // OnCollision(最小接触力 N、0 = 何でも) / SetVelocity(0 = 上書き, 1 = 加算) /
-    // SetMotor(モータの目標値。単位はジョイントの motor と同じ)。
+    // SetMotor(モータの目標値。単位はジョイントの motor と同じ) /
+    // SetUiProp(数・整数・真偽の性質の値)。
     double value = 0.0;
+    // ---- UI のノード（nodeIsUi）。性質の名前は文字列のまま持つ（この型のヘッダは ui/ の
+    // 性質の表を読まない）。名前と値の確かめは ui::nodePropValue（読込の警告 = SceneDocument と
+    // 実行 = Scene が同じ規則で引く）。
+    std::string element;  // 要素の名前（空 = トリガーが渡した要素 / OnUiClick は何でも）
+    std::string prop;     // SetUiProp: 性質の名前（XML の属性名と同じ。例 "text"）
+    // SetUiProp: 文字の欄の値（揃え・アンカー・文字など、value / vec / color に入らない型。
+    // 属性の文字列で、性質の表の読み方で読む）。
+    std::string text;
 };
+
+// ---- UI のノードの相手の決め方（唯一の規則）-------------------------------------
+// トリガーが UI の文脈（押された Canvas と要素）をアクションへ渡すか。UI のトリガーを足したら
+// ここへ 1 行（実行 = Scene と、ノードエディタの「未設定」の印 = /scene の両方がこれで決まる）。
+inline bool nodePassesUiContext(NodeKind k) { return k == NodeKind::OnUiClick; }
+// UI のトリガーが受け付ける Canvas の番号（-1 = どの Canvas でも。UI の文脈を渡さない種類も
+// -1）。実行（Scene::collectUiTriggers の絞り込み）とノードエディタの「未設定」の印
+// （uiPropNodeUnset）の両方がこれで決まる。UI のトリガーを足したらここへ 1 行。
+inline int uiTriggerCanvas(const NodeDesc& trigger) {
+    switch (trigger.kind) {
+        case NodeKind::OnUiClick: return trigger.target >= 0 ? trigger.target : -1;
+        default: return -1;
+    }
+}
+
+// トリガーが渡した UI の文脈（-1 = 無し）。
+struct UiNodeContext {
+    int canvas = -1;   // Canvas の番号
+    int element = -1;  // 要素の id
+};
+// SetUiProp が動かない理由（None = 相手が決まる）。
+enum class UiNodeUnset { None, NoProp, NoCanvas, NoElement };
+// ブラウザへ送る理由の名前（"prop" / "canvas" / "element"。None は ""）。
+inline const char* uiNodeUnsetName(UiNodeUnset u) {
+    switch (u) {
+        case UiNodeUnset::NoProp: return "prop";
+        case UiNodeUnset::NoCanvas: return "canvas";
+        case UiNodeUnset::NoElement: return "element";
+        case UiNodeUnset::None: break;
+    }
+    return "";
+}
+// SetUiProp の相手（唯一の規則）: Canvas は target が 0 以上ならそれ、無ければ文脈の Canvas。
+// 要素は名前（element）があればそれ、無ければ文脈の要素（相手の Canvas が文脈の Canvas と同じ
+// ときだけ）。決まれば canvas / elementId（名前で指すときは -1）に入れて None。
+inline UiNodeUnset uiPropTarget(const NodeDesc& n, const UiNodeContext& ctx, int& canvas,
+                                int& elementId) {
+    canvas = n.target >= 0 ? n.target : ctx.canvas;
+    elementId = (canvas >= 0 && canvas == ctx.canvas) ? ctx.element : -1;
+    if (n.prop.empty()) return UiNodeUnset::NoProp;
+    if (canvas < 0) return UiNodeUnset::NoCanvas;
+    if (n.element.empty() && elementId < 0) return UiNodeUnset::NoElement;
+    return UiNodeUnset::None;
+}
+// SetUiProp の数の欄（value / vec）の入力の守り（壊れた値・極端な値を止めるだけ。性質ごとの
+// 範囲は実行時に UI の性質の表の丸めで当てる）。
+constexpr double kUiNodeNumberLimit = 1.0e6;
+// ノードの文字の欄（text）の上限（バイト）。UI の性質の文字と同じ値（core/SceneLimits.h）。
+constexpr std::size_t kMaxNodeTextBytes = kMaxUiTextBytes;
 
 // トリガーの出力からアクションの入力へ 1 本。多対多を許す（1 トリガーで
 // 複数アクション、複数トリガーから同じアクション）。
@@ -1065,6 +1142,38 @@ struct EventAssetDesc {
     // ファイルを参照する全シーンで同じスクリプトになる。
     std::string file;
 };
+
+// グラフの上での判定（ノードエディタの「未設定」の印）: 実行ではトリガーごとに別々に発火する
+// ので、繋いだトリガーごとにそのトリガーが渡す文脈で uiPropTarget に渡し、**どれか 1 つでも
+// 相手が決まれば設定済み**（そのトリガーの発火では動く）。全部だめなら最初のトリガーの理由。
+// 文脈を渡すトリガー（nodePassesUiContext）の「押される Canvas」は、そのトリガーが受け付ける
+// Canvas（uiTriggerCanvas）があればそれ、どれでも受けるなら、このノードの相手（target、無ければ
+// 0）が押されたときとして見る。文脈を渡さないトリガーと、線が 1 本も無いときは文脈無し。
+inline UiNodeUnset uiPropNodeUnset(const EventAssetDesc& asset, const NodeDesc& n) {
+    auto judge = [&n](const UiNodeContext& ctx) {
+        int canvas = -1, elementId = -1;
+        return uiPropTarget(n, ctx, canvas, elementId);
+    };
+    bool wired = false;
+    UiNodeUnset first = UiNodeUnset::None;
+    for (const auto& w : asset.wires) {
+        if (w.to != n.id) continue;
+        for (const auto& from : asset.nodes) {
+            if (from.id != w.from) continue;
+            UiNodeContext ctx;
+            if (nodePassesUiContext(from.kind)) {
+                const int only = uiTriggerCanvas(from);
+                ctx.canvas = only >= 0 ? only : (n.target >= 0 ? n.target : 0);
+                ctx.element = 0;  // 押された要素
+            }
+            const UiNodeUnset got = judge(ctx);
+            if (got == UiNodeUnset::None) return got;
+            if (!wired) first = got;
+            wired = true;
+        }
+    }
+    return wired ? first : judge(UiNodeContext{});
+}
 
 // アセット名の正規化（英数字と _ - だけ・64 文字まで）。空になったら不正な
 // 名前（呼び出し側で弾く）。シーン名（EditorState::sanitizeSceneName）と
@@ -1656,6 +1765,9 @@ inline nlohmann::json toJson(const NodeDesc& n) {
     j["color"] = colorToHex(n.color);
     j["vec"] = toJson(n.vec);
     j["value"] = n.value;
+    j["element"] = n.element;
+    j["prop"] = n.prop;
+    j["text"] = n.text;
     return j;
 }
 
@@ -1676,6 +1788,9 @@ inline NodeDesc nodeFromJson(const nlohmann::json& j, const NodeDesc& base) {
     }
     n.vec = vec3FromJson(j.value("vec", nlohmann::json()), n.vec);
     n.value = jsonNumber(j, "value", n.value);
+    n.element = jsonString(j, "element", n.element);
+    n.prop = jsonString(j, "prop", n.prop);
+    n.text = jsonString(j, "text", n.text);
     return n;
 }
 
@@ -2620,10 +2735,16 @@ inline NodeDesc clampNode(NodeDesc n) {
     }
     // 向きの範囲は下の OnCollision の判定より先に丸める（有限でない値を既定値に
     // してから「既定値のままか」を見る。有限の値は ±100 の丸めで 0 や 5 に
-    // 変わらないので、判定の結果は前と同じ）。
-    n.vec.x = cl(n.vec.x, -100.0, 100.0, d.vec.x);
-    n.vec.y = cl(n.vec.y, -100.0, 100.0, d.vec.y);
-    n.vec.z = cl(n.vec.z, -100.0, 100.0, d.vec.z);
+    // 変わらないので、判定の結果は前と同じ）。SetUiProp の vec は UI の位置・大きさ
+    // （設計上の画素）なので広い範囲（性質の表の丸めは実行時に当てる）。
+    const double vecLimit = n.kind == NodeKind::SetUiProp ? kUiNodeNumberLimit : 100.0;
+    n.vec.x = cl(n.vec.x, -vecLimit, vecLimit, d.vec.x);
+    n.vec.y = cl(n.vec.y, -vecLimit, vecLimit, d.vec.y);
+    n.vec.z = cl(n.vec.z, -vecLimit, vecLimit, d.vec.z);
+    // UI の名前は名前の決まり（英数字と _ -）。文字の欄は上限で切る（字の途中で切らない）。
+    n.element = sanitizeSafeName(n.element);
+    n.prop = sanitizeSafeName(n.prop);
+    n.text.resize(utf8PrefixLength(n.text, kMaxNodeTextBytes));
     // OnCollision の vec は「求める接触の向き」（零 = 問わない）。NodeDesc の
     // 既定 (0, 5, 0) は ApplyImpulse のためのものなので、そのまま残すと作った
     // ばかりの衝突トリガーが「上から乗ったとき」だけになる。既定値のままなら
@@ -2647,6 +2768,9 @@ inline NodeDesc clampNode(NodeDesc n) {
         n.value = cl(n.value, -10.0, 10.0, d.value);  // 注視点の高さのずれ (m)
     } else if (n.kind == NodeKind::CameraBehind) {
         n.value = cl(n.value, -180.0, 180.0, d.value);  // 後ろからずらす角度（度）
+    } else if (n.kind == NodeKind::SetUiProp) {
+        // 負もある（位置など）。性質の表の範囲へは実行時に丸める。
+        n.value = cl(n.value, -kUiNodeNumberLimit, kUiNodeNumberLimit, d.value);
     } else {
         n.value = cl(n.value, 0.0, 10000000.0, d.value);
     }
