@@ -148,6 +148,7 @@ inline JointSpec toJointSpec(const ed::JointDesc& j) {
     s.damping = j.damping;
     s.breakForce = j.breakForce;
     s.ratio = j.ratio;
+    s.epicyclic = j.epicyclic;
     s.pitch = j.pitch;
     s.hasAnchor2 = j.anchor2.x != 0.0 || j.anchor2.y != 0.0 || j.anchor2.z != 0.0;
     s.hasAxis2 = j.axis2.x != 0.0 || j.axis2.y != 0.0 || j.axis2.z != 0.0;

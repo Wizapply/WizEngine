@@ -125,7 +125,8 @@
 //              motor="speed|position|force" target=".."  ... 駆動（hinge / slide）
 //              stiffness damping         ... ばね・ダンパ（spring / hinge / slide）
 //              breakforce=".."           ... この反力 (N) を超えたら外れる
-//              ratio anchor2 axis2       ... gear、pitch ... screw
+//              ratio anchor2 axis2       ... gear（epicyclic="true" = body2 が内歯車。
+//                                            遊星歯車のリングギヤ）、pitch ... screw
 //              rotstiffness rotdamping   ... bushing の回転剛性・減衰/>
 //                type は weld / hinge / ball / slide / distance に加えて
 //                universal / cylindrical / planar / pointline / pointplane /

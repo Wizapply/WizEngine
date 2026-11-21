@@ -764,6 +764,7 @@ xml::Element jointElement(const JointDesc& j,
     if (j.breakForce != 0.0) e.setNumber("breakforce", j.breakForce);
     if (j.kind == JointKind::Gear) {
         e.setNumber("ratio", j.ratio);
+        if (j.epicyclic) e.setBool("epicyclic", true);
         const bool hasA2 = j.anchor2.x != 0.0 || j.anchor2.y != 0.0 || j.anchor2.z != 0.0;
         const bool hasX2 = j.axis2.x != 0.0 || j.axis2.y != 0.0 || j.axis2.z != 0.0;
         if (hasA2) setVec3(e, "anchor2", j.anchor2);
@@ -852,6 +853,10 @@ JointDesc jointFromXml(const xml::Element& e,
     }
     j.breakForce = e.number("breakforce", j.breakForce);
     j.ratio = e.number("ratio", j.ratio);
+    j.epicyclic = e.boolean("epicyclic", j.epicyclic);
+    if (j.epicyclic && j.kind != JointKind::Gear) {
+        warn(label + " epicyclic= only applies to type=\"gear\" - ignored");
+    }
     j.pitch = e.number("pitch", j.pitch);
     j.anchor2 = getVec3(e, "anchor2", j.anchor2);
     j.axis2 = getVec3(e, "axis2", j.axis2);

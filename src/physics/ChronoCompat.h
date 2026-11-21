@@ -55,12 +55,12 @@
 #include <chrono/physics/ChLoadContainer.h>  // removeLoadFrom の ChLoadBase
 #define WIZ_HAVE_LOADS 1
 #endif
-// FEA のケーブル（ANCF）。Chrono 9 は ChLinkNodeFrame、旧版は ChLinkPointFrame
-// （どちらを使うかは Cables.cpp が WIZ_HAVE_FEA_LINK_NODE_FRAME で選ぶ）。
+// FEA のケーブル（ANCF）。端の留め具は Chrono 9 の ChLinkNodeFrame（Cables.cpp が読む）。
+// 旧版（8 まで）の名前 ChLinkPointFrame への分岐は持たない: このエンジンは Chrono 9 の
+// API が前提で、分岐を残すと ChLinkNodeFrame.h の __has_include を外した環境
+// （Visual Studio の IntelliSense で実際に起きた）が、存在しない旧名のヘッダを
+// 開こうとして「ソース ファイルを開けません」を出し続けた。
 #if __has_include(<chrono/fea/ChBuilderBeam.h>) && __has_include(<chrono/fea/ChMesh.h>)
-#if __has_include(<chrono/fea/ChLinkNodeFrame.h>)
-#define WIZ_HAVE_FEA_LINK_NODE_FRAME 1
-#endif
 #define WIZ_HAVE_FEA 1
 #endif
 // モーダル解析（Chrono::Modal。CMake の WIZ_WITH_CHRONO_MODAL）。
@@ -78,12 +78,8 @@
 #if __has_include(<chrono/physics/ChLinkLockScrew.h>)
 #define WIZ_HAVE_SCREW 1
 #endif
-// 定数関数とランプ関数（モータの目標値）。Chrono 9 は functions/ChFunctionConst.h、
-// 旧版は motion_functions/ChFunction_Const.h（どちらを使うかは Joints.cpp が
-// WIZ_HAVE_FUNCTIONS_DIR で選ぶ）。
-#if __has_include(<chrono/functions/ChFunctionConst.h>)
-#define WIZ_HAVE_FUNCTIONS_DIR 1
-#endif
+// 定数関数とランプ関数（モータの目標値）は Chrono 9 の functions/ を Joints.cpp が
+// そのまま読む（旧版の motion_functions/ への分岐は、上の FEA と同じ理由で持たない）。
 
 #include <algorithm>
 #include <memory>
@@ -347,6 +343,22 @@ auto setGearParams(L* link, double ratio, const chrono::ChFrame<>& s1,
 }
 template <typename L>
 bool setGearParams(L*, double, const chrono::ChFrame<>&, const chrono::ChFrame<>&, ...) {
+    return false;
+}
+
+// 歯車の内歯車（遊星歯車のリングギヤ）。Chrono 9 は SetEpicyclic、旧版は Set_epicyclic。
+template <typename L>
+auto setGearEpicyclic(L* link, bool on, int) -> decltype(link->SetEpicyclic(on), bool()) {
+    link->SetEpicyclic(on);
+    return true;
+}
+template <typename L>
+auto setGearEpicyclic(L* link, bool on, long) -> decltype(link->Set_epicyclic(on), bool()) {
+    link->Set_epicyclic(on);
+    return true;
+}
+template <typename L>
+bool setGearEpicyclic(L*, bool, ...) {
     return false;
 }
 

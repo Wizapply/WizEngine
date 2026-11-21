@@ -70,7 +70,8 @@ struct BodyTransform {
 //   Planar     … 面内の移動と面内の回転（ChLinkLockPlanar。axis = 面の法線）
 //   PointLine  … 点を線に載せる（ChLinkLockPointLine。axis = 線の向き）
 //   PointPlane … 点を面に載せる（ChLinkLockPointPlane。axis = 面の法線）
-//   Gear       … 歯車（ChLinkLockGear。2 本のシャフトの角速度比 ratio）
+//   Gear       … 歯車（ChLinkLockGear。2 本のシャフトの角速度比 ratio、epicyclic =
+//                シャフト 2 が内歯車）
 //   Screw      … ねじ（ChLinkLockScrew。1 回転で pitch [m] 進む）
 //   Spring     … 2 点間のばね・ダンパ（ChLinkTSDA。拘束ではなく力）
 //   Bushing    … ゴムブッシュ（ChLoadBodyBodyBushingMate。並進・回転の
@@ -115,6 +116,9 @@ struct JointSpec {
     // Gear: 変速比。Screw: 1 回転あたりの前進 (m)。
     double ratio = 1.0;
     double pitch = 0.01;
+    // Gear: シャフト 2 の歯車が内歯車（ChLinkLockGear::SetEpicyclic。遊星歯車の
+    // プラネット ⇄ リングギヤ）。
+    bool epicyclic = false;
     // Gear の 2 本目のシャフト（ワールド座標）。hasAnchor2 = false なら B の
     // 中心、hasAxis2 = false なら axis と同じ向き。
     bool hasAnchor2 = false;

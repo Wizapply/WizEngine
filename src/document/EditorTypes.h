@@ -104,7 +104,9 @@ inline ShapeKind shapeFromName(const std::string& s, ShapeKind fallback) {
 //   Planar      … 平面上の移動と面内の回転（axis = 面の法線）
 //   PointLine   … 点を線に載せる（axis = 線の向き。回転は自由）
 //   PointPlane  … 点を面に載せる（axis = 面の法線。回転は自由）
-//   Gear        … 2 本のシャフトを歯車で結ぶ（ratio。anchor2 / axis2 が 2 本目）
+//   Gear        … 2 本のシャフトを歯車で結ぶ（ratio。anchor2 / axis2 が 2 本目。
+//                  epicyclic = シャフト 1 の歯車がシャフト 2 の内歯車にかみ合う =
+//                  遊星歯車のリングギヤ）
 //   Screw       … ねじ（axis まわりの回転が pitch [m/回転] の前進になる）
 //   Spring      … 2 点間のばね・ダンパ（拘束ではなく力。stiffness / damping）
 //   Bushing     … ゴムブッシュ（ChLoadBodyBodyBushingMate。並進 3 軸の
@@ -563,6 +565,10 @@ struct JointDesc {
     // 1 回転あたりの前進 (m)。
     double ratio = 1.0;
     double pitch = 0.01;
+    // Gear: シャフト 2 の歯車が内歯車（シャフト 1 の歯車がその内側でかみ合う。
+    // 遊星歯車のプラネット ⇄ リングギヤ）。false = 外歯車どうし（逆向きに回る）。
+    // ratio は大きさだけが効く（向きはこれで決まる）。
+    bool epicyclic = false;
     // Gear の 2 本目のシャフト（ワールド座標）。axis2 が零ベクトルなら axis と
     // 同じ向き、anchor2 が零ベクトルなら B の中心を使う。
     Vec3d anchor2{0.0, 0.0, 0.0};
@@ -594,6 +600,7 @@ inline JointDesc clampJoint(JointDesc j) {
     j.pitch = cl(j.pitch, -10.0, 10.0, d.pitch);
     if (j.pitch == 0.0) j.pitch = d.pitch;
     j.distance = cl(j.distance, 0.0, 1000.0, d.distance);
+    if (j.kind != JointKind::Gear) j.epicyclic = false;
     // モータは回転 / 直動にしか付かない。
     if (j.kind != JointKind::Revolute && j.kind != JointKind::Prismatic) {
         j.motor = MotorMode::None;
@@ -1599,6 +1606,7 @@ inline nlohmann::json toJson(const JointDesc& jt) {
     j["damping"] = jt.damping;
     j["breakForce"] = jt.breakForce;
     j["ratio"] = jt.ratio;
+    j["epicyclic"] = jt.epicyclic;
     j["pitch"] = jt.pitch;
     j["anchor2"] = toJson(jt.anchor2);
     j["axis2"] = toJson(jt.axis2);
@@ -1630,6 +1638,7 @@ inline JointDesc jointFromJson(const nlohmann::json& j, const JointDesc& base) {
     jt.damping = jsonNumber(j, "damping", jt.damping);
     jt.breakForce = jsonNumber(j, "breakForce", jt.breakForce);
     jt.ratio = jsonNumber(j, "ratio", jt.ratio);
+    if (j.contains("epicyclic") && j["epicyclic"].is_boolean()) jt.epicyclic = j["epicyclic"];
     jt.pitch = jsonNumber(j, "pitch", jt.pitch);
     jt.anchor2 = vec3FromJson(j.value("anchor2", nlohmann::json()), jt.anchor2);
     jt.axis2 = vec3FromJson(j.value("axis2", nlohmann::json()), jt.axis2);

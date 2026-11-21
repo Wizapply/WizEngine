@@ -19,11 +19,7 @@
 #include <chrono/fea/ChElementCableANCF.h>
 #include <chrono/fea/ChMesh.h>
 #include <chrono/fea/ChNodeFEAxyzD.h>
-#ifdef WIZ_HAVE_FEA_LINK_NODE_FRAME
-#include <chrono/fea/ChLinkNodeFrame.h>
-#else
-#include <chrono/fea/ChLinkPointFrame.h>
-#endif
+#include <chrono/fea/ChLinkNodeFrame.h>  // Chrono 9 の名前（旧版の ChLinkPointFrame は読まない）
 #endif
 
 #include <algorithm>
@@ -41,12 +37,8 @@ namespace physics {
 #ifdef WIZ_HAVE_FEA
 namespace {
 
-// 端の拘束（節点 ⇄ ボディ）。Chrono 9 は ChLinkNodeFrame、旧版は ChLinkPointFrame。
-#ifdef WIZ_HAVE_FEA_LINK_NODE_FRAME
+// 端の拘束（節点 ⇄ ボディ）。Chrono 9 の ChLinkNodeFrame。
 using WizNodeFrameLink = chrono::fea::ChLinkNodeFrame;
-#else
-using WizNodeFrameLink = chrono::fea::ChLinkPointFrame;
-#endif
 
 }  // namespace
 #endif

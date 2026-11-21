@@ -35,13 +35,8 @@
 #if __has_include(<chrono/ChVersion.h>)
 #include <chrono/ChVersion.h>  // CH_VERSION（直動モータの軸の向きが版で違う）
 #endif
-#ifdef WIZ_HAVE_FUNCTIONS_DIR
-#include <chrono/functions/ChFunctionConst.h>
+#include <chrono/functions/ChFunctionConst.h>  // Chrono 9 の置き場（旧版の motion_functions/ は読まない）
 #include <chrono/functions/ChFunctionRamp.h>
-#else
-#include <chrono/motion_functions/ChFunction_Const.h>
-#include <chrono/motion_functions/ChFunction_Ramp.h>
-#endif
 
 #include <algorithm>
 #include <cmath>
@@ -57,14 +52,9 @@ namespace physics {
 
 namespace {
 
-// モータの目標値の関数（定数とランプ）。Chrono 9 は ChFunctionConst、旧版は ChFunction_Const。
-#ifdef WIZ_HAVE_FUNCTIONS_DIR
+// モータの目標値の関数（定数とランプ）。Chrono 9 の ChFunctionConst / ChFunctionRamp。
 using WizConstFunction = chrono::ChFunctionConst;
 using WizRampFunction = chrono::ChFunctionRamp;
-#else
-using WizConstFunction = chrono::ChFunction_Const;
-using WizRampFunction = chrono::ChFunction_Ramp;
-#endif
 
 // ワールド座標の座標系をボディのローカルへ（歯車のシャフト座標系用）。
 // Chrono の TransformParentToLocal は版で引数が違うので四元数で手計算。
@@ -410,6 +400,11 @@ std::size_t Joints::add(const JointSpec& spec) {
             if (!setGearParams(l.get(), spec.ratio, s1, s2, 0)) {
                 LOGW("physics", "gear joint: this Chrono has a different ChLinkLockGear "
                                 "API - skipped");
+                return kInvalidJoint;
+            }
+            if (spec.epicyclic && !setGearEpicyclic(l.get(), true, 0)) {
+                LOGW("physics", "gear joint: this Chrono has no epicyclic (internal gear) "
+                                "setting - skipped");
                 return kInvalidJoint;
             }
             link = l;

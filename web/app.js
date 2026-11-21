@@ -2311,6 +2311,7 @@
       distance: num('jtDistance', 0),
       breakForce: num('jtBreak', 0),
       ratio: num('jtRatio', 1),
+      epicyclic: document.getElementById('jtEpicyclic').checked,
       pitch: num('jtPitch', 0.01),
       rotStiffness: num('jtRotStiff', 0),
       rotDamping: num('jtRotDamp', 0)
@@ -2370,6 +2371,7 @@
     setField('jtDistance', j.distance);
     setField('jtBreak', j.breakForce);
     setField('jtRatio', j.ratio);
+    setField('jtEpicyclic', !!j.epicyclic);
     setField('jtPitch', j.pitch);
     setField('jtRotStiff', j.rotStiffness || 0);
     setField('jtRotDamp', j.rotDamping || 0);
