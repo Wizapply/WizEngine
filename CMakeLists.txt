@@ -335,6 +335,7 @@ endif()
 #   vehicle/    車両モデル（純粋な数値ライブラリ。tests/vehicle が使う）
 #   formula/    ノード式（計算式アセット）の検証・実行（C++ / LuaJIT）・XML・数式テキスト
 #   control/    制御器の信号名とセンサの計算（ノード式をブロック線図として回す。純粋）
+#   transmission/ 遊星歯車式 AT の構造・変速制御・信号・XML（純粋。動力学は Chrono のシャフト）
 #   terrain/    テレインの高さ格子（純粋な計算。tests/terrain が使う）
 #   app/        起動設定（config.json）の読み込み
 #   autogen/    AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換 Text to 3D。
@@ -371,6 +372,7 @@ set(WIZ_PHYSICS_SOURCES
     src/physics/PhysicsWorldMotion.cpp
     src/physics/PhysicsWorldRegistry.cpp
     src/physics/PhysicsWorldSystem.cpp
+    src/physics/ShaftNetworks.cpp
     src/physics/Sleeping.cpp
     src/physics/SoftBodies.cpp
     src/physics/StaticPairs.cpp
@@ -428,6 +430,7 @@ set(WIZ_SCENE_SOURCES
     src/scene/UiOps.cpp
     src/scene/UiState.cpp)
 set(WIZ_COMPONENT_SOURCES
+    src/components/AtDriveline.cpp
     src/components/AutoGenComponent.cpp
     src/components/EditorComponent.cpp
     src/components/EffectsComponent.cpp
@@ -448,6 +451,12 @@ set(WIZ_FORMULA_SOURCES
 set(WIZ_CONTROL_SOURCES
     src/control/ControlSignals.cpp
     src/control/ControlTemplates.cpp)
+set(WIZ_TRANSMISSION_SOURCES
+    src/transmission/AtControl.cpp
+    src/transmission/AtKinematics.cpp
+    src/transmission/AtSignals.cpp
+    src/transmission/AtTypes.cpp
+    src/transmission/AtXml.cpp)
 set(WIZ_VEHICLE_SOURCES
     src/vehicle/Powertrain.cpp
     src/vehicle/SoftTire.cpp
@@ -502,6 +511,7 @@ add_executable(wizengine
     ${WIZ_SCENE_SOURCES}
     ${WIZ_COMPONENT_SOURCES}
     ${WIZ_VEHICLE_SOURCES}
+    ${WIZ_TRANSMISSION_SOURCES}
     ${WIZ_FORMULA_SOURCES}
     ${WIZ_CONTROL_SOURCES}
     ${WIZ_TERRAIN_SOURCES}

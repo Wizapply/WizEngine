@@ -769,10 +769,12 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 - **信号は in / out ノードの name**（`control/ControlSignals.h` が唯一の定義）。
   センサ: `time`、`body:<名前>.x y z vx vy vz wx wy wz rx ry rz speed vfwd vlat`、
   `joint:<名前>.angle rate pos vel force torque`、`vehicle:<名前>.speed rpm gear`、
+  `trans:<名前>.<量>`（遊星歯車式 AT。下の「遊星歯車式 AT」の章）、
   `param:<名前>`（下のパラメータ）、`var:<名前>`（下の変数）。
   アクチュエータ: `joint:<名前>.target`（モータの目標値）、`body:<名前>.fx fy fz
   tx ty tz`（ワールド）/ `lfx lfy lfz ltx lty ltz`（ローカル）、
-  `vehicle:<名前>.throttle brake steer handbrake`、パーティクルの量
+  `vehicle:<名前>.throttle brake steer handbrake`、AT への入力
+  `trans:<名前>.engine_torque engine_rpm throttle brake select manual output_rpm grade couple`、パーティクルの量
   `emitter:<名前>.rate`（下の「パーティクル」の章）、パラメータの書き換え
   `param:<名前>`・変数への書き込み `var:<名前>`（下記）、記録だけの `scope:<ラベル>`。
   **単位は SI で角度は rad**（文書の度とは違う。ジョイントの目標値も換算しない）。
@@ -954,7 +956,9 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
     82000 と効率 0.7・コンプレッサーのチョーク流量と速度線・ターボ回転の上限）で、
     公表の曲線に合うように選んだ（調整は `samples/` には置いていない作業用の
     スクラッチ。式の値は `combustion` の数式テキストの先頭にまとまっている）。
-  負荷のかけ方はパラメータ `mode`（選択肢）で 3 通り:
+  負荷のかけ方はパラメータ `mode`（選択肢）で 4 通り（4 つ目の **AT (JR913E)** は
+  下の「遊星歯車式 AT」の章の Chrono のシャフト網を、クランクのボディに直結してつなぐ。
+  他のモードでは `couple = 0` で切り離す）:
   **ダイナモ**（回転数を保つ。`dyno_rpm` 0 = 掃引、> 0 = その回転数、変化は
   1500 rpm/s まで。**回転数を保つので、スロットルで変わるのはトルクだけ** =
   実物のダイナモと同じ）・**フリーラン**（負荷 kload ω²、プロペラの形）・
@@ -1067,6 +1071,118 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   サブシステム（式を部品として入れ子にしてコンパイル時に平坦化）、ベクトル
   信号（コンパイル時にスカラーへ展開）、離散伝達関数 / 状態空間ブロック、
   状態機械（イベントグラフの拡張）、FMI / FMU の取り込み、制御器の C コード生成。
+
+## 遊星歯車式 AT（Chrono の 1D シャフト。`physics/ShaftNetworks` + `components/AtDriveline` + `src/transmission/`）
+
+エンジンのトルク・回転数から、トルクコンバータ・遊星歯車列・締結要素の油圧・変速制御を
+通って出力軸（車軸）のトルク・回転数までを解く。**動力学はすべて Chrono**（Chrono::Vehicle の
+パワートレインと同じ 1D シャフトの部品を、3D の剛体と同じ `ChSystem` に入れる）。見本は
+JATCO **JR913E**（FR 9 速。VR30DDTT と組む日産 Z / Q50 系）で、`assets/scenes/at_jr913e.xml`
+（エンジンのトルクマップ + AT + 車両）と `assets/scenes/v6_engine.xml` の負荷モード
+「AT (JR913E)」（Chrono の V6 のクランクに直結）が使う。
+
+```
+シーン文書 <control><transmission>（AtDesc）
+  ├ transmission/AtKinematics … 構造の解決・段の変速比・要素の分担（純粋）
+  ├ transmission/AtControl    … TCU（変速の判断・掛け替え）と油圧（純粋）
+  ├ transmission/AtSignals    … 計測値と trans:<名前>.<量> の名前（純粋）
+  └ components/AtDriveline    … AtDesc → ShaftNetworkSpec を組み、毎ステップ容量と荷重を与え、
+        │                       結果を読む（ControlComponent が持つ）
+        └ physics/ShaftNetworks … Chrono: ChShaft / ChShaftsPlanetary / ChShaftsClutch /
+                                  ChShaftsTorqueConverter / ChShaftsTorsionSpring / ChShaftsGear /
+                                  ChShaftsMotorSpeed / ChShaftBodyRotation（PhysicsWorld の担当）
+```
+
+- **Chrono のシャフト網**（`physics/ShaftTypes.h` が値型、`ShaftNetworks` が実体、PhysicsWorld の
+  `addShaftNetwork / removeAllShaftNetworks / setShaftLoads / setShaftClutchLimits /
+  setShaftMotorSpeeds / readShaftNetwork`）は AT を知らない汎用の口。ケースは網ごとの固定軸
+  （-1）。遊星は `ChShaftsPlanetary`（shaft1 = キャリヤ、r = −(1 + k), 1, k = Willis）、締結要素・
+  ロックアップ・ブレーキ・パーキングは `ChShaftsClutch`（箱型の拘束 = 止まるか容量で滑るかを
+  ソルバが決める。容量は毎ステップ `SetTorqueLimit`）、ダンパとドライブシャフトは
+  `ChShaftsTorsionSpring`、終減速は `ChShaftsGear`、トルコンは `ChShaftsTorqueConverter`
+  （ステータ = ケース）。Core 専用（Multicore は ChShaft を積分しない）なので、
+  `Scene::requiredBackend` が AT のあるシーンを Core にする。系を作り直すと網は消え、
+  `PhysicsWorld::systemSerial()` が進む = ControlComponent が作り直す。
+- **シャフトの並び**（`AtDriveline.h` の冒頭が正）: エンジン軸（torque は クランク + カバー +
+  羽根車、speed / body はカバー + 羽根車だけ）・ロックアップ / ダンパの 1 次側・歯車列の軸
+  （タービンは入力軸に、出力側の慣性は出力軸に足す）・終減速の後の軸・車輪 + 車両
+  （m r² + 車輪の慣性）。
+- **1 ステップの順番**（ControlComponent、PHYSICS スレッド）: ①read（直前の積分の角速度と
+  各部のトルク → `trans:<名前>.<量>`）②制御器を評価して出力を当てる（`trans:` の入力は次に
+  書くまで保持）③apply（TCU = AtControl が各クラッチの容量を決め、軸に荷重 = エンジンの
+  トルク・油圧ポンプ・軸受と開いた要素の引きずり・かみ合いと終減速の損失・車両の抵抗を
+  与える）④Chrono が積分。損失は前のステップのトルクから見積もる陽的な荷重。締結要素は
+  滑っている間は動摩擦（`<element dynamic>`、すべり速度で 1 へ戻る）。
+- **トルコンの表**（`<converter sr k tr>`、K は rpm/√(N·m)、0 = 容量ゼロ）: Chrono は容量係数
+  K（(rad/s)/√(N·m)）を直線補間するので、AtDriveline が「容量 1/K² を直線でつなぐ」細かい
+  折れ線（201 点）に引き直して渡す。K を直線でつなぐと 0（SR = 1）の手前でトルクが崖になり、
+  Chrono が陽的に与える流体のトルクが振動する。逆駆動（エンジンブレーキ）は Chrono の約束で
+  SR を 1 で折り返して同じ表を引き、トルク比 1（自前モデルの頃の `reverse` は廃止）。
+- **物理のレートは 200 Hz 以上、ソルバは bb か psor**（Chrono のトルコンとねじりばねは各ステップ
+  の初めに陽的に力を与えるので、ダンパの固有振動 ≈ 220 rad/s に対して刻みが粗いと発散する。
+  本物の Chrono 9.0.0 で 120 Hz は発散・200 Hz は安定、APGD は 240 Hz でも発散 = シャフトの
+  クラッチを解けない）。外れると網を作るときに LOGW。at_jr913e は 240 Hz、V6 は 3840 Hz。
+  反復回数は 30 でも 100 と同じ結果。
+- **入力の 3 通り**: `input="torque"`（エンジン軸に正味のトルクを荷重で与える。アイドル制御・
+  燃料カット・TCU のトルク絞り `torque_request` もここ）・`input="speed"`（エンジン軸を速度
+  モータで回す。AT が取ったトルクは `engine_torque` / `load_torque`）・**`input="body"`**
+  （`<engine body="crank" axis="0 0 1">`。エンジン軸をシーンの剛体へ `ChShaftBodyRotation` で
+  **直結**。トルクは Chrono の中でそのまま行き来する = 受け渡しの遅れが無い。axis はワールドの
+  向きで、網を作るときの剛体の姿勢でローカルへ直す）。body では剛体へ直結した短い軸と
+  エンジン軸の間に**切り離しのクラッチ**（入力 `couple`、1 = つなぐ・0 = 切る = フレックス
+  プレートを外した状態）がある。V6 は AT を使わないモードで切り離す（ダイナモの測定に
+  トルコンとポンプを掛けない）。body の TCU のトルク絞りは外のエンジンが受け取らない限り
+  効かない（V6 の燃焼の式は読んでいない）。出力は `load="vehicle"`（終減速・ドライブ
+  シャフトのねじり・車輪 + 車両の転がり / 空気 / 勾配 / ブレーキ）か `load="dyno"`（出力軸を
+  速度モータで回す台上試験）。
+- **歯車列はデータ**（`<shaft>` `<gearset sun carrier ring zs zr>` `<element type a b>`
+  `<gear name elements>` `<neutral>`）。段の変速比・要素の分担（入力 1 N·m あたり）は
+  AtKinematics が解き、容量 0 の要素は「分担の最大 × rating × 1.4」。**JR913E の形と歯数は
+  公表のギア比からの逆算**（JATCO の図面は無い）: 9G-TRONIC 系の 4 遊星 + 6 要素（ブレーキ
+  A B C・クラッチ D E F、1 段 3 要素・隣の段と 1 要素の掛け替え）の全構成を総当たりし、
+  9G-TRONIC の歯数（46/98・44/100・36/84・34/86）で 9G の公表比 10 個を 4 桁で再現する形が
+  P4 のつなぎ方違いの 3 つだけ = 同じ運動学、と分かったので、その形で JR913E の比を小数
+  3 桁で再現する整数の歯数（P1 60/128・P2 41/91・P3 38/86・P4 39/97、遊星は等配できる数）を
+  選んだ。締結表は 1 ABD・2 BDE・3 ABE・4 BEF・5 AEF・6 DEF・7 ADF・8 CDF・9 ACF・R ABC。
+- **変速（TCU = AtControl。冒頭の注記が正）**: 変速線はタービン回転（その段のとき）で、開度の
+  1.5 乗で上げ線 1500〜6500 rpm / 下げ線 1050〜3500 rpm の間を動く。下げは下げ線より上に
+  収まるいちばん高い段へ飛び越す（1 要素の掛け替えで行ける段だけ）、キックダウン、ブレーキ中は
+  上げない、M レンジは 1 段ずつ。掛け替えは「パワーオンの上げ / コーストの下げ」= 準備 →
+  トルク相 → イナーシャ相（締結側の容量を PI でタービン回転の軌道に合わせる。上げはエンジン
+  トルクを 40% 絞る）→ 同期、「パワーオンの下げ / コーストの上げ」= 解放側を滑らせて先に
+  回転を合わせてから掛け替え。**パワーオン / オフはエンジンが出しているトルクで決める**
+  （body では切り離しのクラッチのトルク。Chrono の `GetTorqueReactionOnShaft` は剛体の側への
+  向きなので、そのまま使うと符号が逆で、全開の上げをコースト扱いにして同期しなかった）。
+  油圧は充填（fill 秒は力が出ない）+ 一次遅れ。ロックアップは 2 速以上・18 km/h 以上、
+  アイドル + 250 rpm を割ったら素早く開ける。
+- **文書は `<control>` の `<transmission>`**（`AtXml.h` の冒頭に全体）。`preset="jr913e"` で
+  JR913E の値から始めて書いた節だけ上書き。保存は常に全部を書く。読み込みは `clampAt` で
+  丸め、AtKinematics で構造を解いてつなぎ先の打ち間違い・段の拘束の過不足・等配できない
+  歯数を warnings に出す。本体は `EditorState::transmissions()`（`transmissionVersion()`）。
+  数値の編集は 📄 XML。網を作るのは開始・Reset・定義の変更・系の作り直し・つないだ剛体の
+  作り直し、エディタへ戻ると外す。/scene の `control.transmissions`（段・回転・車速・ロック
+  アップ・作れなかった理由 `error`）と `formulas.transmissions`（ノードエディタの候補）。
+- **信号**（`trans:<名前>.<量>`）: センサは engine_rpm turbine_rpm output_rpm wheel_rpm /
+  engine_torque load_torque turbine_torque input_torque output_torque axle_torque / gear
+  target_gear shifting phase ratio / tc_speed_ratio tc_torque_ratio tc_slip lockup lockup_slip /
+  speed speed_kmh accel efficiency torque_request line_pressure power_in power_out と、要素ごと
+  `torque_<要素>`（Chrono のクラッチの反トルク）`pressure_<要素>` `slip_<要素>`・軸ごと
+  `rpm_<軸>` `w_<軸>`。入力は engine_torque engine_rpm throttle brake select（0 P 1 R 2 N 3 D
+  4 M）manual output_rpm grade (rad) couple。
+- **見本 `at_jr913e.xml`**: 制御器 `driver`（VR30DDTT 相当の全開トルク = 公表曲線、過給ぶんは
+  0.35 s の遅れ、摩擦は回転数の 2 次式。program = 手動 / 全開加速 / 市街地 / ストール）と
+  `anim`（3D の模式図: AT の軸ごとのボディを hinge の速度モータで回す。回転は 0.03 倍）。
+- **確認（本物の Chrono 9.0.0 をこの環境でビルドし、PhysicsWorld + AtDriveline を同じ
+  ソースのまま回して）**: 10 段の比が公表値どおり、ストール 2519 rpm・トルク比 1.90・車軸
+  14.2 kN·m、全開で 0–100 km/h 4.74 s（ターボの遅れ無し）/ 4.98 s（at_jr913e の driver 式 =
+  遅れ込み）、6 速直結の効率 93.5%（6000 rpm 全開）、キックダウン・急ブレーキの下げ・R、
+  直結（クランクに見立てた剛体 + トルクモータ、燃焼トルクの脈動 ±200%）で 1→6 速、切り離しの
+  間は駆動が抜ける。いずれも以前の自前の 1D モデル（陰解法 + 能動集合法。比較用に手元に
+  残した）と変速の時刻まで一致。**エンジン本体（Scene・ブラウザ）での実行は未確認**。
+- **未**: 一方向クラッチ（JR913E には無い）、遠心振り子ダンパ、油温による摩擦係数・粘性の
+  変化、ライン圧の油圧回路（ソレノイド・バルブボディ）、変速の学習制御、要素の発熱、
+  車輪を 3D の車体（VehicleComponent の車輪）へつなぐ口、3D の歯車の形（いまは模式図）、
+  Inspector での数値編集。
 
 ## 起動設定（`config.json` + `src/app/AppConfig.{h,cpp}`）
 
@@ -1977,7 +2093,8 @@ src/
   main.cpp       起動・引数解析・2 スレッドのループ
   core/          Log, AssetError, Versions, Stats, CpuAffinity, PortScan
                  （エンジン非依存の土台）
-  physics/       PhysicsWorld（Chrono）, MeshCollision（glTF 凸包）, ModelImport（URDF 等の取込）, PhysicsTuning
+  physics/       PhysicsWorld（Chrono）, MeshCollision（glTF 凸包）, ModelImport（URDF 等の取込）, PhysicsTuning,
+                 ShaftNetworks（1D シャフト網 = AT の駆動系）
   render/        Renderer（Filament）, GltfLoader, EnvironmentLoader, ImageLoader
   streaming/     HttpServer, WebRtcStreamer, VideoStreamer（GStreamer）
   document/      EditorTypes, SceneDocument, SceneXml（シーン文書。エンジン非依存）
@@ -1988,11 +2105,13 @@ src/
                  MathBridge, RenderBridge
   components/    EditorComponent, GizmoComponent, PhysicsControlComponent,
                  StreamControlComponent, VehicleComponent, PrefabComponent,
-                 AutoGenComponent, ControlComponent, EffectsComponent（パーティクル）
+                 AutoGenComponent, ControlComponent, EffectsComponent（パーティクル）,
+                 AtDriveline（AT を Chrono のシャフト網として組む係）
   app/           起動設定（config.json の読み込み = AppConfig）
   autogen/       AI によるシーン自動構築（LLM / Meshy の HTTP クライアント・指示文・
                  配置の後始末。Chrono も Filament も知らない）
   vehicle/       車両モデル（純粋な数値ライブラリ。tests/vehicle が使う）
+  transmission/  遊星歯車式 AT の構造・変速制御（TCU）・信号・XML（純粋。動力学は Chrono）
   formula/       計算式（ノード式）の検証・実行（C++ / LuaJIT）・XML・数式テキスト
   control/       制御器の信号名・センサの計算・雛形（純粋。ControlComponent が使う）
 tests/vehicle/   車両モデルの単体テスト（-DWIZ_BUILD_TESTS=ON で本体からも回せる）
@@ -2421,6 +2540,9 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   ブロックを足し、センサ / アクチュエータの信号名で Chrono とつなぐ。スコープと
   CSV。上の「制御器」の章）と、計算式の数式テキスト ⇄ ノードの変換・汎用の
   雛形（上の「計算式」の章）。車両のタイヤ式・空気圧式の差し替えは廃止。
+- 済（実機待ち）: 遊星歯車式 AT（JATCO JR913E。Chrono の 1D シャフトでトルコン・ロック
+  アップ・ダンパ・遊星 4 組・締結要素 6 つ・終減速・車両、TCU の油圧と掛け替え変速。V6 の
+  クランクへ直結。上の「遊星歯車式 AT」の章）。
 - 済: イベントアセット（Node-RED 風のノードエディタ。衝突・開始・タイマー・
   掴みのトリガーと、色・力・固定・引き寄せ・ライト・カメラ注視のアクション。
   ノードは名前付きアセットにまとめ、オブジェクト / シーン全体に何本でも

@@ -1,5 +1,7 @@
 #include "control/ControlSignals.h"
 
+#include "transmission/AtSignals.h"
+
 #include <utility>
 
 namespace wizengine {
@@ -103,7 +105,7 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
     std::string kind, target, qty;
     split(name, kind, target, qty);
     if (sensor && kind == "time" && target.empty()) {
-        out = SignalRef{Source::Time, "", Quantity::None};
+        out = SignalRef{Source::Time, "", Quantity::None, ""};
         return true;
     }
     if (kind == "param" || kind == "var") {
@@ -114,7 +116,7 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
             error = "\"" + name + "\": " + kind + " needs a name (" + kind + ":<name>)";
             return false;
         }
-        out = SignalRef{kind == "param" ? Source::Param : Source::Var, pname, Quantity::None};
+        out = SignalRef{kind == "param" ? Source::Param : Source::Var, pname, Quantity::None, ""};
         return true;
     }
     if (!sensor && kind == "scope") {
@@ -124,7 +126,17 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
             error = "\"" + name + "\": scope needs a label (scope:<label>)";
             return false;
         }
-        out = SignalRef{Source::Scope, label, Quantity::None};
+        out = SignalRef{Source::Scope, label, Quantity::None, ""};
+        return true;
+    }
+    if (kind == "trans") {
+        // 量の名前は AT の中身（要素・軸の名前）で決まるので、ここでは形だけ見る。
+        // 本当にあるかは制御器を組むとき（ControlComponent が transmission/AtSignals で引く）。
+        if (target.empty() || qty.empty()) {
+            error = "\"" + name + "\": needs trans:<name>.<quantity>";
+            return false;
+        }
+        out = SignalRef{Source::Transmission, target, Quantity::Trans, qty};
         return true;
     }
     const std::vector<Entry>* table = nullptr;
@@ -143,8 +155,8 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
         table = &emitterActuators();
     } else {
         error = "\"" + name + "\": unknown signal kind \"" + kind + "\" (" +
-                (sensor ? "time, body:, joint:, vehicle:, param:, var:"
-                        : "body:, joint:, vehicle:, emitter:, param:, var:, scope:") +
+                (sensor ? "time, body:, joint:, vehicle:, trans:, param:, var:"
+                        : "body:, joint:, vehicle:, trans:, emitter:, param:, var:, scope:") +
                 ")";
         return false;
     }
@@ -158,7 +170,7 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
                 " quantity \"" + qty + "\" for " + kind + " (" + listOf(*table) + ")";
         return false;
     }
-    out = SignalRef{src, target, q};
+    out = SignalRef{src, target, q, ""};
     return true;
 }
 
@@ -179,6 +191,8 @@ bool parseActuator(const std::string& name, SignalRef& out, std::string& error) 
 }
 
 const std::vector<std::string>& sensorQuantities(Source source) {
+    // AT は要素・軸ごとの量を除いた共通の名前（唯一の定義は transmission/AtSignals）。
+    if (source == Source::Transmission) return wizengine::transmission::atCommonSensorNames();
     static const std::vector<std::string> body = names(bodySensors());
     static const std::vector<std::string> joint = names(jointSensors());
     static const std::vector<std::string> vehicle = names(vehicleSensors());
@@ -192,6 +206,7 @@ const std::vector<std::string>& sensorQuantities(Source source) {
 }
 
 const std::vector<std::string>& actuatorQuantities(Source source) {
+    if (source == Source::Transmission) return wizengine::transmission::atInputNames();
     static const std::vector<std::string> body = names(bodyActuators());
     static const std::vector<std::string> joint = names(jointActuators());
     static const std::vector<std::string> vehicle = names(vehicleActuators());

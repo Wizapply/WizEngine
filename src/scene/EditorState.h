@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include "document/EditorTypes.h"
+#include "transmission/AtTypes.h"
 
 // エディタ／シミュレートの切り替えと、まだ適用されていない編集操作を持つ入れ物。
 //
@@ -284,6 +285,13 @@ public:
     // 送られたキーだけ上書き（title / signals / span）。move で並びを入れ替える。
     bool updateChart(int index, const nlohmann::json& patch);
 
+    // 遊星歯車式 AT（文書の <transmission>）。書くのは物理スレッド（読込・XML の適用）、
+    // 読むのは物理スレッド（ControlComponent。transmissionVersion が変わったときだけ
+    // 取り、AT のモデルを作り直す）と HTTP スレッド（JSON）。
+    std::vector<wizengine::transmission::AtDesc> transmissions() const;
+    void setTransmissions(std::vector<wizengine::transmission::AtDesc> list);
+    std::uint64_t transmissionVersion() const { return transmissionVersion_.load(); }
+
     // ---- プレハブ（見た目の部品の集合）------------------------------------
     // イベント・計算式と同じ流儀のアセット。部品は番号で参照する（軸と同じ）。
     // 書くのは物理スレッド（Op 実行時とギズモのドラッグ）、読むのは HTTP
@@ -414,6 +422,8 @@ private:
     std::vector<wizengine::editor::ParamDesc> params_;
     std::atomic<std::uint64_t> paramVersion_{0};
     std::vector<wizengine::editor::ChartDesc> charts_;
+    std::vector<wizengine::transmission::AtDesc> transmissions_;
+    std::atomic<std::uint64_t> transmissionVersion_{0};
     // プレハブ（mutex_ の下）。
     std::vector<wizengine::editor::PrefabDesc> prefabs_;
     std::atomic<std::uint64_t> prefabVersion_{0};

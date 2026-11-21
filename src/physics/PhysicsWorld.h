@@ -5,12 +5,14 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "physics/PhysicsTypes.h"
+#include "physics/ShaftTypes.h"
 
 namespace wizengine {
 namespace terrain {
@@ -334,6 +336,23 @@ public:
     // ケーブルの張力の目安（端の拘束の反力 N。無ければ 0）。
     double cableTension(std::size_t cable) const;
 
+    // ---- 1D のシャフト網（Chrono の ChShaft 系。AT の駆動系など）------------
+    // 軸・遊星・クラッチ / ブレーキ・ねじりばね・歯車・トルクコンバータ・速度モータ・
+    // 3D の剛体との直結（physics/ShaftTypes.h）を、剛体と同じ系に足す。戻り値は網の
+    // 番号（作れなければ kInvalidId: Multicore・番号の範囲外・剛体が無い）。Core 専用。
+    // 作るのも外すのも使い手（ControlComponent）の役目で、系の作り直し（recreate）では
+    // 全部消える = systemSerial() が進んだら作り直す。
+    // 毎ステップ step の前に荷重（軸ごとのトルク）・クラッチの容量・モータの速度を与え、
+    // 後で readShaftNetwork（直前のステップの角速度と各部のトルク）。
+    std::size_t addShaftNetwork(const wizengine::physics::ShaftNetworkSpec& spec);
+    void removeAllShaftNetworks();
+    void setShaftLoads(std::size_t net, const std::vector<double>& torque);
+    void setShaftClutchLimits(std::size_t net, const std::vector<double>& limit);
+    void setShaftMotorSpeeds(std::size_t net, const std::vector<double>& w);
+    void readShaftNetwork(std::size_t net, wizengine::physics::ShaftNetworkState& out) const;
+    // 系を作り直すたびに 1 進む（作り直しで消えた物を使い手が知るため）。
+    std::uint64_t systemSerial() const { return systemSerial_; }
+
     // ---- モーダル解析（Chrono::Modal。固有振動数）-------------------------
     // いまの系（剛体 + FEA + 拘束）の非減衰固有振動数を count 本求める
     // （Hz、昇順）。接触は入らない。Core 専用で、モジュールの無いビルド・
@@ -396,6 +415,7 @@ public:
 private:
     // 担当の入れ物（Chrono の系と名簿。中身は PhysicsParts.h）。
     struct Parts;
+    std::uint64_t systemSerial_ = 0;
     // 壊れる順番（ジョイント・ケーブル・荷重など）は Parts の中で持つ。
     std::unique_ptr<Parts> p_;
 };

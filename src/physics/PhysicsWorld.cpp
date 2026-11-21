@@ -111,6 +111,31 @@ void PhysicsWorld::cableNodePositions(std::size_t cable, std::vector<float>& out
 
 double PhysicsWorld::cableTension(std::size_t cable) const { return p_->cables.tension(cable); }
 
+// ---- 1D のシャフト網（本体は ShaftNetworks）-------------------------------------
+
+std::size_t PhysicsWorld::addShaftNetwork(const wizengine::physics::ShaftNetworkSpec& spec) {
+    return p_->shafts.add(spec);
+}
+
+void PhysicsWorld::removeAllShaftNetworks() { p_->shafts.removeAll(); }
+
+void PhysicsWorld::setShaftLoads(std::size_t net, const std::vector<double>& torque) {
+    p_->shafts.setLoads(net, torque);
+}
+
+void PhysicsWorld::setShaftClutchLimits(std::size_t net, const std::vector<double>& limit) {
+    p_->shafts.setClutchLimits(net, limit);
+}
+
+void PhysicsWorld::setShaftMotorSpeeds(std::size_t net, const std::vector<double>& w) {
+    p_->shafts.setMotorSpeeds(net, w);
+}
+
+void PhysicsWorld::readShaftNetwork(std::size_t net,
+                                    wizengine::physics::ShaftNetworkState& out) const {
+    p_->shafts.read(net, out);
+}
+
 // ---- モーダル解析（本体は ModalAnalysis）------------------------------------
 
 bool PhysicsWorld::modalFrequencies(int count, std::vector<double>& hz, std::string& why) {

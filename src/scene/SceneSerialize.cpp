@@ -4,6 +4,7 @@
 
 #include "control/ControlSignals.h"
 #include "control/ControlTemplates.h"
+#include "transmission/AtSignals.h"
 #include "formula/FormulaText.h"
 #include "terrain/TerrainBrush.h"
 #include "scene/UiFiles.h"
@@ -422,7 +423,17 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             q["joint"] = ctl::actuatorQuantities(ctl::Source::Joint);
             q["vehicle"] = ctl::actuatorQuantities(ctl::Source::Vehicle);
             q["emitter"] = ctl::actuatorQuantities(ctl::Source::Emitter);
+            q["trans"] = ctl::actuatorQuantities(ctl::Source::Transmission);
             f["actuators"] = q;
+            f["sensors"]["trans"] = ctl::sensorQuantities(ctl::Source::Transmission);
+            // AT の名前と、要素・軸ごとの量（torque_A など）を含む読める量の一覧。
+            f["transmissions"] = nlohmann::json::array();
+            for (const auto& t : editor_.transmissions()) {
+                nlohmann::json e;
+                e["name"] = t.name;
+                e["sensors"] = wizengine::transmission::atSensorNames(t);
+                f["transmissions"].push_back(std::move(e));
+            }
         }
         j["formulas"] = f;
     }
@@ -649,6 +660,7 @@ ed::SceneDocument Scene::document() {
     doc.controllers = editor_.controllers();
     doc.params = editor_.params();
     doc.charts = editor_.charts();
+    doc.transmissions = editor_.transmissions();
     return doc;
 }
 
@@ -753,6 +765,7 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     editor_.setControllers(doc.controllers);
     editor_.setParams(doc.params);
     editor_.setCharts(doc.charts);
+    editor_.setTransmissions(doc.transmissions);
     editor_.setPrefabEditObject(-1);
     for (const auto& bIn : doc.bodies) createObject(ed::clampBody(bIn));
     editor_.bumpVehicleVersion();  // 走っている車両モデルは作り直す
@@ -923,6 +936,18 @@ std::string Scene::appendDocument(const ed::SceneDocument& doc) {
         auto charts = editor_.charts();
         charts.insert(charts.end(), doc.charts.begin(), doc.charts.end());
         editor_.setCharts(std::move(charts));
+        // AT も足す（同名は今のシーンのものを残す）。
+        auto trans = editor_.transmissions();
+        bool addedTrans = false;
+        for (const auto& t : doc.transmissions) {
+            bool dup = false;
+            for (const auto& have : trans) dup = dup || have.name == t.name;
+            if (!dup) {
+                trans.push_back(t);
+                addedTrans = true;
+            }
+        }
+        if (addedTrans) editor_.setTransmissions(std::move(trans));
     }
     const std::size_t base = boxes_.size();
     for (const auto& bIn : doc.bodies) createObject(ed::clampBody(bIn));

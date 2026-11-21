@@ -1640,6 +1640,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         editor_.setControllers({});
         editor_.setParams({});
         editor_.setCharts({});
+        editor_.setTransmissions({});
         editor_.setPrefabAssets({});
         ui_.clear();  // UI（Canvas・共用 UI・フォント）もシーンの一部
         // 共用のファイルの覚えも捨てる（残すと、全消しの後に同じ名前を作って保存したとき、

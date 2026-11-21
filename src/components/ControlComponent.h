@@ -18,6 +18,7 @@
 #include "scene/SceneComponent.h"
 #include "formula/Formula.h"
 #include "formula/LuaFormula.h"
+#include "components/AtDriveline.h"
 
 class VehicleComponent;
 class EffectsComponent;
@@ -55,6 +56,17 @@ class EffectsComponent;
 // 実行エンジン: LuaJIT（車両と同じノード式。Lua ステートはこの係が 1 つ持ち、
 // 物理スレッド専用）。無いビルドは C++ のインタプリタ（結果は同じ）。
 //
+// 遊星歯車式 AT（文書の <control><transmission>）もここが持つ: AT ごとに
+// AtDriveline（components/AtDriveline.h）が Chrono の 1D シャフト網を組み、動力学は
+// Chrono が剛体と同じ系で解く。1 ステップの順番は
+//   1. read  … 直前の積分の結果（角速度・各部のトルク）を trans:<名前>.<量> へ
+//   2. 制御器を評価して出力を当てる（trans:<名前>.<入力> は次に書くまで保持）
+//   3. apply … TCU が各クラッチの容量を決め、軸に荷重を与える
+//   4. Chrono が積分（このコンポーネントの後）
+// 作り直すのは transmissionVersion が変わったとき（読込・XML の適用）・開始・Reset・
+// 物理の系の作り直し（PhysicsWorld::systemSerial）・つないだ剛体が作り直されたとき。
+// エディタへ戻ると網を外す。
+//
 // HTTP スレッドからは statusJson（/scene の control）と samplesJson /
 // samplesCsv（/control・/control.csv）を読む。共有するのは mutex_ の下の
 // 状態表示と記録だけ（葉のロック）。
@@ -84,6 +96,8 @@ private:
         int object = -1;  // オブジェクト番号（body / vehicle）
         int joint = -1;   // 文書のジョイント番号
         int emitter = -1; // エミッタの番号（emitter:<名前>）
+        int trans = -1;   // AT の番号（trans:<名前>）
+        int transQty = -1;  // AT の量の番号（センサ = atSensorId、出力 = atInputId。transmission/AtSignals）
         double lastApplied = 0.0;  // joint target: 前回渡した値（同じなら渡さない）
         bool applied = false;
     };
@@ -110,6 +124,9 @@ private:
     void applyOutputs(Scene& scene, Runtime& rt, double dt);
     wizengine::control::BodyState bodyState(Scene& scene, int object);
     void publishStatus();
+    void rebuildTransmissions(Scene& scene);
+    bool transmissionsStale(Scene& scene) const;
+    void applyTransmissions(Scene& scene, double dt);
 
     VehicleComponent* vehicles_;
     EffectsComponent* effects_ = nullptr;
@@ -117,6 +134,17 @@ private:
     std::unique_ptr<wizengine::formula::LuaRuntime> lua_;
 
     // ---- PHYSICS スレッド専用 ----
+    struct TransRuntime {
+        std::string name;
+        std::unique_ptr<AtDriveline> driveline;  // 制御器の入力（inputs）もここが持つ
+        bool running = false;                    // Chrono の網ができている
+        std::string error;                       // 作れなかった理由（英語）
+        int bodyObject = -1;                     // input = body のつなぎ先（オブジェクト番号）
+        std::size_t bodyPhys = static_cast<std::size_t>(-1);
+    };
+    std::vector<TransRuntime> trans_;
+    std::uint64_t transVersion_ = ~std::uint64_t(0);
+    std::uint64_t transSerial_ = ~std::uint64_t(0);  // 網を作ったときの PhysicsWorld::systemSerial
     std::vector<Runtime> runtimes_;
     std::uint64_t generation_ = ~std::uint64_t(0);
     std::uint64_t controlVersion_ = ~std::uint64_t(0);

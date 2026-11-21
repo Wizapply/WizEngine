@@ -11,16 +11,19 @@ void PhysicsWorld::setMaterialCombine(CombineMode mode) {
 }
 
 // 系をまるごと作り直す（バックエンドの自動切替: Multicore ⇄ Core、NSC ⇄ SMC）。
-// ボディ・ジョイント・ケーブル・荷重は全部捨てる - 番号は無効になるので、
+// ボディ・ジョイント・ケーブル・シャフト網・荷重は全部捨てる - 番号は無効になるので、
 // Scene が設計値から作り直す（Scene::rebuildPhysicsWorld）。
 void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     // 新しい部品の片付けは通知（onBodiesCleared / onSystemRecreated）で済む。ここで
-    // 名指しする 5 つは既存の例外: joints と cables は出来事の受け手ではない、terrain と
+    // 名指しする 6 つは既存の例外: joints・cables・shafts は出来事の受け手ではない、terrain と
     // loads は系に結び付く物（コールバック・荷重コンテナ）を古い系を壊す前に手放す、
-    // diag は診断の数え直し（bodies.clear() は通知を配る側なので数に入れない。joints と
-    // cables は名簿を空にする前に片付ける）。
+    // diag は診断の数え直し（bodies.clear() は通知を配る側なので数に入れない。joints・
+    // cables・shafts は名簿を空にする前に片付ける）。シャフト網は使い手（ControlComponent）が
+    // 作り直すので、systemSerial を進めて知らせる。
     p_->joints.clear();
     p_->cables.clear();
+    p_->shafts.clear();
+    ++systemSerial_;
     // 名簿を空にすると、番号と並ぶ担当の配列（ソフトボディの一覧など）も
     // onBodiesCleared で捨てられる（系を壊す前 = 途中で例外が出ても古い番号が残らない）。
     p_->bodies.clear();

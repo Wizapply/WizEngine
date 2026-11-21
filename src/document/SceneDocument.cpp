@@ -7,6 +7,7 @@
 #include "ui/UiProps.h"  // UI のノード（SetUiProp）の性質の名前と型
 #include "ui/UiValue.h"
 #include "ui/UiXml.h"
+#include "transmission/AtXml.h"
 #include "vehicle/VehicleXml.h"
 
 #include <algorithm>
@@ -1535,7 +1536,8 @@ xml::Element toXml(const SceneDocument& doc) {
     }
 
     // 制御器。持っているときだけ書く（無い文書を太らせない）。
-    if (!doc.controllers.empty() || !doc.params.empty() || !doc.charts.empty()) {
+    if (!doc.controllers.empty() || !doc.params.empty() || !doc.charts.empty() ||
+        !doc.transmissions.empty()) {
         xml::Element ctl("control");
         for (const auto& c : doc.controllers) {
             xml::Element e("controller");
@@ -1563,6 +1565,9 @@ xml::Element toXml(const SceneDocument& doc) {
             e.set("signals", sig);
             e.setNumber("span", c.span);
             ctl.append(std::move(e));
+        }
+        for (const auto& t : doc.transmissions) {
+            ctl.append(wizengine::transmission::transmissionElement(t));
         }
         root.append(std::move(ctl));
     }
@@ -1943,7 +1948,8 @@ SceneDocument fromXml(const xml::Element& root,
     // 制御器。参照する計算式が <asset> に無いものは残す（警告だけ）: 式を
     // 後から足せば動き出す。センサ名の検査は実行時（ControlComponent）。
     if (const xml::Element* ctl = root.first("control")) {
-        warnUnknownChildren(*ctl, {"controller", "param", "chart"}, "<control>", warn);
+        warnUnknownChildren(*ctl, {"controller", "param", "chart", "transmission"}, "<control>",
+                            warn);
         for (const xml::Element* e : ctl->all("controller")) {
             ControllerDesc c;
             c.formula = e->attr("formula");
@@ -2008,6 +2014,21 @@ SceneDocument fromXml(const xml::Element& root,
                 c.signals.push_back(tok);
             }
             doc.charts.push_back(clampChart(c));
+        }
+        for (const xml::Element* e : ctl->all("transmission")) {
+            wizengine::transmission::AtDesc t = wizengine::transmission::transmissionFromXml(*e, warn);
+            if (sanitizeEventName(t.name) != t.name || t.name.empty()) {
+                warn("<transmission name=\"" + t.name +
+                     "\">: the name must be letters, digits, _ and - - ignored");
+                continue;
+            }
+            bool dup = false;
+            for (const auto& q : doc.transmissions) dup = dup || q.name == t.name;
+            if (dup) {
+                warn("<transmission name=\"" + t.name + "\">: duplicate name - ignored");
+                continue;
+            }
+            doc.transmissions.push_back(std::move(t));
         }
     }
 

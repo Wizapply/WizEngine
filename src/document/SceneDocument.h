@@ -8,6 +8,7 @@
 
 #include "core/Xml.h"
 #include "document/EditorTypes.h"
+#include "transmission/AtTypes.h"
 #include "ui/UiTypes.h"
 #include "ui/UiValue.h"  // NodeFieldValues
 
@@ -288,6 +289,9 @@ struct SceneDocument {
     std::vector<ParamDesc> params;
     // 制御盤のグラフ（<control> の <chart>）。
     std::vector<ChartDesc> charts;
+    // 遊星歯車式 AT（<control> の <transmission>、transmission/AtXml.h）。
+    // シミュレート中に ControlComponent が回し、制御器から trans:<名前>.<量> で読み書きする。
+    std::vector<wizengine::transmission::AtDesc> transmissions;
     // UI（ui/UiTypes.h）: フォントと UI アセット（<asset> の <font> / <ui>）、
     // Canvas（<worldbody> の <canvas>）。節が無ければ空（既定のフォントは読込側）。
     std::vector<ui::FontAssetDesc> fonts;

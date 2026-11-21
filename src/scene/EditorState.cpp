@@ -702,6 +702,20 @@ void EditorState::setParamValues(const std::map<std::string, double>& values) {
     if (changed) paramVersion_.fetch_add(1);
 }
 
+// ---- 遊星歯車式 AT ---------------------------------------------------------------
+std::vector<wizengine::transmission::AtDesc> EditorState::transmissions() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return transmissions_;
+}
+
+void EditorState::setTransmissions(std::vector<wizengine::transmission::AtDesc> list) {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        transmissions_ = std::move(list);
+    }
+    transmissionVersion_.fetch_add(1);
+}
+
 // ---- 制御盤のグラフ -------------------------------------------------------------
 std::vector<wizengine::editor::ChartDesc> EditorState::charts() const {
     std::lock_guard<std::mutex> lk(mutex_);

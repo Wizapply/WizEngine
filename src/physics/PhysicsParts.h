@@ -14,6 +14,7 @@
 #include "physics/Joints.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsWorld.h"
+#include "physics/ShaftNetworks.h"
 #include "physics/Sleeping.h"
 #include "physics/SoftBodies.h"
 #include "physics/StaticPairs.h"
@@ -63,4 +64,6 @@ struct PhysicsWorld::Parts {
     wizengine::physics::Joints joints{system, bodies, motion};
     // joints より後 = 最初に壊れる。ジョイントとの順番には依存しない。
     wizengine::physics::Cables cables{system, bodies, materials};
+    // 1D のシャフト網（AT の駆動系など）。剛体との直結が ChBody を持つので名簿より後に壊す。
+    wizengine::physics::ShaftNetworks shafts{system, bodies};
 };

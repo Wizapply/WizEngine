@@ -27,6 +27,14 @@
 //       force torque           … 拘束の反力 (N) / 反トルク (N·m)（大きさ）
 //   vehicle:<名前>.<量>        … 車両（<vehicle> を持つオブジェクト）
 //       speed rpm gear         … 前向きの速さ (m/s) / エンジン回転 / ギア (-1 = R)
+//   trans:<名前>.<量>          … 遊星歯車式 AT（文書の <control><transmission>）
+//       engine_rpm turbine_rpm output_rpm wheel_rpm   … 回転数 (rpm)
+//       engine_torque load_torque turbine_torque input_torque output_torque axle_torque
+//                              … トルク (N·m)。load_torque = AT がエンジンから取ったぶん
+//       gear target_gear shifting phase ratio … 段（-1 = R、0 = N / P）・変速中・相
+//       tc_speed_ratio tc_torque_ratio tc_slip lockup lockup_slip … トルコン
+//       speed speed_kmh accel efficiency torque_request line_pressure power_in power_out
+//       torque_<要素> pressure_<要素> slip_<要素> rpm_<軸>   … 要素ごと・軸ごと
 //   param:<名前>               … 制御器のパラメータ（文書の <control><param>）。
 //                                ブラウザのスライダーでシミュレート中に変えられる
 //   var:<名前>                 … 変数（下の「変数」）。今の値
@@ -49,6 +57,11 @@
 //                                ときだけ書く = 式が同じ値を出し続けている間は
 //                                スライダーで上書きできる。保存すると残る）
 //   var:<名前>                 … 変数に書く（下の「変数」）
+//   trans:<名前>.engine_torque engine_rpm throttle brake select manual output_rpm grade couple
+//                              … AT への入力（エンジントルク N·m / エンジン回転 rpm /
+//                                アクセル・ブレーキ 0..1 / セレクタ 0 P 1 R 2 N 3 D 4 M /
+//                                手動の段 / 台上の出力回転 rpm / 勾配 rad / 剛体との
+//                                結合 1 = つなぐ 0 = 切り離す）。書いた値は次に書くまで保持
 //   scope:<ラベル>             … 記録だけ（スコープに出る）
 //
 // ---- 変数（var:<名前>）----------------------------------------------------------
@@ -71,7 +84,7 @@
 namespace wizengine {
 namespace control {
 
-enum class Source { Time, Body, Joint, Vehicle, Scope, Param, Emitter, Var };
+enum class Source { Time, Body, Joint, Vehicle, Scope, Param, Emitter, Var, Transmission };
 
 enum class Quantity {
     None,
@@ -86,12 +99,15 @@ enum class Quantity {
     Fx, Fy, Fz, Tx, Ty, Tz, LFx, LFy, LFz, LTx, LTy, LTz,
     Throttle, Brake, Steer, Handbrake,
     EmitRate,
+    // trans（センサ・アクチュエータとも。量の名前は SignalRef::sub、transmission/AtSignals が引く）
+    Trans,
 };
 
 struct SignalRef {
     Source source = Source::Time;
     std::string target;   // オブジェクト / ジョイント / パラメータの名前、scope のラベル
     Quantity quantity = Quantity::None;
+    std::string sub;      // trans: の量の名前（"engine_rpm"、"torque_A" …）
 };
 
 // 解析。読めなければ false で error に理由（英語、ログ用）。

@@ -1072,6 +1072,8 @@ PhysicsBackend Scene::requiredBackend(ContactMethod& contact, std::string& reaso
     if (ed::solverNeedsCore(s.solver)) why.push_back("solver '" + s.solver + "'");
     if (ed::integratorNeedsCore(s.integrator)) why.push_back("integrator '" + s.integrator + "'");
     if (s.modal > 0) why.push_back("modal analysis");
+    // 遊星歯車式 AT（Chrono の 1D シャフト。Multicore のデータマネージャは ChShaft を持たない）。
+    if (!editor_.transmissions().empty()) why.push_back("transmission (Chrono 1D shafts)");
     // テレイン。SceneSystemConfig::terrainForcesCore。当たり判定は自前の接触
     // （CustomCollisionCallback。Multicore では PhysicsWorld が張らない）。
     if (sys_.terrainForcesCore && terrainLoaded()) {
