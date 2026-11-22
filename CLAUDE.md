@@ -19,8 +19,9 @@ Claude Code 向けのプロジェクト前提メモ。作業開始時にまず�
 **Charon**（製品名。1.x のコードネームが **WizEngine** で、名前空間
 `wizengine`・実行ファイル `wizengine`・シーン文書のルート要素 `<wizengine>`
 もそれ。ユーザーに見える名前 - README・起動ログ・ブラウザの見出しと
-About・`/stats` のキー - が Charon。ロゴは `web/logo.png` で README の
-先頭とサイドバーの見出しが同じファイルを使う。依存ライブラリのライセンス
+About・`/stats` のキー - が Charon。ロゴは README の先頭が
+`web/logo.svg`（ベクター版）、サイドバーの見出しが `web/logo.png`（同じ図柄）。
+README のスクリーンショットは `docs/images/screenshot_*.webp`（1200×630 に揃える）。依存ライブラリのライセンス
 一覧は `THIRD_PARTY_NOTICES.md` - 依存を足したら 1 行足す）は、サーバー側で **Chrono**（物理）＋ **Filament**（描画）を回し、オフスクリーンで
 描いたフレームを **GStreamer** で H.264 にして RTP/UDP で配信するプロトタイプ。
 クライアントは `gst-launch-1.0` のワンライナーで受ける（専用クライアントは未作成）。
