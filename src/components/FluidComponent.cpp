@@ -33,6 +33,11 @@ fl::WaterParams toParams(const ed::WaterDesc& w) {
     p.amplitude = w.wave;
     p.period = w.period;
     p.heading = w.heading * fl::kPi / 180.0;
+    p.wind = w.wind;
+    p.spread = w.spread * fl::kPi / 180.0;
+    p.waveCount = w.waves;
+    p.seed = unsigned(w.seed);
+    p.choppy = w.choppy;
     return p;
 }
 
@@ -62,16 +67,19 @@ void applyTorque(PhysicsWorld& physics, std::size_t id, const fl::Vec3& center,
 
 void FluidComponent::onPhysicsStep(Scene& scene, double dt) {
     const std::uint64_t ver = scene.editor().waterVersion();
-    if (ver != physVersion_) {
+    const ed::SimSettings sim = scene.editor().sim();
+    const fl::Vec3 gravity{sim.gravityX, sim.gravity, sim.gravityZ};
+    if (ver != physVersion_ || gravity.length() != physGravity_) {
         physVersion_ = ver;
         physHas_ = scene.editor().hasWater();
         physWater_ = scene.editor().water();
+        physGravity_ = gravity.length();
+        physParams_ = toParams(physWater_);
+        fl::prepareWaves(physParams_, physGravity_);
     }
     if (!physHas_ || !physWater_.enabled || dt <= 0.0) return;
 
-    const fl::WaterParams wp = toParams(physWater_);
-    const ed::SimSettings sim = scene.editor().sim();
-    const fl::Vec3 gravity{sim.gravityX, sim.gravity, sim.gravityZ};
+    const fl::WaterParams& wp = physParams_;
     const double t = scene.physicsSimTime();
     PhysicsWorld& physics = scene.physics();
 
@@ -101,7 +109,7 @@ void FluidComponent::onPhysicsStep(Scene& scene, double dt) {
         const double reach = b.shape == fl::BodyState::Shape::Sphere
                                  ? b.radius
                                  : std::sqrt(b.half.dot(b.half));
-        const double waveTop = wp.level + wp.amplitude;
+        const double waveTop = wp.level + wp.crest;
         if (b.position.y - reach > waveTop) continue;
         if (std::fabs(b.position.x - wp.centerX) > wp.halfX + reach ||
             std::fabs(b.position.z - wp.centerZ) > wp.halfZ + reach) {
@@ -127,41 +135,75 @@ void FluidComponent::onPhysicsStep(Scene& scene, double dt) {
 
 void FluidComponent::onRender(Scene& scene) {
     wizengine::Renderer& r = scene.renderer();
-    const double gravity = std::fabs(scene.editor().sim().gravity);
+    const ed::SimSettings simNow = scene.editor().sim();
+    // 波の成分は物理と同じ重力の大きさで作る（同じ波を描く）。
+    const double gravity = fl::Vec3{simNow.gravityX, simNow.gravity, simNow.gravityZ}.length();
 
     // ---- 水面 ----
     const std::uint64_t wv = scene.editor().waterVersion();
-    if (wv != waterVersion_) {
+    if (wv != waterVersion_ || gravity != waterGravity_) {
         waterVersion_ = wv;
+        waterGravity_ = gravity;
         waterHas_ = scene.editor().hasWater();
         water_ = scene.editor().water();
+        waterParams_ = toParams(water_);
+        fl::prepareWaves(waterParams_, gravity);
         const bool show = waterHas_ && water_.enabled;
-        if (waterShape_ != kNone && (!show || water_.cells != waterCells_)) {
-            r.removeShape(waterShape_);
-            waterShape_ = kNone;
+        if (waterMesh_ != kNone && (!show || water_.cells != waterCells_)) {
+            r.removeWaterMesh(waterMesh_);
+            waterMesh_ = kNone;
         }
-        if (show && waterShape_ == kNone) {
+        if (show && waterMesh_ == kNone) {
             waterCells_ = water_.cells;
             const std::vector<unsigned> idx = fl::waterGridIndices(waterCells_);
             const std::size_t verts = std::size_t(waterCells_ + 1) * std::size_t(waterCells_ + 1);
-            waterShape_ = r.addSoftShape(verts, std::vector<uint32_t>(idx.begin(), idx.end()));
+            waterMesh_ = r.addWaterMesh(verts, std::vector<uint32_t>(idx.begin(), idx.end()));
         }
-        if (waterShape_ != kNone) {
-            r.setShapeColor(waterShape_, {water_.color.r, water_.color.g, water_.color.b});
-            wizengine::ShapeMaterial m;
-            m.roughness = float(water_.roughness);
-            m.metallic = 0.0f;
-            m.reflectance = 0.5f;  // 水の F0 は約 2%（Filament の 0.35 相当）より少し強め
-            r.setShapeMaterial(waterShape_, m);
+        if (waterMesh_ != kNone) {
+            wizengine::Renderer::WaterStyle st;
+            st.color = {water_.color.r, water_.color.g, water_.color.b};
+            // 透けた光の色付き: 深い水の色の向き（いちばん強い成分で割った比）を、
+            // 透明度の距離で通したときにその比になる吸収係数（Beer-Lambert）。
+            const float cmax = std::max({water_.color.r, water_.color.g, water_.color.b, 1e-4f});
+            const float cl = float(water_.clarity);
+            auto absorb = [cmax, cl](float c) {
+                return -std::log(std::clamp(c / cmax, 0.05f, 1.0f)) / std::max(0.01f, cl);
+            };
+            st.absorption = {absorb(water_.color.r), absorb(water_.color.g),
+                             absorb(water_.color.b)};
+            st.roughness = float(water_.roughness);
+            st.ior = float(water_.ior);
+            st.clarity = cl;
+            st.ripple = float(water_.ripple);
+            st.heading = float(water_.heading * fl::kPi / 180.0);
+            st.gravity = float(gravity > 0.1 ? gravity : 9.81);
+            st.level = float(waterParams_.level);
+            st.crest = float(waterParams_.crest);
+            r.setWaterStyle(waterMesh_, st);
         }
         waterDrawnAt_ = -1.0;  // 頂点を組み直す
     }
-    if (waterShape_ != kNone) {
+    if (waterMesh_ != kNone) {
         const double t = scene.renderSimTime();
+        r.setWaterTime(waterMesh_, t);
+        // 水深を測る底 = 地面の面の高さ（回転は見ない。地面が無ければ深い海）。
+        const bool hasFloor = scene.groundEnabled();
+        const double floorY = scene.groundPosition().y;
+        const bool floorChanged = hasFloor != waterHasFloor_ || floorY != waterFloor_;
+        waterHasFloor_ = hasFloor;
+        waterFloor_ = floorY;
         // 波が無ければ一度組めば足りる。
-        if (waterDrawnAt_ < 0.0 || (water_.wave > 0.0 && t != waterDrawnAt_)) {
-            fl::waterGridVertices(toParams(water_), waterCells_, t, gravity, pos_, nrm_);
-            r.setSoftShapeVertices(waterShape_, pos_.data(), nrm_.data(), pos_.size() / 3);
+        if (waterDrawnAt_ < 0.0 || floorChanged ||
+            (!waterParams_.waves.empty() && t != waterDrawnAt_)) {
+            fl::waterGridVertices(waterParams_, waterCells_, t, water_.foam, pos_, nrm_, foam_);
+            const std::size_t n = pos_.size() / 3;
+            depth_.resize(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                depth_[i] = hasFloor ? float(std::max(0.0, double(pos_[i * 3 + 1]) - floorY))
+                                     : 1000.0f;
+            }
+            r.setWaterMeshVertices(waterMesh_, pos_.data(), nrm_.data(), foam_.data(),
+                                   depth_.data(), n);
             waterDrawnAt_ = t;
         }
     }

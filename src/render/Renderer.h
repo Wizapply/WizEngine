@@ -469,6 +469,34 @@ public:
     void setLiquidStyle(std::size_t id, const LiquidStyle& style);
     void removeLiquidMesh(std::size_t id);
 
+    // ---- 水面（<water> の格子）---------------------------------------------
+    // 三角形の並びが決まった格子（波で頂点だけ動く）を、透けて屈折する水の材質
+    // （water.mat）で描く。頂点ごとに白波の量（foam、0..1）と水深（depth、m。
+    // 底が分からなければ大きな値）を持ち、材質が「浅い所は底が透けて見え、深い所は
+    // 水の色、波頭は白い」を塗り分ける。細かいさざ波は材質の中の法線だけ
+    // （WaterStyle::ripple と時刻 time）。影は落とさず受ける。全ビューに映る。
+    // RENDER スレッド。
+    struct WaterStyle {
+        filament::math::float3 color{0.03f, 0.16f, 0.22f};   // 深い水の色（リニア）
+        filament::math::float3 absorption{0.0f, 0.0f, 0.0f}; // 吸収係数 (1/m)
+        float roughness = 0.05f;
+        float ior = 1.33f;
+        float clarity = 4.0f;   // 透明度 (m)
+        float ripple = 0.5f;    // さざ波の強さ
+        float heading = 0.0f;   // さざ波の進む向き（rad、0 = +X）
+        float gravity = 9.81f;  // さざ波の速さ（深水波の分散関係）
+        float level = 0.0f;     // 静水面の高さ（波頭を明るくする基準）
+        float crest = 0.0f;     // 静水面からの最大の高さ（0 = 波なし）
+    };
+    std::size_t addWaterMesh(std::size_t vertexCount, const std::vector<uint32_t>& indices);
+    // positions / normals は 3 個で 1 頂点、foam / depth は 1 個で 1 頂点（null = 0）。
+    void setWaterMeshVertices(std::size_t id, const float* positions, const float* normals,
+                              const float* foam, const float* depth, std::size_t vertexCount);
+    void setWaterStyle(std::size_t id, const WaterStyle& style);
+    // さざ波の時刻（シミュレーション時刻。毎フレーム）。
+    void setWaterTime(std::size_t id, double time);
+    void removeWaterMesh(std::size_t id);
+
     // ---- レイヤ ----------------------------------------------------------
     // ギズモのように「エディタカメラのビューにだけ」見せたい物のための
     // レイヤ分け。シーンは全ビュー共有のままなので、レンダラブルの
@@ -851,6 +879,18 @@ private:
     };
     std::vector<LiquidMesh> liquidMeshes_;
     filament::Material* liquidMaterial_ = nullptr;  // liquid.filamat（最初の addLiquidMesh で読む）
+    // 水面の格子（RendererWater.cpp）。番号は使い回さない。
+    struct WaterMesh {
+        utils::Entity entity;
+        filament::VertexBuffer* vb = nullptr;
+        filament::IndexBuffer* ib = nullptr;
+        filament::MaterialInstance* mi = nullptr;
+        std::size_t vertexCount = 0;
+        bool inScene = false;
+        bool used = false;
+    };
+    std::vector<WaterMesh> waterMeshes_;
+    filament::Material* waterMaterial_ = nullptr;  // water.filamat（最初の addWaterMesh で読む）
     // 頂点・インデックスの席を need 以上に作り直す（中身は捨てる）。
     void growLiquidMesh(LiquidMesh& mesh, std::size_t vertices, std::size_t indices);
     filament::Material* particleMaterial_ = nullptr;

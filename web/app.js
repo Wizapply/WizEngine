@@ -2519,8 +2519,17 @@
       wave: num('wtWave', 0),
       period: num('wtPeriod', 4),
       heading: num('wtHeading', 0),
+      wind: num('wtWind', 0),
+      spread: num('wtSpread', 45),
+      waves: num('wtWaves', 12),
+      seed: num('wtSeed', 1),
+      choppy: num('wtChoppy', 1),
+      foam: num('wtFoam', 0.4),
       color: document.getElementById('wtColor').value,
-      roughness: num('wtRough', 0.05)
+      roughness: num('wtRough', 0.05),
+      clarity: num('wtClarity', 4),
+      ior: num('wtIor', 1.33),
+      ripple: num('wtRipple', 0.5)
     });
   }
   function toggleWater(on) {
@@ -2584,8 +2593,17 @@
       setField('wtWave', round2(w.wave));
       setField('wtPeriod', round2(w.period));
       setField('wtHeading', round2(w.heading));
+      setField('wtWind', round2(w.wind));
+      setField('wtSpread', round2(w.spread));
+      setField('wtWaves', w.waves);
+      setField('wtSeed', w.seed);
+      setField('wtChoppy', round2(w.choppy));
+      setField('wtFoam', round2(w.foam));
       setField('wtColor', w.color);
       setField('wtRough', round2(w.roughness));
+      setField('wtClarity', round2(w.clarity));
+      setField('wtIor', round2(w.ior));
+      setField('wtRipple', round2(w.ripple));
     }
     setField('flPresent', !!f);
     document.getElementById('flFields').hidden = !f;

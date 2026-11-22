@@ -20,7 +20,11 @@ namespace editor {
 // 毎ステップ水面の下にある物へ浮力と抗力を掛ける（Core / Multicore どちらでも）。
 // 範囲は position を中心にした X / Z の長方形（halfX / halfZ は半分の広さ）で、
 // 高さは position.y が静水面（水は下へ無限に続く）。範囲の外の物には効かない。
-// 見た目は水面の格子 1 枚（波で揺れる。不透明の光沢面 = 水面下は見えない）。
+// 波はうねり（wave / period / heading の 1 本）と風浪（wind から海のスペクトルで
+// waves 本）の Gerstner 波の和（fluid/WaterForces.h）。見た目は水面の格子 1 枚を
+// 透けて屈折する水の材質（water.mat）で描く: 浅い所は底が透けて見え、深い所は
+// color（水の中で散った光の色）になる。さざ波（ripple）は材質の中の法線だけ、
+// 波頭の白波（foam）は格子の縮みから。
 struct WaterDesc {
     bool enabled = true;             // false = 設定を残したまま水を抜く
     Vec3d position{0.0, 0.0, 0.0};   // 範囲の中心。y = 静水面の高さ (m)
@@ -33,9 +37,20 @@ struct WaterDesc {
     Vec3d flow{0.0, 0.0, 0.0};       // 流れ (m/s)
     double wave = 0.0;               // 波の振幅 (m、0 = 波なし)
     double period = 4.0;             // 波の周期 (s)
-    double heading = 0.0;            // 波の進む向き（Y まわりの度、0 = +X）
-    Color3 color{0.03f, 0.16f, 0.22f};  // 水面の色（リニア）
+    double heading = 0.0;            // 波と風の進む向き（Y まわりの度、0 = +X）
+    // 風浪（海の波のスペクトル Pierson-Moskowitz。有義波高 0.21 U² / g）
+    double wind = 0.0;               // 風速 (m/s、0 = 風浪なし。5 で波高 0.5 m・10 で 2 m)
+    double spread = 45.0;            // 波の向きのばらつき（heading ± 度）
+    int waves = 12;                  // 風浪の成分の数（多いほど不規則、重い）
+    int seed = 1;                    // 成分の向きと位相を決める種（変えると別の海）
+    double choppy = 1.0;             // 波頭の尖り方（0 = 正弦波、1 = Gerstner 波、> 1 = 誇張）
+    // 見た目
+    Color3 color{0.03f, 0.16f, 0.22f};  // 深い水の色（水の中で散った光。リニア）
     double roughness = 0.05;         // 水面の粗さ（小さいほど映り込む）
+    double clarity = 4.0;            // 透明度 (m)。この深さで底がほぼ見えなくなる
+    double ior = 1.33;               // 屈折率（水 1.33）
+    double ripple = 0.5;             // さざ波の強さ（0 = 鏡のような水面）
+    double foam = 0.4;               // 波頭の白波の量（0 = 出さない、1 = 多い）
     int cells = 96;                  // 水面の格子の分割（1 辺。波の細かさ）
 };
 
@@ -57,7 +72,17 @@ inline WaterDesc clampWater(WaterDesc w) {
     w.wave = cl(w.wave, 0.0, 20.0, d.wave);
     w.period = cl(w.period, 0.2, 60.0, d.period);
     w.heading = clampAngleDegrees(w.heading);
+    w.wind = cl(w.wind, 0.0, 40.0, d.wind);
+    w.spread = cl(w.spread, 0.0, 180.0, d.spread);
+    if (w.waves < 1) w.waves = 1;
+    if (w.waves > 64) w.waves = 64;
+    if (w.seed < 0) w.seed = -w.seed;
+    w.choppy = cl(w.choppy, 0.0, 3.0, d.choppy);
     w.roughness = cl(w.roughness, 0.0, 1.0, d.roughness);
+    w.clarity = cl(w.clarity, 0.01, 1000.0, d.clarity);
+    w.ior = cl(w.ior, 1.0, 2.5, d.ior);
+    w.ripple = cl(w.ripple, 0.0, 2.0, d.ripple);
+    w.foam = cl(w.foam, 0.0, 1.0, d.foam);
     if (w.cells < 1) w.cells = 1;
     if (w.cells > 256) w.cells = 256;
     return w;
@@ -77,8 +102,17 @@ inline nlohmann::json toJson(const WaterDesc& w) {
     j["wave"] = w.wave;
     j["period"] = w.period;
     j["heading"] = w.heading;
+    j["wind"] = w.wind;
+    j["spread"] = w.spread;
+    j["waves"] = w.waves;
+    j["seed"] = w.seed;
+    j["choppy"] = w.choppy;
     j["color"] = colorToHex(w.color);
     j["roughness"] = w.roughness;
+    j["clarity"] = w.clarity;
+    j["ior"] = w.ior;
+    j["ripple"] = w.ripple;
+    j["foam"] = w.foam;
     j["cells"] = w.cells;
     return j;
 }
@@ -99,8 +133,17 @@ inline WaterDesc waterFromJson(const nlohmann::json& j, const WaterDesc& base) {
     w.wave = jsonNumber(j, "wave", w.wave);
     w.period = jsonNumber(j, "period", w.period);
     w.heading = jsonNumber(j, "heading", w.heading);
+    w.wind = jsonNumber(j, "wind", w.wind);
+    w.spread = jsonNumber(j, "spread", w.spread);
+    w.waves = jsonInt(j, "waves", w.waves);
+    w.seed = jsonInt(j, "seed", w.seed);
+    w.choppy = jsonNumber(j, "choppy", w.choppy);
     if (j.contains("color") && j["color"].is_string()) w.color = colorFromHex(j["color"], w.color);
     w.roughness = jsonNumber(j, "roughness", w.roughness);
+    w.clarity = jsonNumber(j, "clarity", w.clarity);
+    w.ior = jsonNumber(j, "ior", w.ior);
+    w.ripple = jsonNumber(j, "ripple", w.ripple);
+    w.foam = jsonNumber(j, "foam", w.foam);
     w.cells = jsonInt(j, "cells", w.cells);
     return w;
 }

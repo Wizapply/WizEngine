@@ -11,8 +11,12 @@
 //
 //   <water pos="0 0 0" size="10 10" density="1000" drag="1" lindrag="2"
 //          angdrag="1" flow="0 0 0" wave="0.1" period="4" heading="0"
-//          rgba="0.03 0.16 0.22 1" roughness="0.05" cells="96"/>
+//          wind="6" spread="45" waves="12" seed="1" choppy="1"
+//          rgba="0.03 0.16 0.22 1" roughness="0.05" clarity="4" ior="1.33"
+//          ripple="0.5" foam="0.4" cells="96"/>
 //     pos の y が静水面の高さ、size は範囲の半分の広さ（X Z の 2 つ。1 つなら両方）。
+//     wave / period はうねり 1 本、wind（m/s）は海の波のスペクトルで waves 本の風浪
+//     （どちらも heading の向きへ進む）。rgba は深い水の色、clarity は透明度 (m)。
 //     enabled="false" で設定を残したまま水を抜く。
 //
 //   <fluid spacing="0.04" density="1000" viscosity="0" pressure="0.01" friction="0"
@@ -53,8 +57,17 @@ inline xml::Element waterElement(const WaterDesc& w) {
     if (w.wave != d.wave) e.setNumber("wave", w.wave);
     if (w.period != d.period) e.setNumber("period", w.period);
     if (w.heading != d.heading) e.setNumber("heading", w.heading);
+    if (w.wind != d.wind) e.setNumber("wind", w.wind);
+    if (w.spread != d.spread) e.setNumber("spread", w.spread);
+    if (w.waves != d.waves) e.setInt("waves", w.waves);
+    if (w.seed != d.seed) e.setInt("seed", w.seed);
+    if (w.choppy != d.choppy) e.setNumber("choppy", w.choppy);
     setColor(e, "rgba", w.color);
     if (w.roughness != d.roughness) e.setNumber("roughness", w.roughness, 4);
+    if (w.clarity != d.clarity) e.setNumber("clarity", w.clarity);
+    if (w.ior != d.ior) e.setNumber("ior", w.ior);
+    if (w.ripple != d.ripple) e.setNumber("ripple", w.ripple);
+    if (w.foam != d.foam) e.setNumber("foam", w.foam);
     if (w.cells != d.cells) e.setInt("cells", w.cells);
     return e;
 }
@@ -76,8 +89,17 @@ inline WaterDesc waterFromXml(const xml::Element& e, xml::Warn& warn) {
     w.wave = e.number("wave", w.wave);
     w.period = e.number("period", w.period);
     w.heading = e.number("heading", w.heading);
+    w.wind = e.number("wind", w.wind);
+    w.spread = e.number("spread", w.spread);
+    w.waves = e.integer("waves", w.waves);
+    w.seed = e.integer("seed", w.seed);
+    w.choppy = e.number("choppy", w.choppy);
     w.color = getColor(e, "rgba", w.color);
     w.roughness = e.number("roughness", w.roughness);
+    w.clarity = e.number("clarity", w.clarity);
+    w.ior = e.number("ior", w.ior);
+    w.ripple = e.number("ripple", w.ripple);
+    w.foam = e.number("foam", w.foam);
     w.cells = e.integer("cells", w.cells);
     if (!e.children().empty()) warnUnknownChildren(e, {}, "<water>", warn);
     if (e.has("level")) {

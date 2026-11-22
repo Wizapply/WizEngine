@@ -10,8 +10,19 @@
 // PhysicsWorld::applyForceAtPoint で掛ける）。
 //
 // ---- モデル ------------------------------------------------------------------
-// 水は「水平な水面（正弦波 1 本で揺らせる）の下を満たす、静止または一様に流れる
-// 水」。物の形は箱か球で近似する（凸包のモデルは geom の半径の球）。
+// 水は「波で揺れる水面の下を満たす、静止または一様に流れる水」。物の形は箱か球で
+// 近似する（凸包のモデルは geom の半径の球）。
+//   波     … 何本かの **Gerstner 波**（水面の点が円を描いて回る波。波頭が尖り、谷が
+//             平たくなる）の和。成分は 2 種類で、両方あれば足す:
+//               うねり … 振幅 amplitude・周期 period・向き heading の 1 本（手で決める）
+//               風浪   … 風速 wind から海の波のスペクトル（Pierson-Moskowitz）で決める
+//                        waveCount 本（向きは heading ± spread にばらす。seed で並びが
+//                        決まる = 同じ文書なら毎回同じ海）。有義波高は 0.21 U² / g。
+//             choppy が水平の寄り（尖り方）で、0 = 正弦波の和、1 = 本来の Gerstner 波、
+//             それより大きいと誇張（海のスペクトルは傾きが小さいので、絵として尖らせたい
+//             ときに）。波面が折り返さないように、全成分の傾き k A の和 × choppy は 0.9 で
+//             頭打ち。
+//             描画（水面の格子）と浮力は同じ関数を使う = 物は見えている波どおりに揺れる。
 //   浮力   … アルキメデスの原理。押しのけた水の重さ ρ V_sub |g| を重力と逆向きに、
 //             押しのけた部分の重心（浮心）に掛ける。箱は n × n × n の小箱に分けて
 //             小箱ごとに「水面下にある割合」を出す（傾いた箱の復元モーメント、波の
@@ -28,7 +39,22 @@
 namespace wizengine {
 namespace fluid {
 
-// 水面の設定（文書の editor::WaterDesc を物理の語彙に直したもの）。
+// 波の成分 1 本（prepareWaves が作る）。位相 θ = k (d · x0) − ω t + phase、
+// 静止位置 x0 の水面の点は
+//   高さ   η = A cos θ
+//   水平   x = x0 − q A d sin θ（q = 尖り方。1 = 本来の Gerstner 波）
+// に動く（波は d の向きへ進む）。
+struct WaveComponent {
+    double dx = 1.0, dz = 0.0;  // 進む向き（単位）
+    double k = 0.0;             // 波数 (rad/m)
+    double omega = 0.0;         // 角振動数 (rad/s)。深水波 ω² = g k
+    double amplitude = 0.0;     // 振幅 (m)
+    double phase = 0.0;         // 初期位相 (rad)
+    double q = 0.0;             // 水平の寄り（1 = 本来の Gerstner 波）
+};
+
+// 水面の設定（文書の editor::WaterDesc を物理の語彙に直したもの）。波の成分
+// waves は prepareWaves で作る（作るまでは静水）。
 struct WaterParams {
     double centerX = 0.0, centerZ = 0.0;  // 水の範囲の中心 (m)
     double level = 0.0;                   // 静水面の高さ (m、ワールドの Y)
@@ -38,22 +64,50 @@ struct WaterParams {
     double linearDrag = 2.0;              // 線形の減衰 (1/s)
     double angularDrag = 1.0;             // 回転の減衰 (1/s)
     Vec3 flow{0.0, 0.0, 0.0};             // 流れ (m/s)
-    double amplitude = 0.0;               // 波の振幅 (m、0 = 波なし)
-    double period = 4.0;                  // 波の周期 (s)
-    double heading = 0.0;                 // 波の進む向き（Y まわり、rad。0 = +X）
+    // うねり（手で決める 1 本）
+    double amplitude = 0.0;               // 振幅 (m、0 = 無し)
+    double period = 4.0;                  // 周期 (s)
+    double heading = 0.0;                 // 波と風の進む向き（Y まわり、rad。0 = +X）
+    // 風浪（スペクトルから決める waveCount 本）
+    double wind = 0.0;                    // 風速 (m/s、0 = 無し)
+    double spread = 0.785;                // 向きのばらつき（heading ± spread、rad）
+    int waveCount = 12;                   // 成分の数
+    unsigned seed = 1;                    // 成分の並び（向き・位相）を決める種
+    double choppy = 1.0;                  // 尖り方（0 = 正弦波、1 = 本来の Gerstner 波、> 1 = 誇張）
+
+    // ---- prepareWaves が埋める ----
+    std::vector<WaveComponent> waves;
+    double crest = 0.0;          // 静水面からの最大の高さ（全成分の振幅の和）
+    double maxCompression = 0.0; // 波頭の縮みの最大（Σ q k A。白波の目安に使う）
 };
 
-// 深水波の分散関係から波数 k = ω² / g（g は重力の大きさ。無重力でも波の形が
-// 決まるように 9.81 を下限の代わりに使う）。
-double waveNumber(const WaterParams& w, double gravity);
-// 位置 (x, z)・時刻 t の水面の高さ（波を含む）。
-double surfaceHeight(const WaterParams& w, double x, double z, double t, double gravity);
+// 波の成分を作る（gravity は重力の大きさ。無重力でも形が決まるように 0 なら
+// 9.81 を使う）。設定や重力を変えたら呼び直す。
+void prepareWaves(WaterParams& w, double gravity);
+// 有義波高（成分の分散から 4 √m0。テストと説明のため）。
+double significantWaveHeight(const WaterParams& w);
+
+// 静止位置 (x0, z0) の水面の点（Gerstner の写像そのもの。描画の格子が使う）。
+struct SurfacePoint {
+    Vec3 position;            // 動いた先の位置
+    Vec3 normal{0.0, 1.0, 0.0};  // 上向きの単位法線
+    double compression = 0.0; // 面の縮み 1 − J（正 = 波頭で詰まっている。白波の目安）
+    double height = 0.0;      // 静水面からの高さ
+};
+SurfacePoint surfacePoint(const WaterParams& w, double x0, double z0, double t);
+// 位置 (x, z)・時刻 t の水面の高さ（波を含む）。Gerstner の水平の寄りを数回の反復で
+// 逆にたどって、その真上の点の高さを返す。
+double surfaceHeight(const WaterParams& w, double x, double z, double t);
 // 水面の上向きの法線（単位ベクトル）。
-Vec3 surfaceNormal(const WaterParams& w, double x, double z, double t, double gravity);
+Vec3 surfaceNormal(const WaterParams& w, double x, double z, double t);
 // 位置 p の水の速度（流れ + 波の水粒子の速度。深さで指数的に弱まる）。
-Vec3 waterVelocity(const WaterParams& w, const Vec3& p, double t, double gravity);
+Vec3 waterVelocity(const WaterParams& w, const Vec3& p, double t);
 // (x, z) が水の範囲の中か。
 bool insideWater(const WaterParams& w, double x, double z);
+// 波頭の白さ（0..1）。s は surfacePoint の値、amount は文書の foam（0 = 出さない）。
+// 面の縮みの絶対値で決める（穏やかなうねりは白くならない）。風浪があるときは風速
+// 3 m/s 以下で 0、8 m/s で最大。
+double foamAmount(const WaterParams& w, const SurfacePoint& s, double amount);
 
 // 力を求める物の状態。
 struct BodyState {
@@ -90,10 +144,13 @@ WaterLoad computeWaterLoad(const WaterParams& w, const BodyState& body, const Ve
 // 水の範囲を cells × cells の格子にした三角メッシュ（上から見て反時計回り）。
 // 頂点は (cells + 1)^2 個で、並びは i（X）が内側・j（Z）が外側。
 std::vector<unsigned> waterGridIndices(int cells);
-// 時刻 t の頂点の位置と法線（3 個で 1 頂点）を pos / nrm に書く（大きさは呼び手が
-// 合わせる必要はない = ここで resize する）。
-void waterGridVertices(const WaterParams& w, int cells, double t, double gravity,
-                       std::vector<float>& pos, std::vector<float>& nrm);
+// 時刻 t の頂点の位置と法線（3 個で 1 頂点）を pos / nrm に、白波の量（1 個で 1 頂点、
+// foam が 0 なら全部 0）を foamOut に書く（大きさはここで resize する）。格子の点は
+// Gerstner の写像で動かすが、縁の点は水平に動かさない（プールの壁との隙間を作らない。
+// 高さは surfaceHeight で合わせる）。
+void waterGridVertices(const WaterParams& w, int cells, double t, double foam,
+                       std::vector<float>& pos, std::vector<float>& nrm,
+                       std::vector<float>& foamOut);
 
 }  // namespace fluid
 }  // namespace wizengine

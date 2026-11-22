@@ -392,6 +392,7 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererOverlays.cpp
     src/render/RendererParticles.cpp
     src/render/RendererLiquid.cpp
+    src/render/RendererWater.cpp
     src/render/RendererGround.cpp
     src/render/RendererTerrain.cpp
     src/render/RendererTerrainSurface.cpp

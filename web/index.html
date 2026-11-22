@@ -1468,17 +1468,61 @@
             </span>
           </div>
           <div class="edRow">
-            <span>波の向き</span>
+            <span>波と風の向き</span>
             <input id="wtHeading" class="num" type="number" step="15"
-                   title="波の進む向き（Y まわりの度、0 = +X）" onchange="applyWater()">
+                   title="うねりと風浪の進む向き（Y まわりの度、0 = +X）" onchange="applyWater()">
+          </div>
+          <div class="edRow">
+            <span>風速 / ばらつき</span>
+            <span>
+              <input id="wtWind" class="num" type="number" step="1" min="0" max="40"
+                     title="風速 (m/s)。海の波のスペクトルで風浪を立てる（有義波高 0.21 U²/g = 5 m/s で 0.5 m、10 m/s で 2 m）。0 = 風浪なし"
+                     onchange="applyWater()">
+              <input id="wtSpread" class="num" type="number" step="5" min="0" max="180"
+                     title="風浪の向きのばらつき（± 度）" onchange="applyWater()">
+            </span>
+          </div>
+          <div class="edRow">
+            <span>成分の数 / 種</span>
+            <span>
+              <input id="wtWaves" class="num" type="number" step="1" min="1" max="64"
+                     title="風浪の成分の数（多いほど不規則、重い）" onchange="applyWater()">
+              <input id="wtSeed" class="num" type="number" step="1" min="0"
+                     title="成分の向きと位相を決める種（変えると別の海）" onchange="applyWater()">
+            </span>
+          </div>
+          <div class="edRow">
+            <span>尖り / 白波</span>
+            <span>
+              <input id="wtChoppy" class="num" type="number" step="0.1" min="0" max="3"
+                     title="波頭の尖り方（0 = 正弦波、1 = Gerstner 波、それより大きいと誇張）。浮力も同じ波で計算する"
+                     onchange="applyWater()">
+              <input id="wtFoam" class="num" type="number" step="0.1" min="0" max="1"
+                     title="波頭の白波の量（0 = 出さない）。風浪は 3 m/s 以下では立たない" onchange="applyWater()">
+            </span>
           </div>
           <div class="edRow">
             <span>色 / 粗さ</span>
             <span>
-              <input id="wtColor" type="color" onchange="applyWater()">
+              <input id="wtColor" type="color" title="深い水の色（水の中で散った光）" onchange="applyWater()">
               <input id="wtRough" class="num" type="number" step="0.05" min="0" max="1"
-                     title="水面の粗さ（小さいほど映り込む。SSR と組むと物が映る）" onchange="applyWater()">
+                     title="水面の粗さ（小さいほど映り込む）" onchange="applyWater()">
             </span>
+          </div>
+          <div class="edRow">
+            <span>透明度 / 屈折率</span>
+            <span>
+              <input id="wtClarity" class="num" type="number" step="0.5" min="0.01"
+                     title="透明度 (m)。この深さで底がほぼ見えなくなる（水深は地面まで。地面が無ければ深い海）"
+                     onchange="applyWater()">
+              <input id="wtIor" class="num" type="number" step="0.01" min="1" max="2.5"
+                     title="屈折率（水 1.33）" onchange="applyWater()">
+            </span>
+          </div>
+          <div class="edRow">
+            <span>さざ波</span>
+            <input id="wtRipple" class="num" type="number" step="0.1" min="0" max="2"
+                   title="細かいさざ波の強さ（見た目だけ。0 = 鏡のような水面）" onchange="applyWater()">
           </div>
         </div>
 

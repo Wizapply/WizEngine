@@ -19,9 +19,8 @@ Claude Code 向けのプロジェクト前提メモ。作業開始時にまず�
 **Charon**（製品名。1.x のコードネームが **WizEngine** で、名前空間
 `wizengine`・実行ファイル `wizengine`・シーン文書のルート要素 `<wizengine>`
 もそれ。ユーザーに見える名前 - README・起動ログ・ブラウザの見出しと
-About・`/stats` のキー - が Charon。ロゴは README の先頭が
-`web/logo.svg`（ベクター版）、サイドバーの見出しが `web/logo.png`（同じ図柄）。
-README のスクリーンショットは `docs/images/screenshot_*.webp`（1200×630 に揃える）。依存ライブラリのライセンス
+About・`/stats` のキー - が Charon。ロゴは `web/logo.png` で README の
+先頭とサイドバーの見出しが同じファイルを使う。依存ライブラリのライセンス
 一覧は `THIRD_PARTY_NOTICES.md` - 依存を足したら 1 行足す）は、サーバー側で **Chrono**（物理）＋ **Filament**（描画）を回し、オフスクリーンで
 描いたフレームを **GStreamer** で H.264 にして RTP/UDP で配信するプロトタイプ。
 クライアントは `gst-launch-1.0` のワンライナーで受ける（専用クライアントは未作成）。
@@ -1739,8 +1738,9 @@ rgba2 intensity light lightrange max>`（`ed::EmitterDesc`、`EditorState::emitt
 **水面**（`<water>`）は物理の系の外にある「水の範囲」で、水面より下の物へ浮力・
 抗力を掛けるだけ（水そのものは動かない）。**流体粒子**（`<fluid>`）は
 Chrono::Multicore の流体コンテナ（`ChFluidContainer`）が水を粒子で解く（注ぐ・
-跳ねる・物を押す）。見本は `assets/scenes/water.xml`（プールに物を浮かべる）と
-`assets/scenes/fluid.xml`（水槽のダム崩壊）。
+跳ねる・物を押す）。見本は `assets/scenes/water.xml`（プールに物を浮かべる）・
+`assets/scenes/ocean.xml`（風浪の海に物を浮かべる）・`assets/scenes/fluid.xml`（水槽の
+ダム崩壊）。
 
 ```
 シーン文書 <water> / <fluid>（document/FluidTypes.h + FluidXml.h）
@@ -1749,23 +1749,33 @@ Chrono::Multicore の流体コンテナ（`ChFluidContainer`）が水を粒子�
   │       PhysicsWorld::applyForceAtPoint（力 + 力の対のモーメント）で掛ける
   └ 粒子: シミュレート開始で Scene::buildFluid が fluid/FluidSeed で並べ、
           PhysicsWorld::addFluid → physics/FluidParticles（ChFluidContainer）
-描画: FluidComponent::onRender（水面の格子 = Renderer::addSoftShape、流体粒子 = つないだ
-      水の表面（別スレッドの FluidSurface → Renderer::addLiquidMesh + liquid.mat）か玉）
+描画: FluidComponent::onRender（水面の格子 = Renderer::addWaterMesh + water.mat、流体粒子 =
+      つないだ水の表面（別スレッドの FluidSurface → Renderer::addLiquidMesh + liquid.mat）か玉）
 ```
 
 - **`src/fluid/` は Chrono も Filament も知らない純粋な計算**（自前の `Vec3` / `Quat` =
-  `FluidMath.h`。vehicle/ と同じ方針）。`WaterForces` = 水面の高さ・法線・水の速度
-  （流れ + 深水波の水粒子の速度）・物 1 個に掛かる力、`FluidSeed` = 粒子の六方最密
+  `FluidMath.h`。vehicle/ と同じ方針）。`WaterForces` = 波の成分（`prepareWaves`）・
+  水面の高さ・法線・水の速度（流れ + 深水波の水粒子の速度）・物 1 個に掛かる力・
+  水面の格子と白波、`FluidSeed` = 粒子の六方最密
   配置と玉のメッシュ、`FluidSurface` = 粒子をつないだ水の表面（メタボール + Surface Nets）。境界の FluidComponent / Scene が詰め替える。
 - **文書**: どちらも `<worldbody>` 直下の単一要素（地面・テレインと同じ。節が無い =
   無い、`hasWater` / `hasFluid`）。`<water pos size density drag lindrag angdrag flow
-  wave period heading rgba roughness cells enabled>`（pos の y が静水面、size は X / Z の
-  半分の広さ）。`<fluid spacing density viscosity pressure friction cohesion maxspeed
+  wave period heading wind spread waves seed choppy rgba roughness clarity ior ripple foam
+  cells enabled>`（pos の y が静水面、size は X / Z の半分の広さ）。`<fluid spacing density viscosity pressure friction cohesion maxspeed
   recovery relaxation epsilon max surface rgba clarity ior roughness drawscale enabled>` と子の `<block pos
   size velocity/>`（size は半寸法、最大 64 個）。読み書きはヘッダだけの
   `document/FluidXml.h`（文書層のテストに .cpp を足さなくて済むように）。既定値と
   同じ属性は書かない。打ち間違い（`<water level>`・未知の子・箱の無い流体）は warnings。
-- **水面のモデル**（`WaterForces.h` の冒頭が正）: 箱は 4 × 4 × 4 の小箱に分け、
+- **波**（`WaterForces.h` の冒頭が正）: Gerstner 波の和。**うねり**（wave / period /
+  heading の 1 本）と**風浪**（`wind` m/s から Pierson-Moskowitz のスペクトルで `waves`
+  本。ピーク ωp = 0.877 g / U の 0.6〜3 倍を対数で区切って 1 本ずつ、振幅 √(2SΔω)、
+  最後に分散を理論値へ合わせる = 有義波高 0.21 U² / g。向きは heading ± spread、並びと
+  位相は `seed`）。`choppy` が波頭の尖り（0 = 正弦波、1 = 本来の Gerstner 波、> 1 = 誇張。
+  Σ k A × choppy は 0.9 で頭打ち = 波面が折り返さない）。成分は `prepareWaves` が
+  設定か重力の大きさが変わったときだけ作る（物理と描画で別々に持つ、同じ値になる）。
+  Gerstner 波は水平にも動くので、(x, z) の高さは「真上に来る静止位置」を 4 回の反復で
+  たどって求める（`surfaceHeight`、誤差 1e-6 m 程度）= **描画の格子と浮力が同じ波**。
+- **浮力・抗力のモデル**: 箱は 4 × 4 × 4 の小箱に分け、
   小箱ごとに「水面下の割合」（鉛直方向の広がりで直線に近似 = 揺れても力が跳ねない）
   と浮心を出す = 傾いた箱の復元モーメント・波の上で傾く動きが出る。球は球冠の厳密な
   式。凸包のモデルは geom の半径の球、geom の無いフレーム・三角メッシュ・固定の物は
@@ -1828,9 +1838,18 @@ Chrono::Multicore の流体コンテナ（`ChFluidContainer`）が水を粒子�
   8 三角形）を `Renderer::addSoftShape` の 1 スロットに詰める不透明の玉。どちらの描き方も
   シミュレート中は `Scene::renderFluid`（パスの終わりに写した Chrono の粒子を、姿勢と
   同じ 2 フレームの間で補間した値）、エディタでは文書の配置（`seedFluid` = 開始した
-  ときと同じ並び）を描き、エディタでは組み直したときだけ送る。水面（`<water>`）は
-  格子 1 枚（`cells`、既定 96）を波の式で毎フレーム組む（波が無ければ 1 回だけ）不透明の
-  光沢面（透過は未）。**確認**: 表面の組み立ては単体テスト（閉じた面・外向き・塊の
+  ときと同じ並び）を描き、エディタでは組み直したときだけ送る。**水面（`<water>`）**は
+  格子 1 枚（`cells`、既定 96）を Gerstner の写像で毎フレーム動かし（波が無ければ 1 回
+  だけ。縁の点は水平に動かさない = プールの壁と隙間を作らない）、`Renderer::addWaterMesh`
+  （`RendererWater.cpp`。三角形の並びは固定、頂点の COLOR に白波と水深）を
+  `water.mat` で描く: 画面空間の屈折で透け、透過の割合 = exp(−水深 / `clarity`)、残りは
+  `rgba`（深い水の色）の拡散 = 浅いプールは底が見え、深い海は水の色。水深は地面の面
+  （`Scene::groundPosition().y`、回転は見ない）まで、地面が無ければ深い海。さざ波
+  （`ripple`）は材質の中の法線だけ（8 本の正弦波、遠い所は消す）、白波（`foam`）は面の
+  縮み 1 − J の絶対値から（`foamAmount`。風浪は 3 m/s 以下で 0）、波頭は高さに応じて
+  明るく。**材質は `blending : transparent`**: opaque だと SSAO が水面自身の波に掛かって
+  斜めから見た水面に細かい縞が出た（描いて確認）。代わりに SSAO と SSR は水面に掛から
+  ない。**確認**: 表面の組み立ては単体テスト（閉じた面・外向き・塊の
   表面の位置・水滴・2 粒子の連結 / 分離）と Chrono で崩した実際の粒子（1,764 個で
   2〜4 ms・NaN 0・折れ目 0.05% 以下）。描画は **Filament 1.74 の本物の Renderer を
   lavapipe（CPU の Vulkan）で回して**目で確認（`docs/images/fluid_surface_*.jpg`）。
@@ -1840,7 +1859,8 @@ Chrono::Multicore の流体コンテナ（`ChFluidContainer`）が水を粒子�
   で節ごと外す。キーは `/scene` の `water` / `fluid` と同じ = `FluidTypes.h` の
   `toJson` / `waterFromJson` / `fluidFromJson`）。`/scene` には `fluidStatus`（作った数・
   打ち切り・作れなかった理由）と `features.fluid`。節には「表面でつなぐ」・透明度
-  （clarity）・屈折率（ior）の欄もある。AI の指示文は `<water>` / `<fluid>` を
+  （clarity）・屈折率（ior）の欄もある。水面の欄には風速・ばらつき・成分の数・種・尖り・
+  白波・透明度・屈折率・さざ波もある。AI の指示文は `<water>` / `<fluid>` を
   書かせない（`ScenePrompt.cpp`）、履歴の差分は追加 / 削除 / 変更を 1 行。
 - **Multicore のソルバは 1 段（SLIDING）にする**（`PhysicsSystem::useSingleSlidingPhase`、
   `FluidParticles::add` が呼ぶ）: Chrono 9.0 の `ChIterativeSolverMulticoreNSC::SetR` は
@@ -1862,9 +1882,14 @@ Chrono::Multicore の流体コンテナ（`ChFluidContainer`）が水を粒子�
   動作を確認済み**（流体粒子。Reset の不具合はそこで見つかった）。静止後の水の高さは非圧縮の値より 1〜2 割低い（密度拘束の
   反復で少し縮む）。文書層・純粋な計算は単体テスト（XML 往復・打ち間違いの警告・
   JSON の部分更新・浮力 / 浮心 / 復元モーメント・密度比どおりの喫水・流れに乗る・
-  安全弁・波の式・粒子の配置）。
-- **未**: 水面（`<water>`）の透過・屈折と水中の色、水の側の反作用（物が水を押しのけて
-  水面が盛り上がる）、粒子の表面の泡・しぶきの白さ・コースティクス、粒子と水面の
+  安全弁・波の式・粒子の配置）。**海の波**: 有義波高が 0.21 U²/g に 1% 以内（風速 2〜
+  20 m/s）、逆写像の高さが格子の点と 1.4e-6 m で一致・法線も一致、波の上の箱の浮力の
+  1 周期平均が重さと 0.05% で一致、`ocean.xml` の物を本物の Chrono（Core）で 40 秒
+  回して NaN 0・全部が波に乗って上下。描画は Filament 1.74 を lavapipe で回して確認
+  （`docs/images/ocean_*.jpg` / `water_pool.jpg`）。**エンジン本体での海の確認は未**。
+- **未**: 水平線まで続く海（カメラに付いて動く格子）、水中から見た水面（霧・
+  コースティクス）、岸や物の周りの泡、水の側の反作用（物が水を押しのけて
+  水面が盛り上がる・航跡）、砕け波、粒子の表面の泡・しぶきの白さ・コースティクス、粒子と水面の
   併用時の相互作用（別々に効く）、流体粒子の UI での箱の追加、Chrono::FSI（SPH・CUDA）。
 
 ## ソフトボディ（`src/scene/SoftLattice.{h,cpp}` + `PhysicsWorld::addSoftBody` + `Renderer::addSoftShape`）
@@ -2247,7 +2272,7 @@ src/
   autogen/       AI によるシーン自動構築（LLM / Meshy の HTTP クライアント・指示文・
                  配置の後始末。Chrono も Filament も知らない）
   vehicle/       車両モデル（純粋な数値ライブラリ。tests/vehicle が使う）
-  fluid/         流体の純粋な計算（水面の浮力・抗力・波 = WaterForces、流体粒子の配置と
+  fluid/         流体の純粋な計算（水面の浮力・抗力・Gerstner 波と海のスペクトル = WaterForces、流体粒子の配置と
                  玉のメッシュ = FluidSeed、粒子をつないだ水の表面 = FluidSurface。
                  Chrono も Filament も知らない）
   transmission/  遊星歯車式 AT の構造・変速制御（TCU）・信号・XML（純粋。動力学は Chrono）
@@ -2259,6 +2284,7 @@ cmake/           LuaJIT.cmake（LuaJIT の検出・ビルド）
 samples/         見本シーンの素材を作るもの（エンジンのビルド・実行には使わない）。
                  v6_engine/ = V6 の部品メッシュと環境光を作る Python（manifold3d + trimesh）
                  planetary_gear/ = 遊星歯車のインボリュート歯形の .glb を作る Python
+                 ocean/ = 海の見本の空の環境マップ（assets/env/ocean_sky.hdr）を作る Python
                  meshgen/ = 手元の Text to 3D（LLM が cad.py の API で CSG のスクリプトを書き、
                  ここで回して .glb にする。動く物は部品ごとの .glb + ジョイントのシーン文書。
                  Meshy の代わりの第 1 段。README.md）

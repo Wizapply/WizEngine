@@ -9,6 +9,7 @@
 
 #include "document/FluidTypes.h"
 #include "fluid/FluidSurface.h"
+#include "fluid/WaterForces.h"
 #include "scene/SceneComponent.h"
 
 namespace wizengine {
@@ -24,7 +25,9 @@ class Renderer;
 //             近似する（凸包のモデルは geom の半径の球、geom の無いフレームと三角
 //             メッシュは対象外）。流体粒子（Multicore）は Chrono が解くのでここでは
 //             何もしない。
-//   RENDER  : 水面の格子（波で揺れる）と流体粒子を描く。流体粒子はシミュレート中は
+//   RENDER  : 水面の格子（Gerstner 波で揺れる。Renderer::addWaterMesh = water.mat で、
+//             透けて屈折し、頂点ごとの水深と白波を持つ。水深は地面の高さまで、地面が
+//             無ければ深い海）と流体粒子を描く。流体粒子はシミュレート中は
 //             Chrono の粒子（Scene::renderFluid = 補間済み）、エディタでは文書の配置
 //             （fluid/FluidSeed.h = 開始したときと同じ並び）。描き方は 2 通り:
 //               surface = true … 粒子をつないだ水の表面（fluid/FluidSurface = メタボール
@@ -52,14 +55,21 @@ private:
     std::uint64_t physVersion_ = ~std::uint64_t(0);
     bool physHas_ = false;
     wizengine::editor::WaterDesc physWater_;
+    wizengine::fluid::WaterParams physParams_;  // 波の成分は設定か重力が変わったら作り直す
+    double physGravity_ = -1.0;
 
     // ---- RENDER スレッド専用 ----
     std::uint64_t waterVersion_ = ~std::uint64_t(0);
     bool waterHas_ = false;
     wizengine::editor::WaterDesc water_;
-    std::size_t waterShape_ = std::size_t(-1);
+    wizengine::fluid::WaterParams waterParams_;
+    double waterGravity_ = -1.0;
+    std::size_t waterMesh_ = std::size_t(-1);
     int waterCells_ = 0;
     double waterDrawnAt_ = -1.0;  // 最後に頂点を組んだ時刻（波が無ければ組み直さない）
+    double waterFloor_ = 0.0;     // 水深を測る底の高さ（地面の高さ）
+    bool waterHasFloor_ = false;
+    std::vector<float> foam_, depth_;  // 頂点ごとの白波と水深
 
     std::uint64_t fluidVersion_ = ~std::uint64_t(0);
     bool fluidHas_ = false;
