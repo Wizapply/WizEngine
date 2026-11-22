@@ -361,6 +361,7 @@ set(WIZ_PHYSICS_SOURCES
     src/physics/ContactMaterials.cpp
     src/physics/ContactReport.cpp
     src/physics/Diagnostics.cpp
+    src/physics/FluidParticles.cpp
     src/physics/GravityOverride.cpp
     src/physics/Joints.cpp
     src/physics/JointsManual.cpp
@@ -390,6 +391,7 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererLines.cpp
     src/render/RendererOverlays.cpp
     src/render/RendererParticles.cpp
+    src/render/RendererLiquid.cpp
     src/render/RendererGround.cpp
     src/render/RendererTerrain.cpp
     src/render/RendererTerrainSurface.cpp
@@ -411,6 +413,7 @@ set(WIZ_SCENE_SOURCES
     src/scene/Scene.cpp
     src/scene/SceneEdit.cpp
     src/scene/SceneEvents.cpp
+    src/scene/SceneFluid.cpp
     src/scene/SceneLibrary.cpp
     src/scene/SceneSerialize.cpp
     src/scene/SceneTerrain.cpp
@@ -434,6 +437,7 @@ set(WIZ_COMPONENT_SOURCES
     src/components/AutoGenComponent.cpp
     src/components/EditorComponent.cpp
     src/components/EffectsComponent.cpp
+    src/components/FluidComponent.cpp
     src/components/GizmoComponent.cpp
     src/components/PrefabComponent.cpp
     src/components/ScatterComponent.cpp
@@ -464,6 +468,11 @@ set(WIZ_VEHICLE_SOURCES
     src/vehicle/VehicleTypes.cpp
     src/vehicle/VehicleXml.cpp
     src/vehicle/WheelController.cpp)
+# 流体（水面の浮力・抗力と流体粒子の配置。純粋な計算 = Chrono も Filament も知らない）。
+set(WIZ_FLUID_SOURCES
+    src/fluid/FluidSeed.cpp
+    src/fluid/FluidSurface.cpp
+    src/fluid/WaterForces.cpp)
 set(WIZ_TERRAIN_SOURCES
     src/terrain/HeightField.cpp
     src/terrain/HeightFieldOps.cpp
@@ -511,6 +520,7 @@ add_executable(wizengine
     ${WIZ_SCENE_SOURCES}
     ${WIZ_COMPONENT_SOURCES}
     ${WIZ_VEHICLE_SOURCES}
+    ${WIZ_FLUID_SOURCES}
     ${WIZ_TRANSMISSION_SOURCES}
     ${WIZ_FORMULA_SOURCES}
     ${WIZ_CONTROL_SOURCES}

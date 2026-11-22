@@ -69,6 +69,14 @@ public:
     void setContactRecoverySpeed(double recoverySpeed);
     void setNumThreads(int threads);
     void setSolverIterations(int iterations);
+    // Multicore: ソルバを「滑り（SLIDING）の 1 段だけ」で回す（法線・転がり・拘束の
+    // 段を 0 回にする）。流体粒子のある系で使う: Chrono 9.0 の
+    // ChIterativeSolverMulticoreNSC::SetR は、段を分けて回すとき（いまの段 ≠ 系の
+    // モード）に流体の拘束の行数を数え違えて例外（Blaze の "Invalid subvector
+    // specification"）を投げる。1 段なら行を丸ごと使う経路を通る（Chrono の
+    // demo_MCORE_fluidNSC と同じ設定）。転がり / スピン摩擦は効かなくなる。
+    // 系を作り直すと元の設定（SPINNING の多段）に戻る。Core では何もしない。
+    void useSingleSlidingPhase();
     StepTimers timers() const;
 
 private:

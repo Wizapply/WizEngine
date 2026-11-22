@@ -316,6 +316,18 @@ std::vector<std::string> diffScenes(const ed::SceneDocument& before,
     if (before.hasTerrain != after.hasTerrain) {
         out.push_back(after.hasTerrain ? "added a terrain" : "removed the terrain");
     }
+    // 水面と流体粒子（単一要素。中身は JSON で比べる）。
+    if (before.hasWater != after.hasWater) {
+        out.push_back(after.hasWater ? "added water (<water>)" : "removed the water");
+    } else if (after.hasWater && ed::toJson(before.water) != ed::toJson(after.water)) {
+        out.push_back("changed the water (<water>)");
+    }
+    if (before.hasFluid != after.hasFluid) {
+        out.push_back(after.hasFluid ? "added fluid particles (<fluid>)"
+                                     : "removed the fluid particles");
+    } else if (after.hasFluid && ed::toJson(before.fluid) != ed::toJson(after.fluid)) {
+        out.push_back("changed the fluid particles (<fluid>)");
+    }
 
     if (out.size() > maxLines) {
         const std::size_t more = out.size() - maxLines;

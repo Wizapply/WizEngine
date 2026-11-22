@@ -465,5 +465,18 @@ void PhysicsSystem::setSolverIterations(int iterations) {
     }
 }
 
+void PhysicsSystem::useSingleSlidingPhase() {
+#ifdef WIZ_USE_MULTICORE
+    if (auto* mc = dynamic_cast<ChSystemMulticore*>(sys_.get())) {
+        auto* st = mc->GetSettings();
+        st->solver.solver_mode = SolverMode::SLIDING;
+        st->solver.max_iteration_normal = 0;
+        st->solver.max_iteration_sliding = iterations_;
+        st->solver.max_iteration_spinning = 0;
+        st->solver.max_iteration_bilateral = 0;
+    }
+#endif
+}
+
 }  // namespace physics
 }  // namespace wizengine

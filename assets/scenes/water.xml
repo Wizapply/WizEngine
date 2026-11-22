@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 水面（<water>）の見本: プールに物を落とすと、密度どおりの深さで浮く / 沈む。
+     書式は document/FluidXml.h、モデルは fluid/WaterForces.h（CLAUDE.md の「流体」の章）。
+
+     水は物理の系の中には無く、FluidComponent が毎ステップ「水面より下にある部分」へ
+       浮力 = 押しのけた水の重さ（浮心に）・抗力（二乗 + 線形）・回転の抵抗
+     を掛ける。だから Core でも Multicore でも動き、ほかの機能（ジョイント・車両・
+     テレイン）と一緒に使える。水そのものは動かない（波は形が決まった正弦波）。
+
+     見どころ:
+       wood   … 密度 500 = 半分沈む
+       foam   … 密度 100 = ほとんど水面の上
+       ice    … 密度 900 = 9 割沈む
+       steel  … 密度 7800 = 底まで沈む（水の抵抗でゆっくり）
+       raft   … 平たい板（密度 400）の上に小箱を載せる = 傾いても起き上がる
+       log    … 斜めに落とした細長い丸太（密度 600）= 横倒しで落ち着く
+     マウスで掴んで沈め、離すと浮かび上がる。波（wave / period）を 0 にすると静水。 -->
+<wizengine model="water" version="4">
+  <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60" envelope="0.002"
+          recovery="0.2" friction="0.6" restitution="0" lineardamping="0.05"
+          angulardamping="0.2" sleeping="true"/>
+  <visual>
+    <quality shadowMap="2048" cascades="3" shadow="pcss" contactShadows="true" msaa="4"
+             taa="false" fxaa="true"/>
+    <postprocess enabled="true" ssao="true" ssaoIntensity="1" bloom="0.05" ssr="true"
+                 dof="0" dofBlur="1" vignette="0.2"/>
+  </visual>
+  <asset>
+    <event name="pickup">
+      <node id="1" type="onGrab" pos="40 40" target="-1"/>
+      <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+      <wire from="1" to="2"/>
+    </event>
+  </asset>
+  <worldbody>
+    <environment hdr="studio.hdr" intensity="30000"/>
+    <ground size="12" visual="10" texture="textures/ground.png" tile="3"
+            rgba="0.75 0.78 0.8 1" roughness="0.8"/>
+    <!-- 水: 中心 (0, 0.8, 0) = 静水面の高さ 0.8 m、広さ 8 × 6 m（size は半分）。 -->
+    <water pos="0 0.8 0" size="4 3" density="1000" drag="1" lindrag="2" angdrag="1"
+           wave="0.06" period="2.5" heading="20" rgba="0.03 0.16 0.22 1" roughness="0.04"/>
+
+    <light name="key" type="sun" pos="0 6 0" euler="50 -35 0" diffuse="1 0.97 0.92 1"
+           intensity="90000" castshadow="true"/>
+    <light name="fill" type="sun" pos="0 5 0" euler="25 150 0" diffuse="0.8 0.87 1 1"
+           intensity="25000" castshadow="false"/>
+    <camera name="cam0" target="0 0.8 0" azimuth="35" elevation="28" radius="10"/>
+    <camera name="cam1" target="0 0.8 0" azimuth="120" elevation="6" radius="6"/>
+
+    <!-- プールの壁（水の範囲の縁に沿う）。 -->
+    <body name="wall_e" pos="4.1 0.6 0" fixed="true">
+      <geom type="box" size="0.1 0.6 3.2" mass="100" rgba="0.85 0.86 0.88 1"/>
+    </body>
+    <body name="wall_w" pos="-4.1 0.6 0" fixed="true">
+      <geom type="box" size="0.1 0.6 3.2" mass="100" rgba="0.85 0.86 0.88 1"/>
+    </body>
+    <body name="wall_n" pos="0 0.6 -3.1" fixed="true">
+      <geom type="box" size="4 0.6 0.1" mass="100" rgba="0.85 0.86 0.88 1"/>
+    </body>
+    <body name="wall_s" pos="0 0.6 3.1" fixed="true">
+      <geom type="box" size="4 0.6 0.1" mass="100" rgba="0.85 0.86 0.88 1"/>
+    </body>
+
+    <!-- 浮かべる物（質量 = 密度 × 体積。geom の size は半分の寸法）。 -->
+    <body name="wood" pos="-1.5 1.6 -0.8" euler="10 20 5">
+      <geom type="box" size="0.3 0.3 0.3" mass="108" rgba="0.62 0.42 0.24 1"
+            roughness="0.7"/>
+    </body>
+    <body name="foam" pos="0 2 0.6">
+      <geom type="sphere" size="0.3" mass="11" rgba="0.95 0.85 0.3 1" roughness="0.6"/>
+    </body>
+    <body name="ice" pos="1.6 1.8 -1">
+      <geom type="box" size="0.35 0.25 0.35" mass="220" rgba="0.75 0.88 0.95 1"
+            roughness="0.1"/>
+    </body>
+    <body name="steel" pos="1 2.2 1.2">
+      <geom type="sphere" size="0.15" mass="110" rgba="0.6 0.62 0.65 1" roughness="0.25"
+            metallic="1"/>
+    </body>
+    <body name="raft" pos="-1.2 1.3 1.3">
+      <geom type="box" size="1 0.1 0.5" mass="160" rgba="0.55 0.36 0.2 1" roughness="0.8"/>
+    </body>
+    <body name="crate" pos="-1.2 1.75 1.3" euler="0 25 0">
+      <geom type="box" size="0.15 0.15 0.15" mass="10" rgba="0.8 0.36 0.18 1"/>
+    </body>
+    <body name="log" pos="2.4 2.4 0.9" euler="0 30 60">
+      <geom type="box" size="0.9 0.12 0.12" mass="62" rgba="0.45 0.3 0.18 1"
+            roughness="0.8"/>
+    </body>
+  </worldbody>
+  <events>
+    <event name="pickup"/>
+  </events>
+</wizengine>

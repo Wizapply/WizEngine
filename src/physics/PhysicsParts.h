@@ -10,6 +10,7 @@
 #include "physics/Cables.h"
 #include "physics/ContactMaterials.h"
 #include "physics/Diagnostics.h"
+#include "physics/FluidParticles.h"
 #include "physics/GravityOverride.h"
 #include "physics/Joints.h"
 #include "physics/PhysicsSystem.h"
@@ -66,4 +67,6 @@ struct PhysicsWorld::Parts {
     wizengine::physics::Cables cables{system, bodies, materials};
     // 1D のシャフト網（AT の駆動系など）。剛体との直結が ChBody を持つので名簿より後に壊す。
     wizengine::physics::ShaftNetworks shafts{system, bodies};
+    // 流体粒子（Multicore の流体コンテナ）。系への参照だけを持つ。
+    wizengine::physics::FluidParticles fluid{system};
 };

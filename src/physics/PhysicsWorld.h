@@ -336,6 +336,23 @@ public:
     // ケーブルの張力の目安（端の拘束の反力 N。無ければ 0）。
     double cableTension(std::size_t cable) const;
 
+    // ---- 流体粒子（Chrono::Multicore の ChFluidContainer）--------------------
+    // 回転を持たない粒子の集まりを系に足す（PhysicsTypes.h の FluidSpec）。密度を
+    // 拘束として NSC のソルバで解き、剛体とは接触で双方向にやり取りする。
+    // Multicore + NSC 専用。作れなければ false と理由（英語）: ビルドに Multicore が
+    // 無い・系が Core / SMC・既に足してある・粒子が 0 個。**外す口は無い**
+    // （データマネージャは足すことしかできない）ので、作り直すときは系ごと
+    // （recreate）。recreate で粒子も消える。
+    bool addFluid(const FluidSpec& spec, std::string& why);
+    bool hasFluid() const;
+    std::size_t fluidParticleCount() const;
+    // 粒子のワールド位置を 3 個ずつ out へ詰める（描画スレッドへのスナップショット用）。
+    void fluidParticlePositions(std::vector<float>& out) const;
+    // 粒子の速さの最大値 (m/s)。
+    double fluidMaxSpeed() const;
+    // 粒子を足したときの位置・速度へその場で戻す（Reset）。無ければ false。
+    bool resetFluid();
+
     // ---- 1D のシャフト網（Chrono の ChShaft 系。AT の駆動系など）------------
     // 軸・遊星・クラッチ / ブレーキ・ねじりばね・歯車・トルクコンバータ・速度モータ・
     // 3D の剛体との直結（physics/ShaftTypes.h）を、剛体と同じ系に足す。戻り値は網の

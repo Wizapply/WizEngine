@@ -106,6 +106,46 @@ void EditorState::setEmitters(std::vector<wizengine::editor::EmitterDesc> emitte
     emitterVersion_.fetch_add(1);
 }
 
+// ---- 水面と流体粒子 -----------------------------------------------------------
+
+wizengine::editor::WaterDesc EditorState::water() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return water_;
+}
+
+bool EditorState::hasWater() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return hasWater_;
+}
+
+void EditorState::setWater(bool has, const wizengine::editor::WaterDesc& water) {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        hasWater_ = has;
+        water_ = wizengine::editor::clampWater(water);
+    }
+    waterVersion_.fetch_add(1);
+}
+
+wizengine::editor::FluidDesc EditorState::fluid() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return fluid_;
+}
+
+bool EditorState::hasFluid() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return hasFluid_;
+}
+
+void EditorState::setFluid(bool has, const wizengine::editor::FluidDesc& fluid) {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        hasFluid_ = has;
+        fluid_ = wizengine::editor::clampFluid(fluid);
+    }
+    fluidVersion_.fetch_add(1);
+}
+
 // ---- イベントアセット -------------------------------------------------------
 // 変更は必ず graphVersion_ を進める（物理スレッドが実行キャッシュを取り直す
 // 合図）。mutex_ の下で書き、読みはコピーで返す - ジョイントと同じ流儀。

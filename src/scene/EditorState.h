@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include "document/EditorTypes.h"
+#include "document/FluidTypes.h"
 #include "transmission/AtTypes.h"
 
 // エディタ／シミュレートの切り替えと、まだ適用されていない編集操作を持つ入れ物。
@@ -128,6 +129,19 @@ public:
     std::vector<wizengine::editor::EmitterDesc> emitters() const;
     void setEmitters(std::vector<wizengine::editor::EmitterDesc> emitters);
     std::uint64_t emitterVersion() const { return emitterVersion_.load(); }
+
+    // ---- 水面と流体粒子（<worldbody> の <water> / <fluid>）--------------------
+    // 文書の単一要素。has = false は「無い」（節を書かない文書）。書き換えるたびに
+    // 版番号が進む（FluidComponent が浮力の設定・水面と粒子の見た目を取り直す合図）。
+    // 流体粒子の実体（Chrono）はシミュレート開始で作る（Scene::buildFluid）。
+    wizengine::editor::WaterDesc water() const;
+    bool hasWater() const;
+    void setWater(bool has, const wizengine::editor::WaterDesc& water);
+    std::uint64_t waterVersion() const { return waterVersion_.load(); }
+    wizengine::editor::FluidDesc fluid() const;
+    bool hasFluid() const;
+    void setFluid(bool has, const wizengine::editor::FluidDesc& fluid);
+    std::uint64_t fluidVersion() const { return fluidVersion_.load(); }
 
     // ---- イベントアセット（ノードベースのスクリプト）------------------------
     // ノードとワイヤーの束を「アセット」として名前で持つ（EditorTypes.h の
@@ -396,6 +410,12 @@ private:
     std::vector<wizengine::editor::CableDesc> cables_;  // 同上（mutex_ の下）
     std::vector<wizengine::editor::EmitterDesc> emitters_;  // 同上
     std::atomic<std::uint64_t> emitterVersion_{0};
+    wizengine::editor::WaterDesc water_;  // mutex_ の下
+    bool hasWater_ = false;
+    std::atomic<std::uint64_t> waterVersion_{0};
+    wizengine::editor::FluidDesc fluid_;  // mutex_ の下
+    bool hasFluid_ = false;
+    std::atomic<std::uint64_t> fluidVersion_{0};
     // イベントアセット（mutex_ の下）。nextNodeId はアセットごとの採番、
     // fireCounts_ は（アセット名, ノード id）-> 発火回数。
     struct EventAssetState {

@@ -1551,6 +1551,16 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         return;
     }
 
+    // 水面と流体粒子（World タブの「流体」節とアセットパネルのタイル）。
+    if (op.kind == "water") {
+        applyWaterOp(a);
+        return;
+    }
+    if (op.kind == "fluid") {
+        applyFluidOp(a);
+        return;
+    }
+
     if (op.kind == "render") {
         // 送られてきたキーだけ上書き（edit.ground と同じ部分更新）。
         // "preset" が入っていれば renderFromJson がそこから組み立てる。
@@ -1626,6 +1636,9 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             std::lock_guard<std::mutex> lk(objectsMutex_);
             meshes_.clear();
         }
+        // 水面と流体粒子も外す（どちらも「節が無い」が初期状態）。
+        editor_.setWater(false, ed::WaterDesc{});
+        editor_.setFluid(false, ed::FluidDesc{});
         // 地面・環境光・描画設定も初期値へ（ライト・カメラと同じ扱い）。
         setGroundAndEnvironment(ed::GroundDesc{}, ed::EnvironmentDesc{});
         setRenderDesc(ed::RenderDesc{});

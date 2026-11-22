@@ -48,6 +48,7 @@ struct PhysicsFeatures {
     bool pardiso = false;     // Chrono::PardisoMKL
     bool mumps = false;       // Chrono::MUMPS
     bool modal = false;       // Chrono::Modal
+    bool fluid = false;       // Chrono::Multicore の流体粒子（WIZ_USE_MULTICORE のビルド）
 };
 
 // 描画側へ渡す剛体の姿勢のスナップショット。
@@ -178,6 +179,27 @@ struct CableSpec {
     // （実機で確認: おもりが暴れた）。呼び出し側がボディの大きさから決める。
     double clearA = 0.0;
     double clearB = 0.0;
+};
+
+// ---- 流体粒子（Chrono::Multicore の ChFluidContainer）---------------------------
+// 回転を持たない粒子（3 自由度）の集まりを系に足し、SPH のカーネルで測った密度を
+// 「静止密度に等しい」という拘束として NSC のソルバに入れて解く（剛体との接触も同じ
+// ソルバ = 双方向）。Multicore + NSC 専用。位置・速度は 3 個で 1 粒子（ワールド）。
+// 粒子の配置と値の決め方は fluid/FluidSeed.h（Scene が文書から作る）。
+struct FluidSpec {
+    std::vector<float> positions;
+    std::vector<float> velocities;
+    double kernelRadius = 0.044;     // m（粒子の間隔 / 0.9）
+    double particleMass = 0.045;     // kg（静止密度 × 1 粒子の体積）
+    double density = 1000.0;         // kg/m^3
+    double viscosity = 0.0;          // 0 = 切る
+    double artificialPressure = 0.01;  // 人工圧力の係数（0 = 切る）
+    double friction = 0.0;           // 剛体との摩擦
+    double cohesion = 0.0;           // 剛体との付着
+    double maxVelocity = 20.0;       // m/s
+    double recovery = 10.0;          // 剛体へのめり込みを押し戻す速さ (m/s)
+    double tau = 0.004;              // 密度拘束の緩和時間 (s)
+    double epsilon = 1.0e-3;         // 拘束の正則化
 };
 
 // 直前の step() が作った接触 1 点ぶん（activeContacts）。

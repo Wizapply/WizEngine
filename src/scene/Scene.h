@@ -372,6 +372,12 @@ public:
     // 補間していないときは最新のフレームの時刻）。見た目だけの粒子の年齢を
     // 物理の時計で数えるため（EffectsComponent）。
     double renderSimTime() const { return renderSimTime_; }
+    // このフレームに描く流体粒子の位置（RENDER スレッド専用。3 個で 1 粒子、
+    // 補間済み）。シミュレート中に流体の実体があるときだけ非 null。エディタでは
+    // null = 描く側（FluidComponent）が文書の配置を描く。
+    const std::vector<float>* renderFluid() const {
+        return renderFluid_.empty() || renderFluid_[0].empty() ? nullptr : &renderFluid_[0];
+    }
     // 物理スレッドが進めているシミュレーション時刻（PHYSICS スレッド専用。
     // 呼ばれたステップの始まりの時刻）。
     double physicsSimTime() const { return simClock_; }
@@ -557,6 +563,23 @@ private:
     // タイミング: シミュレート開始と停止）。
     void buildCables();
     void removeAllCables();
+    // 文書の流体粒子（<fluid>）を Chrono::Multicore の流体コンテナに作る。
+    // シミュレート開始（と、その最中の系の作り直し）で呼ぶ。外す口は無いので、
+    // 前の開始で作った粒子が系に残っていたら、開始の前に系ごと作り直す（enterMode）。
+    // 作れなかった理由は fluidStatus（/scene）とステータスへ。
+    void buildFluid();
+    // Reset で流体粒子を最初に戻す（PHYSICS、シミュレート中だけ）。設計が作ったときの
+    // ままなら粒子をその場で書き戻す（PhysicsWorld::resetFluid）。シミュレート中に
+    // 流体を足した / 外した / 設定を変えたなら、開始と同じく系ごと作り直す。
+    // 戻り値 true = 系ごと作り直した（作り直しが置き直し・ジョイント・snapshot まで
+    // 済ませているので、呼び手 reset はそこで終える）。
+    bool resetFluid();
+    // edit.water / edit.fluid（部分更新。"present": false で節ごと外す）。PHYSICS。
+    void applyWaterOp(const nlohmann::json& args);
+    void applyFluidOp(const nlohmann::json& args);
+    // /scene の water・fluid・fluidStatus（どのスレッドからでも。EditorState と
+    // poseMutex_ のロックを順に取る）。
+    nlohmann::json fluidJson();
     // <option modal="N">: 固有振動数を求めてログと /scene に出す。
     void runModalAnalysis();
     // RENDER thread: ケーブルの見た目（円柱の連なり）を作り、節点の
@@ -1099,6 +1122,25 @@ private:
     std::vector<double> cableTension_;  // 同上（N）
     std::vector<double> modalHz_;       // 同上
     std::string backendNote_;           // 同上（"core: FEA cable" など）
+    // 流体粒子の位置（3 個で 1 粒子。外側は 0 か 1 個 = 補間の lerpPoints を
+    // ケーブルと共用するため）。シミュレート中に流体があるときだけ endPhysicsPass が
+    // 書く（数万個あるので毎ステップの snapshot では写さない。実体が無くなれば
+    // snapshot が空にする = 描画は文書の配置を描く）。poseMutex_ の下。
+    std::vector<std::vector<float>> latestFluid_;
+    // 流体粒子を作った結果（/scene の fluidStatus）。poseMutex_ の下。
+    struct FluidStatus {
+        std::size_t particles = 0;   // 作った数（0 = 作っていない）
+        std::size_t requested = 0;   // 文書の配置で詰めた数（上限で打ち切る前）
+        bool truncated = false;
+        std::string error;           // 作れなかった理由（英語）
+    };
+    FluidStatus fluidStatus_;
+    // 流体粒子の実体がいまの系にあって、シミュレート中か（PHYSICS スレッド専用。
+    // buildFluid が立て、停止と系の作り直しで下ろす。snapshot が粒子を写すかの判定）。
+    bool fluidLive_ = false;
+    // 流体粒子を作ったときの EditorState::fluidVersion（Reset が「設計が変わったか」を
+    // 見る。PHYSICS スレッド専用）。
+    std::uint64_t fluidBuiltVersion_ = ~std::uint64_t(0);
     // RENDER スレッド専用: ケーブルごとの円柱スロット。
     struct CableRender {
         std::vector<std::size_t> renderIds;
@@ -1259,6 +1301,7 @@ private:
         std::vector<BodyTransform> poses;
         std::vector<std::vector<float>> soft;    // latestSoft_ と同じ並び
         std::vector<std::vector<float>> cables;  // latestCables_ と同じ並び
+        std::vector<std::vector<float>> fluid;   // latestFluid_ と同じ並び
         double simTime = 0.0;   // このフレームのシミュレーション時刻 (s)
         double wallTime = 0.0;  // 公開した実時間（steady_clock の秒）
         double timeScale = 1.0; // 公開したときの時間の速さ（補間の進み方）
@@ -1275,6 +1318,7 @@ private:
     std::vector<BodyTransform> renderPoses_;
     std::vector<std::vector<float>> renderSoft_;
     std::vector<std::vector<float>> renderCables_;
+    std::vector<std::vector<float>> renderFluid_;
     double renderAlpha_ = -1.0;
     double renderSimTime_ = 0.0;
 

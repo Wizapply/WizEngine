@@ -8,6 +8,7 @@
 
 #include "core/Xml.h"
 #include "document/EditorTypes.h"
+#include "document/FluidTypes.h"
 #include "transmission/AtTypes.h"
 #include "ui/UiTypes.h"
 #include "ui/UiValue.h"  // NodeFieldValues
@@ -112,6 +113,11 @@
 //                                    ... パーティクルのエミッタ（見た目だけ。
 //                                        EditorTypes.h の EmitterDesc）。量は
 //                                        rate か、制御器の emitter:<名前>.rate
+//       <water pos="0 0 0" size="10 10" density="1000" drag="1" wave="0.1" period="4"/>
+//                                    ... 水面（浮力・抗力。単一要素。document/FluidXml.h）
+//       <fluid spacing="0.04" density="1000"> <block pos size velocity/> </fluid>
+//                                    ... 流体粒子（Chrono::Multicore の流体コンテナ。
+//                                        単一要素。文書にあれば Multicore を選ぶ）
 //       <canvas name="hud" mode="overlay|camera|world" cameras="0 1" height="1080"
 //               order distance pos euler size ui="hud">
 //         <image id parent name anchor pivot pos size color file .../>
@@ -273,6 +279,10 @@ struct SceneDocument {
     // パーティクルのエミッタ（<worldbody> の <emitter>）。body はオブジェクト
     // 番号（-1 = ワールド）。物理には関わらない見た目だけの物。
     std::vector<EmitterDesc> emitters;
+    // 水面（<worldbody> の <water>）と流体粒子（<fluid>）。どちらも単一要素で、
+    // 節が無い = 無い（hasWater / hasFluid が false）。
+    WaterDesc water;
+    FluidDesc fluid;
     // イベントアセット（<asset> の <event>）と、ワールドに付いているぶん
     // （ルートの <events>）。オブジェクトに付いているぶんは BodyDesc::events。
     std::vector<EventAssetDesc> eventAssets;
@@ -306,6 +316,8 @@ struct SceneDocument {
     bool hasEnvironment = false;
     // テレインは「節が無い = 無い」（既定の構成へ戻す意味ではない）。
     bool hasTerrain = false;
+    bool hasWater = false;
+    bool hasFluid = false;
     bool hasLights = false;
     bool hasCameras = false;
     bool hasEvents = false;

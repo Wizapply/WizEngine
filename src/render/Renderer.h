@@ -445,6 +445,30 @@ public:
     // particles が最大数を超えたぶんは描かない。
     void setParticles(std::size_t id, const std::vector<Particle>& particles);
 
+    // ---- 液体（流体粒子から組んだ水の表面）--------------------------------
+    // 頂点と三角形の数が毎フレーム変わるメッシュを、画面空間の屈折で透けて見える
+    // 水の材質（liquid.mat）で描く。席（バッファの大きさ）は足りなくなったら
+    // 1.5 倍に作り直し、余った三角形の席は面積 0（インデックス 0）で埋める =
+    // 実行中にプリミティブ数を変える版依存の API を使わない（パーティクルと同じ方針）。
+    // 頂点はワールド座標、法線は外向き。影は落とさない（透明な物の影は不自然）が
+    // 受ける。全ビューに映る。RENDER スレッド。
+    struct LiquidStyle {
+        filament::math::float3 color{1.0f, 1.0f, 1.0f};      // 表面の色（白 = 色を付けない）
+        filament::math::float3 absorption{0.0f, 0.0f, 0.0f}; // 吸収係数 (1/m)
+        float roughness = 0.05f;
+        float ior = 1.33f;          // 屈折率（水 1.33）
+        float transmission = 1.0f;  // 透過の割合（0 = 不透明の誘電体）
+        float thickness = 0.1f;     // 屈折と吸収に使う厚み (m)
+    };
+    std::size_t addLiquidMesh();
+    // vertexCount 個の頂点（positions / normals は 3 個で 1 頂点）と indexCount 個の
+    // インデックス（3 個で 1 三角形）。0 個なら何も描かない。
+    void setLiquidMesh(std::size_t id, const float* positions, const float* normals,
+                       std::size_t vertexCount, const uint32_t* indices,
+                       std::size_t indexCount);
+    void setLiquidStyle(std::size_t id, const LiquidStyle& style);
+    void removeLiquidMesh(std::size_t id);
+
     // ---- レイヤ ----------------------------------------------------------
     // ギズモのように「エディタカメラのビューにだけ」見せたい物のための
     // レイヤ分け。シーンは全ビュー共有のままなので、レンダラブルの
@@ -813,6 +837,22 @@ private:
         std::size_t lastCount = 0;  // 前回描いた数（次の転送でそこまで消す）
     };
     std::vector<ParticleMesh> particleMeshes_;
+    // 液体のメッシュ（RendererLiquid.cpp）。番号は使い回さない（数個しか作らない）。
+    struct LiquidMesh {
+        utils::Entity entity;
+        filament::VertexBuffer* vb = nullptr;
+        filament::IndexBuffer* ib = nullptr;
+        filament::MaterialInstance* mi = nullptr;
+        std::size_t vertexCapacity = 0;
+        std::size_t indexCapacity = 0;
+        std::size_t lastIndexCount = 0;  // 前回描いた数（次の転送でそこまで 0 で埋める）
+        bool inScene = false;
+        bool used = false;
+    };
+    std::vector<LiquidMesh> liquidMeshes_;
+    filament::Material* liquidMaterial_ = nullptr;  // liquid.filamat（最初の addLiquidMesh で読む）
+    // 頂点・インデックスの席を need 以上に作り直す（中身は捨てる）。
+    void growLiquidMesh(LiquidMesh& mesh, std::size_t vertices, std::size_t indices);
     filament::Material* particleMaterial_ = nullptr;
     // particle.filamat の読み込み（コンストラクタが 1 回だけ。無ければ AssetError）。
     void loadParticleMaterial();

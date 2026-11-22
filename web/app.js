@@ -63,7 +63,7 @@
   function setControlsEnabled(on) {
     document.querySelectorAll(
         '#sidebar button.wide, #sidebar .modeBtn, #paneEditor button, ' +
-        '#secWorld button, #secRender button')
+        '#secWorld button, #secRender button, #secFluid button')
       .forEach((b) => { b.disabled = !on; });
   }
   setControlsEnabled(false);
@@ -2500,6 +2500,134 @@
   // プリセットは名前だけ送る（中身の定義はサーバーが持つ = UI とずれない）。
   function applyRenderPreset(name) { send('edit.render', { preset: name }); }
 
+  // ---- 流体（World タブの「💧 流体」節。XML の <water> / <fluid>）-----------
+  // 送るのは欄の値をまとめた部分更新（サーバーの waterFromJson / fluidFromJson）。
+  // 節ごと外すのは "present": false。
+  function vec3Of(px, py, pz, fx, fy, fz) {
+    return { x: num(px, fx), y: num(py, fy), z: num(pz, fz) };
+  }
+  function applyWater() {
+    send('edit.water', {
+      pos: vec3Of('wtPX', 'wtPY', 'wtPZ', 0, 0, 0),
+      sizeX: num('wtSX', 10),
+      sizeZ: num('wtSZ', 10),
+      density: num('wtDensity', 1000),
+      drag: num('wtDrag', 1),
+      linearDrag: num('wtLin', 2),
+      angularDrag: num('wtAng', 1),
+      flow: vec3Of('wtFX', 'wtFY', 'wtFZ', 0, 0, 0),
+      wave: num('wtWave', 0),
+      period: num('wtPeriod', 4),
+      heading: num('wtHeading', 0),
+      color: document.getElementById('wtColor').value,
+      roughness: num('wtRough', 0.05)
+    });
+  }
+  function toggleWater(on) {
+    send('edit.water', on ? {} : { present: false });
+  }
+  function applyFluid() {
+    const f = sceneData && sceneData.fluid;
+    // 箱は配列ごと送る（1 つ目だけ欄で編集し、2 つ目以降はそのまま返す）。
+    const blocks = (f && f.blocks ? f.blocks.slice() : []);
+    blocks[0] = {
+      pos: vec3Of('flBPX', 'flBPY', 'flBPZ', 0, 0.5, 0),
+      size: vec3Of('flBSX', 'flBSY', 'flBSZ', 0.2, 0.2, 0.2),
+      velocity: vec3Of('flBVX', 'flBVY', 'flBVZ', 0, 0, 0)
+    };
+    send('edit.fluid', {
+      spacing: num('flSpacing', 0.04),
+      density: num('flDensity', 1000),
+      viscosity: num('flVisc', 0),
+      pressure: num('flPressure', 0.01),
+      max: num('flMax', 40000),
+      surface: document.getElementById('flSurface').checked,
+      clarity: num('flClarity', 0.3),
+      ior: num('flIor', 1.33),
+      color: document.getElementById('flColor').value,
+      roughness: num('flRough', 0.15),
+      blocks: blocks
+    });
+  }
+  function toggleFluid(on) {
+    send('edit.fluid', on ? {} : { present: false });
+  }
+  // アセットパネルのタイル: 無ければ置き、あれば World タブの流体節を開く。
+  function addWater() {
+    if (!(sceneData && sceneData.water)) send('edit.water', {});
+    showFluidSection();
+  }
+  function addFluid() {
+    if (!(sceneData && sceneData.fluid)) send('edit.fluid', {});
+    showFluidSection();
+  }
+  function showFluidSection() {
+    showTab('physics');
+    const sec = document.getElementById('secFluid');
+    if (sec) sec.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+  // /scene の water / fluid / fluidStatus を欄へ（フォーカス中の欄は setField が触らない）。
+  function renderFluidSection() {
+    const w = sceneData.water, f = sceneData.fluid;
+    setField('wtPresent', !!w);
+    document.getElementById('wtFields').hidden = !w;
+    if (w) {
+      setField('wtPX', round2(w.pos.x)); setField('wtPY', round2(w.pos.y));
+      setField('wtPZ', round2(w.pos.z));
+      setField('wtSX', round2(w.sizeX)); setField('wtSZ', round2(w.sizeZ));
+      setField('wtDensity', round2(w.density));
+      setField('wtDrag', round2(w.drag));
+      setField('wtLin', round2(w.linearDrag));
+      setField('wtAng', round2(w.angularDrag));
+      setField('wtFX', round2(w.flow.x)); setField('wtFY', round2(w.flow.y));
+      setField('wtFZ', round2(w.flow.z));
+      setField('wtWave', round2(w.wave));
+      setField('wtPeriod', round2(w.period));
+      setField('wtHeading', round2(w.heading));
+      setField('wtColor', w.color);
+      setField('wtRough', round2(w.roughness));
+    }
+    setField('flPresent', !!f);
+    document.getElementById('flFields').hidden = !f;
+    if (f) {
+      setField('flSpacing', f.spacing);
+      setField('flDensity', round2(f.density));
+      setField('flVisc', round2(f.viscosity));
+      setField('flPressure', f.pressure);
+      setField('flMax', f.max);
+      setField('flSurface', f.surface !== false);
+      setField('flClarity', round2(f.clarity));
+      setField('flIor', round2(f.ior));
+      setField('flColor', f.color);
+      setField('flRough', round2(f.roughness));
+      const b = (f.blocks && f.blocks[0]) ||
+                { pos: { x: 0, y: 0.5, z: 0 }, size: { x: 0.2, y: 0.2, z: 0.2 },
+                  velocity: { x: 0, y: 0, z: 0 } };
+      setField('flBPX', round2(b.pos.x)); setField('flBPY', round2(b.pos.y));
+      setField('flBPZ', round2(b.pos.z));
+      setField('flBSX', round2(b.size.x)); setField('flBSY', round2(b.size.y));
+      setField('flBSZ', round2(b.size.z));
+      setField('flBVX', round2(b.velocity.x)); setField('flBVY', round2(b.velocity.y));
+      setField('flBVZ', round2(b.velocity.z));
+      const n = (f.blocks || []).length;
+      document.getElementById('flBlockLabel').textContent =
+        '水の箱 1' + (n > 1 ? '（ほかに ' + (n - 1) + ' 個 = 📄 XML で編集）' : '');
+      const st = sceneData.fluidStatus || {};
+      let line = '';
+      if (st.particles > 0) {
+        line = '粒子 ' + st.particles + ' 個で動いています' +
+               (st.truncated ? '（上限で ' + st.requested + ' 個から打ち切り）' : '');
+      } else if (st.error) {
+        line = '作れませんでした: ' + st.error;
+      } else if (!(sceneData.features && sceneData.features.fluid)) {
+        line = 'このビルドには Chrono::Multicore が無いので粒子は作れません（-DWIZ_USE_MULTICORE=ON）';
+      } else {
+        line = 'シミュレート開始で粒子を作ります';
+      }
+      document.getElementById('flStatus').textContent = line;
+    }
+  }
+
   // 保存は今のシーンの名前（新規シーン・読込で決まる）へ。無題ならここで聞く。
   function cleanSceneName(s) {
     return String(s || '').trim().replace(/[^A-Za-z0-9_-]/g, '');
@@ -2667,6 +2795,7 @@
     // 効かない欄は出さない - Inspector にあった頃と同じ見え方。
     document.getElementById('secWorld').hidden = !editorHere;
     document.getElementById('secRender').hidden = !editorHere;
+    document.getElementById('secFluid').hidden = !editorHere;
 
     // モード切替はどのカメラのページからでもできる（サーバー側も同じ扱い）。
     // Editor Camera は「編集できる」カメラなだけで、モードを握ってはいない。
@@ -2786,6 +2915,8 @@
       setField('rnTemperature', round2(r.temperature));
       setField('rnTint', round2(r.tint));
     }
+    // 水面と流体粒子（secFluid 節）。
+    renderFluidSection();
     // ギズモ設定の節はツールバーの ⚙ で開閉（エディタモード中だけ意味がある）。
     document.getElementById('gzSettings')
             .classList.toggle('on', gizmoSettingsOpen);
@@ -3119,6 +3250,11 @@
            '▭', 'Ground', 'ground') +
       tile('onclick="newTerrain()"', '新しいテレイン（平ら・既定の大きさ）を作ってシーンに置く。名前を聞きます',
            '⛰&#xFE0E;', 'Terrain', 'new terrain') +
+      // 流体（シーンに 1 つずつ）。無ければ置き、あれば World タブの流体節を開く。
+      tile('onclick="addWater()"', '水面を置く（浮力・抗力・波）。あれば World タブの流体節を開く',
+           '🌊', 'Water', 'water') +
+      tile('onclick="addFluid()"', '流体粒子を置く（Chrono::Multicore が粒子で解く水）。あれば World タブの流体節を開く',
+           '💧', 'Fluid', 'fluid') +
       // UI の Canvas（映像の上に重ねる。中の要素は一覧の右クリックか Inspector で足す）。
       tile('onclick="uiAddCanvas()"', 'UI の Canvas を追加（映像の上に重ねる）。要素は Inspector か右クリックで足します',
            '🖼&#xFE0E;', 'Canvas', 'ui');

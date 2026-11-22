@@ -1732,6 +1732,140 @@ rgba2 intensity light lightrange max>`（`ed::EmitterDesc`、`EditorState::emitt
   向く板（ビューが共有なので 3 枚の円盤で代える）、エディタでの配置 UI
   （いまは 📄 XML で書く）。
 
+## 流体（`<water>` + `<fluid>`。`src/fluid/` + `components/FluidComponent` + `physics/FluidParticles`）
+
+流体は 2 段構え（調査の経緯と Chrono の他の選択肢は `docs/fluid.md`）:
+**水面**（`<water>`）は物理の系の外にある「水の範囲」で、水面より下の物へ浮力・
+抗力を掛けるだけ（水そのものは動かない）。**流体粒子**（`<fluid>`）は
+Chrono::Multicore の流体コンテナ（`ChFluidContainer`）が水を粒子で解く（注ぐ・
+跳ねる・物を押す）。見本は `assets/scenes/water.xml`（プールに物を浮かべる）と
+`assets/scenes/fluid.xml`（水槽のダム崩壊）。
+
+```
+シーン文書 <water> / <fluid>（document/FluidTypes.h + FluidXml.h）
+  -> EditorState::water() / fluid()（版番号 waterVersion / fluidVersion）
+  ├ 水面: FluidComponent::onPhysicsStep が fluid/WaterForces で力を求め、
+  │       PhysicsWorld::applyForceAtPoint（力 + 力の対のモーメント）で掛ける
+  └ 粒子: シミュレート開始で Scene::buildFluid が fluid/FluidSeed で並べ、
+          PhysicsWorld::addFluid → physics/FluidParticles（ChFluidContainer）
+描画: FluidComponent::onRender（水面の格子 = Renderer::addSoftShape、流体粒子 = つないだ
+      水の表面（別スレッドの FluidSurface → Renderer::addLiquidMesh + liquid.mat）か玉）
+```
+
+- **`src/fluid/` は Chrono も Filament も知らない純粋な計算**（自前の `Vec3` / `Quat` =
+  `FluidMath.h`。vehicle/ と同じ方針）。`WaterForces` = 水面の高さ・法線・水の速度
+  （流れ + 深水波の水粒子の速度）・物 1 個に掛かる力、`FluidSeed` = 粒子の六方最密
+  配置と玉のメッシュ、`FluidSurface` = 粒子をつないだ水の表面（メタボール + Surface Nets）。境界の FluidComponent / Scene が詰め替える。
+- **文書**: どちらも `<worldbody>` 直下の単一要素（地面・テレインと同じ。節が無い =
+  無い、`hasWater` / `hasFluid`）。`<water pos size density drag lindrag angdrag flow
+  wave period heading rgba roughness cells enabled>`（pos の y が静水面、size は X / Z の
+  半分の広さ）。`<fluid spacing density viscosity pressure friction cohesion maxspeed
+  recovery relaxation epsilon max surface rgba clarity ior roughness drawscale enabled>` と子の `<block pos
+  size velocity/>`（size は半寸法、最大 64 個）。読み書きはヘッダだけの
+  `document/FluidXml.h`（文書層のテストに .cpp を足さなくて済むように）。既定値と
+  同じ属性は書かない。打ち間違い（`<water level>`・未知の子・箱の無い流体）は warnings。
+- **水面のモデル**（`WaterForces.h` の冒頭が正）: 箱は 4 × 4 × 4 の小箱に分け、
+  小箱ごとに「水面下の割合」（鉛直方向の広がりで直線に近似 = 揺れても力が跳ねない）
+  と浮心を出す = 傾いた箱の復元モーメント・波の上で傾く動きが出る。球は球冠の厳密な
+  式。凸包のモデルは geom の半径の球、geom の無いフレーム・三角メッシュ・固定の物は
+  対象外、ソフトボディは全粒子へ等しく（モーメントなし）。抗力は浮心の水に対する
+  速度 u で二乗 ½ρCdA|u|u（A = u の向きの投影面積 × 浸かった割合）+ 線形
+  ρV_sub c u、回転は ρV_sub L²/6 (c_ang ω + Cd|ω|ω)。**安全弁**: 抗力はそのステップで
+  相対速度を反転させない大きさで頭打ち（陽に掛けるため、軽い物・速い流れでも
+  発散しない）。既定の減衰（lindrag 2・angdrag 1）は上下の揺れの減衰比 0.1 前後 =
+  数回揺れて収まる。付加質量・造波抵抗・水の側の反作用は入れない。
+- **力の掛け方**: 力は重心へ `applyForceAtPoint`、モーメントは重心の両側の点へ逆向きの
+  力の対（PhysicsWorld にトルクの口が無いので。制御器の `torqueAsCouple` と同じ作り）。
+  水の範囲から十分離れた物（外接球が水面と範囲の外）は計算しない。**水面の編集は
+  シミュレート中でもすぐ効く**（版番号を見て設定を取り直すだけ）。
+- **流体粒子は Multicore + NSC 専用**: `Scene::requiredBackend` が「流体がある →
+  Multicore」を選ぶ。ただし Core 専用の機能（ケーブル・ブッシュ・荷重・テレイン・AT・
+  直接法・モーダル）が先に勝ち、そのときは Core のまま粒子を作らない（理由は
+  backendNote と `/scene` の `fluidStatus.error`）。Multicore の無いビルド・
+  `contact="smc"` も作らない。
+- **粒子は外せない**（Multicore のデータマネージャは 3 自由度の粒子を足す口しか
+  持たない = `FluidParticles.h`）。そこで**シミュレート開始のたびに系ごと作り直す**:
+  `enterMode` が、前の開始の粒子が系に残っていれば `rebuildPhysicsWorld` してから
+  `buildFluid`（モードはまだエディタなので作り直しはジョイントを張らない）。停止では
+  粒子は系に残すが写さない（`fluidLive_` を下ろす = 描画は文書の配置へ戻る。エディタは
+  積分しないので残っていても動かない）。シミュレート中の系の作り直し（他の編集が
+  引き起こすバックエンド切替など）では `rebuildPhysicsWorld` が粒子も作り直す。
+  シミュレート中の `edit.fluid` は Reset か次の開始で効く。**Reset**（`Scene::reset` →
+  `resetFluid`）: 作ったときの設計のまま（`fluidBuiltVersion_` = `fluidVersion`）なら
+  粒子を足したときの位置・速度へその場で書き戻す（`PhysicsWorld::resetFluid` →
+  `Ch3DOFContainer::SetPos / SetPosDt`。数は変わらないので外す必要が無い）。シミュレート
+  中に流体を足した / 外した / 設定を変えたなら開始と同じく系ごと作り直す。以前は
+  Reset が剛体だけを戻し、粒子は崩れたまま残っていた（実機で報告）。一時停止中の
+  Reset でも戻った並びが見えるよう、`snapshot(cut = true)` は粒子も写す（毎ステップの
+  snapshot は写さない = パスの終わりだけ）。
+- **値の決め方は Chrono の `demo_MCORE_fluidNSC` に合わせた**: 粒子は間隔 spacing の
+  六方最密格子（1 粒子の体積 spacing³/√2、質量 = 密度 × それ）、カーネル半径 =
+  spacing / 0.9、密度拘束の緩和時間 tau = relaxation × 物理の刻み（既定 4 ステップ）、
+  人工圧力の届く距離 = カーネル半径 × 0.2。**細かい刻みが要る**（デモは 1 ms）ので、
+  刻みが 2.5 ms より粗いと `buildFluid` が LOGW。見本は 250 Hz × 4 = 1 ms。
+- **描画は 2 通り**（`<fluid surface>`、既定 true）。
+  **表面（既定）**: 粒子どうしをつないだ水の表面を、透けて屈折する水の材質で描く。
+  ①`fluid/FluidSurface`（純粋な計算）が粒子ごとの滑らかな山（メタボール、
+  w(q) = (1 − q²)³・半径 R = 1.4 d）を格子（0.5 d、粒子の外接箱 + R だけ）に溜め、
+  等値面 iso = 0.75 を **Surface Nets**（等値面をまたぐセルに頂点 1 個、またぐ辺ごとに
+  周りの 4 セルで四角形）で三角形にし、1 回ならして、法線は隣の三角形の面積の重み付き
+  平均。iso と R は「塊の表面が外側の粒子の中心から約 0.6 d 外・孤立した 1 粒は小さな
+  水滴として残る」に較正してある（R を変えたら kIso も測り直す）。②**別スレッド**
+  （`FluidComponent::workerLoop`）が組み、描画スレッドは「前の表面ができていれば今の
+  粒子で次を頼む・できた表面を送る」だけ（待たない = 1〜2 フレーム遅れて追う。開始 /
+  停止の切り替わりと、流体が消えたときに仕掛かりの結果を捨てる番号 `hiddenAtSerial_`）。
+  ③`Renderer::addLiquidMesh / setLiquidMesh / setLiquidStyle`（`RendererLiquid.cpp`）:
+  頂点と三角形の数が毎フレーム変わるので席を 1.5 倍で取り、余った三角形の席は
+  インデックス 0（面積 0）で埋める（プリミティブ数を変える API を使わない = パーティクルと
+  同じ方針）。影は落とさず受ける。④材質は `assets/materials/liquid.mat`（lit +
+  `refractionMode : screenspace`・`refractionType : solid`、パラメータ baseColor /
+  absorption / roughness / ior / transmission / thickness）= 背景が屈折率でずれて透け、
+  厚みのぶん吸収で色が付く。吸収係数は「厚み `clarity` (m) の水を通すと rgba の色」に
+  なる Beer-Lambert の係数（−ln(rgba) / clarity）、厚みは粒子の上下の広がり + d（大きく
+  変わったら入れ直す）。画面空間の屈折なので、液体どうしの重なりは屈折で見えない
+  （Filament の約束）。**玉（surface="false"）**: 従来の粒子ごとの正八面体（6 頂点・
+  8 三角形）を `Renderer::addSoftShape` の 1 スロットに詰める不透明の玉。どちらの描き方も
+  シミュレート中は `Scene::renderFluid`（パスの終わりに写した Chrono の粒子を、姿勢と
+  同じ 2 フレームの間で補間した値）、エディタでは文書の配置（`seedFluid` = 開始した
+  ときと同じ並び）を描き、エディタでは組み直したときだけ送る。水面（`<water>`）は
+  格子 1 枚（`cells`、既定 96）を波の式で毎フレーム組む（波が無ければ 1 回だけ）不透明の
+  光沢面（透過は未）。**確認**: 表面の組み立ては単体テスト（閉じた面・外向き・塊の
+  表面の位置・水滴・2 粒子の連結 / 分離）と Chrono で崩した実際の粒子（1,764 個で
+  2〜4 ms・NaN 0・折れ目 0.05% 以下）。描画は **Filament 1.74 の本物の Renderer を
+  lavapipe（CPU の Vulkan）で回して**目で確認（`docs/images/fluid_surface_*.jpg`）。
+- **UI**: World タブの「💧 流体」節（`secFluid`。水面と粒子の有無・主な値・1 つ目の箱。
+  2 つ目以降の箱は 📄 XML）、アセットパネルの 🌊 Water / 💧 Fluid タイル（無ければ置く、
+  あれば節を開く）。コマンドは `edit.water` / `edit.fluid`（部分更新、`"present": false`
+  で節ごと外す。キーは `/scene` の `water` / `fluid` と同じ = `FluidTypes.h` の
+  `toJson` / `waterFromJson` / `fluidFromJson`）。`/scene` には `fluidStatus`（作った数・
+  打ち切り・作れなかった理由）と `features.fluid`。節には「表面でつなぐ」・透明度
+  （clarity）・屈折率（ior）の欄もある。AI の指示文は `<water>` / `<fluid>` を
+  書かせない（`ScenePrompt.cpp`）、履歴の差分は追加 / 削除 / 変更を 1 行。
+- **Multicore のソルバは 1 段（SLIDING）にする**（`PhysicsSystem::useSingleSlidingPhase`、
+  `FluidParticles::add` が呼ぶ）: Chrono 9.0 の `ChIterativeSolverMulticoreNSC::SetR` は
+  段を分けて回すとき（WizEngine の既定 = SPINNING の多段）に流体の拘束の行数を数え
+  違え、最初のステップで Blaze の例外 "Invalid subvector specification" を投げる（本物の
+  Chrono で確認）。1 段なら行を丸ごと使う経路を通る（Chrono のデモと同じ設定）。
+  代わりに流体のある系では転がり / スピン摩擦が効かない。系を作り直すと元に戻る。
+- **重さ**: 速さは粒子の数で決まり、反復回数ではほとんど変わらない（本物の Chrono 9.0・
+  4 コアで、1,800 粒子・2 ms 刻み・反復 30 が 1 ステップ 9〜14 ms = 実時間の約 1/5、
+  7,400 粒子・1 ms 刻みが 40〜90 ms）。見本の `fluid.xml` は前者。
+- **確認（本物の Chrono 9.0.0 = Core + Multicore をこの環境でビルドし、PhysicsWorld を
+  同じソースのまま回して）**: 水面の浮力は FluidComponent と同じ掛け方で、密度 500 の
+  箱の中心が理論どおり水面で止まる（y 1.0000）・25° 傾けて落とした密度 400 のいかだが
+  0.09° まで起き上がり喫水も理論どおり（1.0200）。流体粒子はダム崩壊（`fluid.xml` と同じ
+  配置、1,764 / 7,363 粒子）で NaN 0・水槽から漏れる粒子 0〜3・波が反対の壁まで届いて
+  0.5 m まで跳ねる・浮いた箱を押し流す、浅い水へ落とした密度 500 の箱が浮く（中心
+  0.162 m、水面 ≈ 0.157 m）、Reset で最初の並びへ誤差 0 で戻り 2 回目も同じように
+  崩れる（1.2 s 後の到達 0.578 m・平均の高さ 0.054 m が一致）。**実機（エンジン本体）で
+  動作を確認済み**（流体粒子。Reset の不具合はそこで見つかった）。静止後の水の高さは非圧縮の値より 1〜2 割低い（密度拘束の
+  反復で少し縮む）。文書層・純粋な計算は単体テスト（XML 往復・打ち間違いの警告・
+  JSON の部分更新・浮力 / 浮心 / 復元モーメント・密度比どおりの喫水・流れに乗る・
+  安全弁・波の式・粒子の配置）。
+- **未**: 水面（`<water>`）の透過・屈折と水中の色、水の側の反作用（物が水を押しのけて
+  水面が盛り上がる）、粒子の表面の泡・しぶきの白さ・コースティクス、粒子と水面の
+  併用時の相互作用（別々に効く）、流体粒子の UI での箱の追加、Chrono::FSI（SPH・CUDA）。
+
 ## ソフトボディ（`src/scene/SoftLattice.{h,cpp}` + `PhysicsWorld::addSoftBody` + `Renderer::addSoftShape`）
 
 **質点ばね方式**。Chrono の FEA モジュールは使わず、小さな球の剛体
@@ -2094,23 +2228,27 @@ src/
   core/          Log, AssetError, Versions, Stats, CpuAffinity, PortScan
                  （エンジン非依存の土台）
   physics/       PhysicsWorld（Chrono）, MeshCollision（glTF 凸包）, ModelImport（URDF 等の取込）, PhysicsTuning,
-                 ShaftNetworks（1D シャフト網 = AT の駆動系）
+                 ShaftNetworks（1D シャフト網 = AT の駆動系）, FluidParticles（Multicore の流体粒子）
   render/        Renderer（Filament）, GltfLoader, EnvironmentLoader, ImageLoader
   streaming/     HttpServer, WebRtcStreamer, VideoStreamer（GStreamer）
   document/      EditorTypes, SceneDocument, SceneXml（シーン文書。エンジン非依存）
   scene/         Scene（Scene.cpp / SceneEdit.cpp / SceneEvents.cpp /
-                 SceneSerialize.cpp + 私的ヘッダ SceneInternal.h）, SceneConfig,
+                 SceneSerialize.cpp / SceneFluid.cpp + 私的ヘッダ SceneInternal.h）, SceneConfig,
                  EditorState, GameObject, CameraObject, BoxController,
                  SceneComponent, PrefabDefaults, PrefabFrame, SceneMath,
                  MathBridge, RenderBridge
   components/    EditorComponent, GizmoComponent, PhysicsControlComponent,
                  StreamControlComponent, VehicleComponent, PrefabComponent,
                  AutoGenComponent, ControlComponent, EffectsComponent（パーティクル）,
-                 AtDriveline（AT を Chrono のシャフト網として組む係）
+                 AtDriveline（AT を Chrono のシャフト網として組む係）,
+                 FluidComponent（水面の浮力・抗力と、水面・流体粒子の描画）
   app/           起動設定（config.json の読み込み = AppConfig）
   autogen/       AI によるシーン自動構築（LLM / Meshy の HTTP クライアント・指示文・
                  配置の後始末。Chrono も Filament も知らない）
   vehicle/       車両モデル（純粋な数値ライブラリ。tests/vehicle が使う）
+  fluid/         流体の純粋な計算（水面の浮力・抗力・波 = WaterForces、流体粒子の配置と
+                 玉のメッシュ = FluidSeed、粒子をつないだ水の表面 = FluidSurface。
+                 Chrono も Filament も知らない）
   transmission/  遊星歯車式 AT の構造・変速制御（TCU）・信号・XML（純粋。動力学は Chrono）
   formula/       計算式（ノード式）の検証・実行（C++ / LuaJIT）・XML・数式テキスト
   control/       制御器の信号名・センサの計算・雛形（純粋。ControlComponent が使う）
@@ -2556,6 +2694,8 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
 - 済（実機待ち）: 起動設定の config.json 化（上の「起動設定」の章）。
 - 済（実機待ち）: AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換
   Text to 3D。上の「AI によるシーン自動構築」の章）。
+- 済（流体粒子は実機で確認）: 流体（水面の浮力・抗力・波と、Chrono::Multicore の流体粒子。
+  上の「流体」の章と `docs/fluid.md`）。
 - 済: ステップ3（姿勢反映）〜6（UDP配信）。
 - 未: ステップ7（クライアント→サーバーの入力・制御チャネル。カメラ操作を
   UDP/TCP で受けて `Renderer` にカメラ更新 API を追加）。

@@ -1397,6 +1397,181 @@
           （F 値を半分にすると 2 段明るい）。</div>
       </section>
 
+      <!-- 流体: 水面（XML の <water>。浮力・抗力を掛ける水の範囲と波）と流体粒子
+           （<fluid>。Chrono::Multicore が粒子で解く水）。どちらもシーンに 1 つの
+           単一要素。送るのは edit.water / edit.fluid（部分更新、"present": false で
+           節ごと外す）= エディタカメラのページ専用。粒子の箱は 1 つ目だけここで
+           編集でき、2 つ目以降は 📄 XML で書く。 -->
+      <section class="sbSec" id="secFluid" hidden>
+        <div class="sbSecHead">💧 流体</div>
+        <div class="edLabel">水面（浮力・抗力）</div>
+        <div class="edRow">
+          <span>水面を置く</span>
+          <input id="wtPresent" type="checkbox"
+                 title="水の範囲を置く。水面より下の動く物に浮力と抗力が掛かる（Core / Multicore どちらでも）"
+                 onchange="toggleWater(this.checked)">
+        </div>
+        <div id="wtFields">
+        <div class="trRow" title="範囲の中心 (m)。Y = 静水面の高さ">
+          <span class="trName">中心</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="wtPX" class="num" type="number" step="0.1" onchange="applyWater()"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="wtPY" class="num" type="number" step="0.1" onchange="applyWater()"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="wtPZ" class="num" type="number" step="0.1" onchange="applyWater()"></label>
+        </div>
+          <div class="edRow">
+            <span>広さ X / Z</span>
+            <span>
+              <input id="wtSX" class="num" type="number" step="1" min="0.05"
+                     title="範囲の半分の広さ (m)。外の物には効かない" onchange="applyWater()">
+              <input id="wtSZ" class="num" type="number" step="1" min="0.05" onchange="applyWater()">
+            </span>
+          </div>
+          <div class="edRow">
+            <span>密度</span>
+            <input id="wtDensity" class="num" type="number" step="25" min="1"
+                   title="kg/m³（真水 1000・海水 1025・油 900）。物の密度がこれより小さいと浮く"
+                   onchange="applyWater()">
+          </div>
+          <div class="edRow">
+            <span>抗力 Cd / 減衰</span>
+            <span>
+              <input id="wtDrag" class="num" type="number" step="0.1" min="0"
+                     title="二乗の抗力係数（球 0.5・箱 1 前後）" onchange="applyWater()">
+              <input id="wtLin" class="num" type="number" step="0.5" min="0"
+                     title="線形の減衰 (1/s)。上下の揺れがどれだけ早く収まるか" onchange="applyWater()">
+            </span>
+          </div>
+          <div class="edRow">
+            <span>回転の減衰</span>
+            <input id="wtAng" class="num" type="number" step="0.5" min="0"
+                   title="回転の減衰 (1/s)" onchange="applyWater()">
+          </div>
+        <div class="trRow" title="流れの速さ (m/s)。浮いた物が流される">
+          <span class="trName">流れ</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="wtFX" class="num" type="number" step="0.1" onchange="applyWater()"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="wtFY" class="num" type="number" step="0.1" onchange="applyWater()"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="wtFZ" class="num" type="number" step="0.1" onchange="applyWater()"></label>
+        </div>
+          <div class="edRow">
+            <span>波 振幅 / 周期</span>
+            <span>
+              <input id="wtWave" class="num" type="number" step="0.05" min="0"
+                     title="波の振幅 (m)。0 = 波なし" onchange="applyWater()">
+              <input id="wtPeriod" class="num" type="number" step="0.5" min="0.2"
+                     title="波の周期 (s)。波長は深水波の分散関係で決まる" onchange="applyWater()">
+            </span>
+          </div>
+          <div class="edRow">
+            <span>波の向き</span>
+            <input id="wtHeading" class="num" type="number" step="15"
+                   title="波の進む向き（Y まわりの度、0 = +X）" onchange="applyWater()">
+          </div>
+          <div class="edRow">
+            <span>色 / 粗さ</span>
+            <span>
+              <input id="wtColor" type="color" onchange="applyWater()">
+              <input id="wtRough" class="num" type="number" step="0.05" min="0" max="1"
+                     title="水面の粗さ（小さいほど映り込む。SSR と組むと物が映る）" onchange="applyWater()">
+            </span>
+          </div>
+        </div>
+
+        <div class="edLabel">流体粒子（Chrono::Multicore）</div>
+        <div class="edRow">
+          <span>流体粒子を置く</span>
+          <input id="flPresent" type="checkbox"
+                 title="水そのものを粒子で解く（注ぐ・跳ねる・物を浮かべる）。Multicore 専用 = ケーブル・テレインなど Core 専用の機能とは一緒に使えない"
+                 onchange="toggleFluid(this.checked)">
+        </div>
+        <div id="flFields">
+          <div class="edRow">
+            <span>粒子の間隔</span>
+            <input id="flSpacing" class="num" type="number" step="0.005" min="0.002"
+                   title="m。半分にすると粒子の数は約 8 倍" onchange="applyFluid()">
+          </div>
+          <div class="edRow">
+            <span>密度 / 粘性</span>
+            <span>
+              <input id="flDensity" class="num" type="number" step="25" min="1"
+                     title="静止密度 kg/m³" onchange="applyFluid()">
+              <input id="flVisc" class="num" type="number" step="0.01" min="0"
+                     title="粘性（0 = 切る）" onchange="applyFluid()">
+            </span>
+          </div>
+          <div class="edRow">
+            <span>凝集 / 上限</span>
+            <span>
+              <input id="flPressure" class="num" type="number" step="0.005" min="0" max="1"
+                     title="人工圧力の係数（表面張力のようにまとまる。0 = 切る）" onchange="applyFluid()">
+              <input id="flMax" class="num" type="number" step="1000" min="1"
+                     title="作る粒子の上限" onchange="applyFluid()">
+            </span>
+          </div>
+          <div class="edRow">
+            <span>表面でつなぐ</span>
+            <input id="flSurface" type="checkbox"
+                   title="粒子どうしをつないだ水の表面を、透けて屈折する水の材質で描く（外すと粒子ごとの玉）"
+                   onchange="applyFluid()">
+          </div>
+          <div class="edRow">
+            <span>透明度 / 屈折率</span>
+            <span>
+              <input id="flClarity" class="num" type="number" step="0.05" min="0.001"
+                     title="この厚み (m) の水を通すと下の「色」になる。大きいほど澄んだ水" onchange="applyFluid()">
+              <input id="flIor" class="num" type="number" step="0.01" min="1" max="3"
+                     title="屈折率（水 1.33）" onchange="applyFluid()">
+            </span>
+          </div>
+          <div class="edRow">
+            <span>色 / 粗さ</span>
+            <span>
+              <input id="flColor" type="color" onchange="applyFluid()">
+              <input id="flRough" class="num" type="number" step="0.05" min="0" max="1"
+                     onchange="applyFluid()">
+            </span>
+          </div>
+          <div class="edLabel" id="flBlockLabel">水の箱 1</div>
+        <div class="trRow" title="水を置く箱の中心 (m)">
+          <span class="trName">中心</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="flBPX" class="num" type="number" step="0.1" onchange="applyFluid()"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="flBPY" class="num" type="number" step="0.1" onchange="applyFluid()"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="flBPZ" class="num" type="number" step="0.1" onchange="applyFluid()"></label>
+        </div>
+        <div class="trRow" title="箱の半分の大きさ (m)">
+          <span class="trName">半寸法</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="flBSX" class="num" type="number" step="0.05" onchange="applyFluid()"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="flBSY" class="num" type="number" step="0.05" onchange="applyFluid()"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="flBSZ" class="num" type="number" step="0.05" onchange="applyFluid()"></label>
+        </div>
+        <div class="trRow" title="m/s">
+          <span class="trName">初速</span>
+          <label class="trCell"><span class="axis axX">X</span>
+            <input id="flBVX" class="num" type="number" step="0.5" onchange="applyFluid()"></label>
+          <label class="trCell"><span class="axis axY">Y</span>
+            <input id="flBVY" class="num" type="number" step="0.5" onchange="applyFluid()"></label>
+          <label class="trCell"><span class="axis axZ">Z</span>
+            <input id="flBVZ" class="num" type="number" step="0.5" onchange="applyFluid()"></label>
+        </div>
+          <div class="edHint" id="flStatus"></div>
+        </div>
+        <div class="edHint">水面は物に力を掛けるだけで、水そのものは動きません。
+          水が動く様子は流体粒子で解きます（粒子は細かい刻みが要るので、
+          World の Rate × サブステップを 500 Hz 以上に）。箱を増やすのは
+          📄 XML の &lt;fluid&gt;&lt;block/&gt; で。</div>
+      </section>
+
       <section class="sbSec">
         <div class="sbSecHead">Stream (this camera)</div>
         <div class="tuneRow">

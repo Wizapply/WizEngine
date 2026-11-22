@@ -1,0 +1,36 @@
+// 液体（流体粒子から組んだ水の表面）の材質。Filament の**画面空間の屈折**
+// （refractionMode : screenspace）を使う透過する誘電体:
+//   ・背景（水の向こうの物・床）が屈折率 ior でずれて透けて見える
+//   ・厚みのぶんだけ absorption で色が吸われる（浅い所は透明、深い所は青い）
+//   ・表面は普通の lit と同じく光源と環境マップを映す（フレネルで縁ほど強い）
+// 屈折は「不透明の物を描いた後の画面」を引くので、液体どうしの重なりは
+// 屈折で見えない（Filament の画面空間の屈折の約束）。値はインスタンスごとに
+// 必ず入れること（.mat には既定値が書けない。Renderer::setLiquidStyle）。
+material {
+    name : liquid,
+    shadingModel : lit,
+    refractionMode : screenspace,
+    refractionType : solid,
+    culling : none,
+    parameters : [
+        { type : float3, name : baseColor },
+        { type : float3, name : absorption },
+        { type : float,  name : roughness },
+        { type : float,  name : ior },
+        { type : float,  name : transmission },
+        { type : float,  name : thickness }
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = vec4(materialParams.baseColor, 1.0);
+        material.metallic = 0.0;
+        material.roughness = materialParams.roughness;
+        material.ior = materialParams.ior;
+        material.transmission = materialParams.transmission;
+        material.absorption = materialParams.absorption;
+        material.thickness = materialParams.thickness;
+    }
+}

@@ -27,6 +27,9 @@ PhysicsFeatures physicsFeatures() {
 #ifdef WIZ_HAVE_MODAL
     f.modal = true;
 #endif
+#ifdef WIZ_USE_MULTICORE
+    f.fluid = true;
+#endif
     return f;
 }
 
@@ -110,6 +113,24 @@ void PhysicsWorld::cableNodePositions(std::size_t cable, std::vector<float>& out
 }
 
 double PhysicsWorld::cableTension(std::size_t cable) const { return p_->cables.tension(cable); }
+
+// ---- 流体粒子（本体は FluidParticles）--------------------------------------------
+
+bool PhysicsWorld::addFluid(const FluidSpec& spec, std::string& why) {
+    return p_->fluid.add(spec, why);
+}
+
+bool PhysicsWorld::hasFluid() const { return p_->fluid.active(); }
+
+std::size_t PhysicsWorld::fluidParticleCount() const { return p_->fluid.count(); }
+
+void PhysicsWorld::fluidParticlePositions(std::vector<float>& out) const {
+    p_->fluid.positions(out);
+}
+
+double PhysicsWorld::fluidMaxSpeed() const { return p_->fluid.maxSpeed(); }
+
+bool PhysicsWorld::resetFluid() { return p_->fluid.resetToInitial(); }
 
 // ---- 1D のシャフト網（本体は ShaftNetworks）-------------------------------------
 

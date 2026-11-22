@@ -23,6 +23,7 @@ void PhysicsWorld::recreate(PhysicsBackend backend, ContactMethod contact) {
     p_->joints.clear();
     p_->cables.clear();
     p_->shafts.clear();
+    p_->fluid.clear();  // 流体粒子のコンテナは古い系と一緒に消える
     ++systemSerial_;
     // 名簿を空にすると、番号と並ぶ担当の配列（ソフトボディの一覧など）も
     // onBodiesCleared で捨てられる（系を壊す前 = 途中で例外が出ても古い番号が残らない）。

@@ -2,6 +2,7 @@
 
 #include "core/Clamp.h"
 #include "core/MathConstants.h"
+#include "document/FluidXml.h"
 #include "document/XmlValues.h"
 #include "formula/FormulaXml.h"
 #include "ui/UiProps.h"  // UI のノード（SetUiProp）の性質の名前と型
@@ -1512,6 +1513,9 @@ xml::Element toXml(const SceneDocument& doc) {
     for (const auto& b : doc.bodies) world.append(bodyElement(b));
     for (const auto& c : doc.cables) world.append(cableElement(c, doc.bodies));
     for (const auto& m : doc.emitters) world.append(emitterElement(m, doc.bodies));
+    // 水面と流体粒子（持っているときだけ = 無い文書の保存ファイルを太らせない）。
+    if (doc.hasWater) world.append(waterElement(doc.water));
+    if (doc.hasFluid) world.append(fluidElement(doc.fluid));
     for (const auto& c : doc.canvases) world.append(ui::canvasElement(c));
     root.append(std::move(world));
 
@@ -1717,7 +1721,7 @@ SceneDocument fromXml(const xml::Element& root,
     if (const xml::Element* world = root.first("worldbody")) {
         warnUnknownChildren(*world,
                             {"environment", "ground", "terrain", "light", "camera",
-                             "body", "cable", "emitter", ui::kCanvasTag},
+                             "body", "cable", "emitter", "water", "fluid", ui::kCanvasTag},
                             "<worldbody>", warn);
 
         // 環境光と地面は worldbody 直下の単一要素。2 個目以降は警告して無視。
@@ -1807,6 +1811,19 @@ SceneDocument fromXml(const xml::Element& root,
         // パーティクルのエミッタ（見た目だけ）。付け先も body を全部読んだ後で解く。
         for (const xml::Element* m : world->all("emitter")) {
             doc.emitters.push_back(emitterFromXml(*m, doc.bodies, warn));
+        }
+        // 水面と流体粒子（document/FluidXml.h）。どちらも単一要素。
+        const auto waters = world->all("water");
+        if (!waters.empty()) {
+            doc.hasWater = true;
+            doc.water = waterFromXml(*waters[0], warn);
+            if (waters.size() > 1) warn("multiple <water> elements - using the first");
+        }
+        const auto fluids = world->all("fluid");
+        if (!fluids.empty()) {
+            doc.hasFluid = true;
+            doc.fluid = fluidFromXml(*fluids[0], warn);
+            if (fluids.size() > 1) warn("multiple <fluid> elements - using the first");
         }
         // UI の Canvas（ui/UiXml.h）。フォントと UI アセットの宣言は <asset> で読んだ。
         ui::readCanvases(*world, doc.fonts, doc.uiAssets, doc.canvases, warn);

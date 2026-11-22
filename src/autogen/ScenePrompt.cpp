@@ -224,7 +224,7 @@ MODELS
 
     s += R"(
 DO NOT WRITE
-- <vehicle>, <terrain>, <soft>, <cable>, <prefab>, <emitter>, <event>/<events>, <formula>, <control>,
+- <vehicle>, <terrain>, <soft>, <cable>, <prefab>, <emitter>, <water>, <fluid>, <event>/<events>, <formula>, <control>,
   <include>, <default>, <site>, <tendon>, <actuator>, <sensor> or any element not shown above.
   (These exist in the engine but need data you cannot produce; in edit mode keep existing ones unchanged.)
 
