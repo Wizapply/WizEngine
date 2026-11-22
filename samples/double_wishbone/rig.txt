@@ -1,0 +1,58 @@
+# 加振台（pad）の上下の動きを作り、サスペンションの計測値をスコープへ出す。
+# モード（param:mode）: 0 静置 / 1 段差（4 秒周期で振幅ぶん上がって下がる）/
+#   2 正弦掃引（0.5 → 20 Hz を 40 秒。2 Hz までは変位一定、その先は速度一定）/
+#   3 正弦（param:freq）。各モードは自分の時計を持ち、選んだときに 0 から始まる。
+amp = param:amp
+mode = param:mode
+m1 = abs(mode - 1) < 0.5
+m2 = abs(mode - 2) < 0.5
+m3 = abs(mode - 3) < 0.5
+
+# 段差: 縁石を 0.6 m/s で上り下りする台形波
+t1 = select(m1, delay(t1) + dt, 0)
+up = sin(2 * pi * (t1 - 1) / 4) > 0
+step = ratelimit(amp * up * m1, 0.6, 0.6)
+
+# 正弦掃引（線形チャープ）
+T = 40; f0 = 0.5; f1 = 20
+t2 = select(m2, delay(t2) + dt, 0)
+ts = min(t2, T)
+fs = f0 + (f1 - f0) * ts / T
+ph2 = 2 * pi * (f0 * ts + (f1 - f0) * ts * ts / (2 * T))
+sweep = amp * min(1, 2 / fs) * sin(ph2) * (t2 < T) * m2
+
+# 正弦（周波数はスライダーで変えても位相が飛ばないように積分する）
+ph3 = select(m3, delay(ph3) + 2 * pi * param:freq * dt, 0)
+sine = amp * sin(ph3) * m3
+
+road = ratelimit(step + sweep + sine, 5, 5)
+joint:pad.target = road
+
+# ---- 計測 ----------------------------------------------------------------------
+# 開始時の値を覚える（最初の評価だけ今の値、あとは前回の値を保つ）
+yc0 = select(time > 0, delay(yc0), body:chassis.y)
+yw0 = select(time > 0, delay(yw0), body:wheel.y)
+heave = body:chassis.y - yc0
+wheel = body:wheel.y - yw0
+scope:road_mm = 1000 * road
+scope:body_mm = 1000 * heave
+scope:wheel_mm = 1000 * wheel
+scope:travel_mm = 1000 * (wheel - heave)
+
+# キャンバーとトー: アップライトの姿勢（R = Rz Ry Rx）でホイールの軸
+# （アップライトのローカルの ({AX}, {AY}, {AZ}) = 設計姿勢のワールド +X）を回す。
+rx = body:upright.rx; ry = body:upright.ry; rz = body:upright.rz
+y1 = cos(rx) * {AY} - sin(rx) * {AZ}
+z1 = sin(rx) * {AY} + cos(rx) * {AZ}
+x2 = cos(ry) * {AX} + sin(ry) * z1
+z2 = cos(ry) * z1 - sin(ry) * {AX}
+x3 = cos(rz) * x2 - sin(rz) * y1
+y3 = sin(rz) * x2 + cos(rz) * y1
+scope:camber_deg = atan2(-y3, x3) * 180 / pi   # + = 上が外へ倒れる
+scope:toe_deg = atan2(z2, x3) * 180 / pi       # + = トーイン
+
+# 力: コイルは Chrono のばねの力（大きさ）、タイヤは符号付き（負 = 実車なら浮いている）
+scope:spring_N = joint:coil.force
+scope:tire_N = {K_TIRE} * ({REST_TIRE} - (body:wheel.y - body:pad.y)) - {C_TIRE} * (body:wheel.vy - body:pad.vy)
+scope:body_acc = lag(derivative(body:chassis.vy), 0.01)
+scope:sweep_Hz = fs * m2
