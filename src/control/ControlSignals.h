@@ -58,6 +58,17 @@
 //   emitter:<名前>.rate        … パーティクルのエミッタ（<worldbody> の <emitter>）が
 //                                このステップに出す量 (粒子 / 秒)。書いている間は
 //                                文書の rate より勝つ（見た目だけ。物理に影響なし）
+//   audio:<名前>.play          … オーディオソース（<worldbody> の <audiosource>）を鳴らす /
+//                                止める（0.5 を下から上へまたいだら Play、上から下へ
+//                                またいだら Stop。loop の音源を「回っている間だけ鳴らす」）
+//   audio:<名前>.trigger       … 一発鳴らす（0.5 を下から上へまたいだら Play。下がっても
+//                                止めない = PlayOneShot。燃焼・衝突のような短い音を、
+//                                信号が立っている時間と関係なく最後まで鳴らす）。
+//                                鳴らした**ステップの時刻**がミキサーへ渡り、音の頭は
+//                                出力のサンプル位置に割り付けられる = 描画のフレームより
+//                                細かい間隔（6800 rpm の点火 = 340 回 / 秒）でも並びが崩れない
+//   audio:<名前>.volume pitch  … 音量・高さ（再生速度の倍率）。書いている間は文書の値より
+//                                勝つ（エンジン音の高さを回転数で、など。止めると戻る）
 //   param:<名前>               … パラメータを書き換える（制御盤のスライダーも動く。
 //                                範囲は <param> の min / max で丸める。値が変わった
 //                                ときだけ書く = 式が同じ値を出し続けている間は
@@ -96,7 +107,7 @@
 namespace wizengine {
 namespace control {
 
-enum class Source { Time, Body, Joint, Vehicle, Scope, Param, Emitter, Var, Transmission, Air };
+enum class Source { Time, Body, Joint, Vehicle, Scope, Param, Emitter, Var, Transmission, Air, Audio };
 
 enum class Quantity {
     None,
@@ -111,6 +122,7 @@ enum class Quantity {
     Fx, Fy, Fz, Tx, Ty, Tz, LFx, LFy, LFz, LTx, LTy, LTz,
     Throttle, Brake, Steer, Handbrake,
     EmitRate,
+    AudioPlay, AudioTrigger, AudioVolume, AudioPitch,
     // trans（センサ・アクチュエータとも。量の名前は SignalRef::sub、transmission/AtSignals が引く）
     Trans,
     // air（センサ・アクチュエータとも。量の名前は SignalRef::sub = airSensorNames の 1 つ）

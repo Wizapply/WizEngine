@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- オーディオの見本（Unity の AudioSource / AudioListener に相当）。
+       * bgm      … どこにも付かない 2D の音（spatialblend 0）。ループで小さく流れる
+       * engine   … 回る腕の先に付いた 3D の音（spatialblend 1）。耳（カメラ）の周りを
+                    回るので、左右に振れ、近づくと大きく・高く（ドップラー）、離れると
+                    小さく・低く聞こえる
+       * hit_N    … 箱ごとの 3D の衝突音。イベント thud（onCollision → playAudio）が
+                    地面や他の物に当たったときに鳴らす（loop でない音は重ねて鳴る）。
+                    3 つの箱は高さが違うので、1 つずつ地面に着地して鳴る。
+                    onCollision は「新しく触れた」ときだけ鳴る（Unity の OnCollisionEnter）
+                    ので、止まった箱は鳴らない。マウスで掴んで持ち上げ、落とすとまた鳴る
+       * hit_ball … 跳ねる球（反発係数 0.6）。跳ねるたびに床から離れて触れ直すので、
+                    跳ねるたびに鳴る（間隔が詰まって、最後は転がって止まる）
+       * chime    … 柱の上のベル。シーン全体のイベント bell（onTimer 4 s → playAudio
+                    source="chime"）が鳴らす
+     耳は既定 = 見ているページのカメラ。<audiolistener body="arm"/> を足すと腕に乗って
+     聞ける（ドップラーは相対速度なので消える）。音はシミュレート中だけ、ブラウザで
+     鳴る（映像ヘッダーの 🔊、最初のクリックで音が出る）。クリップは
+     samples/audio/gen_clips.py が作った assets/audio/*.wav。 -->
+<wizengine model="audio" version="4">
+  <!-- combine="max": 接触する 2 つの反発係数の大きい方を使う。既定の min だと床（シーンの
+       restitution = 0）が勝って、反発係数 0.6 の球も跳ねない = 衝突音が 1 回で終わる。 -->
+  <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="60" combine="max"/>
+  <asset>
+    <event name="pickup">
+      <node id="1" type="onGrab" pos="40 40" target="-1"/>
+      <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+      <wire from="1" to="2"/>
+    </event>
+    <!-- 付けた箱が何かに（強めに）当たったら、その箱の音源を鳴らす。source を書かない
+         = 付けた相手に付いている音源の全部。 -->
+    <event name="thud">
+      <node id="1" type="onCollision" pos="40 40" target="-1" other="-2" minforce="3"/>
+      <node id="2" type="playAudio" pos="300 40" target="-1"/>
+      <wire from="1" to="2"/>
+    </event>
+    <!-- 4 秒ごとにベル。シーン全体に付けたイベントには「付けた相手」が無いので、
+         音源を名前で指す（source="chime"）。 -->
+    <event name="bell">
+      <node id="1" type="onTimer" pos="40 40" seconds="4"/>
+      <node id="2" type="playAudio" pos="300 40" target="-1" source="chime"/>
+      <wire from="1" to="2"/>
+    </event>
+  </asset>
+  <worldbody>
+    <ground size="12" visual="10" texture="textures/ground.png" tile="2"/>
+    <light name="key" type="directional" pos="0 8 0" euler="35 -25 0" intensity="100000"
+           castshadow="true"/>
+    <light name="fill" type="point" pos="-3 4 3" intensity="60000" falloff="20"
+           castshadow="false"/>
+    <camera name="cam0" target="0 1.2 0" azimuth="30" elevation="18" radius="11"/>
+
+    <!-- 回る腕: 柱に hinge（縦軸）で留め、速度モータで 120 deg/s。腕は重力を受けない
+         （hinge が支えるので垂れ下がらないように）。 -->
+    <body name="post" pos="0 0.95 0" fixed="true">
+      <geom type="box" size="0.08 0.95 0.08" mass="10" rgba="0.4 0.42 0.48 1"/>
+    </body>
+    <body name="arm" pos="2.15 2 0">
+      <geom type="box" size="2 0.05 0.05" mass="1" rgba="0.9 0.5 0.2 1" gravity="false"/>
+    </body>
+
+    <!-- 落ちてくる箱。高さを変えて横に並べてあるので、1 つずつ別の時刻に地面へ着地して
+         鳴る（約 0.4 / 0.8 / 1.1 秒）。回る腕の届く範囲（軸から半径 4.15 m・高さ 2 m）の
+         外に置く: 中だと落ちる途中で腕に叩かれる。 -->
+    <body name="box0" pos="-4.2 1.2 2.4">
+      <geom type="box" size="0.2 0.2 0.2" mass="1" rgba="0.80 0.36 0.18 1"/>
+      <event name="thud"/>
+    </body>
+    <body name="box1" pos="-3.6 3.2 3.2" euler="10 20 0">
+      <geom type="box" size="0.2 0.2 0.2" mass="1" rgba="0.76 0.42 0.20 1"/>
+      <event name="thud"/>
+    </body>
+    <body name="box2" pos="-2.8 6.0 4.0" euler="-15 5 10">
+      <geom type="box" size="0.2 0.2 0.2" mass="1" rgba="0.72 0.34 0.22 1"/>
+      <event name="thud"/>
+    </body>
+    <body name="ball" pos="3.6 2.5 3">
+      <geom type="sphere" size="0.2" mass="0.5" rgba="0.3 0.6 0.9 1" restitution="0.6"/>
+      <event name="thud"/>
+    </body>
+
+    <!-- ベルの柱（腕の届く範囲の外 = 軸から 5 m。中に立てると腕が毎周ぶつかって止まる） -->
+    <body name="bell_post" pos="-4 1.2 -3" fixed="true">
+      <geom type="box" size="0.06 1.2 0.06" mass="5" rgba="0.5 0.45 0.3 1"/>
+    </body>
+
+    <!-- 音源（Unity の AudioSource）。body = 付け先、pos = 付け先のローカル。
+         衝突音は mindistance（ここまでは減衰しない距離）を 6 m にしてある: 1 m だと
+         カメラ（約 10 m 先）では 1/10 = -20 dB まで下がり、BGM と回転音に埋もれる。 -->
+    <audiosource name="bgm" body="world" clip="audio/bgm_loop.wav" volume="0.15" loop="true"/>
+    <audiosource name="engine" body="arm" pos="2 0 0" clip="audio/engine_loop.wav" volume="0.7"
+                 pitch="1.5" loop="true" spatialblend="1" mindistance="1.5" maxdistance="40"/>
+    <audiosource name="hit_0" body="box0" clip="audio/impact.wav" playonawake="false"
+                 spatialblend="1" mindistance="6" maxdistance="60"/>
+    <audiosource name="hit_1" body="box1" clip="audio/impact.wav" pitch="0.9"
+                 playonawake="false" spatialblend="1" mindistance="6" maxdistance="60"/>
+    <audiosource name="hit_2" body="box2" clip="audio/impact.wav" pitch="1.1"
+                 playonawake="false" spatialblend="1" mindistance="6" maxdistance="60"/>
+    <audiosource name="hit_ball" body="ball" clip="audio/beep.wav" volume="0.6"
+                 playonawake="false" spatialblend="1" mindistance="6" maxdistance="60"/>
+    <audiosource name="chime" body="bell_post" pos="0 1.25 0" clip="audio/chime.wav"
+                 volume="0.7" playonawake="false" spatialblend="1" mindistance="6"
+                 maxdistance="40" rolloff="linear"/>
+  </worldbody>
+  <equality>
+    <joint name="spin" type="hinge" body1="arm" body2="post" anchor="0 2 0" axis="0 1 0"
+           motor="speed" target="120"/>
+  </equality>
+  <events>
+    <event name="pickup"/>
+    <event name="bell"/>
+  </events>
+</wizengine>

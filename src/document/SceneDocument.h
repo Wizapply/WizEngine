@@ -9,6 +9,7 @@
 #include "core/Xml.h"
 #include "document/EditorTypes.h"
 #include "document/FluidTypes.h"
+#include "document/AudioTypes.h"
 #include "transmission/AtTypes.h"
 #include "ui/UiTypes.h"
 #include "ui/UiValue.h"  // NodeFieldValues
@@ -119,6 +120,15 @@
 //                                    ... パーティクルのエミッタ（見た目だけ。
 //                                        EditorTypes.h の EmitterDesc）。量は
 //                                        rate か、制御器の emitter:<名前>.rate
+//       <audiosource name="engine" body="car" pos="0 0.5 -1" clip="audio/engine_loop.wav"
+//                    volume="0.8" pitch="1" loop="true" playonawake="true" mute="false"
+//                    spatialblend="1" pan="0" mindistance="1" maxdistance="60"
+//                    rolloff="logarithmic|linear" doppler="1"/>
+//                                    ... 音源（Unity の AudioSource。鳴らすのはブラウザ。
+//                                        spatialblend 0 = 2D・1 = 3D。document/AudioTypes.h）
+//       <audiolistener body="car" pos="0 1 0" euler="0 0 0" volume="1" doppler="1"
+//                      soundspeed="343"/>
+//                                    ... 耳（単一要素。無ければ各ページのカメラが耳）
 //       <water pos="0 0 0" size="10 10" density="1000" drag="1" wave="0.1" period="4"/>
 //                                    ... 水面（浮力・抗力。単一要素。document/FluidXml.h）
 //       <fluid spacing="0.04" density="1000"> <block pos size velocity/> </fluid>
@@ -285,6 +295,12 @@ struct SceneDocument {
     // パーティクルのエミッタ（<worldbody> の <emitter>）。body はオブジェクト
     // 番号（-1 = ワールド）。物理には関わらない見た目だけの物。
     std::vector<EmitterDesc> emitters;
+    // オーディオ（<worldbody> の <audiosource> と <audiolistener>。document/AudioTypes.h）。
+    // 音源の body はオブジェクト番号（-1 = ワールド）。リスナーは単一要素で、節が無い
+    // = 各ページのカメラが耳（hasAudioListener が false）。
+    std::vector<AudioSourceDesc> audioSources;
+    bool hasAudioListener = false;
+    AudioListenerDesc audioListener;
     // 水面（<worldbody> の <water>）と流体粒子（<fluid>）。どちらも単一要素で、
     // 節が無い = 無い（hasWater / hasFluid が false）。
     WaterDesc water;

@@ -28,12 +28,16 @@
 #include <math/mat4.h>
 #include <math/vec3.h>
 
+#include "streaming/AudioDecode.h"
 #include "streaming/HttpServer.h"
 #include "core/Log.h"
 #include "core/Versions.h"
 #include "core/AssetError.h"
 #include "core/CpuAffinity.h"
 #include "components/EditorComponent.h"
+#include "audio/AudioClip.h"
+#include "audio/AudioOutput.h"
+#include "document/AudioTypes.h"
 #include "document/EditorTypes.h"
 #include "core/PortScan.h"
 #include "components/PhysicsControlComponent.h"
@@ -455,6 +459,11 @@ int run(int argc, char** argv) {
     };
     std::vector<std::unique_ptr<CameraEndpoint>> endpoints;
     std::unique_ptr<HttpListener> listener;  // the one port they all share
+    // オーディオ（サーバーで作って映像と同じ WebRTC の回線で送る）。クリップの読み込み
+    // （別スレッド）と、カメラごとのミキサーを回す音声のスレッド。web モードだけ。
+    // endpoints より後に宣言 = 先に壊れる（sink が WebRtcStreamer を指しているため）。
+    std::unique_ptr<wizengine::audio::AudioClipCache> audioClips;
+    std::unique_ptr<wizengine::audio::AudioOutput> audioOut;
 
     // web mode -> WebRTC to the browser (no GStreamer sink). Other modes -> the
     // GStreamer VideoStreamer, which stays single-camera (camera 0).
@@ -519,6 +528,10 @@ int run(int argc, char** argv) {
         // unrelated program) is skipped instead of failing to bind.
         listener = std::make_unique<HttpListener>(
             wizengine::findFreePortRun(httpPort, 1));
+        audioClips = std::make_unique<wizengine::audio::AudioClipCache>(wizengine::kAssetRoot);
+        audioClips->setFallbackDecoder(wizengine::streaming::decodeAudioFileGst);
+        audioOut = std::make_unique<wizengine::audio::AudioOutput>(scene.cameraCount(),
+                                                                   *audioClips);
         for (std::size_t i = 0; i < scene.cameraCount(); ++i) {
             auto ep = std::make_unique<CameraEndpoint>();
             ep->path = "/cam" + std::to_string(i) + "/";
@@ -628,6 +641,16 @@ int run(int argc, char** argv) {
                     return controlComp->samplesCsv(formula);
                 });
 
+            // このカメラの音（音声のスレッドが 10 ms ごとに作る）→ 音声のトラック。
+            audioOut->setSink(camIndex, [rtc](const int16_t* pcm, std::size_t frames,
+                                              double latency) {
+                rtc->pushAudio(pcm, frames, latency);
+            });
+            // Inspector の ▶ 試聴だけが使うクリップの配信。
+            ep->http->setClipSource(wizengine::kAssetRoot, [](const std::string& file) {
+                return wizengine::editor::audioClipAllowed(file);
+            });
+
             // シーン文書そのもの（保存されるのと同じ XML）。ブラウザの
             // アセットパネルの「📄 XML」から開く。
             ep->http->setSceneXmlProvider([&scene] { return scene.documentXml(); });
@@ -646,6 +669,8 @@ int run(int argc, char** argv) {
                 ep.reqKbps.store(kbps);
                 ep.formatDirty.store(true);
             }));
+
+        audioOut->start();
 
         // ギズモ（エディタ専用レイヤ）はエディタカメラのビューにだけ映す。
         // 他のビューは addView が「見せない」で作っている。
@@ -1054,8 +1079,21 @@ int run(int argc, char** argv) {
                     ep->nextFrameDue =
                         nowTp + std::chrono::microseconds(1000000 / ep->fps);
                 }
+                // このフレームに描く状態の音（耳 = このカメラ）。映像の絵と同じ瞬間。
+                const std::size_t camIdx = std::size_t(&ep - endpoints.data());
+                if (audioOut) {
+                    wizengine::audio::AudioFrame af;
+                    scene.buildAudioFrame(camIdx, af);
+                    af.paused = tuning.paused.load();
+                    audioOut->submit(camIdx, std::move(af));
+                }
                 renderer.renderFrame(ep->viewIndex,
                                      [&](const uint8_t* data, size_t size) {
+                                         // 描いてから押し込むまでの遅れ = 音をずらす量。
+                                         if (audioOut) {
+                                             audioOut->setVideoLatency(
+                                                 camIdx, renderer.readbackLatency(ep->viewIndex));
+                                         }
                                          ep->pushFrame(data, size);
                                      });
             }
@@ -1092,6 +1130,7 @@ int run(int argc, char** argv) {
     aiComp->shutdown();
     // Readbacks are asynchronous, so let the in-flight ones land before the
     // encoders and their buffers go away.
+    if (audioOut) audioOut->stop();  // sink（WebRtcStreamer）へ書くスレッドを先に止める
     renderer.finishPendingReadbacks();
     if (listener) listener->stop();
     std::puts("\nstopped.");

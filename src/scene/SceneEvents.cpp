@@ -242,14 +242,25 @@ void Scene::runEventGraph(double dt) {
     }
 
     // 今ステップの接触をオブジェクト番号のペア（-1 = 地面）に引き直し、
-    // 前ステップに無かったものだけを「新しくぶつかった」として残す。NSC では
-    // 積まれているだけでも毎ステップ接触が立つので、差分を取らないと乗って
-    // いるだけで発火し続ける。ペアごとに一番強い接触点の力と法線も持つ
-    // （OnCollision の「最小接触力」「向き」の絞り込みに使う）。
+    // 触れ始めたばかりのものだけを「ぶつかった」候補として残す。NSC では
+    // 積まれているだけでも毎ステップ接触が立つので、続いている接触は候補にしない
+    // （乗っているだけで発火し続けないように）。ペアごとに一番強い接触点の力と
+    // 法線も持つ（OnCollision の「最小接触力」「向き」の絞り込みに使う）。
+    //
+    // **ぶつかった瞬間は 1 ステップではなく、触れてから kCollisionEnterSeconds の
+    // 間**: 接触はエンベロープ（面が実際に触れる数 mm 手前）で先にでき、ゆっくり
+    // 着地した物（跳ねる球の小さな跳ね・そっと置いた物）はその最初のステップの力が
+    // ほぼ 0 になる。1 ステップだけ見ると最小接触力（minforce）で落とされ、その
+    // 着地は二度と鳴らなかった。この間に条件を満たした最初のステップで、1 回の
+    // 接触（触れてから離れるまで = 通し番号）につき 1 回だけ発火する
+    // （InstanceState::firedContacts）。minforce 0・向きの指定なしなら従来どおり
+    // 触れた最初のステップで鳴る。
+    constexpr double kCollisionEnterSeconds = 0.05;
     struct NewPair {
         int a = -1, b = -1;
         double force = 0.0;
         double nx = 0.0, ny = 0.0, nz = 0.0;  // a から b へ向く法線
+        std::uint64_t episode = 0;            // 接触の通し番号
     };
     std::vector<NewPair> newPairs;
     if (wantContacts) {
@@ -292,18 +303,41 @@ void Scene::runEventGraph(double dt) {
             if (slot.a == -1 && slot.b == -1 && slot.force == 0.0) slot = np;
             else if (np.force > slot.force) slot = np;
         }
-        // 最初のパスは今の接触を覚えるだけで発火させない。シミュレート開始の
-        // 時点で既に触れていたペア（積んである箱・地面の上の箱）まで「新しく
+        // 続いている接触は年齢を進め、新しい接触には通し番号を振る。最初のパスは
+        // 今の接触を覚えるだけで発火させない（年齢を窓の外から始める）。シミュレート
+        // 開始の時点で既に触れていたペア（積んである箱・地面の上の箱）まで「新しく
         // ぶつかった」ことになってしまうため。
-        std::set<std::pair<int, int>> nowKeys;
-        for (const auto& kv : now) nowKeys.insert(kv.first);
-        if (graphRt_.contactsPrimed) {
-            for (const auto& kv : now) {
-                if (!graphRt_.prevContacts.count(kv.first)) newPairs.push_back(kv.second);
+        std::map<std::pair<int, int>, GraphRuntime::ContactEpisode> next;
+        for (const auto& kv : now) {
+            GraphRuntime::ContactEpisode e;
+            const auto it = graphRt_.contacts.find(kv.first);
+            if (it != graphRt_.contacts.end()) {
+                e = it->second;
+                e.age += dt;
+            } else {
+                e.id = ++graphRt_.contactSerial;
+                e.age = graphRt_.contactsPrimed ? 0.0 : kCollisionEnterSeconds;
+            }
+            next[kv.first] = e;
+            if (e.age < kCollisionEnterSeconds) {
+                NewPair p = kv.second;
+                p.episode = e.id;
+                newPairs.push_back(p);
             }
         }
         graphRt_.contactsPrimed = true;
-        graphRt_.prevContacts.swap(nowKeys);
+        graphRt_.contacts.swap(next);
+        // 離れた接触の「鳴らし済み」の印を捨てる（覚え続けない）。
+        std::set<std::uint64_t> active;
+        for (const auto& c : graphRt_.contacts) active.insert(c.second.id);
+        for (auto& st : graphRt_.state) {
+            for (auto& kv : st.second.firedContacts) {
+                for (auto it = kv.second.begin(); it != kv.second.end();) {
+                    if (active.count(*it)) ++it;
+                    else it = kv.second.erase(it);
+                }
+            }
+        }
     }
 
     // 掴んでいるカメラぶん（カメラごとに違う物を掴める）。
@@ -399,6 +433,8 @@ void Scene::runEventGraph(double dt) {
                     for (const auto& p : newPairs) {
                         int hit = -1;
                         if (!collisionMatches(n, inst.owner, p, hit)) continue;
+                        // 1 回の接触で 1 回だけ（触れてからの窓の間に何度条件を満たしても）。
+                        if (!st.firedContacts[n.id].insert(p.episode).second) continue;
                         GraphContext c = base;
                         c.object = hit;
                         fires.push_back(c);
@@ -557,6 +593,17 @@ void Scene::runGraphAction(const ed::NodeDesc& n, const GraphContext& ctx,
             l.stateDirty = true;
             return;
         }
+        case ed::NodeKind::PlayAudio:
+        case ed::NodeKind::StopAudio: {
+            // 音を作るのはサーバーの音声のスレッド（audio/AudioMixer）。ここは「鳴らせ /
+            // 止めろ」の回数と時刻を数えるだけ（SceneAudio.cpp）。相手は他のオブジェクトの
+            // アクションと同じ決まり。名前（element）があれば、その名前の音源（相手か
+            // ワールドに付いた物）。時刻はこのステップの終わり（step の後に走るので、
+            // simClock_ はまだ進めていない）。
+            audioPlayOn(objectAlive(obj) ? obj : -1, n.element,
+                        n.kind == ed::NodeKind::PlayAudio, simClock_ + dt);
+            return;
+        }
         case ed::NodeKind::SetVelocity: {
             if (!objectAlive(obj)) return;
             const GameObject& o = boxes_[std::size_t(obj)];
@@ -631,7 +678,7 @@ void Scene::resetGraphRuntime() {
     graphRt_.instances.clear();
     graphRt_.state.clear();
     graphRt_.startFired = false;
-    graphRt_.prevContacts.clear();
+    graphRt_.contacts.clear();
     graphRt_.contactsPrimed = false;
     editor_.clearNodeFireCounts();
     clearGrabLines();

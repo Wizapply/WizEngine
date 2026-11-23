@@ -1024,6 +1024,97 @@ EmitterDesc emitterFromXml(const xml::Element& e, const std::vector<BodyDesc>& b
     return clampEmitter(m);
 }
 
+// ---- オーディオ（WizEngine の拡張。Unity の AudioSource / AudioListener）-----------
+// 付け先は body（名前・番号・world）。既定と同じ値は書かない（clip は常に書く）。
+xml::Element audioSourceElement(const AudioSourceDesc& a, const std::vector<BodyDesc>& bodies) {
+    xml::Element e("audiosource");
+    const AudioSourceDesc d;
+    if (!a.name.empty()) e.set("name", a.name);
+    e.set("body", bodyRefText(bodies, a.body));
+    if (!isZero(a.position)) setVec3(e, "pos", a.position);
+    e.set("clip", a.clip);
+    if (a.volume != d.volume) e.setNumber("volume", a.volume);
+    if (a.pitch != d.pitch) e.setNumber("pitch", a.pitch);
+    if (a.loop != d.loop) e.setBool("loop", a.loop);
+    if (a.playOnAwake != d.playOnAwake) e.setBool("playonawake", a.playOnAwake);
+    if (a.mute != d.mute) e.setBool("mute", a.mute);
+    if (a.spatialBlend != d.spatialBlend) e.setNumber("spatialblend", a.spatialBlend);
+    if (a.panStereo != d.panStereo) e.setNumber("pan", a.panStereo);
+    if (a.minDistance != d.minDistance) e.setNumber("mindistance", a.minDistance);
+    if (a.maxDistance != d.maxDistance) e.setNumber("maxdistance", a.maxDistance);
+    if (a.rolloff != d.rolloff) e.set("rolloff", audioRolloffName(a.rolloff));
+    if (a.dopplerLevel != d.dopplerLevel) e.setNumber("doppler", a.dopplerLevel);
+    return e;
+}
+AudioSourceDesc audioSourceFromXml(const xml::Element& e, const std::vector<BodyDesc>& bodies,
+                                   Warn& warn) {
+    AudioSourceDesc a;
+    a.name = e.attr("name");
+    const std::string label =
+        "<audiosource" + (a.name.empty() ? std::string() : " name=\"" + a.name + "\"") + ">";
+    if (!a.name.empty() && sanitizeAudioName(a.name) != a.name) {
+        warn(label + ": the name may only use letters, digits, _ and - (read as \"" +
+             sanitizeAudioName(a.name) + "\")");
+    }
+    a.body = bodyRefIndex(bodies, e.attr("body", "world"), "body", warn);
+    a.position = getVec3(e, "pos", a.position);
+    a.clip = e.attr("clip");
+    if (a.clip.empty()) {
+        warn(label + ": no clip - it stays silent (clip=\"audio/<file>.wav\", relative to assets/)");
+    } else if (!assetFileAllowed(a.clip)) {
+        warn(label + ": clip=\"" + a.clip +
+             "\" must be a path relative to assets/ (no .. or absolute path) - ignored");
+    } else if (!audioClipExtension(a.clip)) {
+        warn(label + ": clip=\"" + a.clip +
+             "\" is not an audio file (.wav .ogg .mp3 .flac .m4a .aac .opus .webm) - ignored");
+    }
+    a.volume = e.number("volume", a.volume);
+    a.pitch = e.number("pitch", a.pitch);
+    a.loop = e.boolean("loop", a.loop);
+    a.playOnAwake = e.boolean("playonawake", a.playOnAwake);
+    a.mute = e.boolean("mute", a.mute);
+    a.spatialBlend = e.number("spatialblend", a.spatialBlend);
+    a.panStereo = e.number("pan", a.panStereo);
+    a.minDistance = e.number("mindistance", a.minDistance);
+    a.maxDistance = e.number("maxdistance", a.maxDistance);
+    if (e.has("rolloff") &&
+        unknownName(audioRolloffFromName, e.attr("rolloff"), AudioRolloff::Logarithmic,
+                    AudioRolloff::Linear)) {
+        warn(label + ": rolloff=\"" + e.attr("rolloff") +
+             "\" is unknown (logarithmic / linear) - reading as logarithmic");
+    }
+    a.rolloff = audioRolloffFromName(e.attr("rolloff"), a.rolloff);
+    a.dopplerLevel = e.number("doppler", a.dopplerLevel);
+    if (a.maxDistance <= a.minDistance) {
+        warn(label + ": maxdistance must be larger than mindistance - set to twice mindistance");
+    }
+    return clampAudioSource(a);
+}
+xml::Element audioListenerElement(const AudioListenerDesc& l, const std::vector<BodyDesc>& bodies) {
+    xml::Element e("audiolistener");
+    const AudioListenerDesc d;
+    if (l.body >= 0) e.set("body", bodyRefText(bodies, l.body));
+    if (!isZero(l.position)) setVec3(e, "pos", l.position);
+    if (!isZero(l.rotation)) setVec3(e, "euler", l.rotation);
+    if (l.volume != d.volume) e.setNumber("volume", l.volume);
+    if (l.doppler != d.doppler) e.setNumber("doppler", l.doppler);
+    if (l.soundSpeed != d.soundSpeed) e.setNumber("soundspeed", l.soundSpeed);
+    return e;
+}
+AudioListenerDesc audioListenerFromXml(const xml::Element& e, const std::vector<BodyDesc>& bodies,
+                                       Warn& warn) {
+    AudioListenerDesc l;
+    // body を書かない・"camera" = 各ページのカメラ（Unity のカメラに付いた AudioListener）。
+    const std::string body = e.attr("body", "camera");
+    if (body != "camera") l.body = bodyRefIndex(bodies, body, "<audiolistener> body", warn);
+    l.position = getVec3(e, "pos", l.position);
+    l.rotation = getVec3(e, "euler", l.rotation);
+    l.volume = e.number("volume", l.volume);
+    l.doppler = e.number("doppler", l.doppler);
+    l.soundSpeed = e.number("soundspeed", l.soundSpeed);
+    return clampAudioListener(l);
+}
+
 // SetUiProp の値の欄（性質の型で決まる 1 つ = ui::nodeField）の属性名。
 const char* uiNodeValueAttr(ui::NodeField field) {
     switch (field) {
@@ -1127,6 +1218,8 @@ xml::Element nodeElement(const NodeDesc& n) {
     // UI のノード: 要素の名前（空 = トリガーが渡した要素 / 何でも）と、SetUiProp の性質と値
     // （性質を選んでいなければ prop は書かない）。
     if (nodeIsUi(n.kind) && !n.element.empty()) e.set("element", n.element);
+    // オーディオのノード: 鳴らす / 止める音源の名前（空 = 対象に付いている音源の全部）。
+    if (nodeIsAudio(n.kind) && !n.element.empty()) e.set("source", n.element);
     if (n.kind == NodeKind::SetUiProp) {
         if (!n.prop.empty()) e.set("prop", n.prop);
         setUiPropValue(e, n);
@@ -1164,6 +1257,8 @@ NodeDesc nodeFromXml(const xml::Element& e, Warn& warn) {
     } else if (n.kind == NodeKind::CameraOrbit) {
         n.vec = Vec3d{e.number("distance", kOrbitDistance),
                       e.number("elevation", kOrbitElevation), 0.0};
+    } else if (nodeIsAudio(n.kind)) {
+        n.element = e.attr("source");
     } else if (nodeIsUi(n.kind)) {
         // 値の欄は全部読む（書くのは性質の型で決まる 1 つ = setUiPropValue）。
         n.element = e.attr("element");
@@ -1556,6 +1651,8 @@ xml::Element toXml(const SceneDocument& doc) {
     for (const auto& b : doc.bodies) world.append(bodyElement(b));
     for (const auto& c : doc.cables) world.append(cableElement(c, doc.bodies));
     for (const auto& m : doc.emitters) world.append(emitterElement(m, doc.bodies));
+    for (const auto& a : doc.audioSources) world.append(audioSourceElement(a, doc.bodies));
+    if (doc.hasAudioListener) world.append(audioListenerElement(doc.audioListener, doc.bodies));
     // 水面と流体粒子（持っているときだけ = 無い文書の保存ファイルを太らせない）。
     if (doc.hasWater) world.append(waterElement(doc.water));
     if (doc.hasFluid) world.append(fluidElement(doc.fluid));
@@ -1764,7 +1861,8 @@ SceneDocument fromXml(const xml::Element& root,
     if (const xml::Element* world = root.first("worldbody")) {
         warnUnknownChildren(*world,
                             {"environment", "ground", "terrain", "light", "camera",
-                             "body", "cable", "emitter", "water", "fluid", ui::kCanvasTag},
+                             "body", "cable", "emitter", "audiosource", "audiolistener", "water",
+                             "fluid", ui::kCanvasTag},
                             "<worldbody>", warn);
 
         // 環境光と地面は worldbody 直下の単一要素。2 個目以降は警告して無視。
@@ -1854,6 +1952,24 @@ SceneDocument fromXml(const xml::Element& root,
         // パーティクルのエミッタ（見た目だけ）。付け先も body を全部読んだ後で解く。
         for (const xml::Element* m : world->all("emitter")) {
             doc.emitters.push_back(emitterFromXml(*m, doc.bodies, warn));
+        }
+        // オーディオ（document/AudioTypes.h）。付け先も body を全部読んだ後で解く。
+        for (const xml::Element* a : world->all("audiosource")) {
+            if (doc.audioSources.size() >= kMaxAudioSources) {
+                warn("more than " + std::to_string(kMaxAudioSources) +
+                     " <audiosource> elements - the rest are ignored");
+                break;
+            }
+            doc.audioSources.push_back(audioSourceFromXml(*a, doc.bodies, warn));
+        }
+        const auto listeners = world->all("audiolistener");
+        if (!listeners.empty()) {
+            doc.hasAudioListener = true;
+            doc.audioListener = audioListenerFromXml(*listeners[0], doc.bodies, warn);
+            if (listeners.size() > 1) {
+                warn("multiple <audiolistener> elements - using the first (Unity also "
+                     "allows only one active listener)");
+            }
         }
         // 水面と流体粒子（document/FluidXml.h）。どちらも単一要素。
         const auto waters = world->all("water");

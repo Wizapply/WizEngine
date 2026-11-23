@@ -55,6 +55,13 @@ const std::vector<Entry>& emitterActuators() {
     static const std::vector<Entry> t = {{"rate", Quantity::EmitRate}};
     return t;
 }
+const std::vector<Entry>& audioActuators() {
+    static const std::vector<Entry> t = {{"play", Quantity::AudioPlay},
+                                         {"trigger", Quantity::AudioTrigger},
+                                         {"volume", Quantity::AudioVolume},
+                                         {"pitch", Quantity::AudioPitch}};
+    return t;
+}
 const std::vector<Entry>& vehicleActuators() {
     static const std::vector<Entry> t = {
         {"throttle", Quantity::Throttle}, {"brake", Quantity::Brake},
@@ -187,10 +194,13 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
     } else if (kind == "emitter" && !sensor) {
         src = Source::Emitter;
         table = &emitterActuators();
+    } else if (kind == "audio" && !sensor) {
+        src = Source::Audio;
+        table = &audioActuators();
     } else {
         error = "\"" + name + "\": unknown signal kind \"" + kind + "\" (" +
                 (sensor ? "time, body:, joint:, vehicle:, trans:, air:, param:, var:"
-                        : "body:, joint:, vehicle:, trans:, air:, emitter:, param:, var:, scope:") +
+                        : "body:, joint:, vehicle:, trans:, air:, emitter:, audio:, param:, var:, scope:") +
                 ")";
         return false;
     }
@@ -247,12 +257,14 @@ const std::vector<std::string>& actuatorQuantities(Source source) {
     static const std::vector<std::string> joint = names(jointActuators());
     static const std::vector<std::string> vehicle = names(vehicleActuators());
     static const std::vector<std::string> emitter = names(emitterActuators());
+    static const std::vector<std::string> audio = names(audioActuators());
     static const std::vector<std::string> none;
     switch (source) {
         case Source::Body: return body;
         case Source::Joint: return joint;
         case Source::Vehicle: return vehicle;
         case Source::Emitter: return emitter;
+        case Source::Audio: return audio;
         default: return none;
     }
 }

@@ -1051,8 +1051,12 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
     // 加えて enabled（bool）で有無を切り替える。
     // 水面（edit.water）と流体粒子（edit.fluid）も同じ: キーは /scene の water /
     // fluid と同じで、"present": false で節ごと外す。
+    // オーディオ（edit.audio.add / set / remove と edit.audiolistener）も同じ: キーは
+    // /scene の audio と同じで、丸めは物理スレッドの適用時（Scene::applyAudioOp）。
     if (what == "ground" || what == "environment" || what == "render" ||
-        what == "terrain" || what == "water" || what == "fluid") {
+        what == "terrain" || what == "water" || what == "fluid" ||
+        what == "audio.add" || what == "audio.set" || what == "audio.remove" ||
+        what == "audiolistener") {
         EditorState::Op op;
         op.kind = what;
         op.args = msg;

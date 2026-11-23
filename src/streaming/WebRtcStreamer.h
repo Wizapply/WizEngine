@@ -70,6 +70,17 @@ public:
 
     void pushFrame(const uint8_t* rgba, std::size_t size);
 
+    // 音（48 kHz ステレオ int16 の交互配置、frames フレーム）を音声のトラックへ。
+    // latencySec = 映像の遅れ（描いてからエンコーダへ押し込むまで）。PTS は
+    // 「パイプラインの時計の今 + latencySec」から始めて、以後は標本の数で途切れなく
+    // 進める（映像の PTS = 押し込んだ時刻なので、同じ瞬間の絵と音が同じ時刻になる）。
+    // 遅れが大きく変わった・音声のスレッドが遅れた（40 ms 以上ずれた）ときだけ
+    // 付け直す。ブラウザの offer に音声（Opus）が無い回線・opusenc の無い環境では
+    // 何もしない。音声のスレッドから。
+    void pushAudio(const int16_t* pcm, std::size_t frames, double latencySec);
+    // いまの回線に音声のトラックがあるか。
+    bool hasAudio();
+
     // Given the browser's SDP offer, returns the SDP answer (blocking, with a
     // timeout). Empty string on failure.
     std::string handleOffer(const std::string& offerSdp);
@@ -83,7 +94,9 @@ private:
     // RTP payload number the browser assigned to our codec in its offer: as
     // the answering side we must send with exactly that PT, or the browser
     // silently discards every packet (black picture, no errors anywhere).
-    void buildPipeline(int payloadType, const std::string& h264ProfileLevelId);
+    // audioPayloadType: ブラウザの offer が Opus に付けた番号（-1 = 音声なし）。
+    void buildPipeline(int payloadType, const std::string& h264ProfileLevelId,
+                       int audioPayloadType);
     void teardownPipeline();  // stop and free the current pipeline
 
     // 次の回線の大きさ（setStreamFormat が書く。buildPipeline が caps に使う）。
@@ -100,6 +113,9 @@ private:
     int bitrate_;
     GstElement* pipeline_ = nullptr;
     GstElement* appsrc_ = nullptr;
+    GstElement* audioSrc_ = nullptr;   // 音声の appsrc（無ければ null）
+    unsigned long long audioNextPts_ = 0;  // 次の音のブロックの PTS (ns)
+    bool audioStarted_ = false;
     // Keyframe warm-up: ask for an IDR every second for the first 5 seconds of
     // a session, so a keyframe lost during the handshake cannot leave the
     // browser stuck on a black frame.

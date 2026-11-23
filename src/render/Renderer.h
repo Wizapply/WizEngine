@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <memory>
 #include <string>
@@ -545,6 +546,14 @@ public:
     void renderFrame(std::size_t viewIndex,
                      const std::function<void(const uint8_t*, size_t)>& onFrame);
 
+    // このビューの直前に届けた絵が、描画を投げてから onFrame（= 映像のエンコーダへ
+    // 押し込む）までに掛かった秒数。映像の PTS は押し込んだ時刻なので、同じ瞬間の
+    // 状態から作った音をこの秒数だけ遅らせて付ければ揃う（audio/AudioOutput）。
+    // onFrame の中で読むとその絵の値。RENDER スレッド。
+    double readbackLatency(std::size_t viewIndex) const {
+        return viewIndex < views_.size() ? views_[viewIndex].lastLatency : 0.0;
+    }
+
     // Blocks until every in-flight readback has completed. Only needed at
     // shutdown, so no buffer is freed while the GPU still owns it.
     void finishPendingReadbacks();
@@ -682,6 +691,8 @@ private:
             // render thread, hence atomic.
             std::shared_ptr<std::atomic<bool>> ready;
             bool inFlight = false;
+            // 描画を投げた時刻（readbackLatency の起点。音を映像に揃えるため）。
+            std::chrono::steady_clock::time_point submitted{};
         };
         Capture captures[kCaptureBuffers];
         int next = 0;  // buffer to fill on the next frame
@@ -689,6 +700,8 @@ private:
         // A single "pending" slot is not enough: with two captures in flight
         // the older one would be forgotten and its buffer never released.
         std::deque<int> pending;
+        // 直前に届けた絵の「描画を投げてから onFrame に渡すまで」(s)。
+        double lastLatency = 0.0;
 
         // UI（overlay）を重ねるビュー。最初に Canvas を出すときに作る
         // （RendererUiViews.cpp の ensureUiView）。null = まだ無い。

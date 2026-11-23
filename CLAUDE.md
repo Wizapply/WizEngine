@@ -776,7 +776,8 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   tx ty tz`（ワールド）/ `lfx lfy lfz ltx lty ltz`（ローカル）、
   `vehicle:<名前>.throttle brake steer handbrake`、AT への入力
   `trans:<名前>.engine_torque engine_rpm throttle brake select manual output_rpm grade couple`、パーティクルの量
-  `emitter:<名前>.rate`（下の「パーティクル」の章）、パラメータの書き換え
+  `emitter:<名前>.rate`（下の「パーティクル」の章）、音の `audio:<名前>.play trigger
+  volume pitch`（下の「オーディオ」の章）、パラメータの書き換え
   `param:<名前>`・変数への書き込み `var:<名前>`（下記）、空気の書き換え `air:<量>`、記録だけの `scope:<ラベル>`。
   **単位は SI で角度は rad**（文書の度とは違う。ジョイントの目標値も換算しない）。
   名前はオブジェクト / ジョイントの name で引く（無い・重複は警告）。ポート名に
@@ -986,6 +987,26 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   `emitter:flameN.rate` を出す（1 回の燃焼で約 60 粒 × 吸気圧、角度の幅を時間に
   直すので回転数によらず同じ数）。右バンク（カットモデルの側）は点光源も持ち、
   頂面と筒を照らす。パラメータ `flame`（スイッチ）で消せる。
+  **点火音**: 同じピストンの同じ点に `<audiosource name="fireN">`（3D、
+  `audio/combustion.wav` = 0.12 秒の燃焼 1 回ぶんの音、playonawake なし、doppler 0 =
+  ピストンの往復はフレームごとの位置の差では速度にならない、mindistance 2 m = どの
+  カメラでも同じ大きさ）を置き、`combustion` が燃焼の始まるステップで
+  `audio:fireN.trigger`（立ち上がりで一発）を立て、`audio:fireN.volume` で燃やした熱の
+  平方根に比例した大きさ（全開 = パラメータ `ignition_sound`、既定 0.8）にする。燃料
+  カット中は熱が 0 なので鳴らない。エンジン音のループを pitch で回すのではなく、
+  **一発の音の並びがそのまま点火の周波数（回転数 / 120 × 6）のエンジン音になる** -
+  そのためミキサーが音の頭をステップの時刻へ割り付ける（下の「オーディオ」の章）。
+  左バンク（2・4・6 番）は pitch を少し下げて排気の違いを出してある。**音は重低音寄り**
+  （`samples/audio/gen_clips.py` の `combustion`: 100 → 45 Hz へ下がるサブ低音 + その
+  2 倍音とブロックの鳴り 120 Hz + 短いノイズと打音）。点火の間隔は 1 回の長さより短い
+  ので音は重なり、低音だけのクリップは互いに打ち消し合って中高回転で痩せる - 2 倍音と
+  120 Hz の芯はそのため、頭のノイズと打音は輪郭（無いとこもる）。確認（式を C++
+  インタプリタで回し、その trigger と volume を本物のミキサーへ通して WAV にした）:
+  1 気筒あたり 720° に 1 回・点火順 1-2-3-4-5-6 の 120° 間隔、全開 0.67 / 部分負荷 0.30 /
+  燃料カット 0 の大きさ、1200 → 6800 rpm の掃引で −15 → −13 dBFS（最大 0.74 = 頭打ち
+  無し）、重心の周波数は 1200 / 3000 / 6800 rpm で 120 / 258 / 360 Hz（最初の版は
+  146 / 443 / 496 Hz）、点火の周波数の倍音が他より 7〜14 dB 強い（音の頭をフレームに
+  丸めると逆に −4〜−15 dB = エンジン音に聞こえない）。Chrono・ブラウザでの実機確認は未。
   **イベントは無し**（空の `<events/>`。節を書かないと既定の pickup が付くが、
   ジョイントで組んだ機構を掴んで引っぱる用途は無いので外してある）。
   **物理モデル版の確認は式を C++ インタプリタで回したところまで**（回転数を指令
@@ -1776,6 +1797,166 @@ rgba2 intensity light lightrange max>`（`ed::EmitterDesc`、`EditorState::emitt
   向く板（ビューが共有なので 3 枚の円盤で代える）、エディタでの配置 UI
   （いまは 📄 XML で書く）。
 
+## オーディオ（`<audiosource>` + `<audiolistener>`。`document/AudioTypes.h` + `scene/SceneAudio.cpp` + `src/audio/` + `WebRtcStreamer`）
+
+Unity の **AudioSource / AudioListener** に相当する音の口。**音はサーバーで作り、映像と
+同じ WebRTC の回線で Opus の音声トラックとして送る**（映像と同期させるため。以前は
+ブラウザの Web Audio で鳴らしていたが、音は映像のエンコードと伝送を待たずに鳴るので、
+絵と揃える手段が無かった）。見本は `assets/scenes/audio.xml`（2D の BGM・回る腕の先の 3D の
+エンジン音 = 左右の振れとドップラー・箱の衝突音・タイマーのベル）と
+`assets/scenes/v6_engine.xml` の点火音（気筒ごとに燃焼のたびに一発。制御器の
+`audio:<名前>.trigger`、上の「制御器」の章の V6 の項）、クリップは
+`samples/audio/gen_clips.py` が作った `assets/audio/*.wav`。
+
+```
+シーン文書 <audiosource> / <audiolistener>（document/AudioTypes.h、XML は SceneDocument.cpp）
+  -> EditorState::audioSources() / audioListener()（版 audioVersion）
+  -> Scene（SceneAudio.cpp）: 実行中の指示 audioRt_（Play / Stop の回数・制御器の音量と高さ）
+  -> RENDER: カメラごとに Scene::buildAudioFrame（描いた姿勢 renderPoses_ と、描いた視点）
+       -> audio::AudioOutput::submit                    （絵を描くのと同じ瞬間の状態）
+  -> 音声のスレッド（AudioOutput、10 ms ごと）: audio::AudioMixer がカメラごとに混ぜる
+       -> WebRtcStreamer::pushAudio（PTS = いま + 映像の読み戻しの遅れ）
+       -> appsrc ! audioconvert ! opusenc ! rtpopuspay ! webrtcbin（映像と同じ回線）
+  -> ブラウザ: 映像と同じ MediaStream で受け、映像の要素（#video）が鳴らす（RTCP で同期）
+```
+
+- **AudioSource**（`<worldbody>` の `<audiosource name body pos clip volume pitch loop
+  playonawake mute spatialblend pan mindistance maxdistance rolloff doppler>`、
+  `ed::AudioSourceDesc`）: 付け先（body、world = -1）のローカルの点にある音源。clip は
+  assets/ 相対の音のファイル（.wav はエンジンが自前で読む = `audio::decodeWav`、
+  .ogg .mp3 .flac .m4a .aac .opus .webm は GStreamer の decodebin = 
+  `streaming/AudioDecode`。`audioClipAllowed` = `assetFileAllowed` + 拡張子）。
+  **spatialblend 0 = 2D**（距離・向きに関係なく鳴る。pan で左右のバランス）、**1 = 3D**
+  （距離で減衰・リスナーの右向きへの成分で等パワーのパン・ドップラー）、間は Unity と
+  同じく混ぜる。減衰は Unity の 2 曲線（logarithmic = min / d で max から先は一定、
+  linear = max で 0）。既定は Unity と同じ 2D（文書の既定値）だが、Inspector の「＋」で
+  オブジェクトに付けると 3D から始まる（`applyAudioOp`）。最大 256 個。
+- **AudioListener**（`<audiolistener body pos euler volume doppler soundspeed>`、単一要素）:
+  **書かない = 各ページのカメラが耳**（Unity のカメラに付いた AudioListener。カメラ =
+  ページごとにミキサーが 1 つあるので、Camera 1 のページでは Camera 1 の位置で聞こえる）。
+  body を書けばその物の位置・向き（前 = ローカル -Z）で聞く。volume が全体の音量、
+  doppler と soundspeed がドップラーの強さと音速。
+- **鳴らし方は 3 通り**（Unity の Play / PlayOneShot / Stop）: ①`playonawake`（シミュ
+  レート開始と Reset で鳴る）②イベントのアクション **playAudio / stopAudio**
+  （target = オブジェクト、-1 = 付けた相手 / 触れた物。文書の `source` = 音源の名前
+  （`NodeDesc::element`）。空 = 対象に付いた音源の全部、名前ありは対象かワールドに
+  付いたその名前の音源 = シーン全体のイベントから BGM やベルを鳴らせる）
+  ③制御器のアクチュエータ **`audio:<名前>.play`**（0.5 を下から上へまたいだら Play、
+  上から下で Stop）・**`.trigger`**（0.5 を下から上へまたいだら一発 Play、下がっても
+  止めない = PlayOneShot。燃焼・衝突のような短い音を、信号が立っている時間と関係なく
+  最後まで鳴らす）・**`.volume` / `.pitch`**（書いている間だけ文書の値より勝つ =
+  エンジン音の高さを回転数で、など。書くのをやめると戻る = `flushAudioWrites`）。
+  **loop の音源は鳴っている間に Play しても鳴らし直さない**（毎フレームのノードから
+  繋いでも途切れない）、**loop でない音源の Play は重ねて鳴らす**（PlayOneShot。
+  1 音源 8 声まで、1 回の update で増やすのは 3 声まで。時刻付きの Play は 8 声まで）。
+- **音の頭はシミュレーション時刻へ割り付ける**（`AudioMixer` の冒頭が正）: Play の回数は
+  描画のフレームごとにしか届かないので、そのまま鳴らすと音の頭がフレーム（約 16.7 ms）に
+  丸まる（6800 rpm の V6 の点火 = 340 回 / 秒では 1 フレームに 5〜6 回が同じ瞬間に重なって
+  リズムが消え、重なった振幅で頭打ちもする）。そこで制御器（play / trigger）とイベント
+  （playAudio）の Play は**鳴らしたステップの物理の時刻**を持ち（`Scene::audioPlay(i,
+  simTime)`、`AudioRuntime::playTimes` = 最近 16 回）、`AudioSourceState::playTimes` で
+  ミキサーへ渡る。ミキサーは「シミュレーション時刻 → 出力のサンプル位置」の写像を、
+  フレームごとの（simTime, そのとき出し始めるサンプル位置）の組から **α-β フィルタ**で
+  推定する（位置と傾き = サンプル / シミュレーション秒。初めは最小二乗と同じ大きな利得から
+  定常の 0.1 へ下げる = 実時間の 0.65 倍で回る物理でも数フレームで傾きが合う。時間の速さを
+  変えたら傾きをその比で直す、0.15 秒以上ずれたら付け直す、一時停止の間は出力の位置も
+  止める）。声は `Voice::startAt`（`rendered_` の数え方）まで黙って待つ。余裕（写した位置から
+  何秒後ろへずらすか）は**ジッタバッファ**: Play が届くのはその時刻の絵の少し前〜フレーム +
+  ブロック後なので、遅れて届いたぶん + 4 ms へ広げ（10〜100 ms）、約 20 秒で下限へ戻す
+  （広げた瞬間だけ間隔が 1 つ伸びる）。時刻付きの音は余裕のぶん映像より遅れる（60 fps で
+  約 30 ms = 人が気づく遅れより十分小さい）。時刻の無い Play（playonawake・Inspector
+  など）は今までどおり次のブロックから。確認（物理 0.4〜1 倍の実時間・スロー 0.25 倍・
+  描画 60 fps ± 揺れ・10 ms のブロックと寝坊を模した単体テスト）: 340 Hz の点火の間隔の
+  誤差 rms 0.13〜0.38 ms（最大 1 ms 未満）、写像の傾きは理論値の 0.2% 以内（フレームに
+  丸めると rms 10〜14 ms）。
+  **衝突音は onCollision（新しく触れたときだけ = Unity の OnCollisionEnter）→ playAudio**
+  なので、止まって載っている物・床を滑り続ける物は鳴り続けない（離れて触れ直すと鳴る）。
+  見本 `audio.xml` は `<option combine="max">`: 既定の min だと床の反発係数 0（シーンの
+  restitution）が勝ち、反発係数 0.6 の球も跳ねずに 1 回しか鳴らなかった。物は回る腕の
+  届く範囲（軸から半径 4.15 m・高さ 2 m）の外に置く（ベルの柱が中にあったときは腕が
+  毎周ぶつかって止まり、落ちる箱と球は途中で腕に叩かれた。本物の Chrono で、腕の
+  角速度が 1 周 = 3 秒ごとに目標 2.09 から −0.25 rad/s まで跳ね返るのを確認）。箱は高さを
+  変えて横に並べ、1 つずつ別の時刻（0.47 / 0.80 / 1.12 s）に地面へ着地して鳴る。衝突音の
+  mindistance は 6 m（1 m だとカメラの 10 m 先で -20 dB になり BGM に埋もれた）。
+- **鳴るのはシミュレート中だけ**（Unity の Play モードと同じ。エディタと一時停止は無音を
+  送り続ける = 音声のトラックは途切れない。一時停止は声の位置も止める）。指示は**世代
+  （`runGeneration`）ごとの回数**で、開始・停止・Reset で 0 に戻す（`audioSyncLocked`）。
+  ミキサーは世代が変わったら全部止めて回数を 0 から数え直す = 開始直後の
+  onStart → playAudio も取りこぼさない。設計の版（`audioVersion`）が変わったら今の
+  回数から数え直す（番号がずれても前の回数で鳴らさない）。時間の速さ（スロー）は音の
+  高さに掛けない（Unity と同じ）。
+- **`src/audio/` は Chrono も Filament も GStreamer も知らない**（vehicle/ fluid/ と同じ方針）:
+  `AudioFrame`（1 フレームの耳と音源の値型）・`AudioClip`（48 kHz ステレオ int16 に揃えた
+  PCM、WAV の読み込み、別スレッドで読む `AudioClipCache` = 音声のスレッドはファイルを
+  待たない。まだ読めていなければ loop は読めた時点で、一発の音は 0.5 秒以内に読めたとき
+  だけ鳴らす）・`AudioMixer`（1 つの耳の混ぜ合わせ。左右の音量と再生速度はブロックの中で
+  直線に動かす = プチプチ鳴らない。1 を超えた分は柔らかく頭打ち）・`AudioOutput`（音声の
+  スレッド。開始からの経過 × 48000 に追いつくまで 480 フレーム = 10 ms のブロックを作る
+  = 実時間ちょうどの量。0.2 秒より遅れたら飛ばす。1 秒 submit の無いカメラ = 視聴者の
+  いないページは回さない）。ドップラーの速度はミキサーが前のフレームとの位置の差を
+  シミュレーション時刻で割って出す（音源も耳も。追従カメラなら相対速度 0 = 偽の
+  ドップラーが掛からない。音速の半分で頭打ち = 置き直しの跳びを拾わない）。
+- **映像との同期**: 映像の PTS は `appsrc do-timestamp=true` = 絵をエンコーダへ押し込んだ
+  時刻 = 描いた時刻 + 読み戻しの遅れ（`Renderer` は非同期の読み戻しで 1〜2 フレーム後に
+  届ける）。そこで `Renderer::readbackLatency(view)`（描画を投げてから onFrame までの秒、
+  `Capture::submitted` から）を main が `AudioOutput::setVideoLatency` に渡し（ならして
+  使う）、`WebRtcStreamer::pushAudio` が音の PTS を「パイプラインの時計の今 + その遅れ」
+  から始めて、以後は標本の数で途切れなく進める（40 ms 以上ずれたときだけ付け直す）。
+  音の中身は「いま描いた状態」なので、同じ瞬間の絵と音が同じ PTS になる。ブラウザは
+  2 本を同じ MediaStream（webrtcbin の sink パッドの `msid`。1.24 は無いが Chrome は
+  同じストリームに入れた）で受け、RTCP の送信者報告で揃えて出す。
+- **WebRtcStreamer**: ブラウザの offer に Opus（`a=rtpmap:N opus/48000/2`）があり、
+  `opusenc` と `rtpopuspay` があるときだけ音声の枝を足す（`appsrc name=asrc` → 
+  `opusenc bitrate=128000 frame-size=10` → `rtpopuspay pt=N` → `wb.`）。無ければ映像だけ
+  （LOGW）。**offer に映像の種類が無いときは音声を足さない**: 映像の m 行と合わないパッドが
+  残ったまま音声の m 行だけが合うと、webrtcbin が `assertion failed: (trans->stream)` で
+  プロセスごと落ちる（1.24 で確認）。ブラウザが /stats を読む前に別の種類で繋ぐと起きる。
+- **ブラウザ**（`web/app.js` の `connectWebRTC` と `web/audio.js`）: 音声の受信の
+  トランシーバ（recvonly）を足し、届いた 2 本を 1 つのストリームにして映像の要素へ
+  （繋ぎ直した回線の最初のトラックは前のストリームを置き換える = `videoEl.wizPc`）。
+  要素は `muted` で始め（自動再生の制限）、最初のクリック / キーで覚えている設定
+  （既定 = 音を出す）に戻す。映像ヘッダーの 🔊（`#vhAudio`）がミュートの切り替え
+  （localStorage）。`?popup=1` の窓・PiP は音を出さない（PiP の回線は映像だけを頼む）。
+  Inspector の ▶ 試聴だけはこのページの Web Audio（`/camN/clip?file=` を復号して 2D で
+  1 回。エディタの道具なので同期とは無関係）。
+- **UI**: Inspector の「🔊 オーディオソース」節（`secAudioSrc`、選んだ物に付いた音源の
+  カード: 名前・クリップ（▶ 試聴）・音量 / ピッチ・ループ / Play On Awake / ミュート・
+  2D ⇄ 3D のスライダー・パン・距離・減衰・ドップラー・付け先のローカル位置・削除）と、
+  World タブの「🔊 オーディオ」節（`secAudio`、耳の付け先と音量・ドップラー・音速、
+  ワールドに付けた 2D の音の一覧と「＋ 2D サウンドを追加」）。ノードエディタの右クリック
+  に「🔊 音を鳴らす / 🔇 音を止める」。コマンドは `edit.audio.add {body, clip, name}` /
+  `edit.audio.set {index, キー}`（部分更新、名前は一意）/ `edit.audio.remove {index}` /
+  `edit.audiolistener {body, pos, rot, volume, doppler, soundSpeed}`（`present: false` で
+  カメラへ戻す）。EditorComponent → Op → 物理スレッド（他の edit.* と同じ配管）。
+  `/scene` の `audio`（設計値・耳・assets/ の音のファイルの一覧 = 5 秒ごとに取り直す）。
+- **オブジェクトを消すと付いていた音源も消える**（Unity で GameObject を消すと
+  AudioSource も消えるのと同じ。ワールドへ移すと原点で鳴り続けて紛らわしい）。耳が
+  付いていたらカメラへ戻す。保存は他の付け先と同じく番号を詰めて付け替える。
+- **AI のシーン構築**は `<audiosource>` / `<audiolistener>` を書かない（指示文の
+  DO NOT WRITE）、履歴の差分は音源の数・名前ごとの変更・耳の変更を 1 行。
+- **要る GStreamer の要素**: `opusenc`（gst-plugins-base の opus）・`rtpopuspay`
+  （gst-plugins-good）・`decodebin`（WAV 以外のクリップ）。無ければ音声のトラックを
+  作らない / そのクリップを読めない（LOGW）だけで、映像は従来どおり。
+- **確認**: 文書層は単体テスト（同梱シーンが警告 0 件・`audio.xml` の往復・打ち間違い /
+  不正なパス / 範囲の警告・JSON の部分更新とクランプ・`audio:` の信号の解析・ノードの
+  種類名）。ミキサーは単体テスト（2D の左右・パン、3D の左右、距離 2 倍で 0.500、
+  linear の max で 0、ドップラー 34.3 m/s で周波数 ×1.113（理論 1.111）、一発の音の
+  重ね鳴らしと Stop、Reset で loop が鳴り直す・重ならない、エディタで黙る、一時停止で
+  声が残る、遅れて読めるクリップ、WAV の読み込みと 22.05 → 48 kHz）。**音声付きの
+  WebRTC は GStreamer 1.24（この環境に入れた）の本物の webrtcbin + opusenc とヘッドレス
+  Chromium で確認**: 音声と映像の 2 本が 1 つのストリームに届く、実際の index.html /
+  app.js で最初のクリックでミュートが外れ 🔊 で切り替わる、映像の種類が合わない offer でも
+  落ちない。同期は「白い絵とクリック音を同じ瞬間に出し、2 フレーム遅れて絵を押し込む」
+  エンジンと同じ流れで測った: 落ち着いた後の音 − 映像が補正なし 約 28 ms / 補正あり
+  約 78 ms（測り方の遅れは補正なしの真値 −66 ms から約 94 ms と見積もれるので、補正ありの
+  真値は約 −16 ms = 音が少し早い。人が気づく範囲 −45〜+125 ms の内）。エンジン側
+  （SceneAudio / main / Renderer）は Chrono 9.0.0・Filament 1.74 のヘッダで構文検査まで。
+- **未**: AudioMixer のエフェクト（リバーブゾーン・ローパス・グループ）、指向性（cone）と
+  spread、HRTF（いまは等パワーのパン = Unity の既定のスペーシャライザ無しと同じ）、Unity の
+  custom rolloff カーブ、声の総数の上限と優先度、window / stream / rtsp モードの音声
+  （VideoStreamer は映像だけ）、録音、クリップの読み直し（ファイルを差し替えたら再起動）、
+  物理の衝突から自動で鳴らす（いまはイベントの onCollision → playAudio で組む）。
+
 ## 流体（`<water>` + `<fluid>`。`src/fluid/` + `components/FluidComponent` + `physics/FluidParticles`）
 
 流体は 2 段構え（調査の経緯と Chrono の他の選択肢は `docs/fluid.md`）:
@@ -2227,8 +2408,17 @@ collide 部品の外接箱、当たり判定は collide 部品だけ）が実体
   コピーする。タイマー等の実行状態は **（アセット名, 付け先, ノード id）で引く**
   ので、シミュレート中の編集で他のノードの状態がリセットされない。
 - **衝突は「新しく触れたペア」だけ**。NSC は載っているだけでも毎ステップ接触が
-  立つので、前ステップとの差分を取り、さらに**最初の収集パスは覚えるだけ**
-  （priming）にして開始時点で触れていたぶんを発火させない。接触の列挙は
+  立つので、続いている接触は候補にせず、さらに**最初の収集パスは覚えるだけ**
+  （priming）にして開始時点で触れていたぶんを発火させない。**ぶつかった瞬間は
+  触れてから 0.05 秒の窓**（`kCollisionEnterSeconds`）: 接触はエンベロープ（面が
+  触れる数 mm 手前）で先にでき、ゆっくり着地した物はその最初のステップの力が
+  ほぼ 0 になるので、1 ステップだけ見ると minforce で落とされてその着地は二度と
+  鳴らなかった。窓の間に条件（minforce・向き）を満たした最初のステップで、1 回の
+  接触（`GraphRuntime::contacts` の通し番号 = 触れてから離れるまで）につき 1 回だけ
+  発火する（`InstanceState::firedContacts`）。minforce 0・向きの指定なしなら従来
+  どおり触れた最初のステップで鳴る。本物の Chrono 9.0.0（Core）で `audio.xml` と同じ配置を回して、触れた
+  最初のステップの力が 0 N の接触（箱どうし）が実際に出ること、それを 8 ms 後の 5.3 N で
+  拾えることを確かめた。接触の列挙は
   `PhysicsWorld::activeContactPairs()`（`ReportContactCallback` を走査、
   ChBody* → physId は追加時に作る逆引きマップ）。Multicore の接触コンテナが
   `ReportAllContacts` を実装しない版では空が返る＝衝突トリガーだけ効かない。
@@ -2348,10 +2538,14 @@ src/
   physics/       PhysicsWorld（Chrono）, MeshCollision（glTF 凸包）, ModelImport（URDF 等の取込）, PhysicsTuning,
                  ShaftNetworks（1D シャフト網 = AT の駆動系）, FluidParticles（Multicore の流体粒子）
   render/        Renderer（Filament）, GltfLoader, EnvironmentLoader, ImageLoader
-  streaming/     HttpServer, WebRtcStreamer, VideoStreamer（GStreamer）
-  document/      EditorTypes, SceneDocument, SceneXml（シーン文書。エンジン非依存）
+  streaming/     HttpServer, WebRtcStreamer（映像 + Opus の音声）, VideoStreamer（GStreamer）,
+                 AudioDecode（WAV 以外の音のファイルを GStreamer で復号）
+  audio/         オーディオの純粋な計算（AudioFrame・AudioClip = PCM と WAV・別スレッドの
+                 読み込み、AudioMixer = 2D / 3D の混ぜ合わせ、AudioOutput = 音声のスレッド。
+                 Chrono も Filament も GStreamer も知らない）
+  document/      EditorTypes, SceneDocument, SceneXml, AudioTypes（シーン文書。エンジン非依存）
   scene/         Scene（Scene.cpp / SceneEdit.cpp / SceneEvents.cpp /
-                 SceneSerialize.cpp / SceneFluid.cpp + 私的ヘッダ SceneInternal.h）, SceneConfig,
+                 SceneSerialize.cpp / SceneFluid.cpp / SceneAudio.cpp + 私的ヘッダ SceneInternal.h）, SceneConfig,
                  EditorState, GameObject, CameraObject, BoxController,
                  SceneComponent, PrefabDefaults, PrefabFrame, SceneMath,
                  MathBridge, RenderBridge
@@ -2378,6 +2572,7 @@ samples/         見本シーンの素材を作るもの（エンジンのビル
                  planetary_gear/ = 遊星歯車のインボリュート歯形の .glb を作る Python
                  double_wishbone/ = ダブルウィッシュボーンの見本シーン（XML）と部品の .glb を作る Python
                  ocean/ = 海の見本の空の環境マップ（assets/env/ocean_sky.hdr）を作る Python
+                 audio/ = オーディオの見本クリップ（assets/audio/*.wav）を作る Python
                  meshgen/ = 手元の Text to 3D（LLM が cad.py の API で CSG のスクリプトを書き、
                  ここで回して .glb にする。動く物は部品ごとの .glb + ジョイントのシーン文書。
                  Meshy の代わりの第 1 段。README.md）
@@ -2816,6 +3011,9 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   Text to 3D。上の「AI によるシーン自動構築」の章）。
 - 済（流体粒子は実機で確認）: 流体（水面の浮力・抗力・波と、Chrono::Multicore の流体粒子。
   上の「流体」の章と `docs/fluid.md`）。
+- 済（実機でビルドと再生を確認。サーバー側のミキシングは実機待ち）: オーディオ（Unity の
+  AudioSource / AudioListener。2D / 3D・距離の減衰・ドップラー。音はサーバーで作り、映像と
+  同じ WebRTC の回線で同期して送る。上の「オーディオ」の章）。
 - 済: ステップ3（姿勢反映）〜6（UDP配信）。
 - 未: ステップ7（クライアント→サーバーの入力・制御チャネル。カメラ操作を
   UDP/TCP で受けて `Renderer` にカメラ更新 API を追加）。

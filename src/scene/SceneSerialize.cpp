@@ -317,6 +317,10 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         }
     }
 
+    // オーディオ（Inspector の「オーディオソース」節・World タブの「オーディオ」節・
+    // 制御器の audio:<名前> の候補）。
+    j["audio"] = audioSceneJson();
+
     // イベントアセット（ASSETS パネルのタイル・Inspector の付け外し・
     // ノードエディタが描く）。発火回数付き: シミュレート中にどのノードが
     // 動いたかが見える（Node-RED のデバッグバッジに相当）。
@@ -429,6 +433,7 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             q["joint"] = ctl::actuatorQuantities(ctl::Source::Joint);
             q["vehicle"] = ctl::actuatorQuantities(ctl::Source::Vehicle);
             q["emitter"] = ctl::actuatorQuantities(ctl::Source::Emitter);
+            q["audio"] = ctl::actuatorQuantities(ctl::Source::Audio);
             q["trans"] = ctl::actuatorQuantities(ctl::Source::Transmission);
             q["air"] = ctl::actuatorQuantities(ctl::Source::Air);
             f["actuators"] = q;
@@ -623,6 +628,22 @@ ed::SceneDocument Scene::document() {
         }
         doc.emitters.push_back(m);
     }
+    // オーディオ: 音源の付け先・耳の付け先が消えていたらワールド / カメラ（-1）にする。
+    {
+        auto remapBody = [&](int b) {
+            if (b < 0) return -1;
+            return (std::size_t(b) < remap.size() && remap[std::size_t(b)] >= 0)
+                       ? remap[std::size_t(b)]
+                       : -1;
+        };
+        for (auto a : editor_.audioSources()) {
+            a.body = remapBody(a.body);
+            doc.audioSources.push_back(a);
+        }
+        doc.hasAudioListener = editor_.hasAudioListener();
+        doc.audioListener = editor_.audioListener();
+        doc.audioListener.body = remapBody(doc.audioListener.body);
+    }
 
     // ---- イベントアセット --------------------------------------------------
     // 中身（ノード）はそのまま。ノードの対象番号だけ詰めた番号へ付け替える
@@ -699,6 +720,7 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     editor_.setJoints({});
     editor_.setCables({});
     editor_.setEmitters({});
+    editor_.setAudioSources({});
     for (std::size_t i = 0; i < boxes_.size(); ++i) destroyObject(i);
     for (auto& c : controllers_) c->setSelected(BoxController::kNone);
     editor_.clearSel();
@@ -809,6 +831,17 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
             emitters.push_back(m);
         }
         editor_.setEmitters(std::move(emitters));
+    }
+    {
+        std::vector<ed::AudioSourceDesc> sources;
+        for (auto a : doc.audioSources) {
+            if (a.body >= 0) a.body += int(base);
+            sources.push_back(a);
+        }
+        editor_.setAudioSources(std::move(sources));
+        ed::AudioListenerDesc l = doc.audioListener;
+        if (l.body >= 0) l.body += int(base);
+        editor_.setAudioListener(doc.hasAudioListener, l);
     }
     // 水面と流体粒子（節が無い文書は無し）。系の種類は末尾の syncBackend が見る。
     editor_.setWater(doc.hasWater, doc.hasWater ? doc.water : ed::WaterDesc{});
@@ -995,6 +1028,20 @@ std::string Scene::appendDocument(const ed::SceneDocument& doc) {
             emitters.push_back(m);
         }
         editor_.setEmitters(std::move(emitters));
+    }
+    {
+        // 足す文書の音源は後ろへ。耳は足す文書が持っていればそれに置き換える。
+        auto sources = editor_.audioSources();
+        for (auto a : doc.audioSources) {
+            if (a.body >= 0) a.body += int(base);
+            sources.push_back(a);
+        }
+        editor_.setAudioSources(std::move(sources));
+        if (doc.hasAudioListener) {
+            ed::AudioListenerDesc l = doc.audioListener;
+            if (l.body >= 0) l.body += int(base);
+            editor_.setAudioListener(true, l);
+        }
     }
     // 水面と流体粒子は単一要素: 足す文書が持っていればそれに置き換える
     // （持っていなければ今のまま）。

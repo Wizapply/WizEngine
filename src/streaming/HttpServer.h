@@ -59,6 +59,10 @@ public:
     void setControlProviders(std::function<std::string(std::uint64_t)> samples,
                              std::function<std::string(const std::string&)> csv);
 
+    // "<prefix>/clip?file=audio/x.wav": assets/ の音のファイルをそのまま返す（Inspector の
+    // ▶ 試聴だけが使う。シミュレート中の音はサーバーが作って WebRTC で送る）。root は assets/ のフォルダ、allowed がパスと拡張子の関所。
+    void setClipSource(std::string root, std::function<bool(const std::string&)> allowed);
+
     // True while a browser holds the viewer session (used to idle the engine
     // when nobody is watching). Also expires a viewer that stopped pinging.
     bool hasViewer();
@@ -85,6 +89,8 @@ private:
     std::function<std::string()> sceneXmlProvider_;
     std::function<std::string(std::uint64_t)> controlProvider_;
     std::function<std::string(const std::string&)> controlCsvProvider_;
+    std::string clipRoot_;
+    std::function<bool(const std::string&)> clipAllowed_;
 
     // Single-viewer session state.
     static constexpr std::chrono::seconds kViewerTimeout{6};
