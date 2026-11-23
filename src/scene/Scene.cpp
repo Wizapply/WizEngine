@@ -813,6 +813,34 @@ const std::vector<ChVector3d>* Scene::meshHull(int meshIndex) {
     return m.hull.empty() ? nullptr : &m.hull;
 }
 
+// 当たり判定の点の外接箱（空気抵抗用）。凸包と元の三角形の外接箱は同じなので、
+// どちらか読み込み済みの方から 1 回だけ出す（Trimesh なら三角形 = 凸包を読み直さない）。
+bool Scene::meshHalfExtents(int meshIndex, bool trimesh, ed::Vec3d& half) {
+    if (meshIndex < 0 || std::size_t(meshIndex) >= meshes_.size()) return false;
+    MeshAsset& m = meshes_[std::size_t(meshIndex)];
+    if (!m.boundsDone) {
+        m.boundsDone = true;
+        const std::vector<ChVector3d>* pts = nullptr;
+        if (trimesh) {
+            if (const auto* tm = meshTrimesh(meshIndex)) pts = &tm->vertices;
+        }
+        if (!pts || pts->empty()) pts = meshHull(meshIndex);
+        if (pts && !pts->empty()) {
+            ChVector3d lo = pts->front(), hi = pts->front();
+            for (const ChVector3d& p : *pts) {
+                lo = ChVector3d(std::min(lo.x(), p.x()), std::min(lo.y(), p.y()),
+                                std::min(lo.z(), p.z()));
+                hi = ChVector3d(std::max(hi.x(), p.x()), std::max(hi.y(), p.y()),
+                                std::max(hi.z(), p.z()));
+            }
+            m.boundsHalf = ed::Vec3d{0.5 * (hi.x() - lo.x()), 0.5 * (hi.y() - lo.y()),
+                                     0.5 * (hi.z() - lo.z())};
+        }
+    }
+    half = m.boundsHalf;
+    return half.x > 0.0 || half.y > 0.0 || half.z > 0.0;
+}
+
 // メッシュの三角形（collision="trimesh"）。凸包と同じく最初に使うときに読む。
 const wizengine::CollisionTriangles* Scene::meshTrimesh(int meshIndex) {
     if (meshIndex < 0 || std::size_t(meshIndex) >= meshes_.size()) {

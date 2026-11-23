@@ -2414,6 +2414,18 @@
       restitution: num('edRestitution', 0),
       linearDamping: num('edLinDamp', 0.15),
       angularDamping: num('edAngDamp', 0.6),
+      // 空気: チェックを外すと密度 0・気象条件も切る（= 空気抵抗なし）。
+      airDensity: document.getElementById('edAir').checked ? num('edAirDensity', 1.225) : 0,
+      airAtmosphere: document.getElementById('edAir').checked &&
+        document.getElementById('edAirMode').value === 'atmosphere',
+      airTemperature: num('edAirTemp', 15),
+      airHumidity: num('edAirHum', 0),
+      airPressure: num('edAirPres', 1013.25) * 100,  // 欄は hPa、サーバーは Pa
+      airAltitude: num('edAirAlt', 0),
+      wind: { x: num('edWindX', 0), y: num('edWindY', 0), z: num('edWindZ', 0) },
+      airDrag: num('edAirDrag', 1),
+      airLift: num('edAirLift', 1),
+      airMagnus: num('edAirMagnus', 1),
       sleeping: document.getElementById('edSleeping').checked,
       integrator: document.getElementById('edIntegrator').value,
       solver: document.getElementById('edSolver').value,
@@ -2423,6 +2435,20 @@
       poisson: num('edSmcPoisson', 0.3),
       modal: Math.round(num('edModal', 0))
     });
+  }
+  // 空気抵抗の on / off。on は欄の密度（0 なら大気 1.225 kg/m³）、off は密度 0。
+  function toggleAir() {
+    const on = document.getElementById('edAir').checked;
+    const d = document.getElementById('edAirDensity');
+    if (on && !(parseFloat(d.value) > 0)) d.value = 1.225;
+    document.getElementById('edAirRows').hidden = !on;
+    applySim();
+  }
+  // 密度の決め方で見せる欄を切り替える（気象条件の欄は直接入力でも残す = 制御器の
+  // air:temperature などの土台になるので、見えないだけで値は送る）。
+  function showAirMode(mode) {
+    document.getElementById('edRowAirDensity').hidden = mode === 'atmosphere';
+    document.getElementById('edAirCond').hidden = mode !== 'atmosphere';
   }
   function applyCustomRate() {
     const hz = Math.round(num('hzCustom', 60));
@@ -3176,6 +3202,40 @@
       setField('edRestitution', round2(s.restitution));
       setField('edLinDamp', round2(s.linearDamping));
       setField('edAngDamp', round2(s.angularDamping));
+      {
+        const airOn = (s.airDensity || 0) > 0 || !!s.airAtmosphere;
+        setField('edAir', airOn);
+        if ((s.airDensity || 0) > 0) setField('edAirDensity', round2(s.airDensity));
+        const mode = s.airAtmosphere ? 'atmosphere' : 'direct';
+        setField('edAirMode', mode);
+        showAirMode(document.getElementById('edAirMode').value);
+        setField('edAirTemp', round2(s.airTemperature !== undefined ? s.airTemperature : 15));
+        setField('edAirHum', round2(s.airHumidity || 0));
+        setField('edAirPres', round2((s.airPressure !== undefined ? s.airPressure : 101325) / 100));
+        setField('edAirAlt', round2(s.airAltitude || 0));
+        // いまの空気（サーバーが解いた値 = 気象条件から出した密度・スクリプトの上書き込み）。
+        const a = sceneData.air;
+        const info = document.getElementById('edAirInfo');
+        if (a && airOn) {
+          let t = '実際の密度 ' + a.density.toFixed(4) + ' kg/m³';
+          if (a.fromConditions) {
+            t += '（' + round2(a.temperature) + ' ℃・' + round2(a.humidity) + ' %・その場の気圧 ' +
+              (a.localPressure / 100).toFixed(1) + ' hPa）';
+          }
+          if (a.scripted) t += ' ・制御器が上書き中';
+          info.textContent = t;
+        } else {
+          info.textContent = '';
+        }
+        const w = s.wind || {};
+        setField('edWindX', round2(w.x || 0));
+        setField('edWindY', round2(w.y || 0));
+        setField('edWindZ', round2(w.z || 0));
+        setField('edAirDrag', round2(s.airDrag !== undefined ? s.airDrag : 1));
+        setField('edAirLift', round2(s.airLift !== undefined ? s.airLift : 1));
+        setField('edAirMagnus', round2(s.airMagnus !== undefined ? s.airMagnus : 1));
+        document.getElementById('edAirRows').hidden = !airOn;
+      }
       setField('edSleeping', s.sleeping);
       setField('hzCustom', s.hz);
     }

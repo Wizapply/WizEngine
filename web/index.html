@@ -1060,6 +1060,75 @@
           <input id="edAngDamp" class="num" type="number" step="0.05" min="0"
                  max="10" onchange="applySim()">
         </div>
+        <!-- 空気抵抗（<option density wind airdrag>。密度 0 = 無し）。速度減衰とは別。
+             車両の車体は <vehicle drag> の自前の空気抵抗を使う。 -->
+        <div class="edRow" title="形と速度に応じた空気抵抗（½ρCdAv²）・揚力・マグヌス効果を全ての動く物に掛ける（車両は &lt;vehicle drag&gt; の CdA で密度と風を受ける）">
+          <span>空気抵抗</span>
+          <input id="edAir" type="checkbox" onchange="toggleAir()">
+        </div>
+        <div id="edAirRows" class="edGroup">
+          <div class="edRow" title="密度を直接入れるか、気温・湿度・気圧・標高から計算するか">
+            <span>密度の決め方</span>
+            <select id="edAirMode" class="strSel" onchange="showAirMode(this.value); applySim()">
+              <option value="direct">直接入力</option>
+              <option value="atmosphere">気象条件から</option>
+            </select>
+          </div>
+          <div class="edRow" id="edRowAirDensity">
+            <span>空気密度 kg/m³</span>
+            <input id="edAirDensity" class="num" type="number" step="0.05" min="0"
+                   max="100" onchange="applySim()">
+          </div>
+          <div id="edAirCond" class="edGroup">
+            <div class="edRow">
+              <span>気温 ℃</span>
+              <input id="edAirTemp" class="num" type="number" step="1" min="-80"
+                     max="80" onchange="applySim()">
+            </div>
+            <div class="edRow">
+              <span>湿度 %</span>
+              <input id="edAirHum" class="num" type="number" step="5" min="0"
+                     max="100" onchange="applySim()">
+            </div>
+            <div class="edRow" title="海面気圧（天気予報の気圧）。標高のぶんは自動で下げる">
+              <span>海面気圧 hPa</span>
+              <input id="edAirPres" class="num" type="number" step="1" min="10"
+                     max="2000" onchange="applySim()">
+            </div>
+            <div class="edRow">
+              <span>標高 m</span>
+              <input id="edAirAlt" class="num" type="number" step="100" min="-500"
+                     max="11000" onchange="applySim()">
+            </div>
+          </div>
+          <div class="edRow" title="風の速度 (m/s、ワールドの X Y Z)">
+            <span class="nowrap">風 m/s</span>
+            <span class="ndVec">
+              <input id="edWindX" class="num" type="number" step="0.5" min="-100"
+                     max="100" onchange="applySim()">
+              <input id="edWindY" class="num" type="number" step="0.5" min="-100"
+                     max="100" onchange="applySim()">
+              <input id="edWindZ" class="num" type="number" step="0.5" min="-100"
+                     max="100" onchange="applySim()">
+            </span>
+          </div>
+          <div class="edRow" title="抗力係数の倍率（箱 1.05・球 0.47 に掛ける）">
+            <span>抗力 Cd 倍率</span>
+            <input id="edAirDrag" class="num" type="number" step="0.1" min="0"
+                   max="10" onchange="applySim()">
+          </div>
+          <div class="edRow" title="箱・メッシュの面を板として受ける揚力の倍率（0 = 無し。立方体には効かない）">
+            <span>揚力 倍率</span>
+            <input id="edAirLift" class="num" type="number" step="0.1" min="0"
+                   max="10" onchange="applySim()">
+          </div>
+          <div class="edRow" title="回る球が流れに垂直に受ける力（マグヌス効果）の倍率（0 = 無し）">
+            <span>マグヌス 倍率</span>
+            <input id="edAirMagnus" class="num" type="number" step="0.1" min="0"
+                   max="10" onchange="applySim()">
+          </div>
+          <div id="edAirInfo" class="edHint"></div>
+        </div>
         <div class="edRow">
           <span>スリープ</span>
           <input id="edSleeping" type="checkbox" onchange="applySim()">

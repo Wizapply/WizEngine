@@ -185,6 +185,22 @@ xml::Element optionElement(const SimSettings& s) {
     o.setNumber("restitution", s.restitution, 6);
     o.setNumber("lineardamping", s.linearDamping);
     o.setNumber("angulardamping", s.angularDamping);
+    // 空気抵抗（MuJoCo と同じ density / wind）。既定（無し）なら書かない =
+    // 空気を使わないシーンのファイルは変わらない。
+    if (s.airDensity > 0.0) o.setNumber("density", s.airDensity, 6);
+    if (s.windX != 0.0 || s.windY != 0.0 || s.windZ != 0.0) {
+        const double wind[3] = {s.windX, s.windY, s.windZ};
+        o.setNumbers("wind", wind, 3);
+    }
+    if (s.airDrag != 1.0) o.setNumber("airdrag", s.airDrag, 6);
+    if (s.airLift != 1.0) o.setNumber("airlift", s.airLift, 6);
+    if (s.airMagnus != 1.0) o.setNumber("magnus", s.airMagnus, 6);
+    // 気象条件（atmosphere="true" で密度をここから出す）。既定値は書かない。
+    if (s.airAtmosphere) o.setBool("atmosphere", true);
+    if (s.airTemperature != 15.0) o.setNumber("temperature", s.airTemperature, 6);
+    if (s.airHumidity != 0.0) o.setNumber("humidity", s.airHumidity, 6);
+    if (s.airPressure != 101325.0) o.setNumber("pressure", s.airPressure, 8);
+    if (s.airAltitude != 0.0) o.setNumber("altitude", s.airAltitude, 6);
     o.setBool("sleeping", s.sleeping);
     // 積分器・ソルバ・材質の合成（EditorTypes.h の *NameValid が語彙）。
     o.set("integrator", s.integrator);
@@ -319,6 +335,33 @@ SimSettings optionFromXml(const xml::Element& o, SimSettings base, Warn& warn) {
     base.restitution = float(o.number("restitution", base.restitution));
     base.linearDamping = o.number("lineardamping", base.linearDamping);
     base.angularDamping = o.number("angulardamping", base.angularDamping);
+    base.airDensity = o.number("density", base.airDensity);
+    double wind[3] = {base.windX, base.windY, base.windZ};
+    if (o.has("wind")) {
+        if (o.numbers("wind", wind, 3) >= 3) {
+            base.windX = wind[0];
+            base.windY = wind[1];
+            base.windZ = wind[2];
+        } else {
+            warn("<option wind=\"" + std::string(o.attr("wind", "")) +
+                 "\"> needs 3 numbers (x y z, m/s) - reading as no wind");
+        }
+    }
+    base.airDrag = o.number("airdrag", base.airDrag);
+    base.airLift = o.number("airlift", base.airLift);
+    base.airMagnus = o.number("magnus", base.airMagnus);
+    base.airAtmosphere = o.boolean("atmosphere", base.airAtmosphere);
+    base.airTemperature = o.number("temperature", base.airTemperature);
+    base.airHumidity = o.number("humidity", base.airHumidity);
+    base.airPressure = o.number("pressure", base.airPressure);
+    base.airAltitude = o.number("altitude", base.airAltitude);
+    // 気象条件は atmosphere="false" でも読む（制御器が気温などを書いたときの土台になる）。
+    if (base.airDensity <= 0.0 && !base.airAtmosphere &&
+        (base.windX != 0.0 || base.windY != 0.0 || base.windZ != 0.0 ||
+         base.airDrag != 1.0 || base.airLift != 1.0 || base.airMagnus != 1.0)) {
+        warn("<option wind / airdrag / airlift / magnus> has no effect without density "
+             "(air density in kg/m^3, e.g. density=\"1.225\", or atmosphere=\"true\")");
+    }
     base.sleeping = o.boolean("sleeping", base.sleeping);
     // 名前の打ち間違いは黙って既定にせず伝える（clampSim が既定へ戻す）。
     const std::string integ = o.attr("integrator", base.integrator.c_str());

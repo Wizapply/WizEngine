@@ -68,6 +68,9 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
         prefabVersion_ = scene.editor().prefabVersion();
         prefabs_ = scene.editor().prefabAssets();
     }
+    bool airRead = false;  // シーンの空気は車両があるときだけ 1 回読む
+    double airDensity = 1.225;
+    veh::Vec3 airWind;
     veh::VehicleInput input;
     input.throttle = throttle_.load();
     input.brake = brake_.load();
@@ -309,6 +312,19 @@ void VehicleComponent::onPhysicsStep(Scene& scene, double dt) {
             }
             return best;
         };
+        // 空気はシーンの <option>（密度は直接か気象条件から）+ 制御器の air:<量>。
+        // 密度 0（空気抵抗なし）は従来の 1.225 kg/m³・無風 = 車両は <vehicle drag> の
+        // 空気抵抗を持つ。
+        if (!airRead) {
+            const wizengine::fluid::AirState air = scene.airNow();
+            // スクリプトが密度を書いていれば 0（真空）でもそれに従う。
+            if (air.density > 0.0 || air.scripted) {
+                airDensity = air.density;
+                airWind = veh::Vec3{air.wind.x, air.wind.y, air.wind.z};
+            }
+            airRead = true;
+        }
+        model.setAir(airDensity, airWind);
         const auto& forces = model.step(chassis, dt, query);
         for (const veh::ForceAtPoint& f : forces) {
             physics.applyForceAtPoint(obj.physId, toChrono(f.force),

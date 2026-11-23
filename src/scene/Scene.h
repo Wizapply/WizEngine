@@ -26,6 +26,7 @@
 #include "scene/UiJson.h"      // uijson::Cache
 #include "scene/UiState.h"
 #include "document/SceneDocument.h"
+#include "fluid/Atmosphere.h"     // 空気の状態（AirState / AirOverride）
 #include "physics/MeshCollision.h"  // CollisionTriangles
 #include "physics/PhysicsWorld.h"  // for BodyTransform
 #include "terrain/TerrainFile.h"     // TerrainLayers（層の定義を値で持つ）
@@ -170,6 +171,9 @@ public:
         // 最初に使うときに読む。
         wizengine::CollisionTriangles trimesh;
         bool trimeshTried = false;
+        // 当たり判定の点（凸包 / 三角形）の外接箱の半寸法（空気抵抗の面積用）。
+        wizengine::editor::Vec3d boundsHalf{0.0, 0.0, 0.0};
+        bool boundsDone = false;
     };
 
     // ジョイントの計測値（直前のステップの反力と破断）。物理スレッドが
@@ -346,6 +350,23 @@ public:
     // ときに読み込む（syncRenderables と同じ）。読めなければ kInvalidId。
     std::size_t meshModelId(int meshIndex);
     double meshScale(int meshIndex) const;
+    // PHYSICS スレッド用: メッシュの当たり判定（collision = Model なら凸包、Trimesh なら
+    // 三角形。どちらも外接箱は同じ）の外接箱の半寸法 (m、メッシュの座標軸)。空気抵抗が
+    // 投影面積を出すのに使う。読めなければ false（呼び出し側は球で近似する）。
+    bool meshHalfExtents(int meshIndex, bool trimesh, wizengine::editor::Vec3d& half);
+
+    // ---- 空気（<option density atmosphere temperature humidity pressure altitude wind ...>）--
+    // いまの空気 = 文書の設定 + 制御器（スクリプト）がこのステップに書いた値（air:<量>）。
+    // どのスレッドからでも呼べる（文書は EditorState のロック、上書きは airMutex_）。
+    // 上書きはシミュレート中で、書いたときと同じ世代（runGeneration）のときだけ効く
+    // = 止める・Reset で文書の値へ戻る。
+    wizengine::fluid::AirState airNow();
+    // PHYSICS スレッド（ControlComponent）: このステップの上書き。毎ステップ作り直して
+    // 渡す（書く制御器が無くなれば空 = 文書の値）。積分の前、空気を使う係（流体・車両）
+    // より先に呼ぶ。
+    void setAirOverride(const wizengine::fluid::AirOverride& ov);
+    // /scene の "air"（いまの空気。シミュレート中はスクリプトの上書き込み）。
+    nlohmann::json airJson();
 
     // ---- プレハブの部品の編集（PHYSICS thread、ギズモから）------------------
     // 対象はプレハブ編集モードのオブジェクト（EditorState::prefabEditObject）
@@ -1341,6 +1362,12 @@ private:
     // 実行状態を捨てるたびに進む（poseMutex_）。RENDER はこれが変わったら
     // カメラを掛かる前の視点へ戻す（Reset・停止・読込）。
     std::uint64_t rigGeneration_ = 0;
+
+    // 制御器（スクリプト）が書いた空気の値（airNow / setAirOverride）。書いたときの世代と
+    // 組で持ち、世代が変わったら使わない。airMutex_ の下（HTTP の /scene も読む）。
+    std::mutex airMutex_;
+    wizengine::fluid::AirOverride airOverride_;
+    std::uint64_t airOverrideGeneration_ = ~std::uint64_t(0);
 
     // ---- イベントグラフの実行状態（PHYSICS スレッド専用）------------------
     // グラフ本体は EditorState が持ち、ここにあるのは実行のためのキャッシュと

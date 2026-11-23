@@ -54,6 +54,8 @@
       const ks = isIn ? (t.sensors || q.trans || []) : (q.trans || []);
       for (const k of ks) out.push('trans:' + t.name + '.' + k);
     }
+    // 空気（シーン全体。air:<量>）。読める量と書ける量はサーバーの一覧どおり。
+    for (const k of q.air || []) out.push('air:' + k);
     // パラメータは読むのも書くのもできる。変数（var:）も同じで、今ある名前を候補に。
     for (const p of controlParams()) out.push('param:' + p.name);
     if (typeof fVarNames === 'function') {

@@ -770,13 +770,14 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   センサ: `time`、`body:<名前>.x y z vx vy vz wx wy wz rx ry rz speed vfwd vlat`、
   `joint:<名前>.angle rate pos vel force torque`、`vehicle:<名前>.speed rpm gear`、
   `trans:<名前>.<量>`（遊星歯車式 AT。下の「遊星歯車式 AT」の章）、
-  `param:<名前>`（下のパラメータ）、`var:<名前>`（下の変数）。
+  `param:<名前>`（下のパラメータ）、`var:<名前>`（下の変数）、`air:<量>`（空気。
+  下の「流体」の章の空気の項）。
   アクチュエータ: `joint:<名前>.target`（モータの目標値）、`body:<名前>.fx fy fz
   tx ty tz`（ワールド）/ `lfx lfy lfz ltx lty ltz`（ローカル）、
   `vehicle:<名前>.throttle brake steer handbrake`、AT への入力
   `trans:<名前>.engine_torque engine_rpm throttle brake select manual output_rpm grade couple`、パーティクルの量
   `emitter:<名前>.rate`（下の「パーティクル」の章）、パラメータの書き換え
-  `param:<名前>`・変数への書き込み `var:<名前>`（下記）、記録だけの `scope:<ラベル>`。
+  `param:<名前>`・変数への書き込み `var:<名前>`（下記）、空気の書き換え `air:<量>`、記録だけの `scope:<ラベル>`。
   **単位は SI で角度は rad**（文書の度とは違う。ジョイントの目標値も換算しない）。
   名前はオブジェクト / ジョイントの name で引く（無い・重複は警告）。ポート名に
   `: . -` を通すため `sanitizePortName` を広げた（96 文字まで）。
@@ -1930,6 +1931,54 @@ Chrono::Multicore の流体コンテナ（`ChFluidContainer`）が水を粒子�
   1 周期平均が重さと 0.05% で一致、`ocean.xml` の物を本物の Chrono（Core）で 40 秒
   回して NaN 0・全部が波に乗って上下。描画は Filament 1.74 を lavapipe で回して確認
   （`docs/images/ocean_*.jpg` / `water_pool.jpg`）。**エンジン本体での海の確認は未**。
+- **空気（シーン全体の設定。`<option density wind airdrag airlift magnus atmosphere
+  temperature humidity pressure altitude>`）**: MuJoCo の `<option density wind>` と同じ
+  置き場・同じ意味（`SimSettings::airDensity` / `windX..Z` / `airDrag` / `airLift` /
+  `airMagnus` / `airAtmosphere` / `airTemperature` / `airHumidity` / `airPressure` /
+  `airAltitude`）。**密度 0・atmosphere false が既定 = 無し**（従来の挙動・既定値なら
+  書かない）。大気は 1.225。
+  * **密度は直接か気象条件から**（`fluid/Atmosphere.h`、純粋）: `atmosphere="true"` なら
+    気温 ℃・相対湿度 %・海面気圧 Pa（天気予報の値）・標高 m から湿り空気の密度
+    ρ = pd/(Rd T) + pv/(Rv T)（pv = 湿度 × 飽和水蒸気圧 = Buck の式、その場の気圧 =
+    標準大気の式 p0 (1 − 2.25577e-5 h)^5.25588）。15 ℃・0 %・101325 Pa で 1.2250、
+    20 ℃ 50 % で 1.199、標高 1600 m で 1.010。気象条件は atmosphere="false" でも読み
+    書きする（制御器が書いたときの土台）。
+  * **制御器（スクリプト）から変えられる**: 信号 `air:<量>`（センサ = density temperature
+    humidity pressure local_pressure altitude wind_x/y/z drag lift magnus、アクチュエータ =
+    local_pressure 以外）。ControlComponent が毎ステップ書いた値を `fluid::AirOverride` に
+    集めて `Scene::setAirOverride` へ渡し（後の制御器が勝つ。書く制御器が無くなれば空）、
+    流体・車両の係が同じステップに `Scene::airNow()`（文書 + 上書き = `resolveAir`）で使う
+    （登録順が Control → Fluid → Vehicle なので同じステップから効く）。上書きは書いた
+    世代（runGeneration）とシミュレート中だけ効き、**文書は書き換えない**（止める・
+    Reset で文書の値へ戻る。保存されない）。気象条件を 1 つでも書けば密度は気象条件から
+    計算し直す、density を書けばそれが勝つ。範囲は `clampAir*`（文書の clampSim と同じ）。
+    センサはステップの始めに 1 回取った値（前のステップの上書き込み）。
+  * **今の値は `/scene` の `air`**（密度・気象条件から出したか・その場の気圧・
+    スクリプトの上書き中か。`Scene::airJson`）で、World タブに「実際の密度」を出す。
+  * 式は `fluid/AirDrag.h`（純粋、冒頭が正）:
+  * **抗力** F = −½ρ Cd A |u| u（u = 速度 − 風、A は u の向きへの投影面積 = 箱は回転込み、
+    球は πr²、Cd は箱 1.05・球 0.47 × airdrag）を重心へ。箱は回転にも面ごとの二乗抵抗。
+  * **揚力**（airlift、箱とメッシュ）: 3 組の面をそれぞれ平らな板として C_L = sin 2α
+    （平板の形）。立方体は打ち消して 0、薄い板・棒ほど効く。重心に掛ける（圧力中心の
+    ずれ = ひらひら・風見は無し）。
+  * **マグヌス**（magnus、当たり判定が球の物だけ）: C_L = S / (2.022 S + 0.981)、
+    S = r|ω⊥| / |u|、向き ω × û（逆回転で浮く・横回転で曲がる）。
+  * 安全弁: 抗力はそのステップで相対速度・角速度を反転させない、揚力とマグヌスは 1 ステップの
+    速度変化を |u| の半分まで。
+  * **メッシュ**（collision = model / trimesh）は当たり判定の外接箱で受ける
+    （`Scene::meshHalfExtents`、凸包か三角形から 1 回だけ。読めなければ球で、マグヌスは無し）。
+  * **車両の車体**は形からの力を受けず、`<vehicle drag>`（CdA）で**シーンの密度と風**を受ける
+    （`VehicleModel::setAir`、VehicleComponent が毎ステップ渡す）。シーンの密度が 0 なら従来の
+    1.225 kg/m³・無風 = 古い文書の走りは変わらない。車の形（Cd 0.3 前後）は箱の Cd 1.05 ×
+    箱の面積と合わない（4 倍近く強くなる）ので、CdA は車両側に残してある。
+  * 掛けるのは FluidComponent の水と同じループ（水に浸かった割合ぶんは減らす）。対象外は
+    固定の物と geom の無いフレーム。速度減衰（lineardamping）とは別で両方効く。
+  * UI は World タブのシミュレート設定の「空気抵抗」（チェック・密度の決め方 = 直接入力 /
+    気象条件から・密度・気温・湿度・海面気圧 hPa・標高・風 X Y Z・Cd / 揚力 / マグヌスの
+    倍率 = `edit.sim` の `airDensity` / `airAtmosphere` / `airTemperature` / `airHumidity` /
+    `airPressure`（Pa）/ `airAltitude` / `wind {x,y,z}` / `airDrag` / `airLift` /
+    `airMagnus`）。
+  * 入れていない: 物どうしの風よけ・突風 / 乱れ・物ごとの係数・流れの可視化。
 - **未**: 水平線まで続く海（カメラに付いて動く格子）、水中から見た水面（霧・
   コースティクス）、岸や物の周りの泡、水の側の反作用（物が水を押しのけて
   水面が盛り上がる・航跡）、砕け波、粒子の表面の泡・しぶきの白さ・コースティクス、粒子と水面の

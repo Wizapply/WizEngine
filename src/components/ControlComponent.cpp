@@ -36,8 +36,44 @@ const char* sourceName(ctl::Source s) {
         case ctl::Source::Emitter: return "emitter";
         case ctl::Source::Var: return "var";
         case ctl::Source::Transmission: return "trans";
+        case ctl::Source::Air: return "air";
     }
     return "?";
+}
+
+// air:<量> の名前 → 上書きの項目（書ける量。ControlSignals の airActuatorNames と同じ）。
+bool airField(const std::string& q, wizengine::fluid::AirOverride::Field& out) {
+    using F = wizengine::fluid::AirOverride;
+    static const std::pair<const char*, F::Field> table[] = {
+        {"density", F::Density},   {"temperature", F::Temperature}, {"humidity", F::Humidity},
+        {"pressure", F::Pressure}, {"altitude", F::Altitude},       {"wind_x", F::WindX},
+        {"wind_y", F::WindY},      {"wind_z", F::WindZ},            {"drag", F::Drag},
+        {"lift", F::Lift},         {"magnus", F::Magnus},
+    };
+    for (const auto& e : table) {
+        if (q == e.first) {
+            out = e.second;
+            return true;
+        }
+    }
+    return false;
+}
+
+// air:<量> の今の値（ControlSignals の airSensorNames と同じ名前）。
+double airQuantity(const wizengine::fluid::AirState& a, const std::string& q) {
+    if (q == "density") return a.density;
+    if (q == "temperature") return a.temperature;
+    if (q == "humidity") return a.humidity;
+    if (q == "pressure") return a.pressure;
+    if (q == "local_pressure") return a.localPressure;
+    if (q == "altitude") return a.altitude;
+    if (q == "wind_x") return a.wind.x;
+    if (q == "wind_y") return a.wind.y;
+    if (q == "wind_z") return a.wind.z;
+    if (q == "drag") return a.drag;
+    if (q == "lift") return a.lift;
+    if (q == "magnus") return a.magnus;
+    return 0.0;
 }
 
 }  // namespace
@@ -127,6 +163,12 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
         rebuild(scene);
     }
     if (runtimes_.empty()) {
+        // 書く制御器が無い = 空気は文書の値（前に書いていた分を消す）。
+        if (airSent_) {
+            airWrites_ = wizengine::fluid::AirOverride{};
+            scene.setAirOverride(airWrites_);
+            airSent_ = false;
+        }
         applyTransmissions(scene, dt);
         time_ += dt;
         return;
@@ -148,6 +190,8 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
     }
     jointResults_.clear();
     jointStatsFetched_ = false;
+    airFetched_ = false;
+    airWrites_ = wizengine::fluid::AirOverride{};
 
     bool executed = false;
     for (std::size_t r = 0; r < runtimes_.size(); ++r) {
@@ -193,6 +237,10 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
         }
         applyOutputs(scene, rt, dt);
     }
+    // 空気: このステップに書いた値（無ければ空 = 文書の値）。流体・車両の係はこの後に
+    // 回るので、同じステップから効く。
+    scene.setAirOverride(airWrites_);
+    airSent_ = airWrites_.any();
     // AT: 制御器が今書いた入力で TCU を回し、このステップの荷重とクラッチの容量を与える
     // （積分はこの後 Chrono が剛体と一緒に）。
     applyTransmissions(scene, dt);
@@ -365,6 +413,9 @@ void ControlComponent::bind(Scene& scene, Runtime& rt, Binding& b, bool sensor) 
         case ctl::Source::Var:
             b.ok = true;  // 宣言は要らない（最初に書くまでは 0）
             return;
+        case ctl::Source::Air:
+            b.ok = true;  // シーンに 1 つ（量の名前は parse で確かめ済み）
+            return;
         case ctl::Source::Transmission: {
             for (std::size_t i = 0; i < trans_.size(); ++i) {
                 if (trans_[i].name != r.target) continue;
@@ -536,6 +587,13 @@ double ControlComponent::readSensor(Scene& scene, const Binding& b) {
             const auto it = vars_.find(r.target);
             return it == vars_.end() ? 0.0 : it->second;
         }
+        case ctl::Source::Air:
+            // ステップの始めの空気（前のステップに書いた上書き込み）。
+            if (!airFetched_) {
+                airFetched_ = true;
+                airState_ = scene.airNow();
+            }
+            return airQuantity(airState_, r.sub);
     }
     return 0.0;
 }
@@ -606,6 +664,13 @@ void ControlComponent::applyOutputs(Scene& scene, Runtime& rt, double dt) {
                 // 表へすぐ書く = 後の制御器が同じステップで読む。
                 vars_[b.ref.target] = v;
                 break;
+            case ctl::Source::Air: {
+                // ステップの終わりにまとめて Scene へ（後の制御器が勝つ）。範囲は
+                // resolveAir が丸める。
+                wizengine::fluid::AirOverride::Field f;
+                if (airField(b.ref.sub, f)) airWrites_.set(f, v);
+                break;
+            }
             case ctl::Source::Param:
                 // 値が変わったときだけ書く（同じ値を出し続けている間はスライダーで
                 // 上書きできる）。後の制御器が同じステップで読めるよう写しにも入れる。

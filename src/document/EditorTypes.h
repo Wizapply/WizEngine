@@ -1269,6 +1269,24 @@ struct SimSettings {
     float restitution = 0.0f;
     double linearDamping = 0.15;   // 1/s
     double angularDamping = 0.60;  // 1/s
+    // 空気抵抗（MuJoCo の <option density wind> と同じ置き場）。airDensity が 0 なら
+    // 掛けない（既定 = 従来どおり）。大気は 1.225 kg/m³。力の式は fluid/AirDrag.h。
+    // 速度減衰（linear / angularDamping）とは別の物で、両方効く。車両の車体は
+    // <vehicle drag> の CdA でこの密度と風を受ける（形からの抗力・揚力は掛けない）。
+    double airDensity = 0.0;  // kg/m³
+    double windX = 0.0;       // 風 (m/s、ワールド)
+    double windY = 0.0;
+    double windZ = 0.0;
+    double airDrag = 1.0;     // 抗力係数 Cd の倍率（箱 1.05・球 0.47 に掛ける）
+    double airLift = 1.0;     // 板の揚力の倍率（箱・メッシュの面。0 = 無し）
+    double airMagnus = 1.0;   // マグヌス効果の倍率（回る球。0 = 無し）
+    // 気象条件から密度を出す（airAtmosphere = true のとき airDensity の代わりに使う。
+    // 式は fluid/Atmosphere.h = 湿り空気の状態方程式 + 標準大気の気圧の式）。
+    bool airAtmosphere = false;
+    double airTemperature = 15.0;    // 気温 ℃
+    double airHumidity = 0.0;        // 相対湿度 %
+    double airPressure = 101325.0;   // 海面気圧 Pa（天気予報の気圧）
+    double airAltitude = 0.0;        // 標高 m（気圧を下げる）
     bool sleeping = true;
     std::string integrator = "euler";  // 上の integratorNameValid
     std::string solver = "bb";         // 上の solverNameValid（Core のみ）
@@ -2410,6 +2428,16 @@ inline nlohmann::json toJson(const SimSettings& s) {
     j["restitution"] = s.restitution;
     j["linearDamping"] = s.linearDamping;
     j["angularDamping"] = s.angularDamping;
+    j["airDensity"] = s.airDensity;
+    j["wind"] = nlohmann::json{{"x", s.windX}, {"y", s.windY}, {"z", s.windZ}};
+    j["airDrag"] = s.airDrag;
+    j["airLift"] = s.airLift;
+    j["airMagnus"] = s.airMagnus;
+    j["airAtmosphere"] = s.airAtmosphere;
+    j["airTemperature"] = s.airTemperature;
+    j["airHumidity"] = s.airHumidity;
+    j["airPressure"] = s.airPressure;
+    j["airAltitude"] = s.airAltitude;
     j["sleeping"] = s.sleeping;
     j["integrator"] = s.integrator;
     j["solver"] = s.solver;
@@ -2436,6 +2464,22 @@ inline SimSettings simFromJson(const nlohmann::json& j, const SimSettings& base)
     s.restitution = j.value("restitution", s.restitution);
     s.linearDamping = j.value("linearDamping", s.linearDamping);
     s.angularDamping = j.value("angularDamping", s.angularDamping);
+    s.airDensity = jsonNumber(j, "airDensity", s.airDensity);
+    if (const auto it = j.find("wind"); it != j.end() && it->is_object()) {
+        s.windX = jsonNumber(*it, "x", s.windX);
+        s.windY = jsonNumber(*it, "y", s.windY);
+        s.windZ = jsonNumber(*it, "z", s.windZ);
+    }
+    s.airDrag = jsonNumber(j, "airDrag", s.airDrag);
+    s.airLift = jsonNumber(j, "airLift", s.airLift);
+    s.airMagnus = jsonNumber(j, "airMagnus", s.airMagnus);
+    if (const auto it = j.find("airAtmosphere"); it != j.end() && it->is_boolean()) {
+        s.airAtmosphere = it->get<bool>();
+    }
+    s.airTemperature = jsonNumber(j, "airTemperature", s.airTemperature);
+    s.airHumidity = jsonNumber(j, "airHumidity", s.airHumidity);
+    s.airPressure = jsonNumber(j, "airPressure", s.airPressure);
+    s.airAltitude = jsonNumber(j, "airAltitude", s.airAltitude);
     s.sleeping = j.value("sleeping", s.sleeping);
     if (j.contains("integrator") && j["integrator"].is_string()) s.integrator = j["integrator"];
     if (j.contains("solver") && j["solver"].is_string()) s.solver = j["solver"];
@@ -2512,6 +2556,18 @@ inline SimSettings clampSim(SimSettings s) {
     s.restitution = clf(s.restitution, 0.0f, 1.0f, d.restitution);
     s.linearDamping = cl(s.linearDamping, 0.0, 10.0, d.linearDamping);
     s.angularDamping = cl(s.angularDamping, 0.0, 10.0, d.angularDamping);
+    s.airDensity = cl(s.airDensity, 0.0, 100.0, d.airDensity);
+    s.windX = cl(s.windX, -100.0, 100.0, d.windX);
+    s.windY = cl(s.windY, -100.0, 100.0, d.windY);
+    s.windZ = cl(s.windZ, -100.0, 100.0, d.windZ);
+    s.airDrag = cl(s.airDrag, 0.0, 10.0, d.airDrag);
+    s.airLift = cl(s.airLift, 0.0, 10.0, d.airLift);
+    s.airMagnus = cl(s.airMagnus, 0.0, 10.0, d.airMagnus);
+    // 範囲は fluid/Atmosphere.h の clampAir* と同じ（スクリプトの値もそこで丸める）。
+    s.airTemperature = cl(s.airTemperature, -80.0, 80.0, d.airTemperature);
+    s.airHumidity = cl(s.airHumidity, 0.0, 100.0, d.airHumidity);
+    s.airPressure = cl(s.airPressure, 1000.0, 200000.0, d.airPressure);
+    s.airAltitude = cl(s.airAltitude, -500.0, 11000.0, d.airAltitude);
     // 名前の打ち間違いは既定へ（読み込み側が警告を出す。ここは最後の関所）。
     if (!integratorNameValid(s.integrator)) s.integrator = "euler";
     if (!solverNameValid(s.solver)) s.solver = "bb";

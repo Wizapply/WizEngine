@@ -219,6 +219,8 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     j["mode"] = ed::modeName(editor_.mode());
     j["editorCam"] = int(editorCamera());
     j["sim"] = ed::toJson(editor_.sim());
+    // いまの空気（気象条件から出した密度・スクリプトの上書き込み。World タブの表示用）。
+    j["air"] = airJson();
     // いまの物理の系（バックエンド / 接触の解き方）と、Core を要した理由。
     // このビルドが持つ B の機能も送る（UI が選択肢を灰色にする）。
     j["engine"] = physics_.backendName();
@@ -421,12 +423,14 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             q["body"] = ctl::sensorQuantities(ctl::Source::Body);
             q["joint"] = ctl::sensorQuantities(ctl::Source::Joint);
             q["vehicle"] = ctl::sensorQuantities(ctl::Source::Vehicle);
+            q["air"] = ctl::sensorQuantities(ctl::Source::Air);
             f["sensors"] = q;
             q["body"] = ctl::actuatorQuantities(ctl::Source::Body);
             q["joint"] = ctl::actuatorQuantities(ctl::Source::Joint);
             q["vehicle"] = ctl::actuatorQuantities(ctl::Source::Vehicle);
             q["emitter"] = ctl::actuatorQuantities(ctl::Source::Emitter);
             q["trans"] = ctl::actuatorQuantities(ctl::Source::Transmission);
+            q["air"] = ctl::actuatorQuantities(ctl::Source::Air);
             f["actuators"] = q;
             f["sensors"]["trans"] = ctl::sensorQuantities(ctl::Source::Transmission);
             // AT の名前と、要素・軸ごとの量（torque_A など）を含む読める量の一覧。

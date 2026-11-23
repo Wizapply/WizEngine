@@ -28,6 +28,12 @@
 //   <wizengine model="名前" version="4">
 //     <option gravity="x y z" integrator solver combine contact young poisson modal .../>
 //                                       ... シミュレート設定（MuJoCo の option）。
+//                                       空気抵抗も MuJoCo と同じ density（kg/m³、0 =
+//                                       無し）/ wind="x y z"（m/s）+ airdrag（Cd の倍率）/
+//                                       airlift（板の揚力の倍率）/ magnus（マグヌスの倍率）。
+//                                       atmosphere="true" なら密度を気象条件 temperature
+//                                       （℃）/ humidity（%）/ pressure（海面気圧 Pa）/
+//                                       altitude（標高 m）から出す（fluid/Atmosphere.h）。
 //                                           integrator = euler / projected /
 //                                           implicit / trapezoidal / hht / newmark、
 //                                           solver = bb / apgd / psor / jacobi /

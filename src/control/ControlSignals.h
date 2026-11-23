@@ -38,6 +38,12 @@
 //   param:<名前>               … 制御器のパラメータ（文書の <control><param>）。
 //                                ブラウザのスライダーでシミュレート中に変えられる
 //   var:<名前>                 … 変数（下の「変数」）。今の値
+//   air:<量>                   … いまの空気（文書の <option> + 制御器が書いた値）
+//       density                … 実際に使っている密度 (kg/m³、0 = 空気抵抗なし)
+//       temperature humidity   … 気温 (℃) / 相対湿度 (%)
+//       pressure local_pressure altitude … 海面気圧 / その場の気圧 (Pa) / 標高 (m)
+//       wind_x wind_y wind_z   … 風 (m/s、ワールド)
+//       drag lift magnus       … 抗力・揚力・マグヌスの倍率
 //
 // ---- アクチュエータ（out ノードの name）-------------------------------------
 //   joint:<名前>.target        … モータの目標値（speed = rad/s or m/s、
@@ -57,6 +63,12 @@
 //                                ときだけ書く = 式が同じ値を出し続けている間は
 //                                スライダーで上書きできる。保存すると残る）
 //   var:<名前>                 … 変数に書く（下の「変数」）
+//   air:<量>                   … 空気を書き換える（シーン全体。センサと同じ量の名前、
+//                                local_pressure を除く）。書いている間だけ文書の値より
+//                                勝ち、止めると文書の値へ戻る（保存はされない）。
+//                                temperature / humidity / pressure / altitude を書くと密度は
+//                                気象条件から計算し直す（fluid/Atmosphere.h）。density を
+//                                書けばそれが勝つ。後の制御器が勝つ
 //   trans:<名前>.engine_torque engine_rpm throttle brake select manual output_rpm grade couple
 //                              … AT への入力（エンジントルク N·m / エンジン回転 rpm /
 //                                アクセル・ブレーキ 0..1 / セレクタ 0 P 1 R 2 N 3 D 4 M /
@@ -84,7 +96,7 @@
 namespace wizengine {
 namespace control {
 
-enum class Source { Time, Body, Joint, Vehicle, Scope, Param, Emitter, Var, Transmission };
+enum class Source { Time, Body, Joint, Vehicle, Scope, Param, Emitter, Var, Transmission, Air };
 
 enum class Quantity {
     None,
@@ -101,13 +113,15 @@ enum class Quantity {
     EmitRate,
     // trans（センサ・アクチュエータとも。量の名前は SignalRef::sub、transmission/AtSignals が引く）
     Trans,
+    // air（センサ・アクチュエータとも。量の名前は SignalRef::sub = airSensorNames の 1 つ）
+    Air,
 };
 
 struct SignalRef {
     Source source = Source::Time;
     std::string target;   // オブジェクト / ジョイント / パラメータの名前、scope のラベル
     Quantity quantity = Quantity::None;
-    std::string sub;      // trans: の量の名前（"engine_rpm"、"torque_A" …）
+    std::string sub;      // trans: / air: の量の名前（"engine_rpm"、"torque_A"、"temperature" …）
 };
 
 // 解析。読めなければ false で error に理由（英語、ログ用）。

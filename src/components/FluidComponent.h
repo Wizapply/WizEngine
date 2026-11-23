@@ -24,7 +24,11 @@ class Renderer;
 //             全粒子へ等しく = applyForce、モーメントは掛けない）。形は箱か球で
 //             近似する（凸包のモデルは geom の半径の球、geom の無いフレームと三角
 //             メッシュは対象外）。流体粒子（Multicore）は Chrono が解くのでここでは
-//             何もしない。
+//             何もしない。同じループで空気（<option density wind airdrag airlift
+//             magnus>、fluid/AirDrag.h = 抗力・板の揚力・球のマグヌス）も掛ける: 密度 > 0
+//             のとき全ての動く物へ、水に浸かっていない割合ぶん。メッシュは当たり判定の
+//             外接箱で受ける。車両の車体は VehicleComponent が <vehicle drag> の CdA で
+//             同じ密度と風を掛けるので、ここでは除く。
 //   RENDER  : 水面の格子（Gerstner 波で揺れる。Renderer::addWaterMesh = water.mat で、
 //             透けて屈折し、頂点ごとの水深と白波を持つ。水深は地面の高さまで、地面が
 //             無ければ深い海）と流体粒子を描く。流体粒子はシミュレート中は

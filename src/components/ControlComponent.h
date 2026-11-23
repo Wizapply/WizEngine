@@ -19,6 +19,7 @@
 #include "formula/Formula.h"
 #include "formula/LuaFormula.h"
 #include "components/AtDriveline.h"
+#include "fluid/Atmosphere.h"
 
 class VehicleComponent;
 class EffectsComponent;
@@ -163,6 +164,13 @@ private:
     std::map<int, wizengine::control::JointMeasure::Result> jointResults_;
     std::chrono::steady_clock::time_point lastStatus_{};
     bool jointStatsFetched_ = false;
+    // 空気（air:<量>）: 読むのはステップの始めに 1 回取った状態、書いた値はステップの
+    // 終わりに Scene::setAirOverride へまとめて渡す（毎ステップ作り直す = 書く制御器が
+    // 無くなれば文書の値へ戻る）。
+    bool airFetched_ = false;
+    wizengine::fluid::AirState airState_;
+    wizengine::fluid::AirOverride airWrites_;
+    bool airSent_ = false;  // 前に空でない上書きを渡した（消すときに 1 回だけ渡し直す）
     std::vector<double> jointForce_, jointTorque_;
 
     // ---- 共有（mutex_ の下）----

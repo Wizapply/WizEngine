@@ -502,6 +502,13 @@
     display: flex; align-items: center; justify-content: space-between;
     gap: 8px; font-size: 12px; color: #b8bcc4;
   }
+  /* hidden 属性を display:flex に負けさせない（.sbSec[hidden] と同じ理由）。 */
+  .edRow[hidden] { display: none; }
+  /* 節の中で行をまとめて出し入れする入れ物（空気の欄など）。中の行の間隔を
+     節（.sbSec の gap）と揃える - ただの div だと間隔が 0 になって詰まる。 */
+  .edGroup { display: flex; flex-direction: column; gap: 6px; }
+  .edGroup[hidden] { display: none; }
+  .edRow > .nowrap { white-space: nowrap; }
   .edRow.btnRow { justify-content: stretch; }
   .edRow.btnRow button { flex: 1 1 0; min-width: 0; }
   .edRow button, #paneEditor .sbSec > button {

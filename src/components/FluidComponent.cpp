@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "fluid/AirDrag.h"
 #include "fluid/FluidSeed.h"
 #include "fluid/WaterForces.h"
 #include "physics/PhysicsWorld.h"
@@ -77,7 +78,13 @@ void FluidComponent::onPhysicsStep(Scene& scene, double dt) {
         physParams_ = toParams(physWater_);
         fl::prepareWaves(physParams_, physGravity_);
     }
-    if (!physHas_ || !physWater_.enabled || dt <= 0.0) return;
+    // 空気（シーン全体の設定 <option density atmosphere ... wind> + 制御器が書いた
+    // air:<量>。密度は気象条件から出すこともある = Scene::airNow が解く）。
+    const fl::AirState airState = scene.airNow();
+    const fl::AirParams air = airState.params();
+    const bool hasAir = airState.enabled();
+    const bool hasWater = physHas_ && physWater_.enabled;
+    if ((!hasAir && !hasWater) || dt <= 0.0) return;
 
     const fl::WaterParams& wp = physParams_;
     const double t = scene.physicsSimTime();
@@ -101,33 +108,81 @@ void FluidComponent::onPhysicsStep(Scene& scene, double dt) {
         } else {
             continue;  // geom の無いフレーム・三角メッシュ（形が分からない）
         }
+        const double reach = b.shape == fl::BodyState::Shape::Sphere
+                                 ? b.radius
+                                 : std::sqrt(b.half.dot(b.half));
 
         const BodyTransform tr = physics.bodyTransform(o.physId);
         b.position = {tr.px, tr.py, tr.pz};
         b.rotation = fl::Quat(tr.qw, tr.qx, tr.qy, tr.qz);
-        // 水の範囲から十分離れた物は計算しない（ほとんどの物はここで抜ける）。
-        const double reach = b.shape == fl::BodyState::Shape::Sphere
-                                 ? b.radius
-                                 : std::sqrt(b.half.dot(b.half));
-        const double waveTop = wp.level + wp.crest;
-        if (b.position.y - reach > waveTop) continue;
-        if (std::fabs(b.position.x - wp.centerX) > wp.halfX + reach ||
-            std::fabs(b.position.z - wp.centerZ) > wp.halfZ + reach) {
-            continue;
+
+        // 水の範囲から十分離れた物は水の計算をしない（ほとんどの物はここで抜ける）。
+        bool nearWater = hasWater;
+        if (nearWater) {
+            const double waveTop = wp.level + wp.crest;
+            if (b.position.y - reach > waveTop ||
+                std::fabs(b.position.x - wp.centerX) > wp.halfX + reach ||
+                std::fabs(b.position.z - wp.centerZ) > wp.halfZ + reach) {
+                nearWater = false;
+            }
         }
+        // 車両の車体は <vehicle drag> の CdA で同じ密度と風を受ける（VehicleComponent。
+        // 箱の形からの抗力・揚力は車の形と合わないので掛けない = 二重に数えない）。
+        const bool airHere = hasAir && !d.hasVehicle;
+        if (!nearWater && !airHere) continue;
+
         b.velocity = fromCh(physics.bodyVelocity(o.physId));
         b.angularVelocity = fromCh(physics.bodyAngularVelocity(o.physId));
         b.mass = physics.bodyMass(o.physId);
 
-        const fl::WaterLoad load = fl::computeWaterLoad(wp, b, gravity, t, dt);
-        if (load.submergedVolume <= 0.0) continue;
+        fl::Vec3 force, torque;
+        double inAir = 1.0;  // 水に浸かっていない割合（空気抵抗はそのぶんだけ）
+        if (nearWater) {
+            const fl::WaterLoad load = fl::computeWaterLoad(wp, b, gravity, t, dt);
+            if (load.submergedVolume > 0.0) {
+                force = force + load.force;
+                torque = torque + load.torque;
+                if (load.volume > 0.0) {
+                    inAir = std::clamp(1.0 - load.submergedVolume / load.volume, 0.0, 1.0);
+                }
+            }
+        }
+        if (airHere && inAir > 0.0) {
+            fl::AirBody ab;
+            ab.shape = b.shape == fl::BodyState::Shape::Sphere ? fl::AirBody::Shape::Sphere
+                                                              : fl::AirBody::Shape::Box;
+            ab.half = b.half;
+            ab.radius = b.radius;
+            // メッシュ（凸包・三角メッシュ）は当たり判定の外接箱で受ける（球で近似すると
+            // 平たい物・細長い物の面積と揚力が出ない）。読めなければ球のまま。
+            // マグヌス効果は本物の球（当たり判定が球）だけ。
+            ab.magnus = d.collision == ed::ShapeKind::Sphere;
+            if (d.collision == ed::ShapeKind::Model || d.collision == ed::ShapeKind::Trimesh) {
+                ed::Vec3d mh;
+                if (scene.meshHalfExtents(o.meshIndex,
+                                          d.collision == ed::ShapeKind::Trimesh, mh)) {
+                    ab.shape = fl::AirBody::Shape::Box;
+                    ab.half = {mh.x, mh.y, mh.z};
+                }
+            }
+            ab.rotation = b.rotation;
+            ab.velocity = b.velocity;
+            ab.angularVelocity = b.angularVelocity;
+            ab.mass = b.mass;
+            fl::AirParams a = air;
+            a.density *= inAir;
+            const fl::AirLoad al = fl::computeAirLoad(a, ab, dt);
+            force = force + al.force;
+            torque = torque + al.torque;
+        }
+        if (force.length() < 1e-12 && torque.length() < 1e-12) continue;
         if (o.lattice) {
             // ソフトボディ: 全粒子へ等しく（回すモーメントは掛けない）。
-            physics.applyForce(o.physId, toCh(load.force), dt);
+            physics.applyForce(o.physId, toCh(force), dt);
             continue;
         }
-        physics.applyForceAtPoint(o.physId, toCh(load.force), toCh(b.position), dt);
-        applyTorque(physics, o.physId, b.position, load.torque, std::max(0.05, reach), dt);
+        physics.applyForceAtPoint(o.physId, toCh(force), toCh(b.position), dt);
+        applyTorque(physics, o.physId, b.position, torque, std::max(0.05, reach), dt);
     }
 }
 

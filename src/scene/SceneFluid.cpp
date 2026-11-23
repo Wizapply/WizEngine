@@ -161,3 +161,59 @@ nlohmann::json Scene::fluidJson() {
                         {"error", st.error}};
     return j;
 }
+
+// ---- 空気 ---------------------------------------------------------------------------
+
+namespace {
+// 文書の値 → 純粋な計算の語彙（fluid/ は文書を知らない）。
+wizengine::fluid::AirSettings airSettingsOf(const ed::SimSettings& s) {
+    wizengine::fluid::AirSettings a;
+    a.density = s.airDensity;
+    a.atmosphere = s.airAtmosphere;
+    a.temperature = s.airTemperature;
+    a.humidity = s.airHumidity;
+    a.pressure = s.airPressure;
+    a.altitude = s.airAltitude;
+    a.wind = {s.windX, s.windY, s.windZ};
+    a.drag = s.airDrag;
+    a.lift = s.airLift;
+    a.magnus = s.airMagnus;
+    return a;
+}
+}  // namespace
+
+wizengine::fluid::AirState Scene::airNow() {
+    const wizengine::fluid::AirSettings doc = airSettingsOf(editor_.sim());
+    wizengine::fluid::AirOverride ov;
+    const bool simulating = editor_.mode() == ed::AppMode::Simulate;
+    const std::uint64_t gen = runGeneration();
+    {
+        std::lock_guard<std::mutex> lk(airMutex_);
+        if (simulating && airOverrideGeneration_ == gen) ov = airOverride_;
+    }
+    return wizengine::fluid::resolveAir(doc, ov);
+}
+
+void Scene::setAirOverride(const wizengine::fluid::AirOverride& ov) {
+    const std::uint64_t gen = runGeneration();
+    std::lock_guard<std::mutex> lk(airMutex_);
+    airOverride_ = ov;
+    airOverrideGeneration_ = gen;
+}
+
+nlohmann::json Scene::airJson() {
+    const wizengine::fluid::AirState a = airNow();
+    return nlohmann::json{{"density", a.density},
+                          {"fromConditions", a.fromConditions},
+                          {"conditionsDensity", a.conditionsDensity},
+                          {"temperature", a.temperature},
+                          {"humidity", a.humidity},
+                          {"pressure", a.pressure},
+                          {"altitude", a.altitude},
+                          {"localPressure", a.localPressure},
+                          {"wind", {{"x", a.wind.x}, {"y", a.wind.y}, {"z", a.wind.z}}},
+                          {"drag", a.drag},
+                          {"lift", a.lift},
+                          {"magnus", a.magnus},
+                          {"scripted", a.scripted}};
+}
