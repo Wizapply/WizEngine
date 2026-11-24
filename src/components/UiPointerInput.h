@@ -23,8 +23,10 @@ class Scene;
 //                           UiState に積む（pushClick）。
 //   hover                 … ポインタが上にあるボタン。ギズモのハイライトにも要るので取らない。
 //
-// どのカメラのページからでも受けるが、そのカメラに出ている overlay の Canvas
-// （ui::overlayShownOnCamera）だけに、手前の Canvas（ui::canvasBehind の逆順）から当てる。
+// どのカメラのページからでも受けるが、そのカメラに出ている Canvas（ui::canvasShownOnCamera）
+// だけに当てる: overlay を手前の Canvas（ui::canvasBehind の逆順）から、次に板（camera /
+// world）のうちカーソルの下でカメラにいちばん近い板に（手前の板が後ろの板をふさぐ。板の上の
+// 座標はカーソルのレイと板の面の交点 = Scene::canvasPointAt）。
 // 当たり判定は呼び手の版の写しの設計値。ポインタの様子（上にいる / 押している）は INPUT が
 // UiState へ直接置く（見た目に物理の 1 パスを待たせない）。受け付けない（enabled = false の）
 // ボタンも同じく置き、見た目を変えないのは描く側（ui::resolve）の判断。クリックを積むのは
@@ -59,8 +61,14 @@ private:
     };
 
     // 映像の位置 (x, y)（NDC）にあるボタン（押下を受け止める種類だけ = ui::catchesPointer）。
-    ButtonHit buttonAt(const wizengine::UiState::Snapshot& snap, std::size_t camIndex,
-                       double x, double y, int viewW, int viewH) const;
+    // overlay を手前から見て、無ければカーソルの下でいちばん近い板（camera / world）だけを
+    // 見る（Scene::canvasPointAt。手前の物に隠れた板にも当たる）。
+    ButtonHit buttonAt(const Scene& scene, const wizengine::UiState::Snapshot& snap,
+                       std::size_t camIndex, double x, double y, int viewW, int viewH) const;
+    // Canvas index（全体の矩形 canvas、設計の座標 (px, py)）の上のボタン。当たれば hit に入れて true。
+    bool buttonOnCanvas(const wizengine::UiState::Snapshot& snap, int index,
+                        const wizengine::ui::Rect& canvas, double px, double py,
+                        ButtonHit& hit) const;
     // ボタン hit の上にいる（pressed = 押している）ときのポインタ（hit が無ければ「無し」）。
     static wizengine::UiState::Pointer pointerOver(const ButtonHit& hit, bool pressed);
     // hover / pick。epoch / generations = 受け付けるかを見る前に読んだ世代。

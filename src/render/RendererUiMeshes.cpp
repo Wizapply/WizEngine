@@ -1,4 +1,4 @@
-// Renderer の UI のテクスチャと Canvas（overlay）のレンダラブル。
+// Renderer の UI の Canvas（overlay / 板）のレンダラブル。テクスチャは RendererUiTextures.cpp。
 //
 // Canvas の中身はビューごと（UiCanvasPart）: アンカーの解き方はビューの縦横比で
 // 変わるので、ビューごとにメッシュとレンダラブルを持ち、そのビューの UI の
@@ -8,13 +8,18 @@
 // Canvas の order（setUiCanvasOrder の整数。前後の規則は呼び手 = ui::canvasBehind の順位で、
 // Canvas ごとに違う値を渡す）→ run の並び（= 文書順）の順に 0, 1, 2, ... を振る。
 // 頂点の形は ui/UiMeshFormat.h の UiVertex（属性の割り当ては ui.mat の先頭）。
+//
+// 板の Canvas（UiCanvasPlacement::Plate = camera / world）は中身 1 つを主のシーンに
+// 置く（板の大きさで配置が決まるので全ビューで同じ中身）。材質は同じ ui.mat の
+// 別のインスタンスで、深さで比べる（手前の物に隠れる。書きはしない = 板の中の
+// run どうしは重なり順で決まる）・sRGB へ直すのは主のビューの後処理が切れている
+// ときだけ（後処理が符号化するため。uiPlateSrgbOut）。
+// 重なり順は板の中だけ（ローカルの blendOrder = run の並び）で、板どうし・他の
+// 半透明の物とはカメラからの距離で並ぶ。姿勢と可視はビューごと（RendererUiViews.cpp）。
 #include "render/RendererInternal.h"
 
 #include <algorithm>
 #include <cstddef>
-
-#include "render/ImageScale.h"
-#include "render/UiTextureId.h"
 
 using namespace filament;
 using namespace filament::math;
@@ -24,14 +29,23 @@ using namespace render_detail;
 namespace wizengine {
 namespace {
 
-// UI のビューは後処理（sRGB への符号化を含む）を切ってあり、主のビューは
-// 符号化した値を同じ描画先に書く。UI の色はリニア値（文書の約束）なので、
-// sRGB へ直して書けば主のビューと同じ明るさになる（ui.mat の srgbOut）。
-// 実機で色が明るすぎる・暗すぎるときはここを false にして見比べる。
-constexpr bool kUiSrgbOut = true;
-
 // blendOrder に使える範囲（15 ビット）。
 constexpr uint32_t kMaxBlendOrder = 0x7FFF;
+
+// 通し番号 index の重なり順（範囲の外は最後の番号に丸める）。
+uint16_t clampedBlendOrder(std::size_t index) {
+    return uint16_t(std::min<std::size_t>(index, kMaxBlendOrder));
+}
+
+// 描く回数 runCount が重なり順の範囲に入らなければ 1 回だけ警告する（overlay の
+// ビューと板の共通。what / which は "view" / "canvas" とその番号）。
+void warnBlendOrderRange(bool& warned, std::size_t runCount, const char* what,
+                         std::size_t which) {
+    if (runCount <= std::size_t(kMaxBlendOrder) + 1 || warned) return;
+    warned = true;
+    LOGW("render", "ui %s %zu: %zu draw runs exceed the blend order range - the "
+         "overlap order of the last ones is not kept", what, which, runCount);
+}
 
 // 頂点バッファの末尾に足す、どのインデックスも指さない予備の頂点の数。GPU によっては
 // バッファのいちばん最後の頂点を正しく読めず（最後の字の角が飛んだ）、本物の頂点を
@@ -84,195 +98,26 @@ const char* uiMeshProblem(const ui::UiMeshData& m) {
     return nullptr;
 }
 
-// UI のテクスチャを作れる大きさか（端末の上限を超えると Filament が止まる = abort
-// なので、作る前に断る）。字の置き場と画像の両方がここを通る。だめなら警告する
-// （consequence = 代わりにどう描くか、英語）。
-bool uiTextureSizeOk(Engine& engine, int width, int height, const char* consequence) {
-    const std::size_t maxSize = Texture::getMaxTextureSize(engine, Texture::Sampler::SAMPLER_2D);
-    const bool positive = width > 0 && height > 0;
-    const bool fits = std::size_t(width) <= maxSize && std::size_t(height) <= maxSize;
-    if (positive && fits) return true;
-    LOGW("render", "ui texture %dx%d cannot be created (limit %zu) - %s", width, height, maxSize,
-         consequence);
-    return false;
-}
-
-template <class T>
-int firstFreeSlot(std::vector<T>& slots) {
-    for (std::size_t i = 0; i < slots.size(); ++i) {
-        if (!slots[i].used) return int(i);
-    }
-    slots.emplace_back();
-    return int(slots.size()) - 1;
-}
-
 }  // namespace
-
-void Renderer::loadUiMaterial() {
-    uiMaterial_ = loadMaterialPackage(*engine_, "ui.filamat", "ui material");
-}
-
-// ---- 番号 → 実体 ---------------------------------------------------------------
-Renderer::UiTexture* Renderer::uiTextureAt(int textureId) {
-    if (textureId < 0) return nullptr;
-    const std::size_t slot = std::size_t(uiTextureSlot(textureId));
-    if (slot >= uiTextures_.size()) return nullptr;
-    UiTexture& t = uiTextures_[slot];
-    // 返した後に枠が使い直されていれば世代が違う = 古い番号は別のテクスチャを指さない。
-    const bool current = t.used && t.generation == uiTextureGeneration(textureId);
-    return current ? &t : nullptr;
-}
 
 Renderer::UiCanvas* Renderer::uiCanvasAt(std::size_t id) {
     if (id >= uiCanvases_.size() || !uiCanvases_[id].used) return nullptr;
     return &uiCanvases_[id];
 }
 
-// ---- テクスチャ ----------------------------------------------------------------
-Renderer::UiTexture& Renderer::uiTextureOrWhite(int textureId) {
-    if (UiTexture* t = uiTextureAt(textureId)) return *t;
-    if (textureId != ui::kUiNoTexture && !uiStaleTextureWarned_) {
-        uiStaleTextureWarned_ = true;
-        LOGW("render", "ui mesh refers to texture %d which no longer exists - drawn white",
-             textureId);
-    }
-    if (!uiWhite_.texture) {
-        uiWhite_.texture = createTextureRGBA(*engine_, {255, 255, 255, 255}, 1, 1, false);
-        uiWhite_.width = uiWhite_.height = 1;
-        uiWhite_.mipmapped = true;  // 1 段だけ = ミップ付きの引き方でも同じ
-        uiWhite_.used = true;
-    }
-    return uiWhite_;
-}
-
-MaterialInstance* Renderer::uiInstance(int textureId, int materialId) {
-    UiTexture& t = uiTextureOrWhite(textureId);
-    const int slot = materialId == ui::kUiMaterialSdf ? 1 : 0;
-    MaterialInstance*& mi = t.instances[slot];
-    if (!mi) {
-        mi = uiMaterial_->createInstance();
-        const TextureSampler sampler(t.mipmapped ? TextureSampler::MinFilter::LINEAR_MIPMAP_LINEAR
-                                                 : TextureSampler::MinFilter::LINEAR,
-                                     TextureSampler::MagFilter::LINEAR);
-        mi->setParameter("tex", t.texture, sampler);
-        mi->setParameter("sdf", slot == 1);
-        mi->setParameter("srgbOut", kUiSrgbOut);
-        // 輪郭の値（ui/UiSdfParams.h の kSdfOnEdge、0..255 → 0..1）。
-        mi->setParameter("onEdge", float(ui::kSdfOnEdge) / 255.0f);
-    }
-    return mi;
-}
-
-int Renderer::addUiTextureR8(int width, int height) {
-    if (!uiTextureSizeOk(*engine_, width, height, "text is drawn as filled boxes")) {
-        return ui::kUiNoTexture;
-    }
-    Texture* texture = Texture::Builder()
-                           .width(uint32_t(width))
-                           .height(uint32_t(height))
-                           .levels(1)
-                           .format(Texture::InternalFormat::R8)
-                           .sampler(Texture::Sampler::SAMPLER_2D)
-                           .build(*engine_);
-    if (!texture) {
-        LOGW("render", "ui texture %dx%d could not be created - text is drawn as filled boxes",
-             width, height);
-        return ui::kUiNoTexture;
-    }
-    // 中身を 0（= 輪郭の外）で入れておく（未初期化のテクスチャを引かせない）。
-    std::vector<uint8_t> zeros(std::size_t(width) * std::size_t(height), 0);
-    texture->setImage(*engine_, 0, moveToPixelDescriptor(std::move(zeros), Texture::Format::R));
-    return adoptUiTexture(texture, width, height, false);
-}
-
-void Renderer::updateUiTexture(int textureId, int x, int y, int w, int h,
-                               const uint8_t* pixels, int rowStride) {
-    const UiTexture* t = uiTextureAt(textureId);
-    if (!t || !pixels) return;
-    const bool inside = x >= 0 && y >= 0 && w > 0 && h > 0 && x + w <= t->width &&
-                        y + h <= t->height && rowStride >= x + w;
-    if (!inside) return;
-    // 矩形の行だけを詰めて写す（Filament は非同期に読むので、呼び手の配列は渡せない）。
-    std::vector<uint8_t> rect(std::size_t(w) * std::size_t(h));
-    for (int row = 0; row < h; ++row) {
-        std::memcpy(rect.data() + std::size_t(row) * std::size_t(w),
-                    pixels + std::size_t(y + row) * std::size_t(rowStride) + std::size_t(x),
-                    std::size_t(w));
-    }
-    // 行 y はデータの y 行目（ui.mat の flipUV : false と同じ向き = v = 行 / 高さ）。
-    t->texture->setImage(*engine_, 0, uint32_t(x), uint32_t(y), uint32_t(w), uint32_t(h),
-                         moveToPixelDescriptor(std::move(rect), Texture::Format::R));
-}
-
-int Renderer::loadUiImage(const std::string& path) {
-    std::vector<uint8_t> pixels;
-    int w = 0, h = 0;
-    // 読めなければ decodeTextureRGBA が警告する。代わりの絵は作らない（白で描く）。
-    if (!decodeTextureRGBA(path, "ui image", TextureFallback::None, pixels, w, h)) {
-        return ui::kUiNoTexture;
-    }
-    if (!uiTextureSizeOk(*engine_, w, h, "the image is drawn as a white panel")) {
-        return ui::kUiNoTexture;
-    }
-    premultiplySrgbRGBA(pixels);  // 縁の透明な画素の色がにじまないように
-    Texture* texture =
-        createTextureRGBA(*engine_, std::move(pixels), w, h, true, MipFilter::PremultipliedSrgb);
-    return adoptUiTexture(texture, w, h, true);
-}
-
-int Renderer::adoptUiTexture(Texture* texture, int width, int height, bool mipmapped) {
-    const int slot = firstFreeSlot(uiTextures_);
-    if (slot >= kUiTextureSlots) {  // 番号に入らない（同時に 65536 枚 = 呼び手の誤り）
-        uiTextures_.pop_back();
-        engine_->destroy(texture);
-        LOGW("render", "too many ui textures - this one is not created");
-        return ui::kUiNoTexture;
-    }
-    UiTexture& t = uiTextures_[std::size_t(slot)];
-    const int generation = nextUiTextureGeneration(t.generation);
-    t = UiTexture{};
-    t.texture = texture;
-    t.width = width;
-    t.height = height;
-    t.mipmapped = mipmapped;
-    t.generation = generation;
-    t.used = true;
-    return uiTextureId(slot, generation);
-}
-
-void Renderer::releaseUiTexture(int textureId) {
-    UiTexture* t = uiTextureAt(textureId);
-    if (!t) return;
-    // 使っている Canvas × ビューは描くのをやめる（次の setUiCanvasMesh で作り直す）。
-    for (auto& canvas : uiCanvases_) {
-        if (!canvas.used) continue;
-        for (auto& part : canvas.parts) {
-            bool uses = false;
-            for (const auto& r : part.mesh.runs) {
-                if (r.textureId == textureId) uses = true;
-            }
-            if (uses) destroyUiCanvasPart(part);
-        }
-    }
-    destroyUiTexture(*t);
-}
-
-void Renderer::destroyUiTexture(UiTexture& t) {
-    // 材質インスタンス（テクスチャを参照している）→ テクスチャ の順に壊す。
-    for (auto*& mi : t.instances) {
-        if (mi) engine_->destroy(mi);
-    }
-    if (t.texture) engine_->destroy(t.texture);
-    const int generation = t.generation;  // 枠の世代は残す（次に使うときに進める）
-    t = UiTexture{};
-    t.generation = generation;
-}
-
 // ---- Canvas --------------------------------------------------------------------
-std::size_t Renderer::addUiCanvas() {
+std::size_t Renderer::addUiCanvas(UiCanvasPlacement placement) {
     const int id = firstFreeSlot(uiCanvases_);
-    uiCanvases_[std::size_t(id)] = UiCanvas{};
-    uiCanvases_[std::size_t(id)].used = true;
+    UiCanvas& canvas = uiCanvases_[std::size_t(id)];
+    canvas = UiCanvas{};
+    canvas.placement = placement;
+    canvas.used = true;
+    if (placement == UiCanvasPlacement::Plate) {
+        // 板の中身は全ビュー共通の 1 つ（主のシーンに入る）。中身は setUiCanvasMesh。
+        UiCanvasPart part;
+        part.scene = scene_;
+        canvas.parts.push_back(std::move(part));
+    }
     return std::size_t(id);
 }
 
@@ -285,10 +130,9 @@ void Renderer::removeUiCanvas(std::size_t id) {
 
 void Renderer::destroyUiCanvasPart(UiCanvasPart& part) {
     if (!part.entity.isNull()) {
-        // 入っているのはそのビューの UI のシーンだけ（Renderer.h の UiCanvasPart の約束）。
-        ViewSlot& slot = views_[part.view];
-        bool inUiScene = true;
-        destroyRenderable(*engine_, *slot.uiScene, part.entity, part.vb, part.ib, inUiScene);
+        // 入っているのは part.scene だけ（Renderer.h の UiCanvasPart の約束）。
+        bool inScene = true;
+        destroyRenderable(*engine_, *part.scene, part.entity, part.vb, part.ib, inScene);
     }
     part.mesh = ui::UiMeshData{};
     part.instances.clear();
@@ -318,37 +162,58 @@ void Renderer::buildUiCanvasPart(const UiCanvas& canvas, UiCanvasPart& part) {
                   .build(*engine_);
     part.entity = EntityManager::get().create();
     part.instances.clear();
+    const bool plate = canvas.placement == UiCanvasPlacement::Plate;
     RenderableManager::Builder builder(m.runs.size());
+    // overlay は境界の箱を見ない（UI のビューは全部を描く）。板の箱は中身から
+    // 当て直す（refreshUiPlateBounds）。
     builder.boundingBox({{-1.0e6f, -1.0e6f, -1.0f}, {1.0e6f, 1.0e6f, 1.0f}})
         .culling(false)
         .castShadows(false)
         .receiveShadows(false);
     for (std::size_t i = 0; i < m.runs.size(); ++i) {
         const ui::UiDrawRun& r = m.runs[i];
-        part.instances.push_back(uiInstance(r.textureId, r.materialId));
+        part.instances.push_back(uiInstance(r.textureId, r.materialId, canvas.placement));
         builder.geometry(i, RenderableManager::PrimitiveType::TRIANGLES, part.vb, part.ib,
                          r.firstIndex, r.indexCount)
-            .material(i, part.instances.back())
-            .globalBlendOrderEnabled(i, true);
+            .material(i, part.instances.back());
+        if (plate) {
+            // 板の中だけの重なり順（run の並び = 文書順）。板どうしは距離で並ぶ。
+            builder.blendOrder(i, clampedBlendOrder(i));
+        } else {
+            builder.globalBlendOrderEnabled(i, true);  // 番号は refreshUiBlendOrders
+        }
     }
     builder.build(*engine_, part.entity);
+    if (plate) {
+        // 板は姿勢を当てるまで映さない（applyUiVisibility が描くビューごとに当てる）。
+        // 新しいレンダラブルなので、前に当てた変換の覚えは捨てる。
+        part.appliedTransformKnown = false;
+        setUiPlateShown(part, false);
+        warnBlendOrderRange(uiBlendWarned_, m.runs.size(), "canvas",
+                            std::size_t(&canvas - uiCanvases_.data()));
+    }
     applyUiCanvasTransform(canvas, part);
-    ViewSlot& slot = views_[part.view];
-    slot.uiScene->addEntity(part.entity);  // 入れ物があれば uiScene もある（Renderer.h）
+    // overlay の入れ物があれば uiScene もある、板は主のシーン（Renderer.h）。
+    part.scene->addEntity(part.entity);
 }
 
 void Renderer::setUiCanvasMesh(std::size_t id, std::size_t viewIndex, ui::UiMeshData mesh) {
     UiCanvas* canvas = uiCanvasAt(id);
     if (!canvas) return;
+    const bool plate = canvas->placement == UiCanvasPlacement::Plate;
     UiCanvasPart* part = nullptr;
-    for (auto& p : canvas->parts) {
-        if (p.view == viewIndex) part = &p;
+    if (plate) {
+        part = &canvas->parts.front();  // 板はビューに依らない 1 つ（addUiCanvas）
+    } else {
+        for (auto& p : canvas->parts) {
+            if (p.view == viewIndex) part = &p;
+        }
     }
     if (!part) return;  // このビューには出していない
 
     const bool hasRenderable = !part->entity.isNull();
     if (hasRenderable && sameMesh(part->mesh, mesh)) {
-        refreshUiPartInstances(*part);  // 同じ中身は送らない（材質だけ見直す）
+        refreshUiPartInstances(*canvas, *part);  // 同じ中身は送らない（材質だけ見直す）
         return;
     }
 
@@ -371,24 +236,41 @@ void Renderer::setUiCanvasMesh(std::size_t id, std::size_t viewIndex, ui::UiMesh
     if (!sameShape) destroyUiCanvasPart(*part);
     part->mesh = std::move(mesh);
     if (sameShape) {
-        refreshUiPartInstances(*part);  // 作り直す道は buildUiCanvasPart が解く
+        refreshUiPartInstances(*canvas, *part);  // 作り直す道は buildUiCanvasPart が解く
     } else {
         buildUiCanvasPart(*canvas, *part);
     }
     part->vb->setBufferAt(*engine_, 0, uiVertexDescriptor(part->mesh.vertices));
     part->ib->setBuffer(*engine_, copyToDescriptor(part->mesh.indices.data(),
                                                    part->mesh.indices.size()));
-    if (!sameShape) refreshUiBlendOrders(viewIndex);
+    if (plate) {
+        refreshUiPlateBounds(*part);  // 板の重なり順は作るときに決まる（ローカル）
+    } else if (!sameShape) {
+        refreshUiBlendOrders(viewIndex);
+    }
 }
 
-void Renderer::refreshUiPartInstances(UiCanvasPart& part) {
+void Renderer::refreshUiPlateBounds(UiCanvasPart& part) {
+    // 中身の頂点（設計上の画素、z = 0）を囲む箱。変換は描くビューごとに当たる。
+    float3 lo{0.0f}, hi{0.0f};
+    for (std::size_t i = 0; i < part.mesh.vertices.size(); ++i) {
+        const ui::UiVertex& v = part.mesh.vertices[i];
+        const float3 p{v.x, v.y, 0.0f};
+        lo = i == 0 ? p : min(lo, p);
+        hi = i == 0 ? p : max(hi, p);
+    }
+    auto& rm = engine_->getRenderableManager();
+    rm.setAxisAlignedBoundingBox(rm.getInstance(part.entity), boxFromBounds(lo, hi));
+}
+
+void Renderer::refreshUiPartInstances(const UiCanvas& canvas, UiCanvasPart& part) {
     // テクスチャが後から用意された（白で解決していた番号が有効になった）ら、
     // その run の材質インスタンスを解決し直して差し替える（作り直さない）。
     auto& rm = engine_->getRenderableManager();
     const auto inst = rm.getInstance(part.entity);
     for (std::size_t i = 0; i < part.mesh.runs.size(); ++i) {
         const ui::UiDrawRun& r = part.mesh.runs[i];
-        MaterialInstance* mi = uiInstance(r.textureId, r.materialId);
+        MaterialInstance* mi = uiInstance(r.textureId, r.materialId, canvas.placement);
         if (mi == part.instances[i]) continue;
         rm.setMaterialInstanceAt(inst, i, mi);
         part.instances[i] = mi;
@@ -403,6 +285,20 @@ void Renderer::setUiCanvasViews(std::size_t id, const std::vector<std::size_t>& 
         const bool exists = v < views_.size();
         const bool duplicate = std::find(next.begin(), next.end(), v) != next.end();
         if (exists && !duplicate) next.push_back(v);
+    }
+    if (canvas->placement == UiCanvasPlacement::Plate) {
+        // 板は中身が 1 つなので、出すビューの一覧だけを持ち直す（残るビューの姿勢は保つ）。
+        std::vector<UiPlateView> views;
+        for (const std::size_t v : next) {
+            UiPlateView entry;
+            entry.view = v;
+            for (const auto& old : canvas->plateViews) {
+                if (old.view == v) entry = old;
+            }
+            views.push_back(entry);
+        }
+        canvas->plateViews = std::move(views);
+        return;
     }
     // 外れたビューの中身は壊す。
     auto& parts = canvas->parts;
@@ -425,7 +321,27 @@ void Renderer::setUiCanvasViews(std::size_t id, const std::vector<std::size_t>& 
         ensureUiView(views_[v]);  // 最初に Canvas を出すときに UI のビューを作る
         UiCanvasPart part;
         part.view = v;
+        part.scene = views_[v].uiScene;
         parts.push_back(std::move(part));
+    }
+}
+
+void Renderer::setUiCanvasTransform(std::size_t id, std::size_t viewIndex,
+                                    const mat4f& transform) {
+    UiCanvas* canvas = uiCanvasAt(id);
+    if (!canvas) return;
+    for (auto& pv : canvas->plateViews) {  // overlay の一覧は空 = 何もしない
+        if (pv.view != viewIndex) continue;
+        pv.transform = transform;
+        pv.posed = true;
+    }
+}
+
+void Renderer::clearUiCanvasTransform(std::size_t id, std::size_t viewIndex) {
+    UiCanvas* canvas = uiCanvasAt(id);
+    if (!canvas) return;
+    for (auto& pv : canvas->plateViews) {  // overlay の一覧は空 = 何もしない
+        if (pv.view == viewIndex) pv.posed = false;
     }
 }
 
@@ -433,6 +349,7 @@ void Renderer::setUiCanvasOrder(std::size_t id, int order) {
     UiCanvas* canvas = uiCanvasAt(id);
     if (!canvas || canvas->order == order) return;
     canvas->order = order;
+    if (canvas->placement == UiCanvasPlacement::Plate) return;  // 板は距離で並ぶ
     for (const auto& part : canvas->parts) refreshUiBlendOrders(part.view);
 }
 
@@ -444,10 +361,11 @@ void Renderer::setUiCanvasDesignHeight(std::size_t id, float designHeight) {
 }
 
 void Renderer::applyUiCanvasTransform(const UiCanvas& canvas, UiCanvasPart& part) {
-    if (part.entity.isNull()) return;
+    // 板の変換は描くビューごとに当てる（applyUiVisibility）。
+    const bool plate = canvas.placement == UiCanvasPlacement::Plate;
+    if (part.entity.isNull() || plate) return;
     // 設計上の画素 → ビューの高さ = 1 の単位（applyUiProjection の座標）。
-    const float s = 1.0f / canvas.designHeight;
-    setEntityTransform(*engine_, part.entity, mat4f::scaling(float3{s, s, 1.0f}));
+    setEntityTransform(*engine_, part.entity, uiDesignScale(canvas.designHeight));
 }
 
 void Renderer::refreshUiBlendOrders(std::size_t viewIndex) {
@@ -460,7 +378,8 @@ void Renderer::refreshUiBlendOrders(std::size_t viewIndex) {
     };
     std::vector<Entry> order;
     for (std::size_t i = 0; i < uiCanvases_.size(); ++i) {
-        if (!uiCanvases_[i].used) continue;
+        const bool overlay = uiCanvases_[i].placement == UiCanvasPlacement::Overlay;
+        if (!uiCanvases_[i].used || !overlay) continue;
         for (const auto& part : uiCanvases_[i].parts) {
             if (part.view == viewIndex && !part.entity.isNull()) order.push_back({i, &part});
         }
@@ -473,15 +392,11 @@ void Renderer::refreshUiBlendOrders(std::size_t viewIndex) {
     for (const Entry& e : order) {
         const auto inst = rm.getInstance(e.part->entity);
         for (std::size_t p = 0; p < e.part->mesh.runs.size(); ++p) {
-            rm.setBlendOrderAt(inst, p, uint16_t(std::min(next, kMaxBlendOrder)));
+            rm.setBlendOrderAt(inst, p, clampedBlendOrder(next));
             ++next;
         }
     }
-    if (next > kMaxBlendOrder + 1 && !uiBlendWarned_) {
-        uiBlendWarned_ = true;
-        LOGW("render", "ui view %zu: %u draw runs exceed the blend order range - the "
-             "overlap order of the last ones is not kept", viewIndex, next);
-    }
+    warnBlendOrderRange(uiBlendWarned_, next, "view", viewIndex);
 }
 
 }  // namespace wizengine

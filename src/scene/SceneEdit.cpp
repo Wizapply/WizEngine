@@ -371,10 +371,8 @@ void Scene::destroyLight(std::size_t index) {
     }
     // このライトを動かすイベントノードも一緒に掃除する。
     pruneGraphForRemoved(ed::NodeTargetKind::Light, int(index));
-    if (editor_.selKind() == EditorState::SelKind::Light &&
-        editor_.selIndex() == int(index)) {
-        editor_.clearSel();
-    }
+    const EditorState::Selection sel = editor_.selection();  // 種類と番号は組で読む
+    if (sel.kind == EditorState::SelKind::Light && sel.index == int(index)) editor_.clearSel();
 }
 
 void Scene::moveLight(std::size_t index, double x, double y, double z) {
@@ -597,16 +595,24 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
     // 切替は drain より先 = applyPendingEdits）。
     if (wizengine::uiops::isUiOp(op.kind)) {
         if (!editsUiFrom(op.camera)) return;
-        const wizengine::uiops::Result r = wizengine::uiops::apply(ui_, op.kind, a);
+        // overlay から world になった Canvas（ui.add / ui.set。どの操作で呼ぶかは uiops::apply が
+        // 決める）は、置き場所を書いていなければ送ってきたエディタカメラの前に立てる。
+        const auto placeWorld = [this, &op](double sizeY, wizengine::Vec3d& pos,
+                                            wizengine::Vec3d& euler) {
+            return newWorldCanvasPlacement(op.camera, sizeY, pos, euler);
+        };
+        const wizengine::uiops::Result r = wizengine::uiops::apply(ui_, op.kind, a, placeWorld);
         // 消した Canvas を番号で指すノードを掃除する（ライト・カメラの削除と同じ判断）。
         if (r.removedCanvas >= 0) {
             pruneGraphForRemoved(ed::NodeTargetKind::Canvas, r.removedCanvas);
         }
         if (r.select) {
             setEditorSel(op.camera, EditorState::SelKind::Canvas, r.canvas, r.element);
-        } else if (editor_.selKind() == EditorState::SelKind::Canvas &&
-                   !ui_.selectionExists(editor_.selIndex(), editor_.selSub())) {
-            editor_.clearSel();  // 消した物を指していた（番号が後で別の物に使われる前に）
+        } else {
+            const EditorState::Selection sel = editor_.selection();  // 種類・番号・要素は組で読む
+            const bool canvasSel = sel.kind == EditorState::SelKind::Canvas;
+            // 消した物を指していた（番号が後で別の物に使われる前に）。
+            if (canvasSel && !ui_.selectionExists(sel.index, sel.sub)) editor_.clearSel();
         }
         if (!r.status.empty()) editor_.setStatus(r.status);
         return;
@@ -1509,10 +1515,8 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         controllers_[std::size_t(index)]->setSelected(BoxController::kNone);
         // このカメラを動かすイベントノードも一緒に掃除する。
         pruneGraphForRemoved(ed::NodeTargetKind::Camera, index);
-        if (editor_.selKind() == EditorState::SelKind::Camera &&
-            editor_.selIndex() == index) {
-            editor_.clearSel();
-        }
+        const EditorState::Selection sel = editor_.selection();  // 種類と番号は組で読む
+        if (sel.kind == EditorState::SelKind::Camera && sel.index == index) editor_.clearSel();
         editor_.setStatus("カメラ " + std::to_string(index) + " を削除");
         return;
     }

@@ -21,6 +21,8 @@
 // srgbOut: UI のビューは後処理（トーンマップと sRGB への符号化）を切ってあるので、
 // ここが書いた値がそのまま映像の画素になる。主のビューは sRGB に符号化した値を
 // 書くので、リニアの色を合わせるには sRGB へ直して書く（既定 true）。
+// 板の Canvas（camera / world。主のシーンに置く）は C++ がインスタンスで深さの比較を
+// 入れ（setDepthCulling）、srgbOut を主のビューの後処理の有無に合わせる（切れていれば true）。
 //
 // blending : transparent は乗算済みのアルファを前提にするので、rgb にアルファを
 // 掛けるのはここの 1 か所だけ。重なり順は Renderer が blendOrder で決める

@@ -82,8 +82,9 @@ public:
     // オブジェクトの選択は従来どおり BoxController（カメラ毎）が持つ。ここに
     // 持つのは「エディタカメラがライトかカメラを選んでいる」状態だけ。
     // オブジェクト選択と同時には立たないよう、立てる側（EditorComponent /
-    // Scene）が反対側を必ず消す。kind と index は別々の atomic なので瞬間的に
-    // 食い違いうるが、読む側は必ず alive / active を確かめるので実害はない。
+    // Scene）が反対側を必ず消す。kind / index / sub は 1 つのロックで組として書き、組で
+    // 読むときは selection() を使う（selKind() などを別々に呼ぶと、間で選び直されたときに
+    // 別の選択の値が混ざる。読む側は必ず alive / active を確かめる）。
     // Part はプレハブ編集モード中の「部品」（index = 部品番号。どのプレハブ
     // かは prefabEditObject() のオブジェクトに付いているもの）。
     // Ground / Terrain はシーンに 1 つずつのオブジェクト（index は使わない、
@@ -95,15 +96,25 @@ public:
     enum class SelKind : int {
         None = 0, Light = 1, Camera = 2, Part = 3, Ground = 4, Terrain = 5, Canvas = 6
     };
+    // 選択の組（kind / index / sub を 1 回で読んだ物 = 別々に読むと間で選び直されたときに
+    // 別の選択の値が混ざる。selection() で読む）。
+    struct Selection {
+        SelKind kind = SelKind::None;
+        int index = -1;
+        int sub = -1;
+    };
     void setSel(SelKind kind, int index, int sub = -1) {
-        selIndex_.store(index);
-        selSub_.store(sub);
-        selKind_.store(int(kind));
+        std::lock_guard<std::mutex> lk(selMutex_);
+        sel_ = {kind, index, sub};
     }
     void clearSel() { setSel(SelKind::None, -1); }
-    SelKind selKind() const { return SelKind(selKind_.load()); }
-    int selIndex() const { return selIndex_.load(); }
-    int selSub() const { return selSub_.load(); }
+    Selection selection() const {
+        std::lock_guard<std::mutex> lk(selMutex_);
+        return sel_;
+    }
+    SelKind selKind() const { return selection().kind; }
+    int selIndex() const { return selection().index; }
+    int selSub() const { return selection().sub; }
 
     // ---- ジョイント -----------------------------------------------------
     std::vector<wizengine::editor::JointDesc> joints() const;
@@ -399,9 +410,10 @@ private:
     std::atomic<std::uint64_t> modeEpoch_{0};
     std::atomic<int> request_{0};  // 0=なし 1=Editor 2=Simulate
 
-    std::atomic<int> selKind_{0};    // SelKind
-    std::atomic<int> selIndex_{-1};
-    std::atomic<int> selSub_{-1};    // Canvas の要素の id（-1 = Canvas そのもの）
+    // 選択（sub = Canvas の要素の id、-1 = Canvas そのもの）。selMutex_ は末端（中で他の
+    // ロックを取らない = どのロックの中からでも読み書きできる）。
+    mutable std::mutex selMutex_;
+    Selection sel_;
 
     mutable std::mutex mutex_;
     std::vector<Op> pending_;

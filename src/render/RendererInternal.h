@@ -253,6 +253,35 @@ inline void destroyRenderable(filament::Engine& engine, filament::Scene& scene,
     ib = nullptr;
 }
 
+// 空いた枠（used でない最初の要素）の添字。無ければ末尾に 1 つ足してその添字。
+// UI のテクスチャ（RendererUiTextures.cpp）と Canvas（RendererUiMeshes.cpp）が使う。
+template <class T>
+int firstFreeSlot(std::vector<T>& slots) {
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+        if (!slots[i].used) return int(i);
+    }
+    slots.emplace_back();
+    return int(slots.size()) - 1;
+}
+
+// 頂点の範囲 lo..hi を囲む境界の箱。平らな物で厚み 0 にならないよう、各軸に
+// 最小の半幅を持たせる。使い手: 形状のメッシュ（RendererShapes.cpp）・テレインの
+// チャンク（RendererTerrain.cpp）・UI の板（RendererUiMeshes.cpp）。
+inline filament::Box boxFromBounds(const filament::math::float3& lo,
+                                   const filament::math::float3& hi) {
+    const filament::math::float3 center = (lo + hi) * 0.5f;
+    const filament::math::float3 half =
+        max((hi - lo) * 0.5f, filament::math::float3{0.01f});
+    return filament::Box{center, half};
+}
+
+// UI の Canvas の設計上の画素 → 「Canvas の高さ = 1」の単位（overlay はこの単位で
+// ビューの高さ = 1、板は呼び手の姿勢がこの単位からワールドへ写す）。
+inline filament::math::mat4f uiDesignScale(float designHeight) {
+    const float s = 1.0f / designHeight;
+    return filament::math::mat4f::scaling(filament::math::float3{s, s, 1.0f});
+}
+
 // エンティティの変換（無ければ変換の部品を作ってから当てる）。地面と
 // テレインのチャンクが使う。
 inline void setEntityTransform(filament::Engine& engine, utils::Entity entity,

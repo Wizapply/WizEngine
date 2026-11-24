@@ -234,10 +234,7 @@ void Renderer::setSoftShapeVertices(std::size_t id, const float* positions,
 
     // バウンディングボックスは頂点から（影の範囲とカリングがこれを見る）。
     auto& rm = engine_->getRenderableManager();
-    const float3 center = (lo + hi) * 0.5f;
-    const float3 half = max((hi - lo) * 0.5f, float3{0.01f});
-    rm.setAxisAlignedBoundingBox(rm.getInstance(slot.entity),
-                                 filament::Box{center, half});
+    rm.setAxisAlignedBoundingBox(rm.getInstance(slot.entity), boxFromBounds(lo, hi));
 }
 
 filament::MaterialInstance* Renderer::ensureShapeInstance(ShapeSlot& slot) {

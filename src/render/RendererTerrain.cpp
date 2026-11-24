@@ -229,12 +229,9 @@ bool Renderer::setTerrainChunk(int cx, int cz, const TerrainChunkMesh& mesh) {
     }
 
     // バウンディングボックスは頂点から（影の範囲とカリングがこれを見る）。
-    // 平らなチャンクで厚み 0 にならないよう、各軸に最小の半幅を持たせる。
+    // 平らなチャンクで厚み 0 にならないよう、各軸に最小の半幅を持たせる（boxFromBounds）。
     auto& rm = engine_->getRenderableManager();
-    const float3 center = (lo + hi) * 0.5f;
-    const float3 half = max((hi - lo) * 0.5f, float3{0.01f});
-    rm.setAxisAlignedBoundingBox(rm.getInstance(chunk.entity),
-                                 filament::Box{center, half});
+    rm.setAxisAlignedBoundingBox(rm.getInstance(chunk.entity), boxFromBounds(lo, hi));
     return true;
 }
 

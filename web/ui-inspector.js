@@ -264,7 +264,10 @@
     const isCanvas = sel.element < 0;
     const readOnly = !isCanvas && !sel.editable;  // サーバーが編集させない要素は表示だけ
     const kind = isCanvas ? null : schema.kinds.find((k) => k.name === sel.kind);
-    const specs = isCanvas ? schema.canvas
+    // Canvas は今の表示方法に効く属性だけ（効く表示方法はサーバーの表 = schema の modes）。
+    const mode = isCanvas ? (sel.attrs || {}).mode : '';
+    const specs = isCanvas
+      ? schema.canvas.filter((s) => !s.modes || s.modes.indexOf(mode) >= 0)
       : (kind ? kind.props : []).map((n) => schema.props.find((p) => p.name === n)).filter((p) => p);
 
     document.getElementById('uiSelLabel').textContent =
@@ -274,7 +277,7 @@
 
     // 欄の形（どの選択の・どの欄か・共用 UI か・グローバルか = ボタン）が変わったときだけ
     // 組み直す。表示だけの行は値も形に入れる（中身ごと組み直す）。
-    const key = [sel.canvas, sel.element, sel.kind || '', readOnly, canvas ? canvas.ui : '',
+    const key = [sel.canvas, sel.element, sel.kind || '', mode, readOnly, canvas ? canvas.ui : '',
                  canvas ? canvas.editable : '', uiSharedFileOf(canvas),
                  readOnly ? JSON.stringify(sel.props) : ''].join('|');
     const props = sel.props || {};
