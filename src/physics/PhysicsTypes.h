@@ -10,10 +10,10 @@
 
 #include "physics/PhysicsBackend.h"
 
-// Where the time went inside the last physics step (seconds), straight from
-// Chrono's own timers. Useful for deciding what to optimise: a solver-dominated
-// step wants fewer iterations, a collision-dominated one wants a smaller
-// contact envelope or a different collision system.
+// 直前の物理ステップの中で時間をどこに使ったか（秒）。Chrono 自身のタイマーの
+// 値そのまま。何を最適化するかを決めるのに使う: ソルバが大半のステップなら
+// 反復回数を減らし、衝突判定が大半なら接触のエンベロープを小さくするか、
+// 別の衝突系にする。
 struct StepTimers {
     double step = 0.0;
     double solver = 0.0;
@@ -22,15 +22,14 @@ struct StepTimers {
     double update = 0.0;
 };
 
-// Which Chrono system to build on: PhysicsBackend（physics/PhysicsBackend.h。
+// どの Chrono の系の上に組むか = PhysicsBackend（physics/PhysicsBackend.h。
 // 起動設定 app/AppConfig が Chrono 抜きで読めるよう、enum だけ別の軽い
-// ヘッダに置いてある）。If Multicore is not compiled in, the world falls back
-// to Core and says so on stdout.
+// ヘッダに置いてある）。
 
-// True when this build can actually use PhysicsBackend::Multicore.
+// このビルドが PhysicsBackend::Multicore を本当に使えるとき true。
 bool multicoreAvailable();
 
-// 接触の解き方（B の 22）。
+// 接触の解き方（NSC / SMC）。
 //   NSC … 相補性（硬い接触。既定。1/60 s でも床を抜けない）
 //   SMC … ペナルティ法（ヤング率で決まる柔らかい接触。粒状体・FEA 向け。
 //         剛い材質ほど小さな dt が要る）
@@ -38,7 +37,9 @@ bool multicoreAvailable();
 // ChSystemMulticoreSMC。切替は系の作り直し（recreate）。
 enum class ContactMethod { NSC, SMC };
 
-// このビルドが持っている B の機能（CMake / ヘッダの有無）。Scene が
+// このビルドで使えるかを答える機能（FEA ケーブル・荷重・直接法ソルバ（Pardiso /
+// MUMPS を含む）・モーダル解析。CMake / ヘッダの有無）。どれが Core を要するかの
+// 判定は Scene の requiredBackend が持つ（ここは一覧ではない）。Scene が
 // 「Core へ切り替えれば使えるか」を判断するのに使う。
 struct PhysicsFeatures {
     bool fea = false;         // FEA のケーブル（chrono/fea）
@@ -47,10 +48,11 @@ struct PhysicsFeatures {
     bool pardiso = false;     // Chrono::PardisoMKL
     bool mumps = false;       // Chrono::MUMPS
     bool modal = false;       // Chrono::Modal
+    bool fluid = false;       // Chrono::Multicore の流体粒子（WIZ_USE_MULTICORE のビルド）
 };
 
-// Rigid-body transform snapshot passed to the render side.
-// Position in metres, rotation as a unit quaternion (w, x, y, z).
+// 描画側へ渡す剛体の姿勢のスナップショット。
+// 位置は m、回転は単位四元数 (w, x, y, z)。
 struct BodyTransform {
     double px, py, pz;
     double qw, qx, qy, qz;
@@ -69,7 +71,8 @@ struct BodyTransform {
 //   Planar     … 面内の移動と面内の回転（ChLinkLockPlanar。axis = 面の法線）
 //   PointLine  … 点を線に載せる（ChLinkLockPointLine。axis = 線の向き）
 //   PointPlane … 点を面に載せる（ChLinkLockPointPlane。axis = 面の法線）
-//   Gear       … 歯車（ChLinkLockGear。2 本のシャフトの角速度比 ratio）
+//   Gear       … 歯車（ChLinkLockGear。2 本のシャフトの角速度比 ratio、epicyclic =
+//                シャフト 2 が内歯車）
 //   Screw      … ねじ（ChLinkLockScrew。1 回転で pitch [m] 進む）
 //   Spring     … 2 点間のばね・ダンパ（ChLinkTSDA。拘束ではなく力）
 //   Bushing    … ゴムブッシュ（ChLoadBodyBodyBushingMate。並進・回転の
@@ -114,6 +117,9 @@ struct JointSpec {
     // Gear: 変速比。Screw: 1 回転あたりの前進 (m)。
     double ratio = 1.0;
     double pitch = 0.01;
+    // Gear: シャフト 2 の歯車が内歯車（ChLinkLockGear::SetEpicyclic。遊星歯車の
+    // プラネット ⇄ リングギヤ）。
+    bool epicyclic = false;
     // Gear の 2 本目のシャフト（ワールド座標）。hasAnchor2 = false なら B の
     // 中心、hasAxis2 = false なら axis と同じ向き。
     bool hasAnchor2 = false;
@@ -148,7 +154,7 @@ struct BodyOptions {
     chrono::ChVector3d torque{0.0, 0.0, 0.0};
 };
 
-// ---- ケーブル（FEA。B の 15）-----------------------------------------------
+// ---- ケーブル（FEA の ANCF 梁）---------------------------------------------
 // ANCF ケーブル要素（ChBuilderCableANCF）を a → b の直線に segments 本
 // 並べる。端は「固定点」「ボディに留める」「自由」のどれか。Core 専用
 // （Multicore のデータマネージャは FEA 要素を持たない）。
@@ -175,6 +181,27 @@ struct CableSpec {
     double clearB = 0.0;
 };
 
+// ---- 流体粒子（Chrono::Multicore の ChFluidContainer）---------------------------
+// 回転を持たない粒子（3 自由度）の集まりを系に足し、SPH のカーネルで測った密度を
+// 「静止密度に等しい」という拘束として NSC のソルバに入れて解く（剛体との接触も同じ
+// ソルバ = 双方向）。Multicore + NSC 専用。位置・速度は 3 個で 1 粒子（ワールド）。
+// 粒子の配置と値の決め方は fluid/FluidSeed.h（Scene が文書から作る）。
+struct FluidSpec {
+    std::vector<float> positions;
+    std::vector<float> velocities;
+    double kernelRadius = 0.044;     // m（粒子の間隔 / 0.9）
+    double particleMass = 0.045;     // kg（静止密度 × 1 粒子の体積）
+    double density = 1000.0;         // kg/m^3
+    double viscosity = 0.0;          // 0 = 切る
+    double artificialPressure = 0.01;  // 人工圧力の係数（0 = 切る）
+    double friction = 0.0;           // 剛体との摩擦
+    double cohesion = 0.0;           // 剛体との付着
+    double maxVelocity = 20.0;       // m/s
+    double recovery = 10.0;          // 剛体へのめり込みを押し戻す速さ (m/s)
+    double tau = 0.004;              // 密度拘束の緩和時間 (s)
+    double epsilon = 1.0e-3;         // 拘束の正則化
+};
+
 // 直前の step() が作った接触 1 点ぶん（activeContacts）。
 struct ContactInfo {
     std::size_t a = 0, b = 0;      // physId（a < b）
@@ -188,7 +215,7 @@ struct ContactInfo {
 enum class CombineMode { Min, Average, Max };
 
 // 衝突レイヤの数（ファミリ 0〜7。8〜15 はソフトボディの粒子用）。
-constexpr int kCollisionLayerCount = 8;
+inline constexpr int kCollisionLayerCount = 8;
 
 // PhysicsWorld の入れ子として使う型と定数（PhysicsWorld に同じ名前の別名がある）。
 namespace wizengine {
@@ -208,7 +235,7 @@ struct ExtraShape {
 
 // physId やケーブル番号が無いことを表す値（add* / addCable / setTerrain が
 // 作れなかったとき、テレインが無いときの terrainBodyId など）。
-constexpr std::size_t kInvalidId = static_cast<std::size_t>(-1);
+inline constexpr std::size_t kInvalidId = static_cast<std::size_t>(-1);
 
 // PhysicsWorld::addSoftBody への指定。
 struct SoftBodySpec {
@@ -228,7 +255,7 @@ struct SoftBodySpec {
 };
 
 // addJoint が作れなかったときに返す番号。
-constexpr std::size_t kInvalidJoint = static_cast<std::size_t>(-1);
+inline constexpr std::size_t kInvalidJoint = static_cast<std::size_t>(-1);
 
 // PhysicsWorld::terrainContactShape の戻り値（意味はその宣言のコメント）。
 enum class TerrainContactShape { None, Exact, BoundingBox };

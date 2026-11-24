@@ -2,11 +2,13 @@
 
 #include "core/Clamp.h"
 #include "core/MathConstants.h"
+#include "document/FluidXml.h"
 #include "document/XmlValues.h"
 #include "formula/FormulaXml.h"
 #include "ui/UiProps.h"  // UI のノード（SetUiProp）の性質の名前と型
 #include "ui/UiValue.h"
 #include "ui/UiXml.h"
+#include "transmission/AtXml.h"
 #include "vehicle/VehicleXml.h"
 
 #include <algorithm>
@@ -183,6 +185,22 @@ xml::Element optionElement(const SimSettings& s) {
     o.setNumber("restitution", s.restitution, 6);
     o.setNumber("lineardamping", s.linearDamping);
     o.setNumber("angulardamping", s.angularDamping);
+    // 空気抵抗（MuJoCo と同じ density / wind）。既定（無し）なら書かない =
+    // 空気を使わないシーンのファイルは変わらない。
+    if (s.airDensity > 0.0) o.setNumber("density", s.airDensity, 6);
+    if (s.windX != 0.0 || s.windY != 0.0 || s.windZ != 0.0) {
+        const double wind[3] = {s.windX, s.windY, s.windZ};
+        o.setNumbers("wind", wind, 3);
+    }
+    if (s.airDrag != 1.0) o.setNumber("airdrag", s.airDrag, 6);
+    if (s.airLift != 1.0) o.setNumber("airlift", s.airLift, 6);
+    if (s.airMagnus != 1.0) o.setNumber("magnus", s.airMagnus, 6);
+    // 気象条件（atmosphere="true" で密度をここから出す）。既定値は書かない。
+    if (s.airAtmosphere) o.setBool("atmosphere", true);
+    if (s.airTemperature != 15.0) o.setNumber("temperature", s.airTemperature, 6);
+    if (s.airHumidity != 0.0) o.setNumber("humidity", s.airHumidity, 6);
+    if (s.airPressure != 101325.0) o.setNumber("pressure", s.airPressure, 8);
+    if (s.airAltitude != 0.0) o.setNumber("altitude", s.airAltitude, 6);
     o.setBool("sleeping", s.sleeping);
     // 積分器・ソルバ・材質の合成（EditorTypes.h の *NameValid が語彙）。
     o.set("integrator", s.integrator);
@@ -317,6 +335,33 @@ SimSettings optionFromXml(const xml::Element& o, SimSettings base, Warn& warn) {
     base.restitution = float(o.number("restitution", base.restitution));
     base.linearDamping = o.number("lineardamping", base.linearDamping);
     base.angularDamping = o.number("angulardamping", base.angularDamping);
+    base.airDensity = o.number("density", base.airDensity);
+    double wind[3] = {base.windX, base.windY, base.windZ};
+    if (o.has("wind")) {
+        if (o.numbers("wind", wind, 3) >= 3) {
+            base.windX = wind[0];
+            base.windY = wind[1];
+            base.windZ = wind[2];
+        } else {
+            warn("<option wind=\"" + std::string(o.attr("wind", "")) +
+                 "\"> needs 3 numbers (x y z, m/s) - reading as no wind");
+        }
+    }
+    base.airDrag = o.number("airdrag", base.airDrag);
+    base.airLift = o.number("airlift", base.airLift);
+    base.airMagnus = o.number("magnus", base.airMagnus);
+    base.airAtmosphere = o.boolean("atmosphere", base.airAtmosphere);
+    base.airTemperature = o.number("temperature", base.airTemperature);
+    base.airHumidity = o.number("humidity", base.airHumidity);
+    base.airPressure = o.number("pressure", base.airPressure);
+    base.airAltitude = o.number("altitude", base.airAltitude);
+    // 気象条件は atmosphere="false" でも読む（制御器が気温などを書いたときの土台になる）。
+    if (base.airDensity <= 0.0 && !base.airAtmosphere &&
+        (base.windX != 0.0 || base.windY != 0.0 || base.windZ != 0.0 ||
+         base.airDrag != 1.0 || base.airLift != 1.0 || base.airMagnus != 1.0)) {
+        warn("<option wind / airdrag / airlift / magnus> has no effect without density "
+             "(air density in kg/m^3, e.g. density=\"1.225\", or atmosphere=\"true\")");
+    }
     base.sleeping = o.boolean("sleeping", base.sleeping);
     // 名前の打ち間違いは黙って既定にせず伝える（clampSim が既定へ戻す）。
     const std::string integ = o.attr("integrator", base.integrator.c_str());
@@ -764,6 +809,7 @@ xml::Element jointElement(const JointDesc& j,
     if (j.breakForce != 0.0) e.setNumber("breakforce", j.breakForce);
     if (j.kind == JointKind::Gear) {
         e.setNumber("ratio", j.ratio);
+        if (j.epicyclic) e.setBool("epicyclic", true);
         const bool hasA2 = j.anchor2.x != 0.0 || j.anchor2.y != 0.0 || j.anchor2.z != 0.0;
         const bool hasX2 = j.axis2.x != 0.0 || j.axis2.y != 0.0 || j.axis2.z != 0.0;
         if (hasA2) setVec3(e, "anchor2", j.anchor2);
@@ -852,6 +898,10 @@ JointDesc jointFromXml(const xml::Element& e,
     }
     j.breakForce = e.number("breakforce", j.breakForce);
     j.ratio = e.number("ratio", j.ratio);
+    j.epicyclic = e.boolean("epicyclic", j.epicyclic);
+    if (j.epicyclic && j.kind != JointKind::Gear) {
+        warn(label + " epicyclic= only applies to type=\"gear\" - ignored");
+    }
     j.pitch = e.number("pitch", j.pitch);
     j.anchor2 = getVec3(e, "anchor2", j.anchor2);
     j.axis2 = getVec3(e, "axis2", j.axis2);
@@ -1506,6 +1556,9 @@ xml::Element toXml(const SceneDocument& doc) {
     for (const auto& b : doc.bodies) world.append(bodyElement(b));
     for (const auto& c : doc.cables) world.append(cableElement(c, doc.bodies));
     for (const auto& m : doc.emitters) world.append(emitterElement(m, doc.bodies));
+    // 水面と流体粒子（持っているときだけ = 無い文書の保存ファイルを太らせない）。
+    if (doc.hasWater) world.append(waterElement(doc.water));
+    if (doc.hasFluid) world.append(fluidElement(doc.fluid));
     for (const auto& c : doc.canvases) world.append(ui::canvasElement(c));
     root.append(std::move(world));
 
@@ -1530,7 +1583,8 @@ xml::Element toXml(const SceneDocument& doc) {
     }
 
     // 制御器。持っているときだけ書く（無い文書を太らせない）。
-    if (!doc.controllers.empty() || !doc.params.empty() || !doc.charts.empty()) {
+    if (!doc.controllers.empty() || !doc.params.empty() || !doc.charts.empty() ||
+        !doc.transmissions.empty()) {
         xml::Element ctl("control");
         for (const auto& c : doc.controllers) {
             xml::Element e("controller");
@@ -1558,6 +1612,9 @@ xml::Element toXml(const SceneDocument& doc) {
             e.set("signals", sig);
             e.setNumber("span", c.span);
             ctl.append(std::move(e));
+        }
+        for (const auto& t : doc.transmissions) {
+            ctl.append(wizengine::transmission::transmissionElement(t));
         }
         root.append(std::move(ctl));
     }
@@ -1707,7 +1764,7 @@ SceneDocument fromXml(const xml::Element& root,
     if (const xml::Element* world = root.first("worldbody")) {
         warnUnknownChildren(*world,
                             {"environment", "ground", "terrain", "light", "camera",
-                             "body", "cable", "emitter", ui::kCanvasTag},
+                             "body", "cable", "emitter", "water", "fluid", ui::kCanvasTag},
                             "<worldbody>", warn);
 
         // 環境光と地面は worldbody 直下の単一要素。2 個目以降は警告して無視。
@@ -1797,6 +1854,19 @@ SceneDocument fromXml(const xml::Element& root,
         // パーティクルのエミッタ（見た目だけ）。付け先も body を全部読んだ後で解く。
         for (const xml::Element* m : world->all("emitter")) {
             doc.emitters.push_back(emitterFromXml(*m, doc.bodies, warn));
+        }
+        // 水面と流体粒子（document/FluidXml.h）。どちらも単一要素。
+        const auto waters = world->all("water");
+        if (!waters.empty()) {
+            doc.hasWater = true;
+            doc.water = waterFromXml(*waters[0], warn);
+            if (waters.size() > 1) warn("multiple <water> elements - using the first");
+        }
+        const auto fluids = world->all("fluid");
+        if (!fluids.empty()) {
+            doc.hasFluid = true;
+            doc.fluid = fluidFromXml(*fluids[0], warn);
+            if (fluids.size() > 1) warn("multiple <fluid> elements - using the first");
         }
         // UI の Canvas（ui/UiXml.h）。フォントと UI アセットの宣言は <asset> で読んだ。
         ui::readCanvases(*world, doc.fonts, doc.uiAssets, doc.canvases, warn);
@@ -1938,7 +2008,8 @@ SceneDocument fromXml(const xml::Element& root,
     // 制御器。参照する計算式が <asset> に無いものは残す（警告だけ）: 式を
     // 後から足せば動き出す。センサ名の検査は実行時（ControlComponent）。
     if (const xml::Element* ctl = root.first("control")) {
-        warnUnknownChildren(*ctl, {"controller", "param", "chart"}, "<control>", warn);
+        warnUnknownChildren(*ctl, {"controller", "param", "chart", "transmission"}, "<control>",
+                            warn);
         for (const xml::Element* e : ctl->all("controller")) {
             ControllerDesc c;
             c.formula = e->attr("formula");
@@ -2003,6 +2074,21 @@ SceneDocument fromXml(const xml::Element& root,
                 c.signals.push_back(tok);
             }
             doc.charts.push_back(clampChart(c));
+        }
+        for (const xml::Element* e : ctl->all("transmission")) {
+            wizengine::transmission::AtDesc t = wizengine::transmission::transmissionFromXml(*e, warn);
+            if (sanitizeEventName(t.name) != t.name || t.name.empty()) {
+                warn("<transmission name=\"" + t.name +
+                     "\">: the name must be letters, digits, _ and - - ignored");
+                continue;
+            }
+            bool dup = false;
+            for (const auto& q : doc.transmissions) dup = dup || q.name == t.name;
+            if (dup) {
+                warn("<transmission name=\"" + t.name + "\">: duplicate name - ignored");
+                continue;
+            }
+            doc.transmissions.push_back(std::move(t));
         }
     }
 

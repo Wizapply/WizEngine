@@ -53,6 +53,10 @@ struct PromptOptions {
     int maxMeshes = 4;
     std::vector<LibraryEntry> library;  // 最近のものから最大 40 件
     AssetInventory assets;
+    // エディタカメラ（ユーザーが見る視点）のスロット番号 = 文書の camN の N
+    // （config.json の scene.editorCamera）。<camera> は並び順がスロット番号だが、
+    // 生成側が名前 camN でスロットへ並べ直す（SceneGenerator の arrangeCameras）。
+    int editorCamera = 0;
 };
 
 std::string buildSystemPrompt(const PromptOptions& opt);
@@ -63,9 +67,22 @@ std::string buildSystemPrompt(const PromptOptions& opt);
 const char* systemPromptExample();
 
 // mode と依頼文と（Edit / Append のとき）今のシーン XML から、最初の
-// user メッセージを作る。
+// user メッセージを作る。digest はエンジンが作ったシーンの要約（SceneDigest.h。
+// 空なら付けない）で、XML の後ろに置く。
+// history はこれまでの流れ（SceneHistory.h の formatHistory。空なら付けない）。
 std::string buildUserPrompt(GenMode mode, const std::string& request,
-                            const std::string& currentXml);
+                            const std::string& currentXml, const std::string& digest = {},
+                            const std::string& history = {});
+
+// 見た目の見直し（適用したシーンの画像を添える user メッセージ）。currentXml は
+// 適用後のシーン全体、views は添えた画像の順に「どこから見た絵か」の説明。
+// 直す所が無ければ kNoChanges だけを返させる。
+extern const char* const kNoChanges;  // "NO_CHANGES"
+std::string buildReviewPrompt(const std::string& request, const std::string& currentXml,
+                              const std::vector<std::string>& views,
+                              const std::string& digest = {});
+// 応答が「直す所なし」か（文書を含まず kNoChanges を含む）。
+bool replySaysNoChanges(const std::string& reply);
 
 // 応答から <wizengine ...>...</wizengine> を取り出す。``` で囲まれていても、
 // 推論系モデルの <think> の中に下書きがあっても、**最後の**文書を採る。

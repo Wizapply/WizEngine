@@ -42,7 +42,7 @@ void GravityOverride::cancel(double dt) {
     }
 }
 
-void GravityOverride::onSystemRecreated() { noGravity_.clear(); }
+void GravityOverride::onBodiesCleared() { noGravity_.clear(); }
 
 void GravityOverride::onBodyAdded(std::size_t id, const BodyAddInfo& info) {
     (void)id;

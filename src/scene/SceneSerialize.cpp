@@ -4,6 +4,7 @@
 
 #include "control/ControlSignals.h"
 #include "control/ControlTemplates.h"
+#include "transmission/AtSignals.h"
 #include "formula/FormulaText.h"
 #include "terrain/TerrainBrush.h"
 #include "scene/UiFiles.h"
@@ -219,6 +220,8 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
     j["mode"] = ed::modeName(editor_.mode());
     j["editorCam"] = int(editorCamera());
     j["sim"] = ed::toJson(editor_.sim());
+    // いまの空気（気象条件から出した密度・スクリプトの上書き込み。World タブの表示用）。
+    j["air"] = airJson();
     // いまの物理の系（バックエンド / 接触の解き方）と、Core を要した理由。
     // このビルドが持つ B の機能も送る（UI が選択肢を灰色にする）。
     j["engine"] = physics_.backendName();
@@ -234,6 +237,7 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
                          {"pardiso", f.pardiso},
                          {"mumps", f.mumps},
                          {"modal", f.modal},
+                         {"fluid", f.fluid},
                          {"parsers", wizengine::importAvailable()}};
     }
     // 入力欄の範囲（UI が data-limit / data-limit-max の欄の min / max に入れる）。
@@ -301,6 +305,8 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
         }
     }
 
+    // 水面と流体粒子（World タブの「流体」節）と、流体粒子を作った結果。
+    j.update(fluidJson());
     // パーティクルのエミッタ（見た目だけ。制御器の emitter:<名前>.rate の候補）。
     j["emitters"] = nlohmann::json::array();
     {
@@ -418,12 +424,24 @@ std::string Scene::hierarchyJson(std::size_t cameraIndex) {
             q["body"] = ctl::sensorQuantities(ctl::Source::Body);
             q["joint"] = ctl::sensorQuantities(ctl::Source::Joint);
             q["vehicle"] = ctl::sensorQuantities(ctl::Source::Vehicle);
+            q["air"] = ctl::sensorQuantities(ctl::Source::Air);
             f["sensors"] = q;
             q["body"] = ctl::actuatorQuantities(ctl::Source::Body);
             q["joint"] = ctl::actuatorQuantities(ctl::Source::Joint);
             q["vehicle"] = ctl::actuatorQuantities(ctl::Source::Vehicle);
             q["emitter"] = ctl::actuatorQuantities(ctl::Source::Emitter);
+            q["trans"] = ctl::actuatorQuantities(ctl::Source::Transmission);
+            q["air"] = ctl::actuatorQuantities(ctl::Source::Air);
             f["actuators"] = q;
+            f["sensors"]["trans"] = ctl::sensorQuantities(ctl::Source::Transmission);
+            // AT の名前と、要素・軸ごとの量（torque_A など）を含む読める量の一覧。
+            f["transmissions"] = nlohmann::json::array();
+            for (const auto& t : editor_.transmissions()) {
+                nlohmann::json e;
+                e["name"] = t.name;
+                e["sensors"] = wizengine::transmission::atSensorNames(t);
+                f["transmissions"].push_back(std::move(e));
+            }
         }
         j["formulas"] = f;
     }
@@ -591,6 +609,11 @@ ed::SceneDocument Scene::document() {
         fix(c.bodyB);
         doc.cables.push_back(c);
     }
+    // 水面と流体粒子（単一要素。番号を持たないので付け替えは無い）。
+    doc.hasWater = editor_.hasWater();
+    doc.water = editor_.water();
+    doc.hasFluid = editor_.hasFluid();
+    doc.fluid = editor_.fluid();
     // パーティクルのエミッタ。付け先が消えていたらワールド（-1）に付け替える。
     for (const auto& mIn : editor_.emitters()) {
         ed::EmitterDesc m = mIn;
@@ -650,6 +673,7 @@ ed::SceneDocument Scene::document() {
     doc.controllers = editor_.controllers();
     doc.params = editor_.params();
     doc.charts = editor_.charts();
+    doc.transmissions = editor_.transmissions();
     return doc;
 }
 
@@ -754,6 +778,7 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
     editor_.setControllers(doc.controllers);
     editor_.setParams(doc.params);
     editor_.setCharts(doc.charts);
+    editor_.setTransmissions(doc.transmissions);
     editor_.setPrefabEditObject(-1);
     for (const auto& bIn : doc.bodies) createObject(ed::clampBody(bIn));
     editor_.bumpVehicleVersion();  // 走っている車両モデルは作り直す
@@ -786,6 +811,9 @@ void Scene::loadDocument(const ed::SceneDocument& doc, bool keepSameTerrain) {
         }
         editor_.setEmitters(std::move(emitters));
     }
+    // 水面と流体粒子（節が無い文書は無し）。系の種類は末尾の syncBackend が見る。
+    editor_.setWater(doc.hasWater, doc.hasWater ? doc.water : ed::WaterDesc{});
+    editor_.setFluid(doc.hasFluid, doc.hasFluid ? doc.fluid : ed::FluidDesc{});
 
     // イベントアセット。中身のノードの対象番号は、ジョイントと同じく今回
     // 足されたぶんの先頭（base / lightBase）だけずらす（カメラはスロット
@@ -924,6 +952,18 @@ std::string Scene::appendDocument(const ed::SceneDocument& doc) {
         auto charts = editor_.charts();
         charts.insert(charts.end(), doc.charts.begin(), doc.charts.end());
         editor_.setCharts(std::move(charts));
+        // AT も足す（同名は今のシーンのものを残す）。
+        auto trans = editor_.transmissions();
+        bool addedTrans = false;
+        for (const auto& t : doc.transmissions) {
+            bool dup = false;
+            for (const auto& have : trans) dup = dup || have.name == t.name;
+            if (!dup) {
+                trans.push_back(t);
+                addedTrans = true;
+            }
+        }
+        if (addedTrans) editor_.setTransmissions(std::move(trans));
     }
     const std::size_t base = boxes_.size();
     for (const auto& bIn : doc.bodies) createObject(ed::clampBody(bIn));
@@ -957,6 +997,10 @@ std::string Scene::appendDocument(const ed::SceneDocument& doc) {
         }
         editor_.setEmitters(std::move(emitters));
     }
+    // 水面と流体粒子は単一要素: 足す文書が持っていればそれに置き換える
+    // （持っていなければ今のまま）。
+    if (doc.hasWater) editor_.setWater(true, doc.water);
+    if (doc.hasFluid) editor_.setFluid(true, doc.fluid);
     // UI は後ろへ足す（共用 UI とフォントは名前が重ならないものだけ）。読めない
     // 共用 UI と名前の重なった物は loadUiFromDocument が LOGW に出し、件数を注意に返す。
     // 取込はイベントを入れないので、Canvas の先頭の番号は使わない。

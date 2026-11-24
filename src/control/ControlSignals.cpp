@@ -1,5 +1,8 @@
 #include "control/ControlSignals.h"
 
+#include "transmission/AtSignals.h"
+
+#include <algorithm>
 #include <utility>
 
 namespace wizengine {
@@ -60,6 +63,25 @@ const std::vector<Entry>& vehicleActuators() {
     return t;
 }
 
+// air: の量（読める量。書ける量は local_pressure を除いたもの）。
+const std::vector<std::string>& airSensorNames() {
+    static const std::vector<std::string> t = {
+        "density", "temperature", "humidity", "pressure", "local_pressure", "altitude",
+        "wind_x",  "wind_y",      "wind_z",   "drag",     "lift",           "magnus",
+    };
+    return t;
+}
+const std::vector<std::string>& airActuatorNames() {
+    static const std::vector<std::string> t = [] {
+        std::vector<std::string> v;
+        for (const auto& n : airSensorNames()) {
+            if (n != "local_pressure") v.push_back(n);
+        }
+        return v;
+    }();
+    return t;
+}
+
 // "kind:target.qty" を 3 つに分ける。kind だけ（"time"）は qty も target も空。
 bool split(const std::string& name, std::string& kind, std::string& target,
            std::string& qty) {
@@ -103,7 +125,7 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
     std::string kind, target, qty;
     split(name, kind, target, qty);
     if (sensor && kind == "time" && target.empty()) {
-        out = SignalRef{Source::Time, "", Quantity::None};
+        out = SignalRef{Source::Time, "", Quantity::None, ""};
         return true;
     }
     if (kind == "param" || kind == "var") {
@@ -114,7 +136,7 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
             error = "\"" + name + "\": " + kind + " needs a name (" + kind + ":<name>)";
             return false;
         }
-        out = SignalRef{kind == "param" ? Source::Param : Source::Var, pname, Quantity::None};
+        out = SignalRef{kind == "param" ? Source::Param : Source::Var, pname, Quantity::None, ""};
         return true;
     }
     if (!sensor && kind == "scope") {
@@ -124,7 +146,31 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
             error = "\"" + name + "\": scope needs a label (scope:<label>)";
             return false;
         }
-        out = SignalRef{Source::Scope, label, Quantity::None};
+        out = SignalRef{Source::Scope, label, Quantity::None, ""};
+        return true;
+    }
+    if (kind == "air") {
+        // シーンに 1 つなので対象の名前は無い: air:<量>。
+        const std::string qname = name.substr(name.find(':') + 1);
+        const auto& list = sensor ? airSensorNames() : airActuatorNames();
+        if (std::find(list.begin(), list.end(), qname) == list.end()) {
+            std::string all;
+            for (const auto& n : list) all += (all.empty() ? "" : " ") + n;
+            error = "\"" + name + "\": unknown air " + (sensor ? "sensor" : "actuator") +
+                    " quantity (air:<quantity> - " + all + ")";
+            return false;
+        }
+        out = SignalRef{Source::Air, "", Quantity::Air, qname};
+        return true;
+    }
+    if (kind == "trans") {
+        // 量の名前は AT の中身（要素・軸の名前）で決まるので、ここでは形だけ見る。
+        // 本当にあるかは制御器を組むとき（ControlComponent が transmission/AtSignals で引く）。
+        if (target.empty() || qty.empty()) {
+            error = "\"" + name + "\": needs trans:<name>.<quantity>";
+            return false;
+        }
+        out = SignalRef{Source::Transmission, target, Quantity::Trans, qty};
         return true;
     }
     const std::vector<Entry>* table = nullptr;
@@ -143,8 +189,8 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
         table = &emitterActuators();
     } else {
         error = "\"" + name + "\": unknown signal kind \"" + kind + "\" (" +
-                (sensor ? "time, body:, joint:, vehicle:, param:, var:"
-                        : "body:, joint:, vehicle:, emitter:, param:, var:, scope:") +
+                (sensor ? "time, body:, joint:, vehicle:, trans:, air:, param:, var:"
+                        : "body:, joint:, vehicle:, trans:, air:, emitter:, param:, var:, scope:") +
                 ")";
         return false;
     }
@@ -158,7 +204,7 @@ bool parseWith(const std::string& name, bool sensor, SignalRef& out, std::string
                 " quantity \"" + qty + "\" for " + kind + " (" + listOf(*table) + ")";
         return false;
     }
-    out = SignalRef{src, target, q};
+    out = SignalRef{src, target, q, ""};
     return true;
 }
 
@@ -179,6 +225,9 @@ bool parseActuator(const std::string& name, SignalRef& out, std::string& error) 
 }
 
 const std::vector<std::string>& sensorQuantities(Source source) {
+    // AT は要素・軸ごとの量を除いた共通の名前（唯一の定義は transmission/AtSignals）。
+    if (source == Source::Transmission) return wizengine::transmission::atCommonSensorNames();
+    if (source == Source::Air) return airSensorNames();
     static const std::vector<std::string> body = names(bodySensors());
     static const std::vector<std::string> joint = names(jointSensors());
     static const std::vector<std::string> vehicle = names(vehicleSensors());
@@ -192,6 +241,8 @@ const std::vector<std::string>& sensorQuantities(Source source) {
 }
 
 const std::vector<std::string>& actuatorQuantities(Source source) {
+    if (source == Source::Transmission) return wizengine::transmission::atInputNames();
+    if (source == Source::Air) return airActuatorNames();
     static const std::vector<std::string> body = names(bodyActuators());
     static const std::vector<std::string> joint = names(jointActuators());
     static const std::vector<std::string> vehicle = names(vehicleActuators());

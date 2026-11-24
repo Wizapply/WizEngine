@@ -7,12 +7,15 @@
 #include "physics/BodyLoads.h"
 #include "physics/BodyMotion.h"
 #include "physics/BodyRegistry.h"
+#include "physics/Cables.h"
 #include "physics/ContactMaterials.h"
 #include "physics/Diagnostics.h"
+#include "physics/FluidParticles.h"
 #include "physics/GravityOverride.h"
 #include "physics/Joints.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsWorld.h"
+#include "physics/ShaftNetworks.h"
 #include "physics/Sleeping.h"
 #include "physics/SoftBodies.h"
 #include "physics/StaticPairs.h"
@@ -20,21 +23,9 @@
 #include "physics/VelocityDamping.h"
 
 struct PhysicsWorld::Parts {
-    Parts(PhysicsBackend backend, ContactMethod contact)
-        : staticPairs(system, bodies),  // 参照を覚えるだけ（中身に触るのは attach から）
-          system(backend, contact),
-          bodies(system),
-          sleeping(system, bodies),
-          motion(bodies, sleeping),
-          materials(system, bodies),
-          factory(system, bodies, sleeping, materials),
-          soft(bodies, factory, materials),
-          loads(system, bodies),
-          gravity(system, bodies),
-          damping(bodies),
-          diag(system, bodies),
-          terrain(system, bodies, materials),
-          joints(system, bodies, motion) {
+    // system だけはコンストラクタ引数（系の種類）が要るので初期化子リストに残す。
+    // 他の担当の初期化子は宣言の行に書く（初期化は宣言の順 = 下の並び）。
+    Parts(PhysicsBackend backend, ContactMethod contact) : system(backend, contact) {
         // 出来事の受け手はここで登録する。受け手どうしは順番に依存しない
         // （それぞれ自分の状態と Chrono の別々の部分だけを触る）。
         bodies.events().add(&sleeping);
@@ -46,23 +37,36 @@ struct PhysicsWorld::Parts {
         bodies.events().add(&soft);
     }
 
+    // Chrono の系を（作り直しも含めて）組む。PhysicsWorld のコンストラクタと recreate が呼ぶ。
+    void createSystem();
+    // 本当に系から外す（Core。Multicore は退避だけ）。PhysicsWorld::disableBody から。
+    void detachBody(std::size_t id);
+
     // system より先に宣言する = 系より後に壊れる（Bullet のペアキャッシュがフィルタを
-    // 指すので、系の破棄の途中でも生きている必要がある）。
-    wizengine::physics::StaticPairs staticPairs;
+    // 指すので、系の破棄の途中でも生きている必要がある）。参照を覚えるだけで、
+    // 中身に触るのは attach から（system より先に初期化されても構わない）。
+    wizengine::physics::StaticPairs staticPairs{system, bodies};
     wizengine::physics::PhysicsSystem system;
-    wizengine::physics::BodyRegistry bodies;
-    wizengine::physics::Sleeping sleeping;
-    wizengine::physics::BodyMotion motion;
-    wizengine::physics::ContactMaterials materials;
-    wizengine::physics::BodyFactory factory;
-    wizengine::physics::SoftBodies soft;
-    wizengine::physics::BodyLoads loads;
-    wizengine::physics::GravityOverride gravity;
-    wizengine::physics::VelocityDamping damping;
-    wizengine::physics::Diagnostics diag;
+    wizengine::physics::BodyRegistry bodies{system};
+    wizengine::physics::Sleeping sleeping{system, bodies};
+    wizengine::physics::BodyMotion motion{bodies, sleeping};
+    wizengine::physics::ContactMaterials materials{system, bodies};
+    wizengine::physics::BodyFactory factory{system, bodies, sleeping, materials};
+    wizengine::physics::SoftBodies soft{bodies, factory, materials};
+    wizengine::physics::BodyLoads loads{system, bodies};
+    wizengine::physics::GravityOverride gravity{system, bodies};
+    wizengine::physics::VelocityDamping damping{bodies};
+    wizengine::physics::Diagnostics diag{system, bodies};
     // system より先に壊れる。系が持ち続けるコールバックはデストラクタが切り離す。
-    wizengine::physics::TerrainContact terrain;
-    // 最後に宣言する = 最初に壊れる（以前の PhysicsWorld のメンバと同じく、系と名簿より
-    // 先にリンクと荷重コンテナへの参照を手放す）。
-    wizengine::physics::Joints joints;
+    wizengine::physics::TerrainContact terrain{system, bodies, materials};
+    // joints と cables は系と名簿への参照（system_ / bodies_）を持つので、それより後に
+    // 宣言して先に壊す（今のデストラクタは系に触らないが、触る形にしても安全な順番）。リンクとメッシュは
+    // 系も shared_ptr で持っているので、ここで系から外れるわけではない。
+    wizengine::physics::Joints joints{system, bodies, motion};
+    // joints より後 = 最初に壊れる。ジョイントとの順番には依存しない。
+    wizengine::physics::Cables cables{system, bodies, materials};
+    // 1D のシャフト網（AT の駆動系など）。剛体との直結が ChBody を持つので名簿より後に壊す。
+    wizengine::physics::ShaftNetworks shafts{system, bodies};
+    // 流体粒子（Multicore の流体コンテナ）。系への参照だけを持つ。
+    wizengine::physics::FluidParticles fluid{system};
 };

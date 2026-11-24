@@ -579,6 +579,14 @@ void Scene::applyPendingEdits() {
     for (const auto& op : editor_.drain()) applyEditorOp(op);
 }
 
+namespace {
+// AI のシーン生成が積んだ Op か（AutoGenComponent が args に "ai": true を付ける。
+// ブラウザの edit.xml は EditorComponent が {text} だけで組むので付かない）。
+bool isAiOp(const nlohmann::json& a) {
+    return a.is_object() && a.contains("ai") && a["ai"].is_boolean() && a["ai"].get<bool>();
+}
+}  // namespace
+
 void Scene::applyEditorOp(const EditorState::Op& op) {
     const nlohmann::json& a = op.args;
 
@@ -1547,6 +1555,16 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         return;
     }
 
+    // 水面と流体粒子（World タブの「流体」節とアセットパネルのタイル）。
+    if (op.kind == "water") {
+        applyWaterOp(a);
+        return;
+    }
+    if (op.kind == "fluid") {
+        applyFluidOp(a);
+        return;
+    }
+
     if (op.kind == "render") {
         // 送られてきたキーだけ上書き（edit.ground と同じ部分更新）。
         // "preset" が入っていれば renderFromJson がそこから組み立てる。
@@ -1584,6 +1602,8 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         // 同じテレインなら手元の格子を保つ（/scene.xml を貼り直しても未保存の
         // 編集を捨てない）。
         loadDocument(doc, true);
+        // AI の適用なら、適用し終えたシーンを AI の履歴の基準として覚える。
+        if (isAiOp(a)) editor_.setAiBaseline(documentXml());
         // 保存名は触らない: 適用はファイルにしていない編集で、💾 保存して
         // 初めてファイルになる（モーダルの見出しにもそう書いてある）。
         editor_.setStatus("XML を適用しました" + loadStatusSuffix(warnings.size()));
@@ -1603,6 +1623,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         }
         for (const auto& w : warnings) LOGW("editor", "xml append: %s", w.c_str());
         appendDocument(doc);
+        if (isAiOp(a)) editor_.setAiBaseline(documentXml());
         editor_.setStatus("AI: " + std::to_string(doc.bodies.size()) + " 個を追加しました" +
                           warningCountCaveat("警告", warnings.size()));
         return;
@@ -1619,6 +1640,9 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             std::lock_guard<std::mutex> lk(objectsMutex_);
             meshes_.clear();
         }
+        // 水面と流体粒子も外す（どちらも「節が無い」が初期状態）。
+        editor_.setWater(false, ed::WaterDesc{});
+        editor_.setFluid(false, ed::FluidDesc{});
         // 地面・環境光・描画設定も初期値へ（ライト・カメラと同じ扱い）。
         setGroundAndEnvironment(ed::GroundDesc{}, ed::EnvironmentDesc{});
         setRenderDesc(ed::RenderDesc{});
@@ -1633,6 +1657,7 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         editor_.setControllers({});
         editor_.setParams({});
         editor_.setCharts({});
+        editor_.setTransmissions({});
         editor_.setPrefabAssets({});
         ui_.clear();  // UI（Canvas・共用 UI・フォント）もシーンの一部
         // 共用のファイルの覚えも捨てる（残すと、全消しの後に同じ名前を作って保存したとき、

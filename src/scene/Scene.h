@@ -29,6 +29,7 @@
 #include "ui/UiMeshFormat.h"  // plateMeshToOverlay の UiMeshData
 #include "ui/UiPlane.h"     // canvasPlane の CanvasPlane
 #include "document/SceneDocument.h"
+#include "fluid/Atmosphere.h"     // 空気の状態（AirState / AirOverride）
 #include "physics/MeshCollision.h"  // CollisionTriangles
 #include "physics/PhysicsWorld.h"  // for BodyTransform
 #include "terrain/TerrainFile.h"     // TerrainLayers（層の定義を値で持つ）
@@ -173,6 +174,9 @@ public:
         // 最初に使うときに読む。
         wizengine::CollisionTriangles trimesh;
         bool trimeshTried = false;
+        // 当たり判定の点（凸包 / 三角形）の外接箱の半寸法（空気抵抗の面積用）。
+        wizengine::editor::Vec3d boundsHalf{0.0, 0.0, 0.0};
+        bool boundsDone = false;
     };
 
     // ジョイントの計測値（直前のステップの反力と破断）。物理スレッドが
@@ -399,6 +403,23 @@ public:
     // ときに読み込む（syncRenderables と同じ）。読めなければ kInvalidId。
     std::size_t meshModelId(int meshIndex);
     double meshScale(int meshIndex) const;
+    // PHYSICS スレッド用: メッシュの当たり判定（collision = Model なら凸包、Trimesh なら
+    // 三角形。どちらも外接箱は同じ）の外接箱の半寸法 (m、メッシュの座標軸)。空気抵抗が
+    // 投影面積を出すのに使う。読めなければ false（呼び出し側は球で近似する）。
+    bool meshHalfExtents(int meshIndex, bool trimesh, wizengine::editor::Vec3d& half);
+
+    // ---- 空気（<option density atmosphere temperature humidity pressure altitude wind ...>）--
+    // いまの空気 = 文書の設定 + 制御器（スクリプト）がこのステップに書いた値（air:<量>）。
+    // どのスレッドからでも呼べる（文書は EditorState のロック、上書きは airMutex_）。
+    // 上書きはシミュレート中で、書いたときと同じ世代（runGeneration）のときだけ効く
+    // = 止める・Reset で文書の値へ戻る。
+    wizengine::fluid::AirState airNow();
+    // PHYSICS スレッド（ControlComponent）: このステップの上書き。毎ステップ作り直して
+    // 渡す（書く制御器が無くなれば空 = 文書の値）。積分の前、空気を使う係（流体・車両）
+    // より先に呼ぶ。
+    void setAirOverride(const wizengine::fluid::AirOverride& ov);
+    // /scene の "air"（いまの空気。シミュレート中はスクリプトの上書き込み）。
+    nlohmann::json airJson();
 
     // ---- プレハブの部品の編集（PHYSICS thread、ギズモから）------------------
     // 対象はプレハブ編集モードのオブジェクト（EditorState::prefabEditObject）
@@ -425,6 +446,12 @@ public:
     // 補間していないときは最新のフレームの時刻）。見た目だけの粒子の年齢を
     // 物理の時計で数えるため（EffectsComponent）。
     double renderSimTime() const { return renderSimTime_; }
+    // このフレームに描く流体粒子の位置（RENDER スレッド専用。3 個で 1 粒子、
+    // 補間済み）。シミュレート中に流体の実体があるときだけ非 null。エディタでは
+    // null = 描く側（FluidComponent）が文書の配置を描く。
+    const std::vector<float>* renderFluid() const {
+        return renderFluid_.empty() || renderFluid_[0].empty() ? nullptr : &renderFluid_[0];
+    }
     // 物理スレッドが進めているシミュレーション時刻（PHYSICS スレッド専用。
     // 呼ばれたステップの始まりの時刻）。
     double physicsSimTime() const { return simClock_; }
@@ -627,6 +654,23 @@ private:
     // タイミング: シミュレート開始と停止）。
     void buildCables();
     void removeAllCables();
+    // 文書の流体粒子（<fluid>）を Chrono::Multicore の流体コンテナに作る。
+    // シミュレート開始（と、その最中の系の作り直し）で呼ぶ。外す口は無いので、
+    // 前の開始で作った粒子が系に残っていたら、開始の前に系ごと作り直す（enterMode）。
+    // 作れなかった理由は fluidStatus（/scene）とステータスへ。
+    void buildFluid();
+    // Reset で流体粒子を最初に戻す（PHYSICS、シミュレート中だけ）。設計が作ったときの
+    // ままなら粒子をその場で書き戻す（PhysicsWorld::resetFluid）。シミュレート中に
+    // 流体を足した / 外した / 設定を変えたなら、開始と同じく系ごと作り直す。
+    // 戻り値 true = 系ごと作り直した（作り直しが置き直し・ジョイント・snapshot まで
+    // 済ませているので、呼び手 reset はそこで終える）。
+    bool resetFluid();
+    // edit.water / edit.fluid（部分更新。"present": false で節ごと外す）。PHYSICS。
+    void applyWaterOp(const nlohmann::json& args);
+    void applyFluidOp(const nlohmann::json& args);
+    // /scene の water・fluid・fluidStatus（どのスレッドからでも。EditorState と
+    // poseMutex_ のロックを順に取る）。
+    nlohmann::json fluidJson();
     // <option modal="N">: 固有振動数を求めてログと /scene に出す。
     void runModalAnalysis();
     // RENDER thread: ケーブルの見た目（円柱の連なり）を作り、節点の
@@ -1169,6 +1213,25 @@ private:
     std::vector<double> cableTension_;  // 同上（N）
     std::vector<double> modalHz_;       // 同上
     std::string backendNote_;           // 同上（"core: FEA cable" など）
+    // 流体粒子の位置（3 個で 1 粒子。外側は 0 か 1 個 = 補間の lerpPoints を
+    // ケーブルと共用するため）。シミュレート中に流体があるときだけ endPhysicsPass が
+    // 書く（数万個あるので毎ステップの snapshot では写さない。実体が無くなれば
+    // snapshot が空にする = 描画は文書の配置を描く）。poseMutex_ の下。
+    std::vector<std::vector<float>> latestFluid_;
+    // 流体粒子を作った結果（/scene の fluidStatus）。poseMutex_ の下。
+    struct FluidStatus {
+        std::size_t particles = 0;   // 作った数（0 = 作っていない）
+        std::size_t requested = 0;   // 文書の配置で詰めた数（上限で打ち切る前）
+        bool truncated = false;
+        std::string error;           // 作れなかった理由（英語）
+    };
+    FluidStatus fluidStatus_;
+    // 流体粒子の実体がいまの系にあって、シミュレート中か（PHYSICS スレッド専用。
+    // buildFluid が立て、停止と系の作り直しで下ろす。snapshot が粒子を写すかの判定）。
+    bool fluidLive_ = false;
+    // 流体粒子を作ったときの EditorState::fluidVersion（Reset が「設計が変わったか」を
+    // 見る。PHYSICS スレッド専用）。
+    std::uint64_t fluidBuiltVersion_ = ~std::uint64_t(0);
     // RENDER スレッド専用: ケーブルごとの円柱スロット。
     struct CableRender {
         std::vector<std::size_t> renderIds;
@@ -1329,6 +1392,7 @@ private:
         std::vector<BodyTransform> poses;
         std::vector<std::vector<float>> soft;    // latestSoft_ と同じ並び
         std::vector<std::vector<float>> cables;  // latestCables_ と同じ並び
+        std::vector<std::vector<float>> fluid;   // latestFluid_ と同じ並び
         double simTime = 0.0;   // このフレームのシミュレーション時刻 (s)
         double wallTime = 0.0;  // 公開した実時間（steady_clock の秒）
         double timeScale = 1.0; // 公開したときの時間の速さ（補間の進み方）
@@ -1345,6 +1409,7 @@ private:
     std::vector<BodyTransform> renderPoses_;
     std::vector<std::vector<float>> renderSoft_;
     std::vector<std::vector<float>> renderCables_;
+    std::vector<std::vector<float>> renderFluid_;
     double renderAlpha_ = -1.0;
     double renderSimTime_ = 0.0;
 
@@ -1367,6 +1432,12 @@ private:
     // 実行状態を捨てるたびに進む（poseMutex_）。RENDER はこれが変わったら
     // カメラを掛かる前の視点へ戻す（Reset・停止・読込）。
     std::uint64_t rigGeneration_ = 0;
+
+    // 制御器（スクリプト）が書いた空気の値（airNow / setAirOverride）。書いたときの世代と
+    // 組で持ち、世代が変わったら使わない。airMutex_ の下（HTTP の /scene も読む）。
+    std::mutex airMutex_;
+    wizengine::fluid::AirOverride airOverride_;
+    std::uint64_t airOverrideGeneration_ = ~std::uint64_t(0);
 
     // ---- イベントグラフの実行状態（PHYSICS スレッド専用）------------------
     // グラフ本体は EditorState が持ち、ここにあるのは実行のためのキャッシュと

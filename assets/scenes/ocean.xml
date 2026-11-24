@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 海の見本（<water> の風浪）: 風速 7 m/s の海に、ブイ・木箱・いかだ・丸太を浮かべる。
+     書式は document/FluidXml.h、波と力のモデルは fluid/WaterForces.h（CLAUDE.md の「流体」の章）。
+
+     波は 2 種類の Gerstner 波の和:
+       うねり … wave / period / heading の 1 本（遠くから来た長い波。ここは周期 9 s・振幅 0.35 m）
+       風浪   … wind（風速 m/s）から海の波のスペクトル（Pierson-Moskowitz）で waves 本。
+                有義波高は 0.21 U² / g = 7 m/s で約 1 m。向きは heading ± spread にばらす。
+     choppy が波頭の尖り（1 = 本来の Gerstner 波、ここは少し誇張）、foam が白波の量。
+     浮力は見えている波と同じ式で計算するので、物は波の形どおりに揺れる。
+
+     見た目は透けて屈折する水の材質（water.mat）: 地面が無い = 深い海なので、水の色
+     rgba（水の中で散った光）と空の映り込みで決まる。波頭は明るく、尖った所は白波。
+     細かいさざ波（ripple）は材質の中の法線だけ（物理には効かない）。
+     空は assets/env/ocean_sky.hdr（samples/ocean/sky_hdr.py が作る）で、下半分を遠い海の
+     色にしてあるので、水面の範囲（120 m 四方）の外も海のように見える。
+     地面は外してある（<ground enabled="false">）= 沈む物は底なしに落ちる。 -->
+<wizengine model="ocean" version="4">
+  <option gravity="0 -9.81 0" rate="60" substeps="2" iterations="40" envelope="0.002"
+          recovery="0.2" friction="0.6" restitution="0" lineardamping="0.02"
+          angulardamping="0.1" sleeping="false"/>
+  <visual>
+    <quality shadowMap="2048" cascades="3" shadow="pcss" contactShadows="true" msaa="4"
+             taa="false" fxaa="true"/>
+    <postprocess enabled="true" ssao="true" ssaoIntensity="1" bloom="0.05" ssr="false"
+                 dof="0" dofBlur="1" vignette="0.2"/>
+  </visual>
+  <asset>
+    <event name="pickup">
+      <node id="1" type="onGrab" pos="40 40" target="-1"/>
+      <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+      <wire from="1" to="2"/>
+    </event>
+  </asset>
+  <worldbody>
+    <environment hdr="env/ocean_sky.hdr" intensity="30000" skybox="true"/>
+    <ground enabled="false"/>
+    <!-- 海: 静水面 y = 0、広さ 120 × 120 m（size は半分）、海水の密度。 -->
+    <water pos="0 0 0" size="60 60" density="1025" wave="0.35" period="9" heading="30"
+           wind="7" choppy="1.4" foam="0.5" rgba="0.01 0.05 0.09 1" clarity="8"
+           ripple="0.6" cells="192"/>
+
+    <light name="sun" type="sun" pos="0 10 0" euler="40 -150 0" diffuse="1 0.96 0.9 1"
+           intensity="100000" castshadow="true"/>
+    <camera name="cam0" target="0 0 0" azimuth="35" elevation="16" radius="26"/>
+    <camera name="cam1" target="0 0.5 0" azimuth="200" elevation="4" radius="12"/>
+
+    <!-- 浮かべる物（質量 = 密度 × 体積。geom の size は半分の寸法）。 -->
+    <body name="buoy" pos="4 1 -3">
+      <geom type="sphere" size="0.5" mass="157" rgba="0.95 0.35 0.08 1" roughness="0.5"/>
+    </body>
+    <body name="crate" pos="-3 1 2" euler="0 30 0">
+      <geom type="box" size="0.4 0.4 0.4" mass="256" rgba="0.62 0.42 0.24 1"
+            roughness="0.7"/>
+    </body>
+    <body name="raft" pos="1 0.6 4" euler="0 -20 0">
+      <geom type="box" size="2 0.15 1" mass="960" rgba="0.55 0.36 0.2 1" roughness="0.8"/>
+    </body>
+    <body name="cabin" pos="1 1.25 4" euler="0 -20 0">
+      <geom type="box" size="0.4 0.4 0.4" mass="100" rgba="0.92 0.92 0.9 1" roughness="0.5"/>
+    </body>
+    <body name="log" pos="-6 1 -4" euler="0 60 0">
+      <geom type="box" size="2.5 0.25 0.25" mass="750" rgba="0.45 0.3 0.18 1"
+            roughness="0.8"/>
+    </body>
+    <body name="barrel1" pos="7 1 3">
+      <geom type="sphere" size="0.3" mass="45" rgba="0.2 0.45 0.75 1" roughness="0.4"/>
+    </body>
+    <body name="barrel2" pos="-1 1 -7">
+      <geom type="sphere" size="0.3" mass="45" rgba="0.85 0.8 0.2 1" roughness="0.4"/>
+    </body>
+  </worldbody>
+  <events>
+    <event name="pickup"/>
+  </events>
+</wizengine>

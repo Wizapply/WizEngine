@@ -41,6 +41,7 @@
 #include "components/TerrainComponent.h"
 #include "components/ControlComponent.h"
 #include "components/EffectsComponent.h"
+#include "components/FluidComponent.h"
 #include "components/VehicleComponent.h"
 #include "components/PrefabComponent.h"
 #include "components/ScatterComponent.h"
@@ -492,6 +493,8 @@ int run(int argc, char** argv) {
     auto effectsOwner = std::make_unique<EffectsComponent>();
     controlComp->setEffects(effectsOwner.get());
     scene.addComponent(std::move(effectsOwner));
+    // 流体: 水面の浮力・抗力（物理）と、水面・流体粒子の描画。
+    scene.addComponent(std::make_unique<FluidComponent>());
     scene.addComponent(std::move(vehicleOwner));
     // プレハブ（見た目の部品）の描画。車両の車輪姿勢は VehicleComponent から。
     scene.addComponent(std::make_unique<PrefabComponent>(vehicleComp));
@@ -613,7 +616,7 @@ int run(int argc, char** argv) {
                     j["busy"].push_back(e->http->hasViewer());
                 }
                 // AI のシーン自動構築の状態（🤖 AI モーダルが描く）。
-                j["ai"] = aiComp->statusJson();
+                j["ai"] = aiComp->statusJson(scene.editor().sceneFile());
                 // 制御器の実行状態（コンパイルの成否・警告・評価回数）。
                 j["control"] = controlComp->statusJson();
                 return j.dump();

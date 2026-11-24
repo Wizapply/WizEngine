@@ -502,6 +502,13 @@
     display: flex; align-items: center; justify-content: space-between;
     gap: 8px; font-size: 12px; color: #b8bcc4;
   }
+  /* hidden 属性を display:flex に負けさせない（.sbSec[hidden] と同じ理由）。 */
+  .edRow[hidden] { display: none; }
+  /* 節の中で行をまとめて出し入れする入れ物（空気の欄など）。中の行の間隔を
+     節（.sbSec の gap）と揃える - ただの div だと間隔が 0 になって詰まる。 */
+  .edGroup { display: flex; flex-direction: column; gap: 6px; }
+  .edGroup[hidden] { display: none; }
+  .edRow > .nowrap { white-space: nowrap; }
   .edRow.btnRow { justify-content: stretch; }
   .edRow.btnRow button { flex: 1 1 0; min-width: 0; }
   .edRow button, #paneEditor .sbSec > button {
@@ -1081,6 +1088,20 @@
     background: #101216; color: #dfe2e7; font: 13px/1.5 system-ui, sans-serif;
   }
   #aiPrompt:focus { border-color: #4a70ad; }
+  /* @ の補完（依頼文の欄のすぐ下に出す一覧。カーソル位置には追従しない）。 */
+  .aiPromptWrap { position: relative; }
+  .aiAc {
+    position: absolute; left: 8px; top: 100%; z-index: 5; margin-top: 2px;
+    min-width: 220px; max-width: 70%; max-height: 220px; overflow: auto;
+    background: #1b1e24; border: 1px solid #3a3d45; border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.45); font-size: 12px;
+  }
+  .aiAc div { padding: 4px 10px; cursor: pointer; white-space: nowrap; display: flex; gap: 8px; }
+  .aiAc div.on, .aiAc div:hover { background: #2f5ea8; color: #fff; }
+  .aiAc .aiAcKind { color: #8a909b; font-size: 11px; margin-left: auto; }
+  .aiAc div.on .aiAcKind, .aiAc div:hover .aiAcKind { color: #dfe6f3; }
+  #aiMentions .ok { color: #7fc48a; }
+  #aiMentions .bad { color: #e0a060; }
   .aiRow button {
     padding: 5px 14px; font-size: 12px; border-radius: 4px;
     background: #2f5ea8; color: #fff; border: 1px solid #3d6fc0;
@@ -1099,6 +1120,23 @@
     white-space: pre-wrap; word-break: break-word;
   }
   #aiGen .ndHint { padding: 0; }
+  /* これまでの流れ（AI の依頼と、その間にユーザーが手で変えた所）。 */
+  .aiHist { font-size: 12px; color: #c9ced6; }
+  .aiHist summary { cursor: pointer; display: flex; align-items: center; gap: 8px; }
+  .aiHist summary button {
+    margin-left: auto; padding: 2px 8px; font-size: 11px; border-radius: 4px;
+    background: #2a2d34; color: #dfe2e7; border: 1px solid #3a3d45;
+  }
+  .aiHist ol {
+    margin: 6px 0 0; padding: 6px 10px 6px 28px; max-height: 220px; overflow: auto;
+    background: #101216; border-radius: 6px;
+  }
+  .aiHist li { margin: 0 0 6px; }
+  .aiHist li.old { opacity: .5; }           /* LLM に渡さない古いぶん */
+  .aiHist .who { font-weight: 600; }
+  .aiHist .who.user { color: #e0b060; }
+  .aiHist .when { color: #7b7f88; font-size: 11px; margin-left: 6px; }
+  .aiHist ul { margin: 2px 0 0; padding-left: 16px; color: #9aa3b2; font-size: 11px; }
 
   /* ---- スコープ（制御器の時系列。control.js）---------------------------- */
   #scopeWin {

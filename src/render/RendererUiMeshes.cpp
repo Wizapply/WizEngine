@@ -47,6 +47,20 @@ void warnBlendOrderRange(bool& warned, std::size_t runCount, const char* what,
          "overlap order of the last ones is not kept", what, which, runCount);
 }
 
+// 頂点バッファの末尾に足す、どのインデックスも指さない予備の頂点の数。GPU によっては
+// バッファのいちばん最後の頂点を正しく読めず（最後の字の角が飛んだ）、本物の頂点を
+// 末尾に置かないための保険（頂点の大きさを 16 バイトの倍数にした UiVertex と組）。
+constexpr std::size_t kUiTailVertices = 1;
+
+// 頂点の並び + 予備の頂点を、Filament へ渡す記述子に写す（作るときの vertexCount と組）。
+filament::backend::BufferDescriptor uiVertexDescriptor(const std::vector<ui::UiVertex>& vertices) {
+    std::vector<ui::UiVertex> padded;
+    padded.reserve(vertices.size() + kUiTailVertices);
+    padded.assign(vertices.begin(), vertices.end());
+    padded.resize(vertices.size() + kUiTailVertices);  // 予備は既定値（インデックスが指さない = 描かれない）
+    return copyToDescriptor(padded.data(), padded.size());
+}
+
 bool sameRuns(const std::vector<ui::UiDrawRun>& a, const std::vector<ui::UiDrawRun>& b) {
     if (a.size() != b.size()) return false;
     for (std::size_t i = 0; i < a.size(); ++i) {
@@ -127,7 +141,7 @@ void Renderer::destroyUiCanvasPart(UiCanvasPart& part) {
 void Renderer::buildUiCanvasPart(const UiCanvas& canvas, UiCanvasPart& part) {
     const ui::UiMeshData& m = part.mesh;
     part.vb = VertexBuffer::Builder()
-                  .vertexCount(uint32_t(m.vertices.size()))
+                  .vertexCount(uint32_t(m.vertices.size() + kUiTailVertices))
                   .bufferCount(1)
                   .attribute(VertexAttribute::POSITION, 0, VertexBuffer::AttributeType::FLOAT2,
                              offsetof(ui::UiVertex, x), sizeof(ui::UiVertex))
@@ -226,9 +240,7 @@ void Renderer::setUiCanvasMesh(std::size_t id, std::size_t viewIndex, ui::UiMesh
     } else {
         buildUiCanvasPart(*canvas, *part);
     }
-    part->vb->setBufferAt(*engine_, 0,
-                          copyToDescriptor(part->mesh.vertices.data(),
-                                           part->mesh.vertices.size()));
+    part->vb->setBufferAt(*engine_, 0, uiVertexDescriptor(part->mesh.vertices));
     part->ib->setBuffer(*engine_, copyToDescriptor(part->mesh.indices.data(),
                                                    part->mesh.indices.size()));
     if (plate) {

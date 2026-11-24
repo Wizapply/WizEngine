@@ -1,0 +1,531 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ダブルウィッシュボーン式サスペンションの加振試験（クォーターカー）。
+     車体の 1/4（chassis、400 kg）を縦の直動ジョイントで支え、右前輪のサスペンションを
+     Chrono の拘束で組んである。リンクの拘束・コイルばね・ダンパ・タイヤばねは
+     すべて Chrono が解く（制御器は加振台の動きを作って計測するだけ）。
+       * ロアアーム / アッパーアーム … 車体に hinge（前後方向の軸）
+       * アップライト（ナックル）    … 上下のアームに ball（ボールジョイント）
+       * タイロッド                  … 車体（ステアリングラック）に universal、
+                                       ナックルアームに ball（= キングピンまわりを止める）
+       * ホイール                    … アップライトに hinge（ハブ、自由に回る）
+       * コイルオーバー              … 上端を車体に universal、シリンダとロッドを slide、
+                                       下端をロアアームに ball。ばね + ダンパは
+                                       spring（ChLinkTSDA、自然長 = 予圧つき）
+       * タイヤ                      … ホイールの中心と加振台の間の縦ばね
+                                       （spring、K = 250 kN/m。浮き上がりは
+                                       表せない = 引っぱりも出る。scope:tire_N が負なら
+                                       実車ではタイヤが浮いている）
+       * 加振台 (pad)                … slide の位置モータ。制御器 rig が目標の高さを出す
+     拘束の数はちょうど釣り合っている（車体の上下・サスペンションの上下・ホイールの
+     回転・加振台の 4 自由度。アームは 1 本の hinge で、A アームの 2 点の取り付けは見た目）。
+     部品は形（geom）の無いボディ（質量だけ。見た目は .glb のプレハブ）なので当たらない。
+     色の凡例: 車体 = 紺、ロアアーム = 橙、アッパーアーム = 緑、ナックル = 銀、タイロッド = 青、
+     コイル = 赤、ダンパ = 黒とクロム、ボールジョイント = 真鍮、ブッシュ = 黒、加振台 = 黄。
+     カメラ: cam0 = 内側の斜め前、front = 真正面（キャンバー）、outside = 外側の斜め前。
+
+     ジオメトリ（samples/double_wishbone/gen.py が唯一の定義。数値を変えたらそれで作り直す）:
+       レバー比 0.640・ホイールレート 35.3 kN/m・
+       コイル 86.3 kN/m（予圧 6230 N）・ダンパ 5509 N s/m、
+       ばね上の固有振動数 1.40 Hz・ばね下（ホイールホップ）13.3 Hz・ばね上の減衰比 0.3。
+       アッパーアームを短くしてある（SLA）ので、バンプでネガティブキャンバーが付く。
+       タイロッドの長さと高さで決まるバンプステア（トーの変化）も出る。
+
+     使い方: シミュレートして、制御盤（Scene タブ「🎛 制御盤（コントローラ）」）の
+     「加振のしかた」で 段差 / 正弦掃引 / 正弦 を選ぶ。振幅・周波数はスライダー。
+     グラフ: 路面・車体・ホイールの変位、ストローク、キャンバーとトー、ばねとタイヤの力。
+     設計姿勢 = 1G の釣り合い（コイルとタイヤの自然長は予圧ぶん長くしてある）ので、
+     「静置」ではシミュレートを始めても沈まない。 -->
+<wizengine model="double_wishbone" version="4">
+  <option gravity="0 -9.81 0" rate="480" substeps="2" iterations="100" envelope="0.002"
+          recovery="2" friction="0.6" restitution="0" lineardamping="0"
+          angulardamping="0" sleeping="false" solver="bb"/>
+  <visual>
+    <quality shadowMap="2048" cascades="3" shadow="pcf" msaa="4" fxaa="true"/>
+    <postprocess ssao="true" bloom="0.02" vignette="0.15"/>
+  </visual>
+  <asset>
+    <formula name="rig">
+      <node id="1" type="in" name="param:amp" pos="1190 409"/>
+      <node id="2" type="in" name="param:mode" pos="40 193"/>
+      <node id="3" type="lt" pos="730 137"/>
+      <node id="4" type="abs" pos="500 99"/>
+      <node id="5" type="sub" pos="270 99"/>
+      <node id="6" type="const" params="1" pos="40 311"/>
+      <node id="7" type="const" params="0.5" pos="500 281"/>
+      <node id="8" type="lt" pos="730 234"/>
+      <node id="9" type="abs" pos="500 399"/>
+      <node id="10" type="sub" pos="270 193"/>
+      <node id="11" type="const" params="2" pos="40 547"/>
+      <node id="12" type="lt" pos="730 328"/>
+      <node id="13" type="abs" pos="500 475"/>
+      <node id="14" type="sub" pos="270 287"/>
+      <node id="15" type="const" params="3" pos="40 429"/>
+      <node id="16" type="select" pos="960 471"/>
+      <node id="17" type="add" pos="270 571"/>
+      <node id="18" type="delay" pos="40 665"/>
+      <node id="19" type="dt" pos="40 783"/>
+      <node id="20" type="const" params="0" pos="40 1095"/>
+      <node id="21" type="gt" pos="2110 694"/>
+      <node id="22" type="sin" pos="1880 661"/>
+      <node id="23" type="div" pos="1650 746"/>
+      <node id="24" type="mul" pos="1420 727"/>
+      <node id="25" type="const" params="6.283185307" pos="40 977"/>
+      <node id="26" type="sub" pos="1190 315"/>
+      <node id="27" type="const" params="4" pos="1420 821"/>
+      <node id="28" type="ratelimit" params="0.6 0.6" pos="2800 252"/>
+      <node id="29" type="mul" pos="2570 252"/>
+      <node id="30" type="mul" pos="2340 367"/>
+      <node id="31" type="select" pos="960 585"/>
+      <node id="32" type="add" pos="270 816"/>
+      <node id="33" type="delay" pos="40 859"/>
+      <node id="34" type="min" pos="1190 527"/>
+      <node id="35" type="const" params="40" pos="960 697"/>
+      <node id="36" type="add" pos="1880 355"/>
+      <node id="37" type="div" pos="1650 534"/>
+      <node id="38" type="mul" pos="1420 539"/>
+      <node id="39" type="const" params="19.5" pos="1190 621"/>
+      <node id="40" type="mul" pos="2340 712"/>
+      <node id="41" type="add" pos="2110 600"/>
+      <node id="42" type="mul" pos="1420 351"/>
+      <node id="43" type="div" pos="1880 567"/>
+      <node id="44" type="mul" pos="1650 840"/>
+      <node id="45" type="mul" pos="1420 633"/>
+      <node id="46" type="const" params="80" pos="1650 628"/>
+      <node id="47" type="mul" pos="3260 381"/>
+      <node id="48" type="mul" pos="3030 528"/>
+      <node id="49" type="mul" pos="2800 434"/>
+      <node id="50" type="mul" pos="2570 157"/>
+      <node id="51" type="min" pos="2340 273"/>
+      <node id="52" type="div" pos="2110 388"/>
+      <node id="53" type="sin" pos="2570 712"/>
+      <node id="54" type="lt" pos="1190 739"/>
+      <node id="55" type="select" pos="960 815"/>
+      <node id="56" type="add" pos="730 722"/>
+      <node id="57" type="delay" pos="500 722"/>
+      <node id="58" type="mul" pos="500 840"/>
+      <node id="59" type="mul" pos="270 1170"/>
+      <node id="60" type="in" name="param:freq" pos="40 1213"/>
+      <node id="61" type="mul" pos="1650 440"/>
+      <node id="62" type="mul" pos="1420 445"/>
+      <node id="63" type="sin" pos="1190 833"/>
+      <node id="64" type="ratelimit" params="5 5" pos="3950 378"/>
+      <node id="65" type="add" pos="3720 378"/>
+      <node id="66" type="add" pos="3490 316"/>
+      <node id="67" type="out" name="joint:pad.target" pos="4410 412"/>
+      <node id="68" type="select" pos="500 934"/>
+      <node id="69" type="gt" pos="270 1264"/>
+      <node id="70" type="time" pos="40 1331"/>
+      <node id="71" type="delay" pos="270 934"/>
+      <node id="72" type="in" name="body:chassis.y" pos="270 1052"/>
+      <node id="73" type="select" pos="500 1352"/>
+      <node id="74" type="gt" pos="270 1358"/>
+      <node id="75" type="delay" pos="270 1452"/>
+      <node id="76" type="in" name="body:wheel.y" pos="40 1650"/>
+      <node id="77" type="sub" pos="730 955"/>
+      <node id="78" type="sub" pos="730 1303"/>
+      <node id="79" type="mul" pos="4180 491"/>
+      <node id="80" type="const" params="1000" pos="730 837"/>
+      <node id="81" type="out" name="scope:road_mm" pos="4410 530"/>
+      <node id="82" type="mul" pos="960 927"/>
+      <node id="83" type="out" name="scope:body_mm" pos="4410 809"/>
+      <node id="84" type="mul" pos="960 1021"/>
+      <node id="85" type="out" name="scope:wheel_mm" pos="4410 1281"/>
+      <node id="86" type="mul" pos="1190 909"/>
+      <node id="87" type="sub" pos="960 1115"/>
+      <node id="88" type="out" name="scope:travel_mm" pos="4410 927"/>
+      <node id="89" type="in" name="body:upright.rx" pos="40 1886"/>
+      <node id="90" type="in" name="body:upright.ry" pos="40 2106"/>
+      <node id="91" type="in" name="body:upright.rz" pos="40 2593"/>
+      <node id="92" type="sub" pos="730 1397"/>
+      <node id="93" type="mul" pos="500 1582"/>
+      <node id="94" type="cos" pos="270 1570"/>
+      <node id="95" type="const" params="-0.124035" pos="270 1722"/>
+      <node id="96" type="mul" pos="500 1164"/>
+      <node id="97" type="sin" pos="270 1646"/>
+      <node id="98" type="add" pos="730 1491"/>
+      <node id="99" type="mul" pos="500 1676"/>
+      <node id="100" type="sin" pos="270 1840"/>
+      <node id="101" type="mul" pos="500 1258"/>
+      <node id="102" type="cos" pos="270 1916"/>
+      <node id="103" type="add" pos="1190 1955"/>
+      <node id="104" type="mul" pos="500 2201"/>
+      <node id="105" type="cos" pos="270 1992"/>
+      <node id="106" type="const" params="0.992278" pos="270 2466"/>
+      <node id="107" type="mul" pos="960 1709"/>
+      <node id="108" type="sin" pos="270 2068"/>
+      <node id="109" type="sub" pos="1190 2059"/>
+      <node id="110" type="mul" pos="960 1803"/>
+      <node id="111" type="cos" pos="270 2144"/>
+      <node id="112" type="mul" pos="500 2315"/>
+      <node id="113" type="sin" pos="270 2220"/>
+      <node id="114" type="sub" pos="1650 1999"/>
+      <node id="115" type="mul" pos="1420 2101"/>
+      <node id="116" type="cos" pos="270 2390"/>
+      <node id="117" type="mul" pos="960 1897"/>
+      <node id="118" type="sin" pos="270 2584"/>
+      <node id="119" type="add" pos="1650 2093"/>
+      <node id="120" type="mul" pos="1420 2195"/>
+      <node id="121" type="sin" pos="270 2660"/>
+      <node id="122" type="mul" pos="960 1991"/>
+      <node id="123" type="cos" pos="270 2736"/>
+      <node id="124" type="div" pos="2570 868"/>
+      <node id="125" type="mul" pos="2340 1255"/>
+      <node id="126" type="atan2" pos="2110 2061"/>
+      <node id="127" type="neg" pos="1880 2123"/>
+      <node id="128" type="const" params="180" pos="1880 1247"/>
+      <node id="129" type="const" params="3.141592654" pos="2110 864"/>
+      <node id="130" type="out" name="scope:camber_deg" pos="4410 1163"/>
+      <node id="131" type="div" pos="2340 860"/>
+      <node id="132" type="mul" pos="2110 1239"/>
+      <node id="133" type="atan2" pos="1880 2029"/>
+      <node id="134" type="out" name="scope:toe_deg" pos="4410 1045"/>
+      <node id="135" type="in" name="joint:coil.force" pos="40 1768"/>
+      <node id="136" type="out" name="scope:spring_N" pos="4410 1726"/>
+      <node id="137" type="sub" pos="960 2397"/>
+      <node id="138" type="mul" pos="730 1981"/>
+      <node id="139" type="const" params="250000" pos="500 1981"/>
+      <node id="140" type="sub" pos="500 2497"/>
+      <node id="141" type="const" params="0.3973" pos="270 2812"/>
+      <node id="142" type="sub" pos="270 2296"/>
+      <node id="143" type="in" name="body:pad.y" pos="40 2296"/>
+      <node id="144" type="mul" pos="500 2814"/>
+      <node id="145" type="const" params="150" pos="270 3100"/>
+      <node id="146" type="sub" pos="270 2930"/>
+      <node id="147" type="in" name="body:wheel.vy" pos="40 2930"/>
+      <node id="148" type="in" name="body:pad.vy" pos="40 3048"/>
+      <node id="149" type="out" name="scope:tire_N" pos="4410 2397"/>
+      <node id="150" type="lag" pos="500 2920"/>
+      <node id="151" type="derivative" pos="270 3024"/>
+      <node id="152" type="in" name="body:chassis.vy" pos="40 3166"/>
+      <node id="153" type="const" params="0.01" pos="270 3218"/>
+      <node id="154" type="out" name="scope:body_acc" pos="4410 2920"/>
+      <node id="155" type="mul" pos="2110 294"/>
+      <node id="156" type="out" name="scope:sweep_Hz" pos="4410 294"/>
+      <wire from="6" to="5" port="1"/>
+      <wire from="5" to="4"/>
+      <wire from="4" to="3"/>
+      <wire from="7" to="3" port="1"/>
+      <wire from="11" to="10" port="1"/>
+      <wire from="10" to="9"/>
+      <wire from="9" to="8"/>
+      <wire from="7" to="8" port="1"/>
+      <wire from="15" to="14" port="1"/>
+      <wire from="14" to="13"/>
+      <wire from="13" to="12"/>
+      <wire from="7" to="12" port="1"/>
+      <wire from="18" to="17"/>
+      <wire from="19" to="17" port="1"/>
+      <wire from="17" to="16" port="1"/>
+      <wire from="20" to="16" port="2"/>
+      <wire from="25" to="24"/>
+      <wire from="6" to="26" port="1"/>
+      <wire from="26" to="24" port="1"/>
+      <wire from="24" to="23"/>
+      <wire from="27" to="23" port="1"/>
+      <wire from="23" to="22"/>
+      <wire from="22" to="21"/>
+      <wire from="20" to="21" port="1"/>
+      <wire from="30" to="29"/>
+      <wire from="29" to="28"/>
+      <wire from="33" to="32"/>
+      <wire from="19" to="32" port="1"/>
+      <wire from="32" to="31" port="1"/>
+      <wire from="20" to="31" port="2"/>
+      <wire from="35" to="34" port="1"/>
+      <wire from="7" to="36"/>
+      <wire from="39" to="38"/>
+      <wire from="38" to="37"/>
+      <wire from="35" to="37" port="1"/>
+      <wire from="37" to="36" port="1"/>
+      <wire from="25" to="40"/>
+      <wire from="7" to="42"/>
+      <wire from="42" to="41"/>
+      <wire from="39" to="45"/>
+      <wire from="45" to="44"/>
+      <wire from="44" to="43"/>
+      <wire from="46" to="43" port="1"/>
+      <wire from="43" to="41" port="1"/>
+      <wire from="41" to="40" port="1"/>
+      <wire from="6" to="51"/>
+      <wire from="11" to="52"/>
+      <wire from="52" to="51" port="1"/>
+      <wire from="51" to="50" port="1"/>
+      <wire from="50" to="49"/>
+      <wire from="53" to="49" port="1"/>
+      <wire from="49" to="48"/>
+      <wire from="35" to="54" port="1"/>
+      <wire from="54" to="48" port="1"/>
+      <wire from="48" to="47"/>
+      <wire from="57" to="56"/>
+      <wire from="25" to="59"/>
+      <wire from="60" to="59" port="1"/>
+      <wire from="59" to="58"/>
+      <wire from="19" to="58" port="1"/>
+      <wire from="58" to="56" port="1"/>
+      <wire from="56" to="55" port="1"/>
+      <wire from="20" to="55" port="2"/>
+      <wire from="63" to="62" port="1"/>
+      <wire from="62" to="61"/>
+      <wire from="66" to="65"/>
+      <wire from="65" to="64"/>
+      <wire from="70" to="69"/>
+      <wire from="20" to="69" port="1"/>
+      <wire from="69" to="68"/>
+      <wire from="71" to="68" port="1"/>
+      <wire from="72" to="68" port="2"/>
+      <wire from="70" to="74"/>
+      <wire from="20" to="74" port="1"/>
+      <wire from="74" to="73"/>
+      <wire from="75" to="73" port="1"/>
+      <wire from="76" to="73" port="2"/>
+      <wire from="72" to="77"/>
+      <wire from="76" to="78"/>
+      <wire from="80" to="79"/>
+      <wire from="79" to="81"/>
+      <wire from="80" to="82"/>
+      <wire from="82" to="83"/>
+      <wire from="80" to="84"/>
+      <wire from="84" to="85"/>
+      <wire from="80" to="86"/>
+      <wire from="87" to="86" port="1"/>
+      <wire from="86" to="88"/>
+      <wire from="94" to="93"/>
+      <wire from="95" to="93" port="1"/>
+      <wire from="93" to="92"/>
+      <wire from="97" to="96"/>
+      <wire from="20" to="96" port="1"/>
+      <wire from="96" to="92" port="1"/>
+      <wire from="100" to="99"/>
+      <wire from="95" to="99" port="1"/>
+      <wire from="99" to="98"/>
+      <wire from="102" to="101"/>
+      <wire from="20" to="101" port="1"/>
+      <wire from="101" to="98" port="1"/>
+      <wire from="105" to="104"/>
+      <wire from="106" to="104" port="1"/>
+      <wire from="104" to="103"/>
+      <wire from="108" to="107"/>
+      <wire from="107" to="103" port="1"/>
+      <wire from="111" to="110"/>
+      <wire from="110" to="109"/>
+      <wire from="113" to="112"/>
+      <wire from="106" to="112" port="1"/>
+      <wire from="112" to="109" port="1"/>
+      <wire from="116" to="115"/>
+      <wire from="115" to="114"/>
+      <wire from="118" to="117"/>
+      <wire from="117" to="114" port="1"/>
+      <wire from="121" to="120"/>
+      <wire from="120" to="119"/>
+      <wire from="123" to="122"/>
+      <wire from="122" to="119" port="1"/>
+      <wire from="127" to="126"/>
+      <wire from="126" to="125"/>
+      <wire from="128" to="125" port="1"/>
+      <wire from="125" to="124"/>
+      <wire from="129" to="124" port="1"/>
+      <wire from="124" to="130"/>
+      <wire from="133" to="132"/>
+      <wire from="128" to="132" port="1"/>
+      <wire from="132" to="131"/>
+      <wire from="129" to="131" port="1"/>
+      <wire from="131" to="134"/>
+      <wire from="135" to="136"/>
+      <wire from="139" to="138"/>
+      <wire from="141" to="140"/>
+      <wire from="76" to="142"/>
+      <wire from="143" to="142" port="1"/>
+      <wire from="142" to="140" port="1"/>
+      <wire from="140" to="138" port="1"/>
+      <wire from="138" to="137"/>
+      <wire from="145" to="144"/>
+      <wire from="147" to="146"/>
+      <wire from="148" to="146" port="1"/>
+      <wire from="146" to="144" port="1"/>
+      <wire from="144" to="137" port="1"/>
+      <wire from="137" to="149"/>
+      <wire from="152" to="151"/>
+      <wire from="151" to="150"/>
+      <wire from="153" to="150" port="1"/>
+      <wire from="150" to="154"/>
+      <wire from="155" to="156"/>
+      <wire from="2" to="5"/>
+      <wire from="2" to="10"/>
+      <wire from="2" to="14"/>
+      <wire from="3" to="16"/>
+      <wire from="16" to="18"/>
+      <wire from="16" to="26"/>
+      <wire from="1" to="30"/>
+      <wire from="21" to="30" port="1"/>
+      <wire from="3" to="29" port="1"/>
+      <wire from="8" to="31"/>
+      <wire from="31" to="33"/>
+      <wire from="31" to="34"/>
+      <wire from="34" to="38" port="1"/>
+      <wire from="34" to="42" port="1"/>
+      <wire from="34" to="45" port="1"/>
+      <wire from="34" to="44" port="1"/>
+      <wire from="1" to="50"/>
+      <wire from="36" to="52" port="1"/>
+      <wire from="40" to="53"/>
+      <wire from="31" to="54"/>
+      <wire from="8" to="47" port="1"/>
+      <wire from="12" to="55"/>
+      <wire from="55" to="57"/>
+      <wire from="1" to="62"/>
+      <wire from="55" to="63"/>
+      <wire from="12" to="61" port="1"/>
+      <wire from="28" to="66"/>
+      <wire from="47" to="66" port="1"/>
+      <wire from="61" to="65" port="1"/>
+      <wire from="64" to="67"/>
+      <wire from="68" to="71"/>
+      <wire from="73" to="75"/>
+      <wire from="68" to="77" port="1"/>
+      <wire from="73" to="78" port="1"/>
+      <wire from="64" to="79" port="1"/>
+      <wire from="77" to="82" port="1"/>
+      <wire from="78" to="84" port="1"/>
+      <wire from="78" to="87"/>
+      <wire from="77" to="87" port="1"/>
+      <wire from="89" to="94"/>
+      <wire from="89" to="97"/>
+      <wire from="89" to="100"/>
+      <wire from="89" to="102"/>
+      <wire from="90" to="105"/>
+      <wire from="90" to="108"/>
+      <wire from="98" to="107" port="1"/>
+      <wire from="90" to="111"/>
+      <wire from="98" to="110" port="1"/>
+      <wire from="90" to="113"/>
+      <wire from="91" to="116"/>
+      <wire from="103" to="115" port="1"/>
+      <wire from="91" to="118"/>
+      <wire from="92" to="117" port="1"/>
+      <wire from="91" to="121"/>
+      <wire from="103" to="120" port="1"/>
+      <wire from="91" to="123"/>
+      <wire from="92" to="122" port="1"/>
+      <wire from="119" to="127"/>
+      <wire from="114" to="126" port="1"/>
+      <wire from="109" to="133"/>
+      <wire from="114" to="133" port="1"/>
+      <wire from="36" to="155"/>
+      <wire from="8" to="155" port="1"/>
+    </formula>
+    <mesh name="dw_chassis" file="models/double_wishbone/chassis.glb" scale="1"/>
+    <mesh name="dw_lower_arm" file="models/double_wishbone/lower_arm.glb" scale="1"/>
+    <mesh name="dw_upper_arm" file="models/double_wishbone/upper_arm.glb" scale="1"/>
+    <mesh name="dw_upright" file="models/double_wishbone/upright.glb" scale="1"/>
+    <mesh name="dw_wheel" file="models/double_wishbone/wheel.glb" scale="1"/>
+    <mesh name="dw_tie_rod" file="models/double_wishbone/tie_rod.glb" scale="1"/>
+    <mesh name="dw_shock_rod" file="models/double_wishbone/shock_rod.glb" scale="1"/>
+    <mesh name="dw_shock_body" file="models/double_wishbone/shock_body.glb" scale="1"/>
+    <prefab name="chassis">
+      <part name="mesh" type="mesh" mesh="dw_chassis" size="1 1 1"/>
+    </prefab>
+    <prefab name="lower_arm">
+      <part name="mesh" type="mesh" mesh="dw_lower_arm" size="1 1 1"/>
+    </prefab>
+    <prefab name="upper_arm">
+      <part name="mesh" type="mesh" mesh="dw_upper_arm" size="1 1 1"/>
+    </prefab>
+    <prefab name="upright">
+      <part name="mesh" type="mesh" mesh="dw_upright" size="1 1 1"/>
+    </prefab>
+    <prefab name="wheel">
+      <part name="mesh" type="mesh" mesh="dw_wheel" size="1 1 1"/>
+    </prefab>
+    <prefab name="tie_rod">
+      <part name="mesh" type="mesh" mesh="dw_tie_rod" size="1 1 1"/>
+    </prefab>
+    <prefab name="shock_rod">
+      <part name="mesh" type="mesh" mesh="dw_shock_rod" size="1 1 1"/>
+    </prefab>
+    <prefab name="shock_body">
+      <part name="mesh" type="mesh" mesh="dw_shock_body" size="1 1 1"/>
+    </prefab>
+  </asset>
+  <worldbody>
+    <environment hdr="env/engine_studio.hdr" intensity="22000" skybox="false"/>
+    <ground size="6" visual="4" tile="1" rgba="0.34 0.35 0.37 1" roughness="0.8"/>
+    <light name="key" type="sun" pos="0 5 0" euler="40 150 0" intensity="70000" castshadow="true"/>
+    <light name="fill" type="point" pos="1.6 1.2 -1.4" intensity="30000" falloff="10" castshadow="false"/>
+    <light name="rim" type="point" pos="0.4 1.6 1.2" intensity="20000" falloff="10" castshadow="false"/>
+    <camera name="cam0" target="0.5 0.42 0" azimuth="205" elevation="22" radius="1.9"/>
+    <camera name="front" target="0.5 0.45 0" azimuth="180" elevation="0" radius="1.8"/>
+    <camera name="outside" target="0.5 0.42 0" azimuth="140" elevation="14" radius="1.9"/>
+    <!-- 車体の 1/4（ばね上、紺）。縦の直動ジョイントで上下だけ動く -->
+    <body name="chassis" pos="0.16 0.6 0" mass="400">
+      <prefab name="chassis"/>
+    </body>
+    <!-- ロア A アーム（橙）。車体側は 2 つのブッシュ（黒）、外側はボールジョイント（真鍮） -->
+    <body name="lower_arm" pos="0.51 0.27 0" euler="0 0 -2.7263" mass="5">
+      <prefab name="lower_arm"/>
+    </body>
+    <!-- アッパー A アーム（緑）。ロアより短い = SLA -->
+    <body name="upper_arm" pos="0.56 0.645 0" euler="0 0 7.7652" mass="2.5">
+      <prefab name="upper_arm"/>
+    </body>
+    <!-- ナックル（銀）。スピンドル・ナックルアーム・ブレーキキャリパ（黄） -->
+    <body name="upright" pos="0.695 0.46 0" euler="0 0 7.125" mass="8">
+      <prefab name="upright"/>
+    </body>
+    <!-- ホイール + タイヤ + ブレーキディスク（アップライトの hinge で自由に回る） -->
+    <body name="wheel" pos="0.8 0.43 0" mass="22">
+      <prefab name="wheel"/>
+    </body>
+    <!-- タイロッド（青）。ステアリングは固定 = ラックは車体の一部 -->
+    <body name="tie_rod" pos="0.52 0.355 0.14" euler="0 0 1.5074" mass="1">
+      <prefab name="tie_rod"/>
+    </body>
+    <!-- コイルオーバーの上半分: ピストンロッド（クロム）・アッパーマウント・コイルの上半分（赤） -->
+    <body name="shock_rod" pos="0.5075 0.7813 0" euler="0 0 8.3929" mass="1">
+      <prefab name="shock_rod"/>
+    </body>
+    <!-- コイルオーバーの下半分: ダンパ本体（黒）・下のばね座・コイルの下半分（赤） -->
+    <body name="shock_body" pos="0.5625 0.4087 0" euler="0 0 8.3929" mass="1.5">
+      <prefab name="shock_body"/>
+    </body>
+    <!-- 加振台（黄、位置モータで上下） -->
+    <body name="pad" pos="0.8 0.05 0">
+      <geom type="box" size="0.22 0.05 0.22" mass="20" rgba="0.85 0.6 0.05 1" roughness="0.5" layer="1" nocollide="0 1"/>
+    </body>
+    <!-- 車体の縦ガイド（見た目だけ。拘束は chassis_slide） -->
+    <body name="guide" pos="-0.16 0.75 0" fixed="true">
+      <geom type="box" size="0.03 0.75 0.06" mass="10" rgba="0.3 0.31 0.34 1" metallic="1" roughness="0.5" layer="1" nocollide="0 1"/>
+    </body>
+  </worldbody>
+  <equality>
+    <joint name="chassis_slide" type="slide" body1="chassis" body2="world" anchor="0.16 0.6 0" axis="0 1 0"/>
+    <joint name="lower_pivot" type="hinge" body1="lower_arm" body2="chassis" anchor="0.3 0.28 0" axis="0 0 1"/>
+    <joint name="upper_pivot" type="hinge" body1="upper_arm" body2="chassis" anchor="0.45 0.63 0" axis="0 0 1"/>
+    <joint name="lower_ball" type="ball" body1="upright" body2="lower_arm" anchor="0.72 0.26 0" axis="-0.124 0.9923 0"/>
+    <joint name="upper_ball" type="ball" body1="upright" body2="upper_arm" anchor="0.67 0.66 0" axis="-0.124 0.9923 0"/>
+    <joint name="tie_rod_inner" type="universal" body1="tie_rod" body2="chassis" anchor="0.33 0.35 0.14" axis="0.9997 0.0263 0"/>
+    <joint name="tie_rod_outer" type="ball" body1="tie_rod" body2="upright" anchor="0.71 0.36 0.14" axis="0.9997 0.0263 0"/>
+    <joint name="hub" type="hinge" body1="wheel" body2="upright" anchor="0.8 0.43 0" axis="1 0 0"/>
+    <joint name="strut_top" type="universal" body1="shock_rod" body2="chassis" anchor="0.49 0.9 0" axis="-0.146 0.9893 0"/>
+    <joint name="strut_slide" type="slide" body1="shock_body" body2="shock_rod" anchor="0.535 0.595 0" axis="-0.146 0.9893 0"/>
+    <joint name="strut_bottom" type="ball" body1="shock_body" body2="lower_arm" anchor="0.58 0.29 0" axis="-0.146 0.9893 0"/>
+    <joint name="coil" type="spring" body1="shock_body" body2="shock_rod" anchor="0.5075 0.7813 0" axis="-0.146 0.9893 0"
+           distance="0.44881" stiffness="86281" damping="5509"/>
+    <joint name="tire" type="spring" body1="wheel" body2="pad" anchor="0.8 0.05 0" axis="0 1 0"
+           distance="0.39730" stiffness="250000" damping="150"/>
+    <joint name="pad" type="slide" body1="pad" body2="world" anchor="0.8 0.05 0" axis="0 1 0"
+           motor="position" target="0"/>
+  </equality>
+  <events/>
+  <control>
+    <controller formula="rig" period="0"/>
+    <param name="mode" value="1" min="0" max="3" step="1" label="加振のしかた" options="静置|段差|正弦掃引|正弦"/>
+    <param name="amp" value="0.03" min="0" max="0.08" step="0.005" label="振幅 (m)"/>
+    <param name="freq" value="1.5" min="0.2" max="20" step="0.1" label="正弦の周波数 (Hz)"/>
+    <chart title="変位 (mm): 路面・車体・ホイール" signals="rig/scope:road_mm rig/scope:body_mm rig/scope:wheel_mm" span="10"/>
+    <chart title="サスペンションのストローク (mm、+ = バンプ)" signals="rig/scope:travel_mm" span="10"/>
+    <chart title="キャンバー変化とトー変化 (度)" signals="rig/scope:camber_deg rig/scope:toe_deg" span="10"/>
+    <chart title="力 (N): コイル・タイヤ" signals="rig/scope:spring_N rig/scope:tire_N" span="10"/>
+    <chart title="車体の上下加速度 (m/s²)" signals="rig/scope:body_acc" span="10"/>
+    <chart title="掃引の周波数 (Hz)" signals="rig/scope:sweep_Hz" span="0"/>
+  </control>
+</wizengine>

@@ -305,7 +305,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         // リミット・モータ・ばね・破断・歯車比など（送られたものだけ。
         // jointFromJson が「無いキーは今の値」なので部分指定がそのまま通る）。
         for (const char* key : {"limited", "limitLo", "limitHi", "motor", "motorTarget",
-                                "stiffness", "damping", "breakForce", "ratio", "pitch",
+                                "stiffness", "damping", "breakForce", "ratio", "epicyclic", "pitch",
                                 "anchor2", "axis2", "rotStiffness", "rotDamping"}) {
             if (msg.contains(key)) args[key] = msg[key];
         }
@@ -355,7 +355,7 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
         args["index"] = index;
         for (const char* key : {"name", "kind", "a", "b", "anchor", "axis", "distance",
                                 "limited", "limitLo", "limitHi", "motor", "motorTarget",
-                                "stiffness", "damping", "breakForce", "ratio", "pitch",
+                                "stiffness", "damping", "breakForce", "ratio", "epicyclic", "pitch",
                                 "anchor2", "axis2", "rotStiffness", "rotDamping"}) {
             if (msg.contains(key)) args[key] = msg[key];
         }
@@ -1049,8 +1049,10 @@ bool EditorComponent::onCommand(Scene& scene, std::size_t camIndex,
     // そのまま運ぶ他の Op と同じ流儀）。
     // テレイン（edit.terrain）も同じ。キーは /scene の terrain と同じで、
     // 加えて enabled（bool）で有無を切り替える。
+    // 水面（edit.water）と流体粒子（edit.fluid）も同じ: キーは /scene の water /
+    // fluid と同じで、"present": false で節ごと外す。
     if (what == "ground" || what == "environment" || what == "render" ||
-        what == "terrain") {
+        what == "terrain" || what == "water" || what == "fluid") {
         EditorState::Op op;
         op.kind = what;
         op.args = msg;

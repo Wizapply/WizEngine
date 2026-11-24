@@ -27,7 +27,12 @@ struct UiVertex {
     float outline = 0.0f;
     // 縁取りの色（リニア値、不透明度込み）。outline が 0 の頂点では使わない。
     float outlineR = 0.0f, outlineG = 0.0f, outlineB = 0.0f, outlineA = 0.0f;
+    // 詰め物（使わない）。頂点 1 個を 16 バイトの倍数（64 バイト）にそろえる。60 バイトの
+    // ままだと、GPU によっては頂点の並びの最後の頂点を正しく読めず、最後の字の角が
+    // 飛んで細長い三角形が出た。
+    float pad = 0.0f;
 };
+static_assert(sizeof(UiVertex) % 16 == 0, "UiVertex must be a multiple of 16 bytes");
 
 // 材質の番号（描画側がこの番号で材質を選ぶ）。
 enum UiMaterialId : int {

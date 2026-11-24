@@ -106,6 +106,46 @@ void EditorState::setEmitters(std::vector<wizengine::editor::EmitterDesc> emitte
     emitterVersion_.fetch_add(1);
 }
 
+// ---- 水面と流体粒子 -----------------------------------------------------------
+
+wizengine::editor::WaterDesc EditorState::water() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return water_;
+}
+
+bool EditorState::hasWater() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return hasWater_;
+}
+
+void EditorState::setWater(bool has, const wizengine::editor::WaterDesc& water) {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        hasWater_ = has;
+        water_ = wizengine::editor::clampWater(water);
+    }
+    waterVersion_.fetch_add(1);
+}
+
+wizengine::editor::FluidDesc EditorState::fluid() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return fluid_;
+}
+
+bool EditorState::hasFluid() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return hasFluid_;
+}
+
+void EditorState::setFluid(bool has, const wizengine::editor::FluidDesc& fluid) {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        hasFluid_ = has;
+        fluid_ = wizengine::editor::clampFluid(fluid);
+    }
+    fluidVersion_.fetch_add(1);
+}
+
 // ---- イベントアセット -------------------------------------------------------
 // 変更は必ず graphVersion_ を進める（物理スレッドが実行キャッシュを取り直す
 // 合図）。mutex_ の下で書き、読みはコピーで返す - ジョイントと同じ流儀。
@@ -702,6 +742,20 @@ void EditorState::setParamValues(const std::map<std::string, double>& values) {
     if (changed) paramVersion_.fetch_add(1);
 }
 
+// ---- 遊星歯車式 AT ---------------------------------------------------------------
+std::vector<wizengine::transmission::AtDesc> EditorState::transmissions() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return transmissions_;
+}
+
+void EditorState::setTransmissions(std::vector<wizengine::transmission::AtDesc> list) {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        transmissions_ = std::move(list);
+    }
+    transmissionVersion_.fetch_add(1);
+}
+
 // ---- 制御盤のグラフ -------------------------------------------------------------
 std::vector<wizengine::editor::ChartDesc> EditorState::charts() const {
     std::lock_guard<std::mutex> lk(mutex_);
@@ -920,6 +974,19 @@ void EditorState::setSceneFile(std::string name) {
 std::string EditorState::sceneFile() const {
     std::lock_guard<std::mutex> lk(mutex_);
     return sceneFile_;
+}
+
+void EditorState::setAiBaseline(std::string xml) {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        aiBaseline_ = std::move(xml);
+    }
+    aiBaselineSeq_.fetch_add(1);  // 中身を書いてから進める（番号が新しいのに中身が古い、を起こさない）
+}
+
+std::string EditorState::aiBaseline() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return aiBaseline_;
 }
 
 std::vector<std::string> EditorState::sceneFiles() const {

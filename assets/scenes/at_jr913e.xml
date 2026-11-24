@@ -1,0 +1,694 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- JATCO JR913E（FR 9 速 AT）の動力伝達シミュレーション。
+     エンジン（VR30DDTT 相当のトルク）→ トルクコンバータ（ロックアップ・ダンパ）→ 遊星 4 組 +
+     締結要素 6 つ（ブレーキ A B C・クラッチ D E F）→ 終減速 → ドライブシャフトのねじり → 車輪と車両。
+     AT 本体は <control> の <transmission name="jr913e">。動力学は Chrono の 1D シャフト（ChShaft /
+     ChShaftsPlanetary / ChShaftsClutch / ChShaftsTorqueConverter / ChShaftsTorsionSpring /
+     ChShaftsGear）で、3D の剛体と同じ系で解く。変速の判断と油圧は src/transmission/AtControl。
+     制御器 driver がエンジンのトルクと運転操作を trans:jr913e.<入力> へ書き、結果を
+     trans:jr913e.<量> から読んでスコープへ出す。物理は 240 Hz（Chrono のトルコンとねじりばねは
+     陽的な力なので 200 Hz 以上が要る）、ソルバは bb（APGD はシャフトのクラッチを解けない）。
+     歯車列の形: 9G-TRONIC 系の 4 遊星 + 6 要素（1 段 3 要素、隣の段とは 1 要素の掛け替え）。
+       入力 = タービン + 太陽 1 + キャリヤ 4、出力 = キャリヤ 3 + 内歯車 4、内歯車 1 = キャリヤ 2、
+       内歯車 2 = 太陽 3。A = 太陽 2 のブレーキ、B = 内歯車 3 のブレーキ、C = キャリヤ 1 のブレーキ、
+       D = キャリヤ 1 ⇄ 内歯車 2 / 太陽 3、E = 入力 ⇄ キャリヤ 1、F = 太陽 4 ⇄ 内歯車 2 / 太陽 3。
+       締結表 1 ABD・2 BDE・3 ABE・4 BEF・5 AEF・6 DEF・7 ADF・8 CDF・9 ACF・R ABC。
+     歯数は公表のギア比（5.425 / 3.263 / 2.250 / 1.649 / 1.221 / 1.000 / 0.862 / 0.713 / 0.597、
+     R 4.799）を小数 3 桁で再現する組（P1 60/128・P2 41/91・P3 38/86・P4 39/97）。JATCO の図面の値
+     ではなく、公表の比から逆算した値（9G-TRONIC の歯数でも同じ形が 9G の比を 4 桁で再現する）。
+     3D は軸ごとの回転を見せる模式図（AT の軸 = X 軸。色が同じ部品は同じ軸 = 一緒に回る。遊星は
+     公転だけで自転は描かない）。回転は実際の 0.03 倍（パラメータ anim）。
+     制御盤（Scene タブの「🎛 制御盤」）で program を選ぶ: 手動 / 全開加速 / 市街地 / ストール。 -->
+<wizengine model="at_jr913e" version="4">
+  <option gravity="0 -9.81 0" rate="240" substeps="1" iterations="40" sleeping="false"/>
+  <visual>
+    <quality shadow="pcss" shadowMap="2048" msaa="4"/>
+    <postprocess ssao="true" bloom="0.03"/>
+  </visual>
+  <asset>
+    <prefab name="at_input">
+        <part name="turbine" type="cylinder" pos="-0.58 0 0" size="0.05 0.24 0.24" rgba="0.85 0.62 0.25 1" metallic="1" roughness="0.3"/>
+        <part name="turbine_mark" type="box" pos="-0.555 0.09 0" size="0.004 0.05 0.02" rgba="0.95 0.95 0.95 1"/>
+        <part name="shaft" type="cylinder" pos="-0.115 0 0" size="0.93 0.018 0.018" rgba="0.85 0.62 0.25 1" metallic="1" roughness="0.3"/>
+        <part name="sun1" type="cylinder" pos="-0.35 0 0" size="0.045 0.1032 0.1032" rgba="0.85 0.62 0.25 1" metallic="1" roughness="0.3"/>
+        <part name="sun1_mark" type="box" pos="-0.3255 0.031 0" size="0.004 0.0258 0.012" rgba="0.95 0.95 0.95 1"/>
+        <part name="carrier4_plate" type="cylinder" pos="0.3195 0 0" size="0.01 0.1445 0.1445" rgba="0.85 0.62 0.25 1" metallic="1" roughness="0.3"/>
+        <part name="carrier4_planet1" type="cylinder" pos="0.35 0.0414 0.0414" size="0.0405 0.0459 0.0459" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier4_planet2" type="cylinder" pos="0.35 -0.0414 0.0414" size="0.0405 0.0459 0.0459" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier4_planet3" type="cylinder" pos="0.35 -0.0414 -0.0414" size="0.0405 0.0459 0.0459" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier4_planet4" type="cylinder" pos="0.35 0.0414 -0.0414" size="0.0405 0.0459 0.0459" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier4_mark" type="box" pos="0.3125 0.0585 0" size="0.006 0.012 0.03" rgba="0.95 0.95 0.95 1"/>
+    </prefab>
+    <prefab name="at_c1">
+        <part name="carrier1_plate" type="cylinder" pos="-0.3805 0 0" size="0.01 0.194 0.194" rgba="0.25 0.45 0.85 1" metallic="1" roughness="0.3"/>
+        <part name="carrier1_planet1" type="cylinder" pos="-0.35 0.0572 0.0572" size="0.0405 0.0538 0.0538" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier1_planet2" type="cylinder" pos="-0.35 -0.0572 0.0572" size="0.0405 0.0538 0.0538" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier1_planet3" type="cylinder" pos="-0.35 -0.0572 -0.0572" size="0.0405 0.0538 0.0538" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier1_planet4" type="cylinder" pos="-0.35 0.0572 -0.0572" size="0.0405 0.0538 0.0538" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier1_mark" type="box" pos="-0.3875 0.0808 0" size="0.006 0.012 0.03" rgba="0.95 0.95 0.95 1"/>
+    </prefab>
+    <prefab name="at_n1">
+        <part name="ring1_0" type="box" pos="-0.35 0.1181 0" euler="0 0 0" size="0.045 0.012 0.0757" rgba="0.30 0.70 0.45 1" metallic="1" roughness="0.3"/>
+        <part name="ring1_1" type="box" pos="-0.35 0.0955 0.0694" euler="36 0 0" size="0.045 0.012 0.0757" rgba="0.30 0.70 0.45 1" metallic="1" roughness="0.3"/>
+        <part name="ring1_2" type="box" pos="-0.35 0.0365 0.1123" euler="72 0 0" size="0.045 0.012 0.0757" rgba="0.30 0.70 0.45 1" metallic="1" roughness="0.3"/>
+        <part name="ring1_3" type="box" pos="-0.35 -0.0365 0.1123" euler="108 0 0" size="0.045 0.012 0.0757" rgba="0.30 0.70 0.45 1" metallic="1" roughness="0.3"/>
+        <part name="ring1_4" type="box" pos="-0.35 -0.0955 0.0694" euler="144 0 0" size="0.045 0.012 0.0757" rgba="0.30 0.70 0.45 1" metallic="1" roughness="0.3"/>
+        <part name="ring1_5" type="box" pos="-0.35 -0.1181 0" euler="180 0 0" size="0.045 0.012 0.0757" rgba="0.30 0.70 0.45 1" metallic="1" roughness="0.3"/>
+        <part name="ring1_6" type="box" pos="-0.35 -0.0955 -0.0694" euler="216 0 0" size="0.045 0.012 0.0757" rgba="0.30 0.70 0.45 1" metallic="1" roughness="0.3"/>
+        <part name="ring1_7" type="box" pos="-0.35 -0.0365 -0.1123" euler="252 0 0" size="0.045 0.012 0.0757" rgba="0.30 0.70 0.45 1" metallic="1" roughness="0.3"/>
+        <part name="ring1_8" type="box" pos="-0.35 0.0365 -0.1123" euler="288 0 0" size="0.045 0.012 0.0757" rgba="0.30 0.70 0.45 1" metallic="1" roughness="0.3"/>
+        <part name="ring1_9" type="box" pos="-0.35 0.0955 -0.0694" euler="324 0 0" size="0.045 0.012 0.0757" rgba="0.30 0.70 0.45 1" metallic="1" roughness="0.3"/>
+        <part name="ring1_mark" type="box" pos="-0.3245 0.1181 0" size="0.006 0.014 0.02" rgba="0.95 0.95 0.95 1"/>
+        <part name="carrier2_plate" type="cylinder" pos="-0.1505 0 0" size="0.01 0.1373 0.1373" rgba="0.30 0.70 0.45 1" metallic="1" roughness="0.3"/>
+        <part name="carrier2_planet1" type="cylinder" pos="-0.12 0.0401 0.0401" size="0.0405 0.0396 0.0396" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier2_planet2" type="cylinder" pos="-0.12 -0.0401 0.0401" size="0.0405 0.0396 0.0396" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier2_planet3" type="cylinder" pos="-0.12 -0.0401 -0.0401" size="0.0405 0.0396 0.0396" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier2_planet4" type="cylinder" pos="-0.12 0.0401 -0.0401" size="0.0405 0.0396 0.0396" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier2_mark" type="box" pos="-0.1575 0.0568 0" size="0.006 0.012 0.03" rgba="0.95 0.95 0.95 1"/>
+        <part name="link" type="box" pos="-0.235 0.1181 0" size="0.23 0.008 0.008" rgba="0.30 0.70 0.45 1" metallic="1" roughness="0.3"/>
+    </prefab>
+    <prefab name="at_s2">
+        <part name="sun2" type="cylinder" pos="-0.12 0 0" size="0.045 0.0705 0.0705" rgba="0.85 0.35 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="sun2_mark" type="box" pos="-0.0955 0.0212 0" size="0.004 0.0176 0.012" rgba="0.95 0.95 0.95 1"/>
+    </prefab>
+    <prefab name="at_n2">
+        <part name="ring2_0" type="box" pos="-0.12 0.0863 0" euler="0 0 0" size="0.045 0.012 0.0553" rgba="0.65 0.40 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring2_1" type="box" pos="-0.12 0.0698 0.0507" euler="36 0 0" size="0.045 0.012 0.0553" rgba="0.65 0.40 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring2_2" type="box" pos="-0.12 0.0267 0.082" euler="72 0 0" size="0.045 0.012 0.0553" rgba="0.65 0.40 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring2_3" type="box" pos="-0.12 -0.0267 0.082" euler="108 0 0" size="0.045 0.012 0.0553" rgba="0.65 0.40 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring2_4" type="box" pos="-0.12 -0.0698 0.0507" euler="144 0 0" size="0.045 0.012 0.0553" rgba="0.65 0.40 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring2_5" type="box" pos="-0.12 -0.0863 0" euler="180 0 0" size="0.045 0.012 0.0553" rgba="0.65 0.40 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring2_6" type="box" pos="-0.12 -0.0698 -0.0507" euler="216 0 0" size="0.045 0.012 0.0553" rgba="0.65 0.40 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring2_7" type="box" pos="-0.12 -0.0267 -0.082" euler="252 0 0" size="0.045 0.012 0.0553" rgba="0.65 0.40 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring2_8" type="box" pos="-0.12 0.0267 -0.082" euler="288 0 0" size="0.045 0.012 0.0553" rgba="0.65 0.40 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring2_9" type="box" pos="-0.12 0.0698 -0.0507" euler="324 0 0" size="0.045 0.012 0.0553" rgba="0.65 0.40 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring2_mark" type="box" pos="-0.0945 0.0863 0" size="0.006 0.014 0.02" rgba="0.95 0.95 0.95 1"/>
+        <part name="sun3" type="cylinder" pos="0.12 0 0" size="0.045 0.0654 0.0654" rgba="0.65 0.40 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="sun3_mark" type="box" pos="0.1445 0.0196 0" size="0.004 0.0163 0.012" rgba="0.95 0.95 0.95 1"/>
+        <part name="link" type="box" pos="0 0.026 0" size="0.24 0.008 0.008" rgba="0.65 0.40 0.80 1" metallic="1" roughness="0.3"/>
+    </prefab>
+    <prefab name="at_output">
+        <part name="carrier3_plate" type="cylinder" pos="0.0895 0 0" size="0.01 0.1294 0.1294" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="carrier3_planet1" type="cylinder" pos="0.12 0.0377 0.0377" size="0.0405 0.038 0.038" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier3_planet2" type="cylinder" pos="0.12 -0.0377 0.0377" size="0.0405 0.038 0.038" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier3_planet3" type="cylinder" pos="0.12 -0.0377 -0.0377" size="0.0405 0.038 0.038" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier3_planet4" type="cylinder" pos="0.12 0.0377 -0.0377" size="0.0405 0.038 0.038" rgba="0.72 0.74 0.77 1" metallic="1" roughness="0.3"/>
+        <part name="carrier3_mark" type="box" pos="0.0825 0.0533 0" size="0.006 0.012 0.03" rgba="0.95 0.95 0.95 1"/>
+        <part name="ring4_0" type="box" pos="0.35 0.0914 0" euler="0 0 0" size="0.045 0.012 0.0586" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="ring4_1" type="box" pos="0.35 0.074 0.0537" euler="36 0 0" size="0.045 0.012 0.0586" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="ring4_2" type="box" pos="0.35 0.0283 0.0869" euler="72 0 0" size="0.045 0.012 0.0586" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="ring4_3" type="box" pos="0.35 -0.0283 0.0869" euler="108 0 0" size="0.045 0.012 0.0586" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="ring4_4" type="box" pos="0.35 -0.074 0.0537" euler="144 0 0" size="0.045 0.012 0.0586" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="ring4_5" type="box" pos="0.35 -0.0914 0" euler="180 0 0" size="0.045 0.012 0.0586" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="ring4_6" type="box" pos="0.35 -0.074 -0.0537" euler="216 0 0" size="0.045 0.012 0.0586" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="ring4_7" type="box" pos="0.35 -0.0283 -0.0869" euler="252 0 0" size="0.045 0.012 0.0586" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="ring4_8" type="box" pos="0.35 0.0283 -0.0869" euler="288 0 0" size="0.045 0.012 0.0586" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="ring4_9" type="box" pos="0.35 0.074 -0.0537" euler="324 0 0" size="0.045 0.012 0.0586" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="ring4_mark" type="box" pos="0.3755 0.0914 0" size="0.006 0.014 0.02" rgba="0.95 0.95 0.95 1"/>
+        <part name="link" type="box" pos="0.235 0.0914 0" size="0.23 0.008 0.008" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="flange" type="cylinder" pos="0.56 0 0" size="0.03 0.12 0.12" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="flange_mark" type="box" pos="0.576 0.045 0" size="0.004 0.03 0.015" rgba="0.95 0.95 0.95 1"/>
+        <part name="prop" type="cylinder" pos="0.66 0 0" size="0.2 0.05 0.05" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+        <part name="link_out" type="box" pos="0.455 0.0914 0" size="0.21 0.008 0.008" rgba="0.90 0.85 0.30 1" metallic="1" roughness="0.3"/>
+    </prefab>
+    <prefab name="at_r3">
+        <part name="ring3_0" type="box" pos="0.12 0.082 0" euler="0 0 0" size="0.045 0.012 0.0525" rgba="0.30 0.75 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring3_1" type="box" pos="0.12 0.0663 0.0482" euler="36 0 0" size="0.045 0.012 0.0525" rgba="0.30 0.75 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring3_2" type="box" pos="0.12 0.0253 0.0779" euler="72 0 0" size="0.045 0.012 0.0525" rgba="0.30 0.75 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring3_3" type="box" pos="0.12 -0.0253 0.0779" euler="108 0 0" size="0.045 0.012 0.0525" rgba="0.30 0.75 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring3_4" type="box" pos="0.12 -0.0663 0.0482" euler="144 0 0" size="0.045 0.012 0.0525" rgba="0.30 0.75 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring3_5" type="box" pos="0.12 -0.082 0" euler="180 0 0" size="0.045 0.012 0.0525" rgba="0.30 0.75 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring3_6" type="box" pos="0.12 -0.0663 -0.0482" euler="216 0 0" size="0.045 0.012 0.0525" rgba="0.30 0.75 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring3_7" type="box" pos="0.12 -0.0253 -0.0779" euler="252 0 0" size="0.045 0.012 0.0525" rgba="0.30 0.75 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring3_8" type="box" pos="0.12 0.0253 -0.0779" euler="288 0 0" size="0.045 0.012 0.0525" rgba="0.30 0.75 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring3_9" type="box" pos="0.12 0.0663 -0.0482" euler="324 0 0" size="0.045 0.012 0.0525" rgba="0.30 0.75 0.80 1" metallic="1" roughness="0.3"/>
+        <part name="ring3_mark" type="box" pos="0.1455 0.082 0" size="0.006 0.014 0.02" rgba="0.95 0.95 0.95 1"/>
+    </prefab>
+    <prefab name="at_s4">
+        <part name="sun4" type="cylinder" pos="0.35 0 0" size="0.045 0.0671 0.0671" rgba="0.85 0.50 0.65 1" metallic="1" roughness="0.3"/>
+        <part name="sun4_mark" type="box" pos="0.3745 0.0201 0" size="0.004 0.0168 0.012" rgba="0.95 0.95 0.95 1"/>
+    </prefab>
+    <prefab name="at_engine">
+        <part name="flywheel" type="cylinder" pos="-0.8 0 0" size="0.03 0.34 0.34" rgba="0.35 0.36 0.38 1" metallic="1" roughness="0.3"/>
+        <part name="ringgear" type="cylinder" pos="-0.8 0 0" size="0.02 0.36 0.36" rgba="0.55 0.55 0.57 1" metallic="1" roughness="0.3"/>
+        <part name="fly_mark" type="box" pos="-0.783 0.13 0" size="0.004 0.06 0.03" rgba="0.95 0.95 0.95 1"/>
+        <part name="pump" type="cylinder" pos="-0.66 0 0" size="0.06 0.28 0.28" rgba="0.45 0.47 0.5 1" metallic="1" roughness="0.3"/>
+        <part name="pump_mark" type="box" pos="-0.69 0.13 0" size="0.004 0.04 0.02" rgba="0.95 0.95 0.95 1"/>
+    </prefab>
+    <prefab name="at_wheel">
+        <part name="tire" type="cylinder" pos="1.05 0 0" size="0.22 0.62 0.62" rgba="0.12 0.12 0.13 1" roughness="0.9"/>
+        <part name="rim" type="cylinder" pos="1.05 0 0" size="0.23 0.42 0.42" rgba="0.7 0.72 0.75 1" metallic="1" roughness="0.3"/>
+        <part name="spoke1" type="box" pos="1.17 0 0" size="0.01 0.4 0.05" rgba="0.7 0.72 0.75 1" metallic="1" roughness="0.3"/>
+        <part name="spoke2" type="box" pos="1.17 0 0" size="0.01 0.05 0.4" rgba="0.7 0.72 0.75 1" metallic="1" roughness="0.3"/>
+    </prefab>
+    <prefab name="at_case">
+        <part name="base" type="box" pos="0.1 -0.5 0" size="2.2 0.04 0.7" rgba="0.22 0.23 0.25 1" metallic="1" roughness="0.5"/>
+        <part name="post1" type="box" pos="-0.8 -0.25 -0.3" size="0.06 0.5 0.04" rgba="0.22 0.23 0.25 1" metallic="1" roughness="0.5"/>
+        <part name="post10" type="box" pos="0 -0.25 -0.3" size="0.06 0.5 0.04" rgba="0.22 0.23 0.25 1" metallic="1" roughness="0.5"/>
+        <part name="post17" type="box" pos="0.75 -0.25 -0.3" size="0.06 0.5 0.04" rgba="0.22 0.23 0.25 1" metallic="1" roughness="0.5"/>
+    </prefab>
+    <formula name="driver">
+      <source line="# 運転者とエンジン。AT（JATCO JR913E）は &lt;control&gt; の &lt;transmission name=&quot;jr913e&quot;&gt;。"/>
+      <source line="# エンジンは VR30DDTT 相当: 全開のトルクは公表の性能曲線（475 N m / 1800〜5600 rpm）、"/>
+      <source line="# 過給で出るぶん（220 N m を超えるぶん）はターボの遅れ 0.35 s の一次遅れ、摩擦は回転数の 2 次式。"/>
+      <source line="# 運転のしかたはパラメータ program:"/>
+      <source line="#   0 = 手動      … 制御盤の throttle / brake / shifter / manual / grade で運転する"/>
+      <source line="#   1 = 全開加速  … 1 s 後に全開、30 s でアクセルを戻してブレーキ"/>
+      <source line="#   2 = 市街地    … 発進（開度 0.3）→ 巡航（0.15）→ キックダウン（全開）→ 惰行 → ブレーキで停止"/>
+      <source line="#   3 = ストール  … ブレーキを踏んだまま全開（トルコンのストール回転とトルク比を見る）"/>
+      <source line="prog = param:program"/>
+      <source line="t = time"/>
+      <source line="rpm = trans:jr913e.engine_rpm"/>
+      <source line="kmh = trans:jr913e.speed_kmh"/>
+      <source line=""/>
+      <source line="th_wot = (t &gt; 1) * (t &lt; 30)"/>
+      <source line="br_wot = (t &gt; 30) * 0.25"/>
+      <source line="th_city = curve(t, 0, 0, 1, 0, 1.05, 0.3, 10, 0.3, 10.05, 0.15, 25, 0.15, 25.05, 1, 32, 1, 32.05, 0, 100, 0)"/>
+      <source line="br_city = curve(t, 0, 0, 45, 0, 45.05, 0.12, 100, 0.12)"/>
+      <source line="th = select(prog &lt; 0.5, param:throttle, select(prog &lt; 1.5, th_wot, select(prog &lt; 2.5, th_city, t &gt; 1)))"/>
+      <source line="br = select(prog &lt; 0.5, param:brake, select(prog &lt; 1.5, br_wot, select(prog &lt; 2.5, br_city, 1)))"/>
+      <source line="# 手動以外はいつも D"/>
+      <source line="sel = select(prog &lt; 0.5, param:shifter, 3)"/>
+      <source line=""/>
+      <source line="# ---- エンジン（燃焼・摩擦込みの正味のトルク。アイドル制御と燃料カットは AT の &lt;engine&gt; が持つ）"/>
+      <source line="wot = curve(rpm, 0, 0, 800, 200, 1000, 267, 1250, 349, 1500, 431, 1600, 462, 1700, 472, 1800, 475, 5600, 475, 5800, 470, 6000, 464, 6200, 457, 6400, 445, 6600, 418, 6850, 378, 7000, 354)"/>
+      <source line="fric = 12 + 0.004 * rpm + 0.0000012 * rpm * rpm"/>
+      <source line="tq = th * min(wot, 220) + lag(th * max(wot - 220, 0), 0.35) - fric"/>
+      <source line=""/>
+      <source line="trans:jr913e.engine_torque = tq"/>
+      <source line="trans:jr913e.throttle = th"/>
+      <source line="trans:jr913e.brake = br"/>
+      <source line="trans:jr913e.select = sel"/>
+      <source line="trans:jr913e.manual = param:manual"/>
+      <source line="trans:jr913e.grade = atan(param:grade / 100)"/>
+      <source line=""/>
+      <source line="# ---- 記録（制御盤のグラフ・スコープ）"/>
+      <source line="scope:throttle = th"/>
+      <source line="scope:brake = br"/>
+      <source line="scope:engine_rpm = rpm"/>
+      <source line="scope:turbine_rpm = trans:jr913e.turbine_rpm"/>
+      <source line="scope:output_rpm = trans:jr913e.output_rpm"/>
+      <source line="scope:speed_kmh = kmh"/>
+      <source line="scope:gear = trans:jr913e.gear"/>
+      <source line="scope:target_gear = trans:jr913e.target_gear"/>
+      <source line="scope:phase = trans:jr913e.phase"/>
+      <source line="scope:engine_torque = trans:jr913e.engine_torque"/>
+      <source line="scope:input_torque = trans:jr913e.input_torque"/>
+      <source line="scope:output_torque = trans:jr913e.output_torque"/>
+      <source line="scope:axle_kNm = trans:jr913e.axle_torque / 1000"/>
+      <source line="scope:tc_slip = trans:jr913e.tc_slip"/>
+      <source line="scope:tc_torque_ratio = trans:jr913e.tc_torque_ratio"/>
+      <source line="scope:lockup = trans:jr913e.lockup"/>
+      <source line="scope:lockup_slip = trans:jr913e.lockup_slip"/>
+      <source line="scope:torque_A = trans:jr913e.torque_A"/>
+      <source line="scope:torque_B = trans:jr913e.torque_B"/>
+      <source line="scope:torque_C = trans:jr913e.torque_C"/>
+      <source line="scope:torque_D = trans:jr913e.torque_D"/>
+      <source line="scope:torque_E = trans:jr913e.torque_E"/>
+      <source line="scope:torque_F = trans:jr913e.torque_F"/>
+      <source line="scope:pressure_A = trans:jr913e.pressure_A"/>
+      <source line="scope:pressure_B = trans:jr913e.pressure_B"/>
+      <source line="scope:pressure_C = trans:jr913e.pressure_C"/>
+      <source line="scope:pressure_D = trans:jr913e.pressure_D"/>
+      <source line="scope:pressure_E = trans:jr913e.pressure_E"/>
+      <source line="scope:pressure_F = trans:jr913e.pressure_F"/>
+      <source line="scope:efficiency = trans:jr913e.efficiency"/>
+      <source line="scope:accel_g = trans:jr913e.accel / 9.81"/>
+      <source line="scope:torque_request = trans:jr913e.torque_request"/>
+      <source line="scope:power_kW = trans:jr913e.power_out"/>
+      <node id="1" type="in" name="param:program" pos="40 1545"/>
+      <node id="2" type="time" pos="40 547"/>
+      <node id="3" type="in" name="trans:jr913e.engine_rpm" pos="40 1191"/>
+      <node id="4" type="in" name="trans:jr913e.speed_kmh" pos="40 352"/>
+      <node id="5" type="mul" pos="500 665"/>
+      <node id="6" type="gt" pos="270 512"/>
+      <node id="7" type="const" params="1" pos="40 663"/>
+      <node id="8" type="lt" pos="270 818"/>
+      <node id="9" type="const" params="30" pos="40 865"/>
+      <node id="10" type="mul" pos="500 983"/>
+      <node id="11" type="gt" pos="270 912"/>
+      <node id="12" type="const" params="0.25" pos="270 1006"/>
+      <node id="13" type="curve"
+            params="0 0 1 0 1.05 0.3 10 0.3 10.05 0.15 25 0.15 25.05 1 32 1 32.05 0 100 0"
+            pos="270 158"/>
+      <node id="14" type="curve" params="0 0 45 0 45.05 0.12 100 0.12" pos="270 276"/>
+      <node id="15" type="select" pos="960 650"/>
+      <node id="16" type="lt" pos="270 1124"/>
+      <node id="17" type="const" params="0.5" pos="40 1309"/>
+      <node id="18" type="in" name="param:throttle" pos="730 650"/>
+      <node id="19" type="select" pos="730 934"/>
+      <node id="20" type="lt" pos="270 1406"/>
+      <node id="21" type="const" params="1.5" pos="40 1663"/>
+      <node id="22" type="select" pos="500 759"/>
+      <node id="23" type="lt" pos="270 1712"/>
+      <node id="24" type="const" params="2.5" pos="40 1899"/>
+      <node id="25" type="gt" pos="270 606"/>
+      <node id="26" type="select" pos="960 816"/>
+      <node id="27" type="lt" pos="270 1218"/>
+      <node id="28" type="in" name="param:brake" pos="730 816"/>
+      <node id="29" type="select" pos="730 1079"/>
+      <node id="30" type="lt" pos="270 1500"/>
+      <node id="31" type="select" pos="500 871"/>
+      <node id="32" type="lt" pos="270 1806"/>
+      <node id="33" type="select" pos="500 1703"/>
+      <node id="34" type="lt" pos="270 1312"/>
+      <node id="35" type="in" name="param:shifter" pos="270 1994"/>
+      <node id="36" type="const" params="3" pos="270 2112"/>
+      <node id="37" type="curve"
+            params="0 0 800 200 1000 267 1250 349 1500 431 1600 462 1700 472 1800 475 5600 475 5800 470 6000 464 6200 457 6400 445 6600 418 6850 378 7000 354"
+            pos="270 394"/>
+      <node id="38" type="add" pos="730 1559"/>
+      <node id="39" type="add" pos="500 1923"/>
+      <node id="40" type="const" params="12" pos="270 2324"/>
+      <node id="41" type="mul" pos="270 1900"/>
+      <node id="42" type="const" params="0.004" pos="40 2135"/>
+      <node id="43" type="mul" pos="500 1195"/>
+      <node id="44" type="mul" pos="270 2230"/>
+      <node id="45" type="const" params="1.2e-06" pos="40 2489"/>
+      <node id="46" type="sub" pos="1880 1189"/>
+      <node id="47" type="add" pos="1650 820"/>
+      <node id="48" type="mul" pos="1190 1049"/>
+      <node id="49" type="min" pos="500 1407"/>
+      <node id="50" type="const" params="220" pos="270 1594"/>
+      <node id="51" type="lag" pos="1420 591"/>
+      <node id="52" type="mul" pos="1190 955"/>
+      <node id="53" type="max" pos="730 1259"/>
+      <node id="54" type="sub" pos="500 1501"/>
+      <node id="55" type="const" params="0" pos="500 1289"/>
+      <node id="56" type="const" params="0.35" pos="1190 591"/>
+      <node id="57" type="out" name="trans:jr913e.engine_torque" pos="2110 1189"/>
+      <node id="58" type="out" name="trans:jr913e.throttle" pos="2110 650"/>
+      <node id="59" type="out" name="trans:jr913e.brake" pos="2110 886"/>
+      <node id="60" type="out" name="trans:jr913e.select" pos="2110 1768"/>
+      <node id="61" type="in" name="param:manual" pos="40 1427"/>
+      <node id="62" type="out" name="trans:jr913e.manual" pos="2110 1307"/>
+      <node id="63" type="atan" pos="500 2017"/>
+      <node id="64" type="div" pos="270 2442"/>
+      <node id="65" type="in" name="param:grade" pos="40 2725"/>
+      <node id="66" type="const" params="100" pos="40 2843"/>
+      <node id="67" type="out" name="trans:jr913e.grade" pos="2110 2240"/>
+      <node id="68" type="out" name="scope:throttle" pos="2110 768"/>
+      <node id="69" type="out" name="scope:brake" pos="2110 1004"/>
+      <node id="70" type="out" name="scope:engine_rpm" pos="2110 234"/>
+      <node id="71" type="in" name="trans:jr913e.turbine_rpm" pos="40 1781"/>
+      <node id="72" type="out" name="scope:turbine_rpm" pos="2110 1650"/>
+      <node id="73" type="in" name="trans:jr913e.output_rpm" pos="40 2017"/>
+      <node id="74" type="out" name="scope:output_rpm" pos="2110 1886"/>
+      <node id="75" type="out" name="scope:speed_kmh" pos="2110 352"/>
+      <node id="76" type="in" name="trans:jr913e.gear" pos="40 2253"/>
+      <node id="77" type="out" name="scope:gear" pos="2110 2004"/>
+      <node id="78" type="in" name="trans:jr913e.target_gear" pos="40 2371"/>
+      <node id="79" type="out" name="scope:target_gear" pos="2110 2122"/>
+      <node id="80" type="in" name="trans:jr913e.phase" pos="40 2607"/>
+      <node id="81" type="out" name="scope:phase" pos="2110 2358"/>
+      <node id="82" type="in" name="trans:jr913e.engine_torque" pos="40 2961"/>
+      <node id="83" type="out" name="scope:engine_torque" pos="2110 2476"/>
+      <node id="84" type="in" name="trans:jr913e.input_torque" pos="40 3079"/>
+      <node id="85" type="out" name="scope:input_torque" pos="2110 2594"/>
+      <node id="86" type="in" name="trans:jr913e.output_torque" pos="40 3433"/>
+      <node id="87" type="out" name="scope:output_torque" pos="2110 2712"/>
+      <node id="88" type="div" pos="270 2653"/>
+      <node id="89" type="in" name="trans:jr913e.axle_torque" pos="40 3197"/>
+      <node id="90" type="const" params="1000" pos="40 3315"/>
+      <node id="91" type="out" name="scope:axle_kNm" pos="2110 2830"/>
+      <node id="92" type="in" name="trans:jr913e.tc_slip" pos="40 3551"/>
+      <node id="93" type="out" name="scope:tc_slip" pos="2110 2948"/>
+      <node id="94" type="in" name="trans:jr913e.tc_torque_ratio" pos="40 3669"/>
+      <node id="95" type="out" name="scope:tc_torque_ratio" pos="2110 3066"/>
+      <node id="96" type="in" name="trans:jr913e.lockup" pos="40 3787"/>
+      <node id="97" type="out" name="scope:lockup" pos="2110 3184"/>
+      <node id="98" type="in" name="trans:jr913e.lockup_slip" pos="40 3905"/>
+      <node id="99" type="out" name="scope:lockup_slip" pos="2110 3302"/>
+      <node id="100" type="in" name="trans:jr913e.torque_A" pos="40 4023"/>
+      <node id="101" type="out" name="scope:torque_A" pos="2110 3420"/>
+      <node id="102" type="in" name="trans:jr913e.torque_B" pos="40 4141"/>
+      <node id="103" type="out" name="scope:torque_B" pos="2110 3538"/>
+      <node id="104" type="in" name="trans:jr913e.torque_C" pos="40 4259"/>
+      <node id="105" type="out" name="scope:torque_C" pos="2110 3656"/>
+      <node id="106" type="in" name="trans:jr913e.torque_D" pos="40 4377"/>
+      <node id="107" type="out" name="scope:torque_D" pos="2110 3774"/>
+      <node id="108" type="in" name="trans:jr913e.torque_E" pos="40 4495"/>
+      <node id="109" type="out" name="scope:torque_E" pos="2110 3892"/>
+      <node id="110" type="in" name="trans:jr913e.torque_F" pos="40 4613"/>
+      <node id="111" type="out" name="scope:torque_F" pos="2110 4010"/>
+      <node id="112" type="in" name="trans:jr913e.pressure_A" pos="40 4731"/>
+      <node id="113" type="out" name="scope:pressure_A" pos="2110 4128"/>
+      <node id="114" type="in" name="trans:jr913e.pressure_B" pos="40 4849"/>
+      <node id="115" type="out" name="scope:pressure_B" pos="2110 4246"/>
+      <node id="116" type="in" name="trans:jr913e.pressure_C" pos="40 4967"/>
+      <node id="117" type="out" name="scope:pressure_C" pos="2110 4364"/>
+      <node id="118" type="in" name="trans:jr913e.pressure_D" pos="40 5085"/>
+      <node id="119" type="out" name="scope:pressure_D" pos="2110 4482"/>
+      <node id="120" type="in" name="trans:jr913e.pressure_E" pos="40 5203"/>
+      <node id="121" type="out" name="scope:pressure_E" pos="2110 4600"/>
+      <node id="122" type="in" name="trans:jr913e.pressure_F" pos="40 5321"/>
+      <node id="123" type="out" name="scope:pressure_F" pos="2110 4718"/>
+      <node id="124" type="in" name="trans:jr913e.efficiency" pos="40 5439"/>
+      <node id="125" type="out" name="scope:efficiency" pos="2110 4836"/>
+      <node id="126" type="div" pos="270 4895"/>
+      <node id="127" type="in" name="trans:jr913e.accel" pos="40 5557"/>
+      <node id="128" type="const" params="9.81" pos="40 5675"/>
+      <node id="129" type="out" name="scope:accel_g" pos="2110 4954"/>
+      <node id="130" type="in" name="trans:jr913e.torque_request" pos="40 5793"/>
+      <node id="131" type="out" name="scope:torque_request" pos="2110 5072"/>
+      <node id="132" type="in" name="trans:jr913e.power_out" pos="40 5911"/>
+      <node id="133" type="out" name="scope:power_kW" pos="2110 5190"/>
+      <wire from="7" to="6" port="1"/>
+      <wire from="6" to="5"/>
+      <wire from="9" to="8" port="1"/>
+      <wire from="8" to="5" port="1"/>
+      <wire from="9" to="11" port="1"/>
+      <wire from="11" to="10"/>
+      <wire from="12" to="10" port="1"/>
+      <wire from="17" to="16" port="1"/>
+      <wire from="16" to="15"/>
+      <wire from="18" to="15" port="1"/>
+      <wire from="21" to="20" port="1"/>
+      <wire from="20" to="19"/>
+      <wire from="24" to="23" port="1"/>
+      <wire from="23" to="22"/>
+      <wire from="7" to="25" port="1"/>
+      <wire from="25" to="22" port="2"/>
+      <wire from="22" to="19" port="2"/>
+      <wire from="19" to="15" port="2"/>
+      <wire from="17" to="27" port="1"/>
+      <wire from="27" to="26"/>
+      <wire from="28" to="26" port="1"/>
+      <wire from="21" to="30" port="1"/>
+      <wire from="30" to="29"/>
+      <wire from="24" to="32" port="1"/>
+      <wire from="32" to="31"/>
+      <wire from="7" to="31" port="2"/>
+      <wire from="31" to="29" port="2"/>
+      <wire from="29" to="26" port="2"/>
+      <wire from="17" to="34" port="1"/>
+      <wire from="34" to="33"/>
+      <wire from="35" to="33" port="1"/>
+      <wire from="36" to="33" port="2"/>
+      <wire from="40" to="39"/>
+      <wire from="42" to="41"/>
+      <wire from="41" to="39" port="1"/>
+      <wire from="39" to="38"/>
+      <wire from="45" to="44"/>
+      <wire from="44" to="43"/>
+      <wire from="43" to="38" port="1"/>
+      <wire from="50" to="49" port="1"/>
+      <wire from="49" to="48" port="1"/>
+      <wire from="48" to="47"/>
+      <wire from="50" to="54" port="1"/>
+      <wire from="54" to="53"/>
+      <wire from="55" to="53" port="1"/>
+      <wire from="53" to="52" port="1"/>
+      <wire from="52" to="51"/>
+      <wire from="56" to="51" port="1"/>
+      <wire from="51" to="47" port="1"/>
+      <wire from="47" to="46"/>
+      <wire from="61" to="62"/>
+      <wire from="65" to="64"/>
+      <wire from="66" to="64" port="1"/>
+      <wire from="64" to="63"/>
+      <wire from="63" to="67"/>
+      <wire from="71" to="72"/>
+      <wire from="73" to="74"/>
+      <wire from="76" to="77"/>
+      <wire from="78" to="79"/>
+      <wire from="80" to="81"/>
+      <wire from="82" to="83"/>
+      <wire from="84" to="85"/>
+      <wire from="86" to="87"/>
+      <wire from="89" to="88"/>
+      <wire from="90" to="88" port="1"/>
+      <wire from="88" to="91"/>
+      <wire from="92" to="93"/>
+      <wire from="94" to="95"/>
+      <wire from="96" to="97"/>
+      <wire from="98" to="99"/>
+      <wire from="100" to="101"/>
+      <wire from="102" to="103"/>
+      <wire from="104" to="105"/>
+      <wire from="106" to="107"/>
+      <wire from="108" to="109"/>
+      <wire from="110" to="111"/>
+      <wire from="112" to="113"/>
+      <wire from="114" to="115"/>
+      <wire from="116" to="117"/>
+      <wire from="118" to="119"/>
+      <wire from="120" to="121"/>
+      <wire from="122" to="123"/>
+      <wire from="124" to="125"/>
+      <wire from="127" to="126"/>
+      <wire from="128" to="126" port="1"/>
+      <wire from="126" to="129"/>
+      <wire from="130" to="131"/>
+      <wire from="132" to="133"/>
+      <wire from="2" to="6"/>
+      <wire from="2" to="8"/>
+      <wire from="2" to="11"/>
+      <wire from="2" to="13"/>
+      <wire from="2" to="14"/>
+      <wire from="1" to="16"/>
+      <wire from="1" to="20"/>
+      <wire from="5" to="19" port="1"/>
+      <wire from="1" to="23"/>
+      <wire from="13" to="22" port="1"/>
+      <wire from="2" to="25"/>
+      <wire from="1" to="27"/>
+      <wire from="1" to="30"/>
+      <wire from="10" to="29" port="1"/>
+      <wire from="1" to="32"/>
+      <wire from="14" to="31" port="1"/>
+      <wire from="1" to="34"/>
+      <wire from="3" to="37"/>
+      <wire from="3" to="41" port="1"/>
+      <wire from="3" to="44" port="1"/>
+      <wire from="3" to="43" port="1"/>
+      <wire from="15" to="48"/>
+      <wire from="37" to="49"/>
+      <wire from="15" to="52"/>
+      <wire from="37" to="54"/>
+      <wire from="38" to="46" port="1"/>
+      <wire from="46" to="57"/>
+      <wire from="15" to="58"/>
+      <wire from="26" to="59"/>
+      <wire from="33" to="60"/>
+      <wire from="15" to="68"/>
+      <wire from="26" to="69"/>
+      <wire from="3" to="70"/>
+      <wire from="4" to="75"/>
+    </formula>
+    <formula name="anim">
+      <source line="# 3D の見た目: AT の各軸の角速度を、倍率 anim を掛けて軸のボディの速度モータへ渡す。"/>
+      <source line="# 6000 rpm をそのまま回すと残像にしかならないので、既定は 0.03 倍（制御盤で 0〜0.3）。"/>
+      <source line="k = param:anim * pi / 30"/>
+      <source line="joint:ax_engine.target = trans:jr913e.engine_rpm * k"/>
+      <source line="joint:ax_input.target = trans:jr913e.rpm_input * k"/>
+      <source line="joint:ax_c1.target = trans:jr913e.rpm_c1 * k"/>
+      <source line="joint:ax_n1.target = trans:jr913e.rpm_n1 * k"/>
+      <source line="joint:ax_s2.target = trans:jr913e.rpm_s2 * k"/>
+      <source line="joint:ax_n2.target = trans:jr913e.rpm_n2 * k"/>
+      <source line="joint:ax_output.target = trans:jr913e.rpm_output * k"/>
+      <source line="joint:ax_r3.target = trans:jr913e.rpm_r3 * k"/>
+      <source line="joint:ax_s4.target = trans:jr913e.rpm_s4 * k"/>
+      <source line="joint:ax_wheel.target = trans:jr913e.wheel_rpm * k"/>
+      <node id="1" type="div" pos="500 311"/>
+      <node id="2" type="mul" pos="270 99"/>
+      <node id="3" type="in" name="param:anim" pos="40 99"/>
+      <node id="4" type="const" params="3.141592654" pos="40 217"/>
+      <node id="5" type="const" params="30" pos="270 311"/>
+      <node id="6" type="mul" pos="730 193"/>
+      <node id="7" type="in" name="trans:jr913e.engine_rpm" pos="500 193"/>
+      <node id="8" type="out" name="joint:ax_engine.target" pos="960 193"/>
+      <node id="9" type="mul" pos="730 299"/>
+      <node id="10" type="in" name="trans:jr913e.rpm_input" pos="500 405"/>
+      <node id="11" type="out" name="joint:ax_input.target" pos="960 311"/>
+      <node id="12" type="mul" pos="730 393"/>
+      <node id="13" type="in" name="trans:jr913e.rpm_c1" pos="500 523"/>
+      <node id="14" type="out" name="joint:ax_c1.target" pos="960 429"/>
+      <node id="15" type="mul" pos="730 487"/>
+      <node id="16" type="in" name="trans:jr913e.rpm_n1" pos="500 641"/>
+      <node id="17" type="out" name="joint:ax_n1.target" pos="960 547"/>
+      <node id="18" type="mul" pos="730 581"/>
+      <node id="19" type="in" name="trans:jr913e.rpm_s2" pos="500 759"/>
+      <node id="20" type="out" name="joint:ax_s2.target" pos="960 665"/>
+      <node id="21" type="mul" pos="730 675"/>
+      <node id="22" type="in" name="trans:jr913e.rpm_n2" pos="500 877"/>
+      <node id="23" type="out" name="joint:ax_n2.target" pos="960 783"/>
+      <node id="24" type="mul" pos="730 769"/>
+      <node id="25" type="in" name="trans:jr913e.rpm_output" pos="500 995"/>
+      <node id="26" type="out" name="joint:ax_output.target" pos="960 901"/>
+      <node id="27" type="mul" pos="730 863"/>
+      <node id="28" type="in" name="trans:jr913e.rpm_r3" pos="500 1113"/>
+      <node id="29" type="out" name="joint:ax_r3.target" pos="960 1019"/>
+      <node id="30" type="mul" pos="730 957"/>
+      <node id="31" type="in" name="trans:jr913e.rpm_s4" pos="500 1231"/>
+      <node id="32" type="out" name="joint:ax_s4.target" pos="960 1137"/>
+      <node id="33" type="mul" pos="730 1051"/>
+      <node id="34" type="in" name="trans:jr913e.wheel_rpm" pos="500 1349"/>
+      <node id="35" type="out" name="joint:ax_wheel.target" pos="960 1255"/>
+      <wire from="3" to="2"/>
+      <wire from="4" to="2" port="1"/>
+      <wire from="2" to="1"/>
+      <wire from="5" to="1" port="1"/>
+      <wire from="7" to="6"/>
+      <wire from="6" to="8"/>
+      <wire from="10" to="9"/>
+      <wire from="9" to="11"/>
+      <wire from="13" to="12"/>
+      <wire from="12" to="14"/>
+      <wire from="16" to="15"/>
+      <wire from="15" to="17"/>
+      <wire from="19" to="18"/>
+      <wire from="18" to="20"/>
+      <wire from="22" to="21"/>
+      <wire from="21" to="23"/>
+      <wire from="25" to="24"/>
+      <wire from="24" to="26"/>
+      <wire from="28" to="27"/>
+      <wire from="27" to="29"/>
+      <wire from="31" to="30"/>
+      <wire from="30" to="32"/>
+      <wire from="34" to="33"/>
+      <wire from="33" to="35"/>
+      <wire from="1" to="6" port="1"/>
+      <wire from="1" to="9" port="1"/>
+      <wire from="1" to="12" port="1"/>
+      <wire from="1" to="15" port="1"/>
+      <wire from="1" to="18" port="1"/>
+      <wire from="1" to="21" port="1"/>
+      <wire from="1" to="24" port="1"/>
+      <wire from="1" to="27" port="1"/>
+      <wire from="1" to="30" port="1"/>
+      <wire from="1" to="33" port="1"/>
+    </formula>
+  </asset>
+  <worldbody>
+    <environment hdr="env/engine_studio.hdr" intensity="22000" skybox="false"/>
+    <ground size="4" visual="3" tile="2" rgba="0.32 0.33 0.35 1" roughness="0.75"/>
+    <light name="key" type="sun" pos="0 4 0" euler="40 -30 0" intensity="90000" castshadow="true"/>
+    <light name="fill" type="point" pos="-1.5 1.6 -1.5" intensity="40000" falloff="10" castshadow="false"/>
+    <light name="rim" type="point" pos="1.4 1.5 1.2" intensity="30000" falloff="10" castshadow="false"/>
+    <camera name="cam0" target="0.1 0.55 0" azimuth="150" elevation="18" radius="2.4"/>
+    <camera name="gears" target="0 0.55 0" azimuth="125" elevation="12" radius="1.1"/>
+    <body name="case" pos="0 0.55 0" fixed="true" mass="20">
+      <prefab name="at_case"/>
+    </body>
+    <body name="engine" pos="0 0.55 0" mass="1">
+      <prefab name="at_engine"/>
+    </body>
+    <body name="input" pos="0 0.55 0" mass="1">
+      <prefab name="at_input"/>
+    </body>
+    <body name="c1" pos="0 0.55 0" mass="1">
+      <prefab name="at_c1"/>
+    </body>
+    <body name="n1" pos="0 0.55 0" mass="1">
+      <prefab name="at_n1"/>
+    </body>
+    <body name="s2" pos="0 0.55 0" mass="1">
+      <prefab name="at_s2"/>
+    </body>
+    <body name="n2" pos="0 0.55 0" mass="1">
+      <prefab name="at_n2"/>
+    </body>
+    <body name="output" pos="0 0.55 0" mass="1">
+      <prefab name="at_output"/>
+    </body>
+    <body name="r3" pos="0 0.55 0" mass="1">
+      <prefab name="at_r3"/>
+    </body>
+    <body name="s4" pos="0 0.55 0" mass="1">
+      <prefab name="at_s4"/>
+    </body>
+    <body name="wheel" pos="0 0.55 0" mass="1">
+      <prefab name="at_wheel"/>
+    </body>
+  </worldbody>
+  <equality>
+    <joint name="ax_engine" type="hinge" body1="engine" body2="world" anchor="0 0.55 0" axis="1 0 0" motor="speed" target="0"/>
+    <joint name="ax_input" type="hinge" body1="input" body2="world" anchor="0 0.55 0" axis="1 0 0" motor="speed" target="0"/>
+    <joint name="ax_c1" type="hinge" body1="c1" body2="world" anchor="0 0.55 0" axis="1 0 0" motor="speed" target="0"/>
+    <joint name="ax_n1" type="hinge" body1="n1" body2="world" anchor="0 0.55 0" axis="1 0 0" motor="speed" target="0"/>
+    <joint name="ax_s2" type="hinge" body1="s2" body2="world" anchor="0 0.55 0" axis="1 0 0" motor="speed" target="0"/>
+    <joint name="ax_n2" type="hinge" body1="n2" body2="world" anchor="0 0.55 0" axis="1 0 0" motor="speed" target="0"/>
+    <joint name="ax_output" type="hinge" body1="output" body2="world" anchor="0 0.55 0" axis="1 0 0" motor="speed" target="0"/>
+    <joint name="ax_r3" type="hinge" body1="r3" body2="world" anchor="0 0.55 0" axis="1 0 0" motor="speed" target="0"/>
+    <joint name="ax_s4" type="hinge" body1="s4" body2="world" anchor="0 0.55 0" axis="1 0 0" motor="speed" target="0"/>
+    <joint name="ax_wheel" type="hinge" body1="wheel" body2="world" anchor="0 0.55 0" axis="1 0 0" motor="speed" target="0"/>
+  </equality>
+  <events/>
+  <control>
+    <controller formula="driver" period="0"/>
+    <controller formula="anim" period="0"/>
+    <param name="program" value="1" min="0" max="3" step="1" label="運転" options="手動|全開加速|市街地|ストール"/>
+    <param name="throttle" value="0.3" min="0" max="1" label="アクセル開度（手動）"/>
+    <param name="brake" value="0" min="0" max="1" label="ブレーキ（手動）"/>
+    <param name="shifter" value="3" min="0" max="4" step="1" label="セレクタ（手動）" options="P|R|N|D|M"/>
+    <param name="manual" value="1" min="1" max="9" step="1" label="M レンジの段"/>
+    <param name="grade" value="0" min="-15" max="15" step="0.5" label="勾配 (%)"/>
+    <param name="anim" value="0.03" min="0" max="0.3" step="0.005" label="3D の回転の倍率"/>
+    <chart title="回転数 (rpm)" signals="driver/scope:engine_rpm driver/scope:turbine_rpm driver/scope:output_rpm" span="20"/>
+    <chart title="車速 (km/h)・段" signals="driver/scope:speed_kmh driver/scope:gear driver/scope:target_gear" span="20"/>
+    <chart title="トルク (N m)" signals="driver/scope:engine_torque driver/scope:input_torque driver/scope:output_torque" span="20"/>
+    <chart title="車軸トルク (kN m)・加速度 (G)" signals="driver/scope:axle_kNm driver/scope:accel_g" span="20"/>
+    <chart title="締結要素のトルク (N m)" signals="driver/scope:torque_A driver/scope:torque_B driver/scope:torque_C driver/scope:torque_D driver/scope:torque_E driver/scope:torque_F" span="10"/>
+    <chart title="締結要素の油圧 (0..1)" signals="driver/scope:pressure_A driver/scope:pressure_B driver/scope:pressure_C driver/scope:pressure_D driver/scope:pressure_E driver/scope:pressure_F" span="10"/>
+    <chart title="トルコン（すべり rpm）" signals="driver/scope:tc_slip driver/scope:lockup_slip" span="20"/>
+    <chart title="トルク比・ロックアップ・効率" signals="driver/scope:tc_torque_ratio driver/scope:lockup driver/scope:efficiency driver/scope:torque_request" span="20"/>
+    <transmission name="jr913e" input="torque" load="vehicle" rating="700" inputShaft="input"
+                  outputShaft="output">
+      <engine inertia="0.18" idle="650" idleGain="1" redline="7000"/>
+      <converter sr="0 0.2 0.4 0.6 0.7 0.8 0.85 0.9 0.95 1"
+                 k="120 121 123 128 133 142 150 168 230 0"
+                 tr="1.9 1.71 1.52 1.33 1.23 1.12 1.05 1 1 1" pumpInertia="0.1"
+                 turbineInertia="0.05"/>
+      <lockup capacity="900" tau="0.25" fromGear="2" speed="18" stiffness="1500" damping="3"
+              inertia="0.03"/>
+      <pump displacement="14" pressureMin="4" pressureMax="18" efficiency="0.85"/>
+      <shift upLight="1500" upFull="6500" downLight="1050" downFull="3500" kickdown="0.9"
+             minTime="0.6" torquePhase="0.12" inertiaPhase="0.3" reduction="0.4" kiss="0.06"
+             margin="1.3" kp="2" ki="40" engage="0.5"/>
+      <output inertia="0.05" finalDrive="3.133" finalEfficiency="0.97" stiffness="6000" damping="60"
+              wheelRadius="0.337" mass="1700" wheelInertia="4.8" crr="0.012" cda="0.62" rho="1.2"
+              brake="25000"/>
+      <shaft name="input" inertia="0.012" drag="0.0008"/>
+      <shaft name="c1" inertia="0.01" drag="0.0004"/>
+      <shaft name="n1" inertia="0.014" drag="0.0004"/>
+      <shaft name="s2" inertia="0.004" drag="0.0002"/>
+      <shaft name="n2" inertia="0.012" drag="0.0004"/>
+      <shaft name="output" inertia="0.02" drag="0.0008"/>
+      <shaft name="r3" inertia="0.012" drag="0.0002"/>
+      <shaft name="s4" inertia="0.004" drag="0.0002"/>
+      <gearset name="P1" sun="input" carrier="c1" ring="n1" zs="60" zr="128" zp="34" planets="4"
+               efficiency="0.985"/>
+      <gearset name="P2" sun="s2" carrier="n1" ring="n2" zs="41" zr="91" zp="25" planets="4"
+               efficiency="0.985"/>
+      <gearset name="P3" sun="n2" carrier="output" ring="r3" zs="38" zr="86" zp="24" planets="4"
+               efficiency="0.985"/>
+      <gearset name="P4" sun="s4" carrier="input" ring="output" zs="39" zr="97" zp="29" planets="4"
+               efficiency="0.985"/>
+      <element name="A" type="brake" a="s2" capacity="0" fill="0.08" tau="0.03" dynamic="0.85"
+               drag="0.003"/>
+      <element name="B" type="brake" a="r3" capacity="0" fill="0.08" tau="0.03" dynamic="0.85"
+               drag="0.003"/>
+      <element name="C" type="brake" a="c1" capacity="0" fill="0.08" tau="0.03" dynamic="0.85"
+               drag="0.003"/>
+      <element name="D" type="clutch" a="c1" b="n2" capacity="0" fill="0.08" tau="0.03"
+               dynamic="0.85" drag="0.003"/>
+      <element name="E" type="clutch" a="input" b="c1" capacity="0" fill="0.08" tau="0.03"
+               dynamic="0.85" drag="0.003"/>
+      <element name="F" type="clutch" a="s4" b="n2" capacity="0" fill="0.08" tau="0.03"
+               dynamic="0.85" drag="0.003"/>
+      <gear name="1" elements="A B D"/>
+      <gear name="2" elements="B D E"/>
+      <gear name="3" elements="A B E"/>
+      <gear name="4" elements="B E F"/>
+      <gear name="5" elements="A E F"/>
+      <gear name="6" elements="D E F"/>
+      <gear name="7" elements="A D F"/>
+      <gear name="8" elements="C D F"/>
+      <gear name="9" elements="A C F"/>
+      <gear name="R" elements="A B C"/>
+      <neutral elements="A B"/>
+    </transmission>
+  </control>
+</wizengine>

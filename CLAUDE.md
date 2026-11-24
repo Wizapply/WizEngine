@@ -769,12 +769,15 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 - **信号は in / out ノードの name**（`control/ControlSignals.h` が唯一の定義）。
   センサ: `time`、`body:<名前>.x y z vx vy vz wx wy wz rx ry rz speed vfwd vlat`、
   `joint:<名前>.angle rate pos vel force torque`、`vehicle:<名前>.speed rpm gear`、
-  `param:<名前>`（下のパラメータ）、`var:<名前>`（下の変数）。
+  `trans:<名前>.<量>`（遊星歯車式 AT。下の「遊星歯車式 AT」の章）、
+  `param:<名前>`（下のパラメータ）、`var:<名前>`（下の変数）、`air:<量>`（空気。
+  下の「流体」の章の空気の項）。
   アクチュエータ: `joint:<名前>.target`（モータの目標値）、`body:<名前>.fx fy fz
   tx ty tz`（ワールド）/ `lfx lfy lfz ltx lty ltz`（ローカル）、
-  `vehicle:<名前>.throttle brake steer handbrake`、パーティクルの量
+  `vehicle:<名前>.throttle brake steer handbrake`、AT への入力
+  `trans:<名前>.engine_torque engine_rpm throttle brake select manual output_rpm grade couple`、パーティクルの量
   `emitter:<名前>.rate`（下の「パーティクル」の章）、パラメータの書き換え
-  `param:<名前>`・変数への書き込み `var:<名前>`（下記）、記録だけの `scope:<ラベル>`。
+  `param:<名前>`・変数への書き込み `var:<名前>`（下記）、空気の書き換え `air:<量>`、記録だけの `scope:<ラベル>`。
   **単位は SI で角度は rad**（文書の度とは違う。ジョイントの目標値も換算しない）。
   名前はオブジェクト / ジョイントの name で引く（無い・重複は警告）。ポート名に
   `: . -` を通すため `sanitizePortName` を広げた（96 文字まで）。
@@ -901,11 +904,62 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   制御（`vehicle.xml` の `cruise`）は未確認。
 - **見本: V6 エンジンのダイナモ試験**（`assets/scenes/v6_engine.xml`、日産
   VR30DDTT 相当 = 60° V6・2997 cc・86 × 86 mm・圧縮比 10.3・点火順 1-2-3-4-5-6）。
-  制御器を「プラントのモデルの一部」として使う例: `combustion` が筒内圧
-  （ポリトロープの圧縮・膨張 + Wiebe 燃焼 + ツインターボの物理モデル）から
-  ピストンへの力を毎ステップ出し、`dyno` が回転数を PI 制御で保って吸収
-  トルクを測る（1000 → 6800 rpm を 40 秒で掃引、カタログの曲線 catalog_Nm と
-  並べてスコープに出る）。負荷のかけ方はパラメータ `mode`（選択肢）で 3 通り:
+  制御器を「プラントのモデルの一部」として使う例: `combustion` が筒内圧から
+  ピストンへの力を毎ステップ出し、`dyno` が回転数を PI 制御で保って吸収トルクを
+  測る（1200 rpm で 5 秒保ち、2000 rpm までは 30 秒・そこから 6800 rpm まで 30 秒で
+  掃引。公表の性能曲線 catalog_Nm / catalog_kW と並べてスコープに出る。低回転を
+  ゆっくりにしたのは、過給が増える → 排気が増える → タービンがさらに回る、の正の
+  帰還で立ち上がるので、速く上げると過給が追いつかないため）。**公表の曲線は
+  VR30DDTT 基準車の「エンジン性能曲線」**（475 Nm が 1800〜5600 rpm・出力の
+  ピーク 298 kW / 6400 rpm。図から 1250〜6850 rpm を読み取った折れ線で、その外は
+  傾きの延長。**比べるだけの値で、計算には使わない**）。
+  **燃焼モデルは物理の式で、トルク曲線の形を決める表は持たない**（以前は
+  「燃焼で圧力が R = 3 倍」の係数と、カタログに合わせた回転数ごとの目標過給圧の
+  表 `boost_map` で形を決めていた - 廃止）:
+  * **吸気**: 閉じ込めた新しい空気 = (吸気圧 × IVC の容積 − 残留ガスの p V) /
+    (R × 吸気温度)。IVC で筒の中は吸気圧で、前のサイクルの残留ガス（排気上死点の
+    すきま容積に背圧で残った分）と同じ比熱で混ざるので p V = R (m_air T_air +
+    m_res T_res) から差し引ける。オーバーラップ中に吸気圧が背圧より高いと残留ガスを
+    追い出す（掃気。以前の「掃気で充填 +15%」の経験式は廃止）。吸気圧は吸気バルブの
+    流れの詰まり `VEv = 1 / (1 + (Sp / 22.5)^10)`（Sp = 平均ピストン速度。高回転で
+    急に効く = マッハ指数の効果を損失の係数で）を掛けた値。
+  * **燃焼**: 燃料 = 空気 / 空燃比（理論空燃比より濃いぶんは酸素が足りず燃えない）、
+    熱 = 燃料 × 低位発熱量 44 MJ/kg × 燃焼効率 0.97 × (1 − 壁への熱損失
+    0.12 (3000 / rpm)^0.3)。筒内圧は熱力学の第 1 法則: 容積 V' で熱 dQ を加えると
+    圧力が (n − 1) dQ / V' 上がり、その後 (V'/V)^n で膨張するので、
+    p = p_ivc (V_ivc / V)^n + (n − 1) Q Gw(ψ) (Vc / V)^(n−1) / V。重みの積分
+    Gw(ψ) = ∫ (V/Vc)^(n−1) dxb（Wiebe の xb）は点火時期と燃焼期間だけで決まるので
+    折れ線の表（`curve`）にした。熱 1 J が IVC〜EVO で出す仕事 Hw = 0.46 も同じ
+    積分から出した定数。
+  * **排気**: EVO の筒内の温度（状態方程式）→ 背圧まで膨張 → ポートと排気管で壁へ
+    熱が逃げる（逃げる割合 1 − exp(−0.2 流量^−0.2)。熱伝達率は流量の 0.8 乗 = 流量が
+    少ないほど大きく冷える）。背圧 = タービン入口の圧力（ノズルを流れる量で決まる）を
+    1 ステップ遅れで排気行程の筒内圧に使う（代数ループを delay で切る）。
+  * **ターボ**: タービン（排気の流量 × 温度 × 膨張比）とコンプレッサーの仕事の差で
+    軸が加減速（integrate）。コンプレッサーは**速度線**: 流量 0 での圧力比
+    1 + 4.5e-9 ω²、流量が増えると `PR0 (1 − (m / 0.19)^4)` で下がりチョーク流量
+    0.19 kg/s（1 基）で 0。吸気圧はインタークーラーとマニホールドを満たす遅れ
+    （時定数 0.02 s の integrate）でその圧力へ近づく。
+  * **ECU**: トルクの上限（パラメータ `torque_limit`、既定 475 Nm = 仕様）になる
+    吸気圧を、このモデルの 1 サイクルの仕事 W = Q Hw + 圧縮・膨張 + 吸排気（吸気圧に
+    比例する部分と背圧の部分に分かれる = 1 次式）から逆算して目標にし（0.3 s の
+    フィルタ。背圧がウェイストゲートで変わる輪を切る）、ウェイストゲートの PID で
+    保つ。ターボの過回転（約 224 krpm）も同じ PID で防ぐ。`boost` は過給圧の上限
+    （bar ゲージ、既定 1.5 = 普段は効かない）。アクセルを戻すと 900 rpm より上は
+    燃料カット、下はアイドルの燃料（回転で絞る）。
+  * **摩擦**: FMEP (bar) = 0.4 + 0.06 Sp + 0.002 Sp² + 0.08 × 吸気圧 (bar)。ポンプ損失
+    は吸排気行程の筒内圧からそのまま出る（以前 dyno が持っていた「アクセルを戻すほど
+    増える損失」の経験式 `Tloss` は廃止 = 二重に数えるため）。
+  * **形の出どころ**: 低回転の立ち上がり = ターボ（流量が少ないと回らない）、平らな
+    所 = ECU のトルク上限、高回転の落ち込み = ターボの回転上限に達した後の
+    コンプレッサーの速度線と吸気バルブの詰まり。**係数は損失と部品の諸元だけ**
+    （燃焼効率・壁の熱損失・吸気バルブ・摩擦・排気ポートの熱損失・タービンのノズル
+    82000 と効率 0.7・コンプレッサーのチョーク流量と速度線・ターボ回転の上限）で、
+    公表の曲線に合うように選んだ（調整は `samples/` には置いていない作業用の
+    スクラッチ。式の値は `combustion` の数式テキストの先頭にまとまっている）。
+  負荷のかけ方はパラメータ `mode`（選択肢）で 4 通り（4 つ目の **AT (JR913E)** は
+  下の「遊星歯車式 AT」の章の Chrono のシャフト網を、クランクのボディに直結してつなぐ。
+  他のモードでは `couple = 0` で切り離す）:
   **ダイナモ**（回転数を保つ。`dyno_rpm` 0 = 掃引、> 0 = その回転数、変化は
   1500 rpm/s まで。**回転数を保つので、スロットルで変わるのはトルクだけ** =
   実物のダイナモと同じ）・**フリーラン**（負荷 kload ω²、プロペラの形）・
@@ -913,32 +967,20 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   転がり + 空気抵抗は仮定値。トルコンは粘性結合で、容量は回転数の 2 乗 =
   アイドルでは弱く這い出し、回すほど強くつながる。`gear`（選択肢 N・1〜9）と
   `brake` を制御盤で変える。車速は式の integrate が持ち、`scope:speed_kmh`）。
-  どのモードも 800 rpm 以下はアイドル補助が押し、アクセルを戻すほど増える
-  損失（摩擦 + ポンプ損失 = エンジンブレーキ、7000 rpm で約 57 Nm）を引く。
-  全開での損失は燃焼モデルの較正（カタログの正味トルク）に含まれているので、
-  軸トルク（`scope:torque_Nm`）は負荷が受け取るぶん。ダイナモ以外では回転数の
+  どのモードも 800 rpm 以下はアイドル補助が押す。軸トルク（`scope:torque_Nm`）は
+  負荷が受け取るぶん（摩擦・ポンプ損失を引いた正味）。ダイナモ以外では回転数の
   指令を今の回転数に追従させておくので、ダイナモへ戻しても跳ねず PID の積分も
   溜まらない。車両とエンジンは強く結ぶので dyno は毎ステップ回す（period 0）。
   燃料カットは 7000 rpm（ニュートラルで踏むとそこで頭打ち）。
-  **ツインターボは物理モデル**（`combustion` の中。左右 1 基ずつだが同じ物なので
-  1 基ぶんを解いて流量を半分にする）: タービン軸の角速度を integrate で持ち、
-  タービンの出力（排気の流量 × 温度 × 膨張比。タービン入口の圧力はノズルを
-  流れる量で決まる = 流量が少ない低回転では回らない）とコンプレッサーが要る
-  仕事（吸気量 × 圧力比。流量が多いと効率が落ちる = チョーク）の差で加速 /
-  減速する。過給圧はその回転数の 2 乗で決まり、**電子ウェイストゲート**（PID、
-  目標を超えたら開いて排気をタービンの外へ逃がす）が目標過給圧で頭打ちに
-  する。吸気量は「6 気筒 × IVC で閉じ込めた空気（吸気圧 × 容積 / 吸気温度）×
-  回転」、吸気温度は圧縮で上がりインタークーラーで冷える。燃焼の圧力上昇は
-  吸気温度（冷たいほど濃い空気 = 燃料も多い）と空燃比（理論より少し濃い所で
-  最大）で変わる。**パラメータ**（制御盤）: `boost`（目標過給圧のピーク、bar
-  ゲージ、既定 1.77 = 目標のマップをこの比で伸縮）・`turbo_inertia`（タービン軸の
-  慣性の倍率 = ラグ）・`intercooler`（効率 0..0.95、既定 0.8）・`afr`（空燃比、
-  既定 12.5）・`ambient`（外気温、既定 25 ℃）。計測値は `scope:target_bar /
-  turbo_krpm / wastegate_pct / air_gs / fuel_gs / charge_mg / intake_C / egt_C /
-  exhaust_bar`。**既定の値で目標過給圧のマップ（= 以前の較正値）を再現する**
-  ように定数を合わせてある（タービンのノズル 110000・軸の慣性 3e-5 kg m² など。
-  排気温度の式は経験式）。式の名前は `p1`〜`p6`（筒内圧）・`p4` と重ならない
-  ように、タービンの入口 / 出口は `pt3` / `pt4`。**炎のパーティクル**: 6 気筒の
+  **パラメータ**（制御盤）: `torque_limit`（ECU のトルク上限）・`boost`（過給圧の
+  上限）・`turbo_inertia`（タービン軸の慣性 3e-5 kg m² の倍率 = ラグ）・
+  `intercooler`（効率 0..0.95、既定 0.8）・`afr`（空燃比、既定 12.5）・`ambient`
+  （外気温、既定 25 ℃）。トルク上限で平らな所では ECU が過給圧で補うので、
+  インタークーラー・空燃比・外気温の違いはターボが限界の回転域（低回転と高回転）で
+  トルクに出る。計測値は `scope:boost_bar / target_bar / turbo_krpm / wastegate_pct /
+  air_gs / fuel_gs / charge_mg / intake_C / egt_C / exhaust_bar / friction_Nm`。
+  式の名前は `p1`〜`p6`（筒内圧）・`p4` と重ならないように、タービンの入口 / 出口は
+  `pt3` / `pt4`。**炎のパーティクル**: 6 気筒の
   ピストンに `<emitter name="flameN">`（頂面の上の燃焼室、粒子はその場に残る =
   inherit 0）を付け、`combustion` が燃えている間（点火〜燃焼期間）だけ
   `emitter:flameN.rate` を出す（1 回の燃焼で約 60 粒 × 吸気圧、角度の幅を時間に
@@ -946,19 +988,26 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   頂面と筒を照らす。パラメータ `flame`（スイッチ）で消せる。
   **イベントは無し**（空の `<events/>`。節を書かないと既定の pickup が付くが、
   ジョイントで組んだ機構を掴んで引っぱる用途は無いので外してある）。
-  Chrono で確認: 全開の掃引で 1700〜6800 rpm がカタログの曲線に 1.3% 以内
-  （それより下は掃引が速くターボが追いつかない = ラグ）、ダイナモで 3000 rpm に
-  保って開度 1 → 0.3 にすると 476 → 64 Nm（部分負荷では流量が足りずターボが
-  回らない = 吸気は負圧 0.69 bar。以前の固定マップでは 101 Nm だった）、開度を
-  1 に戻すと約 1 s で 2.28 bar。4000 rpm で目標過給圧 1.77 → 2.3 bar で 479 →
-  571 Nm、インタークーラー効率 0.8 → 0.3 で吸気温度 60 → 128 ℃・571 → 466 Nm、
-  空燃比 12.5 → 15 で排気温度 694 → 798 ℃・466 → 436 Nm、外気温 25 → 40 ℃ で
-  414 Nm。フリーランで開度 1 / 0.3 / 0.1 → 約 6000 / 2140 / 1210 rpm、車両で
-  1 速発進 → 4 速まで手で上げて 16 s で約 164 km/h、ブレーキで 6 s 後に 7 km/h
-  （エンジンはアイドルへ落ち、トルコンが滑る）、ニュートラルで全開 → 戻すと
-  2.5 s で 7000 → 3100 rpm。制御盤の既定のグラフ（回転数・トルクとカタログ・
-  出力・過給圧と目標・ターボ回転数とウェイストゲート・吸気量と燃料・吸気温度と
-  排気温度・車速・トルコンの滑り・筒内圧・VTC・バルブリフト）も文書に入っている。
+  **物理モデル版の確認は式を C++ インタプリタで回したところまで**（回転数を指令
+  どおりに与え、ピストンの力を仮想仕事でクランクのトルクに直す。Chrono では
+  未確認）: 一定回転に保つと 1250〜6850 rpm が公表の曲線に ±2.6% 以内（1800〜
+  5600 rpm は ±0.3%、出力のピーク 304 kW / 6200 rpm、最高筒内圧 約 88 bar、
+  全開の吸気圧 1.22〜2.47 bar 絶対圧、ターボ 65〜224 krpm、排気温度 590〜860 ℃、
+  燃費率 約 260〜300 g/kWh）。掃引では 1300〜1600 rpm がターボのラグで −5〜−7%、
+  1700〜5600 rpm が ±1.6%、6000 rpm 以上が軸トルクの lag（0.3 s）で +1.3〜+2.8%。
+  3000 rpm で開度 0.3 → 87 Nm、0.1 → 23 Nm、0（燃料カット）→ −41 Nm（7000 rpm で
+  −84 Nm）、開度 0.3 → 1 で約 1 s で 475 Nm。torque_limit 550 で 4000 rpm が 549 Nm。
+  インタークーラー効率 0.3 で 1600 rpm が 474 → 426 Nm・6400 rpm が 441 → 404 Nm
+  （4000 rpm は 474 のまま、吸気温度 45 → 88 ℃）、空燃比 15 で 6400 rpm が 430 Nm、
+  外気温 40 ℃ で 1600 rpm が 411 Nm。部分負荷の排気温度は 770〜840 ℃ と高め
+  （残留ガスと排気ポートの熱損失までで、部分負荷で増える壁の熱損失は入れていない）。
+  フリーラン・車両のモードの数値（以前の確認: フリーランで開度 1 / 0.3 / 0.1 →
+  約 6000 / 2140 / 1210 rpm、車両で 1 速発進 → 4 速まで手で上げて 16 s で約
+  164 km/h、ニュートラルで全開 → 戻すと 2.5 s で 7000 → 3100 rpm）は物理モデル版では
+  未確認（ポンプ損失と燃料カットが式に入ったので変わる）。制御盤の既定のグラフ
+  （回転数・トルクとカタログ・出力 (kW) とカタログ・過給圧と目標・ターボ回転数と
+  ウェイストゲート・吸気量と燃料・吸気温度と排気温度・車速・トルコンの滑り・
+  筒内圧・VTC・バルブリフト）も文書に入っている。
   **見た目は実寸の部品メッシュ**（`assets/models/v6/*.glb`、17 個・計 約 7 MB）。
   CSG（manifold3d）で作るスクリプトが `samples/v6_engine/`（`geom.py` が寸法の唯一の
   定義、`meshes.py` = 動く部品、`statics.py` = ブロック以下、手順は同じフォルダの
@@ -974,7 +1023,7 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   カム軸間 約 100 mm）に傾けてある - 以前の平行なバルブ（カム軸間 38 mm）では
   スプロケットが重なって実寸にできなかった。式はジョイントの角度と位置しか見ない
   ので、配置を変えても計算は同じ（Chrono で確認: 3000 rpm の 476 → 101 Nm、
-  6500 rpm の 426 Nm とも変わらず）。動く部品とブロック / ヘッドの食い込みは
+  6500 rpm の 426 Nm とも変わらず。いずれも物理モデル版より前の燃焼モデルでの値）。動く部品とブロック / ヘッドの食い込みは
   クランク 15° ごとに体積で調べて 0、バルブとピストンの最小すき間は 6.4 mm。
   コンロッドとピストンの `<geom>` は質量と慣性を持たせる芯で、メッシュの中に隠れる
   大きさにしてある（コンロッドの面内の慣性はほぼ長さで決まるので幅を細くしても
@@ -1003,7 +1052,8 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   * 刻みは 240 Hz × 16 サブステップ = 3840 Hz（6800 rpm で 10.6°/ステップ）。
     そのため **substeps の上限を 8 → 32 に上げた**（`clampSim` と System タブ）。
     Chrono 9.0（Core / NSC / bb 100 回）で実時間の約 1 倍、軸トルクはカタログの
-    曲線に 1.5% 以内で合う（471〜476 Nm、約 400 PS / 6500 rpm）。実時間より遅く
+    曲線に 1.5% 以内で合う（471〜476 Nm、約 400 PS / 6500 rpm。物理モデル版より前の
+    燃焼モデル・旧カタログでの値）。実時間より遅く
     回っても、制御器の時刻は物理の時刻なので結果は同じ。
   * **動弁系**: カムシャフト 4 本（hinge の速度モータ。目標 = w/2 + K·位相の誤差
     で位相ロック、吸気側は電動 VTC の位相を足す）とバルブ 12 体（1 気筒の吸気 /
@@ -1023,6 +1073,118 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   信号（コンパイル時にスカラーへ展開）、離散伝達関数 / 状態空間ブロック、
   状態機械（イベントグラフの拡張）、FMI / FMU の取り込み、制御器の C コード生成。
 
+## 遊星歯車式 AT（Chrono の 1D シャフト。`physics/ShaftNetworks` + `components/AtDriveline` + `src/transmission/`）
+
+エンジンのトルク・回転数から、トルクコンバータ・遊星歯車列・締結要素の油圧・変速制御を
+通って出力軸（車軸）のトルク・回転数までを解く。**動力学はすべて Chrono**（Chrono::Vehicle の
+パワートレインと同じ 1D シャフトの部品を、3D の剛体と同じ `ChSystem` に入れる）。見本は
+JATCO **JR913E**（FR 9 速。VR30DDTT と組む日産 Z / Q50 系）で、`assets/scenes/at_jr913e.xml`
+（エンジンのトルクマップ + AT + 車両）と `assets/scenes/v6_engine.xml` の負荷モード
+「AT (JR913E)」（Chrono の V6 のクランクに直結）が使う。
+
+```
+シーン文書 <control><transmission>（AtDesc）
+  ├ transmission/AtKinematics … 構造の解決・段の変速比・要素の分担（純粋）
+  ├ transmission/AtControl    … TCU（変速の判断・掛け替え）と油圧（純粋）
+  ├ transmission/AtSignals    … 計測値と trans:<名前>.<量> の名前（純粋）
+  └ components/AtDriveline    … AtDesc → ShaftNetworkSpec を組み、毎ステップ容量と荷重を与え、
+        │                       結果を読む（ControlComponent が持つ）
+        └ physics/ShaftNetworks … Chrono: ChShaft / ChShaftsPlanetary / ChShaftsClutch /
+                                  ChShaftsTorqueConverter / ChShaftsTorsionSpring / ChShaftsGear /
+                                  ChShaftsMotorSpeed / ChShaftBodyRotation（PhysicsWorld の担当）
+```
+
+- **Chrono のシャフト網**（`physics/ShaftTypes.h` が値型、`ShaftNetworks` が実体、PhysicsWorld の
+  `addShaftNetwork / removeAllShaftNetworks / setShaftLoads / setShaftClutchLimits /
+  setShaftMotorSpeeds / readShaftNetwork`）は AT を知らない汎用の口。ケースは網ごとの固定軸
+  （-1）。遊星は `ChShaftsPlanetary`（shaft1 = キャリヤ、r = −(1 + k), 1, k = Willis）、締結要素・
+  ロックアップ・ブレーキ・パーキングは `ChShaftsClutch`（箱型の拘束 = 止まるか容量で滑るかを
+  ソルバが決める。容量は毎ステップ `SetTorqueLimit`）、ダンパとドライブシャフトは
+  `ChShaftsTorsionSpring`、終減速は `ChShaftsGear`、トルコンは `ChShaftsTorqueConverter`
+  （ステータ = ケース）。Core 専用（Multicore は ChShaft を積分しない）なので、
+  `Scene::requiredBackend` が AT のあるシーンを Core にする。系を作り直すと網は消え、
+  `PhysicsWorld::systemSerial()` が進む = ControlComponent が作り直す。
+- **シャフトの並び**（`AtDriveline.h` の冒頭が正）: エンジン軸（torque は クランク + カバー +
+  羽根車、speed / body はカバー + 羽根車だけ）・ロックアップ / ダンパの 1 次側・歯車列の軸
+  （タービンは入力軸に、出力側の慣性は出力軸に足す）・終減速の後の軸・車輪 + 車両
+  （m r² + 車輪の慣性）。
+- **1 ステップの順番**（ControlComponent、PHYSICS スレッド）: ①read（直前の積分の角速度と
+  各部のトルク → `trans:<名前>.<量>`）②制御器を評価して出力を当てる（`trans:` の入力は次に
+  書くまで保持）③apply（TCU = AtControl が各クラッチの容量を決め、軸に荷重 = エンジンの
+  トルク・油圧ポンプ・軸受と開いた要素の引きずり・かみ合いと終減速の損失・車両の抵抗を
+  与える）④Chrono が積分。損失は前のステップのトルクから見積もる陽的な荷重。締結要素は
+  滑っている間は動摩擦（`<element dynamic>`、すべり速度で 1 へ戻る）。
+- **トルコンの表**（`<converter sr k tr>`、K は rpm/√(N·m)、0 = 容量ゼロ）: Chrono は容量係数
+  K（(rad/s)/√(N·m)）を直線補間するので、AtDriveline が「容量 1/K² を直線でつなぐ」細かい
+  折れ線（201 点）に引き直して渡す。K を直線でつなぐと 0（SR = 1）の手前でトルクが崖になり、
+  Chrono が陽的に与える流体のトルクが振動する。逆駆動（エンジンブレーキ）は Chrono の約束で
+  SR を 1 で折り返して同じ表を引き、トルク比 1（自前モデルの頃の `reverse` は廃止）。
+- **物理のレートは 200 Hz 以上、ソルバは bb か psor**（Chrono のトルコンとねじりばねは各ステップ
+  の初めに陽的に力を与えるので、ダンパの固有振動 ≈ 220 rad/s に対して刻みが粗いと発散する。
+  本物の Chrono 9.0.0 で 120 Hz は発散・200 Hz は安定、APGD は 240 Hz でも発散 = シャフトの
+  クラッチを解けない）。外れると網を作るときに LOGW。at_jr913e は 240 Hz、V6 は 3840 Hz。
+  反復回数は 30 でも 100 と同じ結果。
+- **入力の 3 通り**: `input="torque"`（エンジン軸に正味のトルクを荷重で与える。アイドル制御・
+  燃料カット・TCU のトルク絞り `torque_request` もここ）・`input="speed"`（エンジン軸を速度
+  モータで回す。AT が取ったトルクは `engine_torque` / `load_torque`）・**`input="body"`**
+  （`<engine body="crank" axis="0 0 1">`。エンジン軸をシーンの剛体へ `ChShaftBodyRotation` で
+  **直結**。トルクは Chrono の中でそのまま行き来する = 受け渡しの遅れが無い。axis はワールドの
+  向きで、網を作るときの剛体の姿勢でローカルへ直す）。body では剛体へ直結した短い軸と
+  エンジン軸の間に**切り離しのクラッチ**（入力 `couple`、1 = つなぐ・0 = 切る = フレックス
+  プレートを外した状態）がある。V6 は AT を使わないモードで切り離す（ダイナモの測定に
+  トルコンとポンプを掛けない）。body の TCU のトルク絞りは外のエンジンが受け取らない限り
+  効かない（V6 の燃焼の式は読んでいない）。出力は `load="vehicle"`（終減速・ドライブ
+  シャフトのねじり・車輪 + 車両の転がり / 空気 / 勾配 / ブレーキ）か `load="dyno"`（出力軸を
+  速度モータで回す台上試験）。
+- **歯車列はデータ**（`<shaft>` `<gearset sun carrier ring zs zr>` `<element type a b>`
+  `<gear name elements>` `<neutral>`）。段の変速比・要素の分担（入力 1 N·m あたり）は
+  AtKinematics が解き、容量 0 の要素は「分担の最大 × rating × 1.4」。**JR913E の形と歯数は
+  公表のギア比からの逆算**（JATCO の図面は無い）: 9G-TRONIC 系の 4 遊星 + 6 要素（ブレーキ
+  A B C・クラッチ D E F、1 段 3 要素・隣の段と 1 要素の掛け替え）の全構成を総当たりし、
+  9G-TRONIC の歯数（46/98・44/100・36/84・34/86）で 9G の公表比 10 個を 4 桁で再現する形が
+  P4 のつなぎ方違いの 3 つだけ = 同じ運動学、と分かったので、その形で JR913E の比を小数
+  3 桁で再現する整数の歯数（P1 60/128・P2 41/91・P3 38/86・P4 39/97、遊星は等配できる数）を
+  選んだ。締結表は 1 ABD・2 BDE・3 ABE・4 BEF・5 AEF・6 DEF・7 ADF・8 CDF・9 ACF・R ABC。
+- **変速（TCU = AtControl。冒頭の注記が正）**: 変速線はタービン回転（その段のとき）で、開度の
+  1.5 乗で上げ線 1500〜6500 rpm / 下げ線 1050〜3500 rpm の間を動く。下げは下げ線より上に
+  収まるいちばん高い段へ飛び越す（1 要素の掛け替えで行ける段だけ）、キックダウン、ブレーキ中は
+  上げない、M レンジは 1 段ずつ。掛け替えは「パワーオンの上げ / コーストの下げ」= 準備 →
+  トルク相 → イナーシャ相（締結側の容量を PI でタービン回転の軌道に合わせる。上げはエンジン
+  トルクを 40% 絞る）→ 同期、「パワーオンの下げ / コーストの上げ」= 解放側を滑らせて先に
+  回転を合わせてから掛け替え。**パワーオン / オフはエンジンが出しているトルクで決める**
+  （body では切り離しのクラッチのトルク。Chrono の `GetTorqueReactionOnShaft` は剛体の側への
+  向きなので、そのまま使うと符号が逆で、全開の上げをコースト扱いにして同期しなかった）。
+  油圧は充填（fill 秒は力が出ない）+ 一次遅れ。ロックアップは 2 速以上・18 km/h 以上、
+  アイドル + 250 rpm を割ったら素早く開ける。
+- **文書は `<control>` の `<transmission>`**（`AtXml.h` の冒頭に全体）。`preset="jr913e"` で
+  JR913E の値から始めて書いた節だけ上書き。保存は常に全部を書く。読み込みは `clampAt` で
+  丸め、AtKinematics で構造を解いてつなぎ先の打ち間違い・段の拘束の過不足・等配できない
+  歯数を warnings に出す。本体は `EditorState::transmissions()`（`transmissionVersion()`）。
+  数値の編集は 📄 XML。網を作るのは開始・Reset・定義の変更・系の作り直し・つないだ剛体の
+  作り直し、エディタへ戻ると外す。/scene の `control.transmissions`（段・回転・車速・ロック
+  アップ・作れなかった理由 `error`）と `formulas.transmissions`（ノードエディタの候補）。
+- **信号**（`trans:<名前>.<量>`）: センサは engine_rpm turbine_rpm output_rpm wheel_rpm /
+  engine_torque load_torque turbine_torque input_torque output_torque axle_torque / gear
+  target_gear shifting phase ratio / tc_speed_ratio tc_torque_ratio tc_slip lockup lockup_slip /
+  speed speed_kmh accel efficiency torque_request line_pressure power_in power_out と、要素ごと
+  `torque_<要素>`（Chrono のクラッチの反トルク）`pressure_<要素>` `slip_<要素>`・軸ごと
+  `rpm_<軸>` `w_<軸>`。入力は engine_torque engine_rpm throttle brake select（0 P 1 R 2 N 3 D
+  4 M）manual output_rpm grade (rad) couple。
+- **見本 `at_jr913e.xml`**: 制御器 `driver`（VR30DDTT 相当の全開トルク = 公表曲線、過給ぶんは
+  0.35 s の遅れ、摩擦は回転数の 2 次式。program = 手動 / 全開加速 / 市街地 / ストール）と
+  `anim`（3D の模式図: AT の軸ごとのボディを hinge の速度モータで回す。回転は 0.03 倍）。
+- **確認（本物の Chrono 9.0.0 をこの環境でビルドし、PhysicsWorld + AtDriveline を同じ
+  ソースのまま回して）**: 10 段の比が公表値どおり、ストール 2519 rpm・トルク比 1.90・車軸
+  14.2 kN·m、全開で 0–100 km/h 4.74 s（ターボの遅れ無し）/ 4.98 s（at_jr913e の driver 式 =
+  遅れ込み）、6 速直結の効率 93.5%（6000 rpm 全開）、キックダウン・急ブレーキの下げ・R、
+  直結（クランクに見立てた剛体 + トルクモータ、燃焼トルクの脈動 ±200%）で 1→6 速、切り離しの
+  間は駆動が抜ける。いずれも以前の自前の 1D モデル（陰解法 + 能動集合法。比較用に手元に
+  残した）と変速の時刻まで一致。**エンジン本体（Scene・ブラウザ）での実行は未確認**。
+- **未**: 一方向クラッチ（JR913E には無い）、遠心振り子ダンパ、油温による摩擦係数・粘性の
+  変化、ライン圧の油圧回路（ソレノイド・バルブボディ）、変速の学習制御、要素の発熱、
+  車輪を 3D の車体（VehicleComponent の車輪）へつなぐ口、3D の歯車の形（いまは模式図）、
+  Inspector での数値編集。
+
 ## 起動設定（`config.json` + `src/app/AppConfig.{h,cpp}`）
 
 **実行環境・システムに関わる設定はすべて `config.json`**（リポジトリ直下に
@@ -1038,7 +1200,7 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 | `log` | `level`（debug / info / warn / error。環境変数 `WIZENGINE_LOG` が優先） |
 | `scene` | `startupScene`・`startMode`・`maxCameras`・`editorCamera`・`idleWhenUnwatched` |
 | `physics` | `backend`・`multicoreForSoftBodies`・`multicoreMinBodies`・`terrainForcesCore` |
-| `ai` | `llm`（url / model / apiKey / temperature / timeoutSec / repairs / maxSceneKB）・`meshy`（url / apiKey / refine / artStyle / aiModel / targetPolycount / pollSec / timeoutSec / maxDownloadMB）・`maxMeshes`・`caFile`・`generatedDir` |
+| `ai` | `llm`（url / model / apiKey / temperature / timeoutSec / repairs / maxSceneKB）・`meshy`（url / apiKey / refine / artStyle / aiModel / targetPolycount / pollSec / timeoutSec / maxDownloadMB）・`vision`（rounds / width / detail / quality）・`history`・`maxMeshes`・`caFile`・`generatedDir` |
 
 - **優先順位は「既定値 < config.json < exe 引数」**。既定値の定義はコードに
   1 か所ずつ（`AppConfig.h` の構造体・`scene/SceneSystemConfig.h`・
@@ -1073,12 +1235,17 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 モード × エディタカメラのページ専用、判定はサーバー）。状態は `/scene` の `ai`。
 
 ```
-依頼文 ─► LLM ─► XML（壊れていれば・文書の警告が出れば LLM に直させる = llmRepairs 回）
+依頼文 ─► （編集 / 追加なら）今のシーンの XML + 要約（SceneDigest）+ 選択中の物・@名前
+          + これまでの流れ（SceneHistory: AI の依頼と結果・その間にユーザーが手で変えた所）
+       ─► LLM ─► XML（壊れていれば・文書の警告が出れば LLM に直させる = llmRepairs 回）
           <mesh name generate="英語の説明" height="m">  ← 生成の依頼（WizEngine 内部の印）
        ─► Meshy: 作成を全部先に投げて並行に待つ ─► assets/generated/*.glb
           倍率 = 頼んだ高さ ÷ モデルの高さ（GlbBounds: POSITION の min/max × ノード変換）
        ─► SceneLayout: 動く物の重なり・床へのめり込みを真上へ載せ直す
        ─► toXmlText ─► EditorState の Op "xml"（置き換え）/ "xml.append"（appendDocument）
+       ─► 見た目の見直し（ai.vision.rounds 回）: 適用後のシーンを低解像度で 4 枚撮り
+          （エディタカメラ・正面 +Z・横 +X・上）、JPEG の data URL で LLM へ
+          ─► NO_CHANGES なら終わり / 直した全文なら Op "xml" で置き換えてもう一度
 ```
 
 - **`src/autogen/` は Chrono も Filament も知らない**（文書層 + HTTP だけ）。
@@ -1100,7 +1267,21 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 - **HTTPS は OpenSSL 付きのビルドだけ**（CMake が OpenSSL 3 を見つけたら
   `CPPHTTPLIB_OPENSSL_SUPPORT` を**ターゲット全体**に立てる。httplib はこの
   定義で class の中身が変わるので TU ごとに立て分けると ODR 違反）。無ければ
-  http:// の接続先だけ。プロキシは `HTTPS_PROXY` / `NO_PROXY`、CA は
+  http:// の接続先だけ（ブラウザの 🤖 の見出しが「https ですが、このビルドは
+  OpenSSL 無し」と理由を出す = `/scene` の `ai.llmIssue`）。**Windows**: Win64
+  OpenSSL の**完全版**（Light は DLL だけでヘッダもライブラリも無い = ビルドに
+  使えない）を入れれば `OPENSSL_ROOT_DIR` 無しでも見つかる。FindOpenSSL が見落とす
+  配置（3.2 以降 / 4.x のインポートライブラリ `lib/VC/x64/MD/`、FireDaemon などの
+  zip の `x64/{include,lib,bin}`、PATH の openssl.exe の親）は CMake が先に探して
+  `OPENSSL_ROOT_DIR` と `LIB_EAY_RELEASE` / `SSL_EAY_RELEASE` を渡す。見つからない
+  ときは configure に見た場所と理由（「DLL だけ = Light では」「ヘッダはあるが
+  .lib が無い」）を出す。実行時の DLL（3.x は `libssl-3-x64.dll` /
+  `libcrypto-3-x64.dll`、4.x は `-4-`。名前にメジャー版が入るので見つけた版で探す）は
+  ビルド後に exe の隣へコピーする（PATH にある GStreamer 同梱の別の版を拾わない
+  ため）。**OpenSSL 4.x も可**: httplib が使う API は 4.1.0 のヘッダと照合済み
+  （`X509_get_subject_name` が const を返す・`ASN1_STRING` が不透明になった・
+  `X509_NAME_get_text_by_NID` が非推奨、のどれも httplib 0.15.3 の書き方で通る。
+  非推奨の警告 C4996 は出る）。プロキシは `HTTPS_PROXY` / `NO_PROXY`、CA は
   `ai.caFile`。送るのは `model` と `messages` だけ（`max_tokens` /
   `temperature` / `response_format` は提供元とモデルの世代で可否が違うので
   送らない）。
@@ -1138,6 +1319,78 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
   確認用 PNG の右は関節を range の 70% まで動かした姿勢（開く向き = range の符号の確認）。
   文書は `fromXml` で警告 0 件まで確認済み、Chrono での動きは実機待ち。**まだエンジンの
   生成経路（`<mesh generate>`）にはつながっていない**。
+- **今のシーンの要約と名指し**（`src/autogen/SceneDigest.{h,cpp}`、編集 / 追加 /
+  見直しの往復）: XML だけでは「左の赤い箱」「テーブルの上のコップ」「これ」がどれかを
+  LLM が座標から推理しきれないので、エンジンが文書から決まった計算で出せることを
+  英文にして XML の後ろに添える（`describeScene`）: 物ごとの形・実寸（回転込みの外接箱）・
+  色の名前（`colorName`、リニア → 表示値の HSV）・中心と底 / 上面の高さ・固定 / 質量、
+  何の上に載っているか（底が相手の上面に 3 cm 以内 + 水平に重なる）・めり込み・宙に
+  浮いている（固定でもジョイントでもなく何にも載っていない = 落ちる）、**エディタ
+  カメラから見て左 / 中央 / 右・上下・距離**（ユーザーは画面の左右で話すので）と
+  「画面の右 ≒ +X」のような軸の対応、ジョイントの相手、ライト。**選択中の物**:
+  ブラウザの 🤖 の「選択中の ○○ を「これ」として渡す」（`useSelection`、既定 on）で、
+  AutoGenComponent がエディタカメラの選択を文書の番号（削除済みを詰めた番号）に直して
+  `GenRequest::focus` に入れる → 要約に「SELECTED BY THE USER」と「これ・それ = この物」。
+  **@名前**: 依頼文の `@table` のような名指し（body・ジョイント・ライト・ケーブル・cam<N>）。
+  照合は「シーンにある名前のうち最も長く一致するもの」（`resolveMentions`。日本語の名前の
+  後ろに助詞が続いても切れる、`@box10` を `box1` と取り違えない、英数字の直後の @ =
+  メールアドレスは名指しではない）。**無い名前はサーバーが送らずに断る**（ステータスに
+  名前、「新規」での @ も断る）。名前の無い物は送る前の写しに `body<番号>` を付ける
+  （`nameUnnamedBodies`。編集モードでは返ってきた文書に残る = 適用後は名前付き）。
+  ブラウザ（`web/autogen.js`）は `@` で候補を出す補完（↑↓・Enter / Tab・Esc は一覧だけ
+  閉じる）、欄の下に ✓ / ✗ の確認、オブジェクトの右クリック「🤖 AI の依頼で名指し」
+  （@名前 を入れて 🤖 を開く。「新規」なら「編集」に切り替える）。名前の一覧と照合は
+  サーバーと同じ規則を JS に写してある（`aiObjectNames` / `aiResolveMentions`）。
+  開始のステータスに「選択中 cup、@table」と受け取った指し示しを出す。
+- **これまでの流れ（履歴）**（`src/autogen/SceneHistory.{h,cpp}`）: LLM は依頼ごとに今の
+  シーンしか見ないので、「さっき足した物」「元に戻して」が通じず、ユーザーが手で直した所を
+  次の生成で黙って戻すこともある。そこで**シーンごと**に「AI の依頼・モード・結果・AI が
+  変えた所」と「その間にユーザーが手で変えた所」を 1 件ずつ記録し、直近 `ai.history` 件
+  （config.json、既定 10、0 = 渡さない）を英文（`formatHistory`）にして user メッセージに
+  添える（全モード。XML の全文は持ち回らない = 毎回送る今のシーンが唯一の正。最後が手の
+  変更なら「意図した変更なので戻すな」と言う）。**変わった所は 2 つの文書の差**
+  （`diffScenes`: body・ジョイント・ライトを名前で突き合わせ、追加 / 削除 / 移動 / 回転 /
+  大きさ / 色 / 固定 / 質量 / プレハブなど。カメラは見ない = 視点を回すたびに変わるため）。
+  基準は **AI が適用し終えた直後のシーン**: AutoGenComponent が積む Op に `"ai": true` を
+  付け、SceneEdit の xml / xml.append がそれを適用した後に `EditorState::setAiBaseline
+  (documentXml())`（番号付き）。生成の終わりの知らせ（`SceneGenerator::DoneFn`、busy の
+  うちにワーカーから）が積んだ Op の数だけ番号が進むのを待って読み、「依頼の直前の写し →
+  直後」の差を AI の 1 件に（新規は中身の一覧 `describeNewScene`）、基準もそれに進める。
+  次の依頼のとき INPUT スレッドが「基準 → 今」の差をユーザーの 1 件として記録し、基準を
+  今へ進める（同じ変更を 2 回書かない）。保存は `assets/generated/history/<シーン名>.json`
+  （無題は `_untitled`、50 件まで、基準の XML も入る = 再起動しても続く。シーン名ごと =
+  別のシーンを開くと別の流れ）。ブラウザは 🤖 の「これまでの流れ」（`/scene` の
+  `ai.history` / `historyLimit`、LLM に渡らない古いぶんは薄く）と 🧹 消す
+  （`ai.history.clear`）。
+- **エディタカメラは cam0 と決め打ちしない**: 文書の `<camera>` は**並び順がスロット番号**
+  なので、指示文は `scene.editorCamera` の N で「エディタの視点 = `<camera name="camN">`」と
+  言い（`PromptOptions::editorCamera`、見本・点検表も camN）、生成側が返ってきた文書を
+  **名前 camK でスロット K へ並べ直す**（`arrangeCameras`。名前の無いカメラは最初の 1 つを
+  エディタカメラのスロットへ、残りは空きへ。書かれなかったスロットは今のシーンのカメラで
+  埋める = `GenRequest::currentCameras`）。
+- **見た目の見直し（スクリーンショット）**: 文書だけでは LLM に「大きさ・浮き・
+  色・カメラの構図が依頼どおりか」が見えないので、適用の後に画面を撮って送る。
+  設定は config.json の `ai.vision`（`rounds` 既定 1・0 で切る、`width` 既定 512 =
+  16:9 で 512×288、`detail` = OpenAI の image_url.detail で既定 low = 1 枚 85 トークン
+  ほど、`quality` = JPEG の品質）。流れ: SceneGenerator のワーカーが `SnapshotFn`
+  （AutoGenComponent が渡す）を呼んで待つ → **RENDER スレッドの
+  `AutoGenComponent::onRenderUnlocked`** が、依頼から 1.5 s 経ち EditorState に積み
+  残しの Op が無くなったフレームで `Renderer::captureSnapshot` を 4 回呼ぶ（視点は
+  `planShots`: 文書のエディタカメラと、全 body の外接球に合わせた正面・横・上。
+  画像の向きを英文で添える）→ 撮ったときの文書（`toXmlText(document())`）と一緒に
+  返す → `buildReviewPrompt`（ScenePrompt.cpp）+ 画像で LLM へ。返答が `NO_CHANGES`
+  なら終わり、`<wizengine>` の全文なら通常と同じ検査・修正・配置の後始末を通して
+  Op "xml" で置き換え、`rounds` まで繰り返す。撮影に失敗・20 s で撮れない
+  （視聴者がいなくて描画が止まっている等）・画像を受けないモデルで断られた、は
+  見直しを省くだけ（シーンは適用済みのまま）。**撮影は専用のビュー**
+  （`Renderer::snapshot_`、`src/render/RendererSnapshot.cpp`）: views_ に入れない =
+  カメラのページの番号をずらさず映像にも映らない、エディタ専用レイヤ（ギズモ）と
+  UI は映さない、描画設定はカメラのビューと同じ（TAA だけ切る）。1 枚ごとに
+  flushAndWait で待つ同期の読み戻し（毎フレームではなく生成の後に数枚なので）。
+  撮った絵は `assets/generated/last_shots/shot1..4.jpg` に残る（毎回上書き。
+  last_chat.txt と並べて「LLM が何を見て直したか」を確かめる）。JPEG は
+  stb_image_write（`src/autogen/ImageEncode.cpp`、Filament 同梱の stb と衝突しない
+  ように STB_IMAGE_WRITE_STATIC）。
 - **LLM との往復は `assets/generated/last_chat.txt` に残る**（system / user /
   assistant の全文と、エンジンの検査で見つかった問題。返答のたびに上書き、
   キーは入らない）。「なぜこのシーンになったか」はまずこれを見る。
@@ -1156,12 +1409,19 @@ Simulink の置き換えを目指す仕組みの第 1 段。**ノード式（�
 - **できないこと / 効率の悪いこと**（実装しない判断）: 生成中の LLM 通信の
   中断（キャンセルは今の通信が終わってから効く。Meshy 側で走り始めたタスクは
   止まらず課金される）、生成モデルの凹形状の当たり判定（凸包のまま。器の中に
-  物は入らない）、レンダリング結果を見て直す視覚フィードバック（画像を LLM に
-  渡す往復は 1 回ごとに重い）、物理的に妥当な配置の保証（外接箱での後始末まで）。
+  物は入らない）、物理的に妥当な配置の保証（外接箱での後始末まで）。
 - **確認**: 文書層とパイプラインはモックの OpenAI / Meshy サーバーで結合テスト
   済み（修正の往復・生成・リダイレクト付きダウンロード・倍率・重なり・
   キャッシュ・追加モードの改名・Meshy 無しの代役・スレッド経由の適用）。
-  エンジン側（AutoGenComponent / main / SceneEdit の `xml.append`）は Chrono /
+  履歴は単体テスト（差の行・保存と読み直し・50 件で切る・消す・文章）とモック（履歴が
+  user メッセージに入る、エディタカメラ 2 番で cam2 / 名前なし / cam0 を返したときの
+  スロットの並べ直し、終わりの知らせ）で確認済み。要約と名指しは単体テスト（載っている・浮いている・めり込み・選択・名指しの印、
+  @ の照合 = 日本語名 + 助詞・box1 / box10・メール・無い名前）と、モックで編集モードの
+  user メッセージに要約・選択・名指しが入ることを確認済み（ブラウザの照合は Node で
+  サーバーと同じ結果）。見た目の見直しも同じモックで確認済み（画像 4 枚が data URL + detail で届く・
+  直した全文の適用 → 次の往復で NO_CHANGES・1 回目で NO_CHANGES）。撮影
+  （RendererSnapshot.cpp / AutoGenComponent の onRenderUnlocked）は Filament 1.74 の
+  ヘッダで構文検査まで = 実機で絵が撮れるかは未確認。エンジン側（AutoGenComponent / main / SceneEdit の `xml.append`）は Chrono /
   Filament の無い環境で書いたので実機でのビルド確認待ち。本物の OpenAI /
   Meshy への接続も未確認。
 
@@ -1171,13 +1431,31 @@ Chrono が持っていて WizEngine が使っていなかった機能のうち�
 `PhysicsWorld` の口を広げるだけで入るもの（「A」の一群）。文書の定義は
 `SceneDocument.h` 冒頭、値の型は `EditorTypes.h`、Chrono への変換は
 `SceneInternal.h`（`toJointSpec` / `toBodyOptions`）に 1 か所ずつ。見本は
-`assets/scenes/mechanisms.xml`。
+`assets/scenes/mechanisms.xml`。**遊星歯車の見本は `assets/scenes/planetary_gear.xml`**
+（AT のトランスミッションを組む 1 段ぶん。歯数は CAD 図どおり太陽歯車 A 16・遊星歯車
+B 22 × 4・内歯車 C 60・遊星キャリヤ D、モジュール 5 mm。太陽 ⇄ 遊星は外歯車、遊星 ⇄
+内歯車は `epicyclic` の歯車拘束、遊星はキャリヤに hinge。太陽と内歯車は速度モータ
+（制御器 `planetary` がパラメータ `sun_rpm` / `ring_rpm` から指令）、キャリヤが出力で、
+ウィリスの式（キャリヤ = (Za × 太陽 + Zc × 内歯車) / (Za + Zc)）の値と並べてスコープに
+出す。歯車の形は**インボリュート歯形の .glb**（`samples/planetary_gear/gears.py` が
+作る `assets/models/planetary/*.glb`。寸法の唯一の定義もそこ）で見た目だけ = 当たり
+判定は無く、回転の関係は拘束が決める。歯の位相は遊星の位置でかみ合うように合わせて
+あり、拘束どおりに回る限りかみ合ったまま（断面で重なり 0・すき間 約 0.19 mm を確認）。
+geom の無いボディなので慣性は `addFrame` の既定（m / 24）で、動力の流れ（トルク・
+クラッチ・ブレーキ）の評価にはまだ向かない。**実機で動作を確認済み**（歯数を CAD 図に
+合わせる前の 30 / 18 × 3 / 66 の版で）。
 
 - **ジョイント 13 種**（`JointKind` / `JointType`）。基本 5 種に加えて
   Universal（`ChLinkUniversal`、axis = シャフト）、Cylindrical、Planar
   （axis = 面の法線）、PointLine（axis = 線）、PointPlane、Gear
   （`ChLinkLockGear`、`ratio` と 2 本目のシャフト `anchor2` / `axis2`。
-  シャフト座標系はボディローカルへ手計算で直す `worldToBodyLocal`）、Screw
+  シャフト座標系はボディローカルへ手計算で直す `worldToBodyLocal`。
+  **`epicyclic="true"` = body2 が内歯車**（`SetEpicyclic`。body1 の歯車がその内側で
+  かみ合う = 遊星歯車のプラネット ⇄ リングギヤ。ratio は大きさだけが効き、
+  回る向きはこれで決まる: 外歯車どうしは逆向き、内歯車は同じ向き。かみ合いの
+  関係は 2 本のシャフトを結ぶ線から見た回転で立てるので、キャリアに載って公転する
+  プラネットでもそのまま効く。Inspector のジョイント節の「内歯車」、JSON は
+  `epicyclic`）、Screw
   （`ChLinkLockScrew`、`pitch` m/回転）、Spring（`ChLinkTSDA`、拘束ではなく
   力。地面側の取り付け点はアンカー、ボディ側は中心）。文書の type 名は
   `weld / hinge / ball / slide / distance / universal / cylindrical / planar /
@@ -1421,6 +1699,49 @@ Chrono の「中規模」の機能（新モジュールのリンクか設計変�
   手口で直す）。実機での確認は Multicore → Core の切替が起きること、
   ケーブルが垂れること、ブッシュの箱が止まること、荷重の箱が押されることの順。
 
+## ダブルウィッシュボーン式サスペンション（見本 `assets/scenes/double_wishbone.xml`）
+
+クォーターカーの加振試験台。**エンジンへのコードの追加は無く、既存のジョイント
+（Chrono の拘束）とばね（`ChLinkTSDA`）と制御器だけで組んだシーン文書**。文書は
+`samples/double_wishbone/gen.py` が作る（ハードポイント・質量・ばねの唯一の定義。
+手で XML を直すより gen.py を直して作り直す。手順は同じフォルダの README）。
+
+- **拘束の組み方（冗長なし = 自由度は車体の上下・サスの上下・ホイールの回転・
+  加振台の 4 つ）**: 車体の 1/4（400 kg）= 世界に slide、ロア / アッパー A アーム =
+  車体に hinge（前後軸。A アームの 2 点のブッシュは見た目）、アップライト = 両アームに
+  ball、タイロッド = 車体に universal + アップライトに ball（キングピンまわりを止める）、
+  ホイール = アップライトに hinge、コイルオーバー = 上端 universal・シリンダ ⇄ ロッドの
+  slide・下端 ball。リンクのボディは形（geom）を持たない（質量だけ = `addFrame`）ので
+  部品どうしは当たらない（Chrono はジョイントでつないだ物どうしの接触を切らない）。
+- **見た目は実寸の部品メッシュ**（`assets/models/double_wishbone/*.glb`、ボディごとに 1 個、
+  計 約 0.7 MB。`samples/double_wishbone/meshes.py` が V6 の `meshlib.py` で作る。各 .glb は
+  そのボディの座標系 = `gen.body_frames()`）。色は役割ごと（車体 紺・ロア 橙・アッパー 緑・
+  ナックル 銀・タイロッド 青・コイル 赤・ボールジョイント 真鍮）。コイルばねは上下の
+  ボディに半分ずつ載せてある = 縮むと真ん中で重なり、伸びると開く。カメラは cam0 =
+  内側の斜め前（ホイールに隠れない）・front = 真正面・outside = 外側の斜め前。
+- **ばねの端はボディの中心**（`spring` / `distance` の約束: 動くボディは中心、固定なら
+  アンカー）。だからコイルはシリンダとロッドの 2 体の中心の間に張る（軸上に中心を
+  置いたので、中心間の距離の変化 = コイルの長さの変化）。タイヤはホイール中心 ⇄
+  加振台の中心の縦ばね（250 kN/m。引っぱりも出る = 浮き上がりは表せない。
+  `scope:tire_N` が負なら実車では浮いている）。
+- **設計姿勢 = 1G の釣り合い**: コイルとタイヤの `distance`（自然長）を予圧ぶん長くして
+  ある。コイルの予圧は gen.py が仮想仕事で出す（サスを微小に動かしたときの重力・
+  タイヤ力・ばね力の仕事の和 = 0）。ばね定数はばね上の固有振動数 1.4 Hz（タイヤと直列）
+  ÷ レバー比²、ダンパはばね上の減衰比 0.3。アッパーが短い SLA なのでバンプで
+  ネガティブキャンバー、タイロッドでバンプステアが出る（`gen.py --report` の表）。
+- **制御器 `rig`**（`samples/double_wishbone/rig.txt` の数式）: 加振台の slide の位置
+  モータの目標を作る（`param:mode` = 静置 / 段差 / 正弦掃引 0.5→20 Hz / 正弦、各モードは
+  自分の時計を `select(m, delay(t) + dt, 0)` で持つ）。計測はスコープと制御盤のグラフ:
+  変位・ストローク・キャンバー / トー変化（`body:upright.rx ry rz` から R = Rz Ry Rx で
+  ホイール軸を組み直す = 設計姿勢で 0）・コイルとタイヤの力・車体の加速度。
+  開始時の値は `y0 = select(time > 0, delay(y0), 今の値)` で覚える。
+- **確認（本物の Chrono 9.0.0 = Core をこの環境でビルドし、PhysicsWorld を同じソースの
+  まま組んで、rig を C++ インタプリタで回して）**: 静置で車体の沈み 0.07 mm（= 予圧どおり
+  釣り合う）。段差 30 mm で車体が約 1.4 Hz で減衰しながら追従、正弦掃引 30 mm で
+  ストローク ±60 mm のときキャンバー −2.07 / +1.03°（gen.py の運動学の表 −1.99 / +1.04°
+  とほぼ一致）。13 Hz・30 mm の正弦ではタイヤ力が負まで振れる（ホイールホップ = 実車なら
+  浮く）。NaN なし、実時間の約 10 倍の速さ。**エンジン本体（Scene・ブラウザ）での実行は未確認**。
+
 ## パーティクル（`<emitter>` + `components/EffectsComponent` + `Renderer::setParticles`）
 
 炎・火花のような**見た目だけの粒子**（物理には何も返さない）。文書は `<worldbody>` の
@@ -1454,6 +1775,214 @@ rgba2 intensity light lightrange max>`（`ed::EmitterDesc`、`EditorState::emitt
 - **未**: 力（重力・浮力・抵抗）、当たり判定、テクスチャ付きの粒子、カメラに
   向く板（ビューが共有なので 3 枚の円盤で代える）、エディタでの配置 UI
   （いまは 📄 XML で書く）。
+
+## 流体（`<water>` + `<fluid>`。`src/fluid/` + `components/FluidComponent` + `physics/FluidParticles`）
+
+流体は 2 段構え（調査の経緯と Chrono の他の選択肢は `docs/fluid.md`）:
+**水面**（`<water>`）は物理の系の外にある「水の範囲」で、水面より下の物へ浮力・
+抗力を掛けるだけ（水そのものは動かない）。**流体粒子**（`<fluid>`）は
+Chrono::Multicore の流体コンテナ（`ChFluidContainer`）が水を粒子で解く（注ぐ・
+跳ねる・物を押す）。見本は `assets/scenes/water.xml`（プールに物を浮かべる）・
+`assets/scenes/ocean.xml`（風浪の海に物を浮かべる）・`assets/scenes/fluid.xml`（水槽の
+ダム崩壊）。
+
+```
+シーン文書 <water> / <fluid>（document/FluidTypes.h + FluidXml.h）
+  -> EditorState::water() / fluid()（版番号 waterVersion / fluidVersion）
+  ├ 水面: FluidComponent::onPhysicsStep が fluid/WaterForces で力を求め、
+  │       PhysicsWorld::applyForceAtPoint（力 + 力の対のモーメント）で掛ける
+  └ 粒子: シミュレート開始で Scene::buildFluid が fluid/FluidSeed で並べ、
+          PhysicsWorld::addFluid → physics/FluidParticles（ChFluidContainer）
+描画: FluidComponent::onRender（水面の格子 = Renderer::addWaterMesh + water.mat、流体粒子 =
+      つないだ水の表面（別スレッドの FluidSurface → Renderer::addLiquidMesh + liquid.mat）か玉）
+```
+
+- **`src/fluid/` は Chrono も Filament も知らない純粋な計算**（自前の `Vec3` / `Quat` =
+  `FluidMath.h`。vehicle/ と同じ方針）。`WaterForces` = 波の成分（`prepareWaves`）・
+  水面の高さ・法線・水の速度（流れ + 深水波の水粒子の速度）・物 1 個に掛かる力・
+  水面の格子と白波、`FluidSeed` = 粒子の六方最密
+  配置と玉のメッシュ、`FluidSurface` = 粒子をつないだ水の表面（メタボール + Surface Nets）。境界の FluidComponent / Scene が詰め替える。
+- **文書**: どちらも `<worldbody>` 直下の単一要素（地面・テレインと同じ。節が無い =
+  無い、`hasWater` / `hasFluid`）。`<water pos size density drag lindrag angdrag flow
+  wave period heading wind spread waves seed choppy rgba roughness clarity ior ripple foam
+  cells enabled>`（pos の y が静水面、size は X / Z の半分の広さ）。`<fluid spacing density viscosity pressure friction cohesion maxspeed
+  recovery relaxation epsilon max surface rgba clarity ior roughness drawscale enabled>` と子の `<block pos
+  size velocity/>`（size は半寸法、最大 64 個）。読み書きはヘッダだけの
+  `document/FluidXml.h`（文書層のテストに .cpp を足さなくて済むように）。既定値と
+  同じ属性は書かない。打ち間違い（`<water level>`・未知の子・箱の無い流体）は warnings。
+- **波**（`WaterForces.h` の冒頭が正）: Gerstner 波の和。**うねり**（wave / period /
+  heading の 1 本）と**風浪**（`wind` m/s から Pierson-Moskowitz のスペクトルで `waves`
+  本。ピーク ωp = 0.877 g / U の 0.6〜3 倍を対数で区切って 1 本ずつ、振幅 √(2SΔω)、
+  最後に分散を理論値へ合わせる = 有義波高 0.21 U² / g。向きは heading ± spread、並びと
+  位相は `seed`）。`choppy` が波頭の尖り（0 = 正弦波、1 = 本来の Gerstner 波、> 1 = 誇張。
+  Σ k A × choppy は 0.9 で頭打ち = 波面が折り返さない）。成分は `prepareWaves` が
+  設定か重力の大きさが変わったときだけ作る（物理と描画で別々に持つ、同じ値になる）。
+  Gerstner 波は水平にも動くので、(x, z) の高さは「真上に来る静止位置」を 4 回の反復で
+  たどって求める（`surfaceHeight`、誤差 1e-6 m 程度）= **描画の格子と浮力が同じ波**。
+- **浮力・抗力のモデル**: 箱は 4 × 4 × 4 の小箱に分け、
+  小箱ごとに「水面下の割合」（鉛直方向の広がりで直線に近似 = 揺れても力が跳ねない）
+  と浮心を出す = 傾いた箱の復元モーメント・波の上で傾く動きが出る。球は球冠の厳密な
+  式。凸包のモデルは geom の半径の球、geom の無いフレーム・三角メッシュ・固定の物は
+  対象外、ソフトボディは全粒子へ等しく（モーメントなし）。抗力は浮心の水に対する
+  速度 u で二乗 ½ρCdA|u|u（A = u の向きの投影面積 × 浸かった割合）+ 線形
+  ρV_sub c u、回転は ρV_sub L²/6 (c_ang ω + Cd|ω|ω)。**安全弁**: 抗力はそのステップで
+  相対速度を反転させない大きさで頭打ち（陽に掛けるため、軽い物・速い流れでも
+  発散しない）。既定の減衰（lindrag 2・angdrag 1）は上下の揺れの減衰比 0.1 前後 =
+  数回揺れて収まる。付加質量・造波抵抗・水の側の反作用は入れない。
+- **力の掛け方**: 力は重心へ `applyForceAtPoint`、モーメントは重心の両側の点へ逆向きの
+  力の対（PhysicsWorld にトルクの口が無いので。制御器の `torqueAsCouple` と同じ作り）。
+  水の範囲から十分離れた物（外接球が水面と範囲の外）は計算しない。**水面の編集は
+  シミュレート中でもすぐ効く**（版番号を見て設定を取り直すだけ）。
+- **流体粒子は Multicore + NSC 専用**: `Scene::requiredBackend` が「流体がある →
+  Multicore」を選ぶ。ただし Core 専用の機能（ケーブル・ブッシュ・荷重・テレイン・AT・
+  直接法・モーダル）が先に勝ち、そのときは Core のまま粒子を作らない（理由は
+  backendNote と `/scene` の `fluidStatus.error`）。Multicore の無いビルド・
+  `contact="smc"` も作らない。
+- **粒子は外せない**（Multicore のデータマネージャは 3 自由度の粒子を足す口しか
+  持たない = `FluidParticles.h`）。そこで**シミュレート開始のたびに系ごと作り直す**:
+  `enterMode` が、前の開始の粒子が系に残っていれば `rebuildPhysicsWorld` してから
+  `buildFluid`（モードはまだエディタなので作り直しはジョイントを張らない）。停止では
+  粒子は系に残すが写さない（`fluidLive_` を下ろす = 描画は文書の配置へ戻る。エディタは
+  積分しないので残っていても動かない）。シミュレート中の系の作り直し（他の編集が
+  引き起こすバックエンド切替など）では `rebuildPhysicsWorld` が粒子も作り直す。
+  シミュレート中の `edit.fluid` は Reset か次の開始で効く。**Reset**（`Scene::reset` →
+  `resetFluid`）: 作ったときの設計のまま（`fluidBuiltVersion_` = `fluidVersion`）なら
+  粒子を足したときの位置・速度へその場で書き戻す（`PhysicsWorld::resetFluid` →
+  `Ch3DOFContainer::SetPos / SetPosDt`。数は変わらないので外す必要が無い）。シミュレート
+  中に流体を足した / 外した / 設定を変えたなら開始と同じく系ごと作り直す。以前は
+  Reset が剛体だけを戻し、粒子は崩れたまま残っていた（実機で報告）。一時停止中の
+  Reset でも戻った並びが見えるよう、`snapshot(cut = true)` は粒子も写す（毎ステップの
+  snapshot は写さない = パスの終わりだけ）。
+- **値の決め方は Chrono の `demo_MCORE_fluidNSC` に合わせた**: 粒子は間隔 spacing の
+  六方最密格子（1 粒子の体積 spacing³/√2、質量 = 密度 × それ）、カーネル半径 =
+  spacing / 0.9、密度拘束の緩和時間 tau = relaxation × 物理の刻み（既定 4 ステップ）、
+  人工圧力の届く距離 = カーネル半径 × 0.2。**細かい刻みが要る**（デモは 1 ms）ので、
+  刻みが 2.5 ms より粗いと `buildFluid` が LOGW。見本は 250 Hz × 4 = 1 ms。
+- **描画は 2 通り**（`<fluid surface>`、既定 true）。
+  **表面（既定）**: 粒子どうしをつないだ水の表面を、透けて屈折する水の材質で描く。
+  ①`fluid/FluidSurface`（純粋な計算）が粒子ごとの滑らかな山（メタボール、
+  w(q) = (1 − q²)³・半径 R = 1.4 d）を格子（0.5 d、粒子の外接箱 + R だけ）に溜め、
+  等値面 iso = 0.75 を **Surface Nets**（等値面をまたぐセルに頂点 1 個、またぐ辺ごとに
+  周りの 4 セルで四角形）で三角形にし、1 回ならして、法線は隣の三角形の面積の重み付き
+  平均。iso と R は「塊の表面が外側の粒子の中心から約 0.6 d 外・孤立した 1 粒は小さな
+  水滴として残る」に較正してある（R を変えたら kIso も測り直す）。②**別スレッド**
+  （`FluidComponent::workerLoop`）が組み、描画スレッドは「前の表面ができていれば今の
+  粒子で次を頼む・できた表面を送る」だけ（待たない = 1〜2 フレーム遅れて追う。開始 /
+  停止の切り替わりと、流体が消えたときに仕掛かりの結果を捨てる番号 `hiddenAtSerial_`）。
+  ③`Renderer::addLiquidMesh / setLiquidMesh / setLiquidStyle`（`RendererLiquid.cpp`）:
+  頂点と三角形の数が毎フレーム変わるので席を 1.5 倍で取り、余った三角形の席は
+  インデックス 0（面積 0）で埋める（プリミティブ数を変える API を使わない = パーティクルと
+  同じ方針）。影は落とさず受ける。④材質は `assets/materials/liquid.mat`（lit +
+  `refractionMode : screenspace`・`refractionType : solid`、パラメータ baseColor /
+  absorption / roughness / ior / transmission / thickness）= 背景が屈折率でずれて透け、
+  厚みのぶん吸収で色が付く。吸収係数は「厚み `clarity` (m) の水を通すと rgba の色」に
+  なる Beer-Lambert の係数（−ln(rgba) / clarity）、厚みは粒子の上下の広がり + d（大きく
+  変わったら入れ直す）。画面空間の屈折なので、液体どうしの重なりは屈折で見えない
+  （Filament の約束）。**玉（surface="false"）**: 従来の粒子ごとの正八面体（6 頂点・
+  8 三角形）を `Renderer::addSoftShape` の 1 スロットに詰める不透明の玉。どちらの描き方も
+  シミュレート中は `Scene::renderFluid`（パスの終わりに写した Chrono の粒子を、姿勢と
+  同じ 2 フレームの間で補間した値）、エディタでは文書の配置（`seedFluid` = 開始した
+  ときと同じ並び）を描き、エディタでは組み直したときだけ送る。**水面（`<water>`）**は
+  格子 1 枚（`cells`、既定 96）を Gerstner の写像で毎フレーム動かし（波が無ければ 1 回
+  だけ。縁の点は水平に動かさない = プールの壁と隙間を作らない）、`Renderer::addWaterMesh`
+  （`RendererWater.cpp`。三角形の並びは固定、頂点の COLOR に白波と水深）を
+  `water.mat` で描く: 画面空間の屈折で透け、透過の割合 = exp(−水深 / `clarity`)、残りは
+  `rgba`（深い水の色）の拡散 = 浅いプールは底が見え、深い海は水の色。水深は地面の面
+  （`Scene::groundPosition().y`、回転は見ない）まで、地面が無ければ深い海。さざ波
+  （`ripple`）は材質の中の法線だけ（8 本の正弦波、遠い所は消す）、白波（`foam`）は面の
+  縮み 1 − J の絶対値から（`foamAmount`。風浪は 3 m/s 以下で 0）、波頭は高さに応じて
+  明るく。**材質は `blending : transparent`**: opaque だと SSAO が水面自身の波に掛かって
+  斜めから見た水面に細かい縞が出た（描いて確認）。代わりに SSAO と SSR は水面に掛から
+  ない。**確認**: 表面の組み立ては単体テスト（閉じた面・外向き・塊の
+  表面の位置・水滴・2 粒子の連結 / 分離）と Chrono で崩した実際の粒子（1,764 個で
+  2〜4 ms・NaN 0・折れ目 0.05% 以下）。描画は **Filament 1.74 の本物の Renderer を
+  lavapipe（CPU の Vulkan）で回して**目で確認（`docs/images/fluid_surface_*.jpg`）。
+- **UI**: World タブの「💧 流体」節（`secFluid`。水面と粒子の有無・主な値・1 つ目の箱。
+  2 つ目以降の箱は 📄 XML）、アセットパネルの 🌊 Water / 💧 Fluid タイル（無ければ置く、
+  あれば節を開く）。コマンドは `edit.water` / `edit.fluid`（部分更新、`"present": false`
+  で節ごと外す。キーは `/scene` の `water` / `fluid` と同じ = `FluidTypes.h` の
+  `toJson` / `waterFromJson` / `fluidFromJson`）。`/scene` には `fluidStatus`（作った数・
+  打ち切り・作れなかった理由）と `features.fluid`。節には「表面でつなぐ」・透明度
+  （clarity）・屈折率（ior）の欄もある。水面の欄には風速・ばらつき・成分の数・種・尖り・
+  白波・透明度・屈折率・さざ波もある。AI の指示文は `<water>` / `<fluid>` を
+  書かせない（`ScenePrompt.cpp`）、履歴の差分は追加 / 削除 / 変更を 1 行。
+- **Multicore のソルバは 1 段（SLIDING）にする**（`PhysicsSystem::useSingleSlidingPhase`、
+  `FluidParticles::add` が呼ぶ）: Chrono 9.0 の `ChIterativeSolverMulticoreNSC::SetR` は
+  段を分けて回すとき（WizEngine の既定 = SPINNING の多段）に流体の拘束の行数を数え
+  違え、最初のステップで Blaze の例外 "Invalid subvector specification" を投げる（本物の
+  Chrono で確認）。1 段なら行を丸ごと使う経路を通る（Chrono のデモと同じ設定）。
+  代わりに流体のある系では転がり / スピン摩擦が効かない。系を作り直すと元に戻る。
+- **重さ**: 速さは粒子の数で決まり、反復回数ではほとんど変わらない（本物の Chrono 9.0・
+  4 コアで、1,800 粒子・2 ms 刻み・反復 30 が 1 ステップ 9〜14 ms = 実時間の約 1/5、
+  7,400 粒子・1 ms 刻みが 40〜90 ms）。見本の `fluid.xml` は前者。
+- **確認（本物の Chrono 9.0.0 = Core + Multicore をこの環境でビルドし、PhysicsWorld を
+  同じソースのまま回して）**: 水面の浮力は FluidComponent と同じ掛け方で、密度 500 の
+  箱の中心が理論どおり水面で止まる（y 1.0000）・25° 傾けて落とした密度 400 のいかだが
+  0.09° まで起き上がり喫水も理論どおり（1.0200）。流体粒子はダム崩壊（`fluid.xml` と同じ
+  配置、1,764 / 7,363 粒子）で NaN 0・水槽から漏れる粒子 0〜3・波が反対の壁まで届いて
+  0.5 m まで跳ねる・浮いた箱を押し流す、浅い水へ落とした密度 500 の箱が浮く（中心
+  0.162 m、水面 ≈ 0.157 m）、Reset で最初の並びへ誤差 0 で戻り 2 回目も同じように
+  崩れる（1.2 s 後の到達 0.578 m・平均の高さ 0.054 m が一致）。**実機（エンジン本体）で
+  動作を確認済み**（流体粒子。Reset の不具合はそこで見つかった）。静止後の水の高さは非圧縮の値より 1〜2 割低い（密度拘束の
+  反復で少し縮む）。文書層・純粋な計算は単体テスト（XML 往復・打ち間違いの警告・
+  JSON の部分更新・浮力 / 浮心 / 復元モーメント・密度比どおりの喫水・流れに乗る・
+  安全弁・波の式・粒子の配置）。**海の波**: 有義波高が 0.21 U²/g に 1% 以内（風速 2〜
+  20 m/s）、逆写像の高さが格子の点と 1.4e-6 m で一致・法線も一致、波の上の箱の浮力の
+  1 周期平均が重さと 0.05% で一致、`ocean.xml` の物を本物の Chrono（Core）で 40 秒
+  回して NaN 0・全部が波に乗って上下。描画は Filament 1.74 を lavapipe で回して確認
+  （`docs/images/ocean_*.jpg` / `water_pool.jpg`）。**エンジン本体での海の確認は未**。
+- **空気（シーン全体の設定。`<option density wind airdrag airlift magnus atmosphere
+  temperature humidity pressure altitude>`）**: MuJoCo の `<option density wind>` と同じ
+  置き場・同じ意味（`SimSettings::airDensity` / `windX..Z` / `airDrag` / `airLift` /
+  `airMagnus` / `airAtmosphere` / `airTemperature` / `airHumidity` / `airPressure` /
+  `airAltitude`）。**密度 0・atmosphere false が既定 = 無し**（従来の挙動・既定値なら
+  書かない）。大気は 1.225。
+  * **密度は直接か気象条件から**（`fluid/Atmosphere.h`、純粋）: `atmosphere="true"` なら
+    気温 ℃・相対湿度 %・海面気圧 Pa（天気予報の値）・標高 m から湿り空気の密度
+    ρ = pd/(Rd T) + pv/(Rv T)（pv = 湿度 × 飽和水蒸気圧 = Buck の式、その場の気圧 =
+    標準大気の式 p0 (1 − 2.25577e-5 h)^5.25588）。15 ℃・0 %・101325 Pa で 1.2250、
+    20 ℃ 50 % で 1.199、標高 1600 m で 1.010。気象条件は atmosphere="false" でも読み
+    書きする（制御器が書いたときの土台）。
+  * **制御器（スクリプト）から変えられる**: 信号 `air:<量>`（センサ = density temperature
+    humidity pressure local_pressure altitude wind_x/y/z drag lift magnus、アクチュエータ =
+    local_pressure 以外）。ControlComponent が毎ステップ書いた値を `fluid::AirOverride` に
+    集めて `Scene::setAirOverride` へ渡し（後の制御器が勝つ。書く制御器が無くなれば空）、
+    流体・車両の係が同じステップに `Scene::airNow()`（文書 + 上書き = `resolveAir`）で使う
+    （登録順が Control → Fluid → Vehicle なので同じステップから効く）。上書きは書いた
+    世代（runGeneration）とシミュレート中だけ効き、**文書は書き換えない**（止める・
+    Reset で文書の値へ戻る。保存されない）。気象条件を 1 つでも書けば密度は気象条件から
+    計算し直す、density を書けばそれが勝つ。範囲は `clampAir*`（文書の clampSim と同じ）。
+    センサはステップの始めに 1 回取った値（前のステップの上書き込み）。
+  * **今の値は `/scene` の `air`**（密度・気象条件から出したか・その場の気圧・
+    スクリプトの上書き中か。`Scene::airJson`）で、World タブに「実際の密度」を出す。
+  * 式は `fluid/AirDrag.h`（純粋、冒頭が正）:
+  * **抗力** F = −½ρ Cd A |u| u（u = 速度 − 風、A は u の向きへの投影面積 = 箱は回転込み、
+    球は πr²、Cd は箱 1.05・球 0.47 × airdrag）を重心へ。箱は回転にも面ごとの二乗抵抗。
+  * **揚力**（airlift、箱とメッシュ）: 3 組の面をそれぞれ平らな板として C_L = sin 2α
+    （平板の形）。立方体は打ち消して 0、薄い板・棒ほど効く。重心に掛ける（圧力中心の
+    ずれ = ひらひら・風見は無し）。
+  * **マグヌス**（magnus、当たり判定が球の物だけ）: C_L = S / (2.022 S + 0.981)、
+    S = r|ω⊥| / |u|、向き ω × û（逆回転で浮く・横回転で曲がる）。
+  * 安全弁: 抗力はそのステップで相対速度・角速度を反転させない、揚力とマグヌスは 1 ステップの
+    速度変化を |u| の半分まで。
+  * **メッシュ**（collision = model / trimesh）は当たり判定の外接箱で受ける
+    （`Scene::meshHalfExtents`、凸包か三角形から 1 回だけ。読めなければ球で、マグヌスは無し）。
+  * **車両の車体**は形からの力を受けず、`<vehicle drag>`（CdA）で**シーンの密度と風**を受ける
+    （`VehicleModel::setAir`、VehicleComponent が毎ステップ渡す）。シーンの密度が 0 なら従来の
+    1.225 kg/m³・無風 = 古い文書の走りは変わらない。車の形（Cd 0.3 前後）は箱の Cd 1.05 ×
+    箱の面積と合わない（4 倍近く強くなる）ので、CdA は車両側に残してある。
+  * 掛けるのは FluidComponent の水と同じループ（水に浸かった割合ぶんは減らす）。対象外は
+    固定の物と geom の無いフレーム。速度減衰（lineardamping）とは別で両方効く。
+  * UI は World タブのシミュレート設定の「空気抵抗」（チェック・密度の決め方 = 直接入力 /
+    気象条件から・密度・気温・湿度・海面気圧 hPa・標高・風 X Y Z・Cd / 揚力 / マグヌスの
+    倍率 = `edit.sim` の `airDensity` / `airAtmosphere` / `airTemperature` / `airHumidity` /
+    `airPressure`（Pa）/ `airAltitude` / `wind {x,y,z}` / `airDrag` / `airLift` /
+    `airMagnus`）。
+  * 入れていない: 物どうしの風よけ・突風 / 乱れ・物ごとの係数・流れの可視化。
+- **未**: 水平線まで続く海（カメラに付いて動く格子）、水中から見た水面（霧・
+  コースティクス）、岸や物の周りの泡、水の側の反作用（物が水を押しのけて
+  水面が盛り上がる・航跡）、砕け波、粒子の表面の泡・しぶきの白さ・コースティクス、粒子と水面の
+  併用時の相互作用（別々に効く）、流体粒子の UI での箱の追加、Chrono::FSI（SPH・CUDA）。
 
 ## ソフトボディ（`src/scene/SoftLattice.{h,cpp}` + `PhysicsWorld::addSoftBody` + `Renderer::addSoftShape`）
 
@@ -1816,22 +2345,29 @@ src/
   main.cpp       起動・引数解析・2 スレッドのループ
   core/          Log, AssetError, Versions, Stats, CpuAffinity, PortScan
                  （エンジン非依存の土台）
-  physics/       PhysicsWorld（Chrono）, MeshCollision（glTF 凸包）, ModelImport（URDF 等の取込）, PhysicsTuning
+  physics/       PhysicsWorld（Chrono）, MeshCollision（glTF 凸包）, ModelImport（URDF 等の取込）, PhysicsTuning,
+                 ShaftNetworks（1D シャフト網 = AT の駆動系）, FluidParticles（Multicore の流体粒子）
   render/        Renderer（Filament）, GltfLoader, EnvironmentLoader, ImageLoader
   streaming/     HttpServer, WebRtcStreamer, VideoStreamer（GStreamer）
   document/      EditorTypes, SceneDocument, SceneXml（シーン文書。エンジン非依存）
   scene/         Scene（Scene.cpp / SceneEdit.cpp / SceneEvents.cpp /
-                 SceneSerialize.cpp + 私的ヘッダ SceneInternal.h）, SceneConfig,
+                 SceneSerialize.cpp / SceneFluid.cpp + 私的ヘッダ SceneInternal.h）, SceneConfig,
                  EditorState, GameObject, CameraObject, BoxController,
                  SceneComponent, PrefabDefaults, PrefabFrame, SceneMath,
                  MathBridge, RenderBridge
   components/    EditorComponent, GizmoComponent, PhysicsControlComponent,
                  StreamControlComponent, VehicleComponent, PrefabComponent,
-                 AutoGenComponent, ControlComponent, EffectsComponent（パーティクル）
+                 AutoGenComponent, ControlComponent, EffectsComponent（パーティクル）,
+                 AtDriveline（AT を Chrono のシャフト網として組む係）,
+                 FluidComponent（水面の浮力・抗力と、水面・流体粒子の描画）
   app/           起動設定（config.json の読み込み = AppConfig）
   autogen/       AI によるシーン自動構築（LLM / Meshy の HTTP クライアント・指示文・
                  配置の後始末。Chrono も Filament も知らない）
   vehicle/       車両モデル（純粋な数値ライブラリ。tests/vehicle が使う）
+  fluid/         流体の純粋な計算（水面の浮力・抗力・Gerstner 波と海のスペクトル = WaterForces、流体粒子の配置と
+                 玉のメッシュ = FluidSeed、粒子をつないだ水の表面 = FluidSurface。
+                 Chrono も Filament も知らない）
+  transmission/  遊星歯車式 AT の構造・変速制御（TCU）・信号・XML（純粋。動力学は Chrono）
   formula/       計算式（ノード式）の検証・実行（C++ / LuaJIT）・XML・数式テキスト
   control/       制御器の信号名・センサの計算・雛形（純粋。ControlComponent が使う）
 tests/vehicle/   車両モデルの単体テスト（-DWIZ_BUILD_TESTS=ON で本体からも回せる）
@@ -1839,6 +2375,9 @@ tests/document/  シーン文書の単体テスト（同上。Chrono も Filamen
 cmake/           LuaJIT.cmake（LuaJIT の検出・ビルド）
 samples/         見本シーンの素材を作るもの（エンジンのビルド・実行には使わない）。
                  v6_engine/ = V6 の部品メッシュと環境光を作る Python（manifold3d + trimesh）
+                 planetary_gear/ = 遊星歯車のインボリュート歯形の .glb を作る Python
+                 double_wishbone/ = ダブルウィッシュボーンの見本シーン（XML）と部品の .glb を作る Python
+                 ocean/ = 海の見本の空の環境マップ（assets/env/ocean_sky.hdr）を作る Python
                  meshgen/ = 手元の Text to 3D（LLM が cad.py の API で CSG のスクリプトを書き、
                  ここで回して .glb にする。動く物は部品ごとの .glb + ジョイントのシーン文書。
                  Meshy の代わりの第 1 段。README.md）
@@ -2259,6 +2798,9 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
   ブロックを足し、センサ / アクチュエータの信号名で Chrono とつなぐ。スコープと
   CSV。上の「制御器」の章）と、計算式の数式テキスト ⇄ ノードの変換・汎用の
   雛形（上の「計算式」の章）。車両のタイヤ式・空気圧式の差し替えは廃止。
+- 済（実機待ち）: 遊星歯車式 AT（JATCO JR913E。Chrono の 1D シャフトでトルコン・ロック
+  アップ・ダンパ・遊星 4 組・締結要素 6 つ・終減速・車両、TCU の油圧と掛け替え変速。V6 の
+  クランクへ直結。上の「遊星歯車式 AT」の章）。
 - 済: イベントアセット（Node-RED 風のノードエディタ。衝突・開始・タイマー・
   掴みのトリガーと、色・力・固定・引き寄せ・ライト・カメラ注視のアクション。
   ノードは名前付きアセットにまとめ、オブジェクト / シーン全体に何本でも
@@ -2272,6 +2814,8 @@ tune=zerolatency ! rtph264pay ! udpsink host=127.0.0.1 port=5000` に置き換�
 - 済（実機待ち）: 起動設定の config.json 化（上の「起動設定」の章）。
 - 済（実機待ち）: AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換
   Text to 3D。上の「AI によるシーン自動構築」の章）。
+- 済（流体粒子は実機で確認）: 流体（水面の浮力・抗力・波と、Chrono::Multicore の流体粒子。
+  上の「流体」の章と `docs/fluid.md`）。
 - 済: ステップ3（姿勢反映）〜6（UDP配信）。
 - 未: ステップ7（クライアント→サーバーの入力・制御チャネル。カメラ操作を
   UDP/TCP で受けて `Renderer` にカメラ更新 API を追加）。

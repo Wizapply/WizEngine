@@ -445,6 +445,58 @@ public:
     // particles が最大数を超えたぶんは描かない。
     void setParticles(std::size_t id, const std::vector<Particle>& particles);
 
+    // ---- 液体（流体粒子から組んだ水の表面）--------------------------------
+    // 頂点と三角形の数が毎フレーム変わるメッシュを、画面空間の屈折で透けて見える
+    // 水の材質（liquid.mat）で描く。席（バッファの大きさ）は足りなくなったら
+    // 1.5 倍に作り直し、余った三角形の席は面積 0（インデックス 0）で埋める =
+    // 実行中にプリミティブ数を変える版依存の API を使わない（パーティクルと同じ方針）。
+    // 頂点はワールド座標、法線は外向き。影は落とさない（透明な物の影は不自然）が
+    // 受ける。全ビューに映る。RENDER スレッド。
+    struct LiquidStyle {
+        filament::math::float3 color{1.0f, 1.0f, 1.0f};      // 表面の色（白 = 色を付けない）
+        filament::math::float3 absorption{0.0f, 0.0f, 0.0f}; // 吸収係数 (1/m)
+        float roughness = 0.05f;
+        float ior = 1.33f;          // 屈折率（水 1.33）
+        float transmission = 1.0f;  // 透過の割合（0 = 不透明の誘電体）
+        float thickness = 0.1f;     // 屈折と吸収に使う厚み (m)
+    };
+    std::size_t addLiquidMesh();
+    // vertexCount 個の頂点（positions / normals は 3 個で 1 頂点）と indexCount 個の
+    // インデックス（3 個で 1 三角形）。0 個なら何も描かない。
+    void setLiquidMesh(std::size_t id, const float* positions, const float* normals,
+                       std::size_t vertexCount, const uint32_t* indices,
+                       std::size_t indexCount);
+    void setLiquidStyle(std::size_t id, const LiquidStyle& style);
+    void removeLiquidMesh(std::size_t id);
+
+    // ---- 水面（<water> の格子）---------------------------------------------
+    // 三角形の並びが決まった格子（波で頂点だけ動く）を、透けて屈折する水の材質
+    // （water.mat）で描く。頂点ごとに白波の量（foam、0..1）と水深（depth、m。
+    // 底が分からなければ大きな値）を持ち、材質が「浅い所は底が透けて見え、深い所は
+    // 水の色、波頭は白い」を塗り分ける。細かいさざ波は材質の中の法線だけ
+    // （WaterStyle::ripple と時刻 time）。影は落とさず受ける。全ビューに映る。
+    // RENDER スレッド。
+    struct WaterStyle {
+        filament::math::float3 color{0.03f, 0.16f, 0.22f};   // 深い水の色（リニア）
+        filament::math::float3 absorption{0.0f, 0.0f, 0.0f}; // 吸収係数 (1/m)
+        float roughness = 0.05f;
+        float ior = 1.33f;
+        float clarity = 4.0f;   // 透明度 (m)
+        float ripple = 0.5f;    // さざ波の強さ
+        float heading = 0.0f;   // さざ波の進む向き（rad、0 = +X）
+        float gravity = 9.81f;  // さざ波の速さ（深水波の分散関係）
+        float level = 0.0f;     // 静水面の高さ（波頭を明るくする基準）
+        float crest = 0.0f;     // 静水面からの最大の高さ（0 = 波なし）
+    };
+    std::size_t addWaterMesh(std::size_t vertexCount, const std::vector<uint32_t>& indices);
+    // positions / normals は 3 個で 1 頂点、foam / depth は 1 個で 1 頂点（null = 0）。
+    void setWaterMeshVertices(std::size_t id, const float* positions, const float* normals,
+                              const float* foam, const float* depth, std::size_t vertexCount);
+    void setWaterStyle(std::size_t id, const WaterStyle& style);
+    // さざ波の時刻（シミュレーション時刻。毎フレーム）。
+    void setWaterTime(std::size_t id, double time);
+    void removeWaterMesh(std::size_t id);
+
     // ---- レイヤ ----------------------------------------------------------
     // ギズモのように「エディタカメラのビューにだけ」見せたい物のための
     // レイヤ分け。シーンは全ビュー共有のままなので、レンダラブルの
@@ -502,6 +554,18 @@ public:
     // Blocks until every in-flight readback has completed. Only needed at
     // shutdown, so no buffer is freed while the GPU still owns it.
     void finishPendingReadbacks();
+
+    // ---- スクリーンショット（RendererSnapshot.cpp）-----------------------------
+    // eye から target を見た絵を width × height で 1 枚撮って rgba（上の行から、
+    // 1 行 width * 4 バイト）へ返す。AI の見直し用（低解像度の数枚を、生成の
+    // 後に 1 回だけ撮る）。カメラのビューとは別の専用ビューで描くので、どのページの
+    // 映像にも映らない・ビュー番号もずらさない。ギズモ（エディタ専用レイヤ）と
+    // UI は映らない。描画設定（後処理・露出）はカメラのビューと同じ（TAA だけは
+    // 1 枚きりなので切る）。**撮り終わるまで待つ**（GPU を flushAndWait）ので
+    // 毎フレームは呼ばないこと。RENDER スレッド。失敗（描けない・大きさが不正）は false。
+    bool captureSnapshot(const filament::math::double3& eye,
+                         const filament::math::double3& target, int width, int height,
+                         std::vector<uint8_t>& rgba);
 
     // そのビューの今の出力の大きさ（画素。リサイズの要求は適用されてから変わる）。
     // 範囲外の番号は {0, 0}。UI の Canvas の大きさ（縦横比）を決めるのに使う。
@@ -663,6 +727,10 @@ private:
         utils::Entity uiCameraEntity;
     };
     std::vector<ViewSlot> views_;
+    // スクリーンショット用の専用ビュー（最初の captureSnapshot で作る。captures は
+    // 使わない）。views_ には入れない = カメラのビューの番号をずらさない。
+    ViewSlot snapshot_;
+    void destroySnapshot();
 
     // ---- UI（RendererUiViews.cpp / RendererUiMeshes.cpp）----------------------
     // テクスチャ 1 枚と、それを使う材質インスタンス（画像用と字用。テクスチャを
@@ -860,6 +928,34 @@ private:
         std::size_t lastCount = 0;  // 前回描いた数（次の転送でそこまで消す）
     };
     std::vector<ParticleMesh> particleMeshes_;
+    // 液体のメッシュ（RendererLiquid.cpp）。番号は使い回さない（数個しか作らない）。
+    struct LiquidMesh {
+        utils::Entity entity;
+        filament::VertexBuffer* vb = nullptr;
+        filament::IndexBuffer* ib = nullptr;
+        filament::MaterialInstance* mi = nullptr;
+        std::size_t vertexCapacity = 0;
+        std::size_t indexCapacity = 0;
+        std::size_t lastIndexCount = 0;  // 前回描いた数（次の転送でそこまで 0 で埋める）
+        bool inScene = false;
+        bool used = false;
+    };
+    std::vector<LiquidMesh> liquidMeshes_;
+    filament::Material* liquidMaterial_ = nullptr;  // liquid.filamat（最初の addLiquidMesh で読む）
+    // 水面の格子（RendererWater.cpp）。番号は使い回さない。
+    struct WaterMesh {
+        utils::Entity entity;
+        filament::VertexBuffer* vb = nullptr;
+        filament::IndexBuffer* ib = nullptr;
+        filament::MaterialInstance* mi = nullptr;
+        std::size_t vertexCount = 0;
+        bool inScene = false;
+        bool used = false;
+    };
+    std::vector<WaterMesh> waterMeshes_;
+    filament::Material* waterMaterial_ = nullptr;  // water.filamat（最初の addWaterMesh で読む）
+    // 頂点・インデックスの席を need 以上に作り直す（中身は捨てる）。
+    void growLiquidMesh(LiquidMesh& mesh, std::size_t vertices, std::size_t indices);
     filament::Material* particleMaterial_ = nullptr;
     // particle.filamat の読み込み（コンストラクタが 1 回だけ。無ければ AssetError）。
     void loadParticleMaterial();

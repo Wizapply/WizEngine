@@ -12,6 +12,8 @@
 #include <nlohmann/json.hpp>
 
 #include "document/EditorTypes.h"
+#include "document/FluidTypes.h"
+#include "transmission/AtTypes.h"
 
 // エディタ／シミュレートの切り替えと、まだ適用されていない編集操作を持つ入れ物。
 //
@@ -138,6 +140,19 @@ public:
     std::vector<wizengine::editor::EmitterDesc> emitters() const;
     void setEmitters(std::vector<wizengine::editor::EmitterDesc> emitters);
     std::uint64_t emitterVersion() const { return emitterVersion_.load(); }
+
+    // ---- 水面と流体粒子（<worldbody> の <water> / <fluid>）--------------------
+    // 文書の単一要素。has = false は「無い」（節を書かない文書）。書き換えるたびに
+    // 版番号が進む（FluidComponent が浮力の設定・水面と粒子の見た目を取り直す合図）。
+    // 流体粒子の実体（Chrono）はシミュレート開始で作る（Scene::buildFluid）。
+    wizengine::editor::WaterDesc water() const;
+    bool hasWater() const;
+    void setWater(bool has, const wizengine::editor::WaterDesc& water);
+    std::uint64_t waterVersion() const { return waterVersion_.load(); }
+    wizengine::editor::FluidDesc fluid() const;
+    bool hasFluid() const;
+    void setFluid(bool has, const wizengine::editor::FluidDesc& fluid);
+    std::uint64_t fluidVersion() const { return fluidVersion_.load(); }
 
     // ---- イベントアセット（ノードベースのスクリプト）------------------------
     // ノードとワイヤーの束を「アセット」として名前で持つ（EditorTypes.h の
@@ -295,6 +310,13 @@ public:
     // 送られたキーだけ上書き（title / signals / span）。move で並びを入れ替える。
     bool updateChart(int index, const nlohmann::json& patch);
 
+    // 遊星歯車式 AT（文書の <transmission>）。書くのは物理スレッド（読込・XML の適用）、
+    // 読むのは物理スレッド（ControlComponent。transmissionVersion が変わったときだけ
+    // 取り、AT のモデルを作り直す）と HTTP スレッド（JSON）。
+    std::vector<wizengine::transmission::AtDesc> transmissions() const;
+    void setTransmissions(std::vector<wizengine::transmission::AtDesc> list);
+    std::uint64_t transmissionVersion() const { return transmissionVersion_.load(); }
+
     // ---- プレハブ（見た目の部品の集合）------------------------------------
     // イベント・計算式と同じ流儀のアセット。部品は番号で参照する（軸と同じ）。
     // 書くのは物理スレッド（Op 実行時とギズモのドラッグ）、読むのは HTTP
@@ -347,6 +369,14 @@ public:
     void setSceneFile(std::string name);
     std::string sceneFile() const;
 
+    // AI が適用し終えた直後のシーン（XML）。AI の履歴（AutoGenComponent）が
+    // 「AI が変えた所」と「その後ユーザーが手で変えた所」を出す基準。書くのは
+    // 物理スレッド（AI の Op = "ai" の印付きの xml / xml.append を適用した直後）、
+    // 読むのはワーカー / INPUT スレッド。番号は書くたびに 1 進む。
+    void setAiBaseline(std::string xml);
+    std::string aiBaseline() const;
+    std::uint64_t aiBaselineSeq() const { return aiBaselineSeq_.load(); }
+
     // assets/scenes/ にあるシーンの一覧（拡張子を落とした名前。キャッシュ）。
     // *.xml（今の形式）と *.json（旧形式）の両方を拾い、同じ名前があれば
     // 1 つにまとめる。保存・読込のたびに refresh する。HTTP スレッドが毎回
@@ -392,6 +422,12 @@ private:
     std::vector<wizengine::editor::CableDesc> cables_;  // 同上（mutex_ の下）
     std::vector<wizengine::editor::EmitterDesc> emitters_;  // 同上
     std::atomic<std::uint64_t> emitterVersion_{0};
+    wizengine::editor::WaterDesc water_;  // mutex_ の下
+    bool hasWater_ = false;
+    std::atomic<std::uint64_t> waterVersion_{0};
+    wizengine::editor::FluidDesc fluid_;  // mutex_ の下
+    bool hasFluid_ = false;
+    std::atomic<std::uint64_t> fluidVersion_{0};
     // イベントアセット（mutex_ の下）。nextNodeId はアセットごとの採番、
     // fireCounts_ は（アセット名, ノード id）-> 発火回数。
     struct EventAssetState {
@@ -418,6 +454,8 @@ private:
     std::vector<wizengine::editor::ParamDesc> params_;
     std::atomic<std::uint64_t> paramVersion_{0};
     std::vector<wizengine::editor::ChartDesc> charts_;
+    std::vector<wizengine::transmission::AtDesc> transmissions_;
+    std::atomic<std::uint64_t> transmissionVersion_{0};
     // プレハブ（mutex_ の下）。
     std::vector<wizengine::editor::PrefabDesc> prefabs_;
     std::atomic<std::uint64_t> prefabVersion_{0};
@@ -430,4 +468,6 @@ private:
     std::atomic<std::uint64_t> statusSeq_{0};
     std::string sceneFile_;
     std::vector<std::string> files_;
+    std::string aiBaseline_;  // mutex_ の下
+    std::atomic<std::uint64_t> aiBaselineSeq_{0};
 };

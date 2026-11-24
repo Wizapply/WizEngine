@@ -25,6 +25,9 @@ namespace autogen {
 struct ChatMessage {
     std::string role;  // "system" / "user" / "assistant"
     std::string content;
+    // 添える画像（data URL = "data:image/jpeg;base64,..."）。空でなければ content を
+    // OpenAI の部品の配列（text + image_url）で送る。画像を受けないモデルは 400 を返す。
+    std::vector<std::string> images = {};
 };
 
 struct ChatResult {

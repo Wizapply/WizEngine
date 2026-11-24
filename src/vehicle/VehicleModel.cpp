@@ -8,7 +8,6 @@ namespace wizengine {
 namespace vehicle {
 
 namespace {
-constexpr double kAirDensity = 1.225;  // kg/m³
 }
 
 VehicleModel::VehicleModel(const VehicleDesc& descIn) : desc_(clampVehicle(descIn)) {
@@ -208,9 +207,11 @@ const std::vector<ForceAtPoint>& VehicleModel::step(const ChassisState& chassis,
     }
 
     // ---- 6. 空気抵抗 -------------------------------------------------------
-    const double v = chassis.velocity.length();
-    if (desc_.dragArea > 0.0 && v > 1e-3) {
-        const Vec3 drag = chassis.velocity * (-0.5 * kAirDensity * desc_.dragArea * v);
+    // 風に対する相対速度 u で 0.5 ρ CdA |u| u（ρ と風はシーンの <option>。setAir）。
+    const Vec3 u = chassis.velocity - wind_;
+    const double v = u.length();
+    if (desc_.dragArea > 0.0 && airDensity_ > 0.0 && v > 1e-3) {
+        const Vec3 drag = u * (-0.5 * airDensity_ * desc_.dragArea * v);
         forces_.push_back({drag, chassis.position});
     }
 

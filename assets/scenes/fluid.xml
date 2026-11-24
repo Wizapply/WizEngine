@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 流体粒子（<fluid>）の見本: 水槽のダム崩壊。左に積んだ水の柱がシミュレート開始で
+     崩れ、障害物に当たって跳ね、浮いた箱を押し流す。書式は document/FluidXml.h、
+     仕組みは CLAUDE.md の「流体」の章。
+
+     水は Chrono::Multicore の流体コンテナ（ChFluidContainer）が粒子で解く:
+     粒子どうしの密度を「水の密度に等しい」という拘束にして、剛体の接触と同じ
+     NSC のソルバで解く = 箱は水に押され、水は箱に押し返される（双方向）。
+       ・Multicore 専用（-DWIZ_USE_MULTICORE=ON のビルド）。文書に <fluid> があると
+         Scene が Multicore を選ぶ。ケーブル・テレイン・AT など Core 専用の機能と
+         同じシーンには置けない（置くと粒子を作らずに警告）。
+       ・細かい刻みが要る（Chrono のデモは 1 ms）。ここは 250 Hz × 2 = 2 ms・反復 30。
+       ・粒子の間隔 4 cm で約 1,800 個。spacing を半分にすると約 8 倍に増える。
+       ・重い: 本物の Chrono 9.0（4 コア）で、この設定は 1 ステップ 9〜14 ms = 実時間の
+         約 1/5（スローで流れる）。2.5 cm・1 ms 刻み（約 7,400 個）は 1 ステップ
+         40〜90 ms。速さは粒子の数で決まり、反復回数ではほとんど変わらない。
+       ・粒子は外せないので、シミュレートを始め直すたびに系ごと作り直す。
+     エディタでは文書の配置（開始したときの粒子の並び）が見える。
+     見た目は粒子どうしをつないだ水の表面（メタボール + Surface Nets を別スレッドで組む）
+     を、画面空間の屈折で透ける水の材質（liquid.mat）で描く。rgba は厚み clarity (m) の
+     水を通した色（浅い所ほど透明）。surface="false" で粒子ごとの玉に戻る。 -->
+<wizengine model="fluid" version="4">
+  <option gravity="0 -9.81 0" rate="250" substeps="2" iterations="30" envelope="0.002"
+          recovery="1" friction="0.4" restitution="0" lineardamping="0.02"
+          angulardamping="0.1" sleeping="false"/>
+  <visual>
+    <quality shadowMap="2048" cascades="2" shadow="pcss" contactShadows="true" msaa="4"
+             taa="false" fxaa="true"/>
+    <postprocess enabled="true" ssao="true" ssaoIntensity="1" bloom="0.04" ssr="false"
+                 dof="0" dofBlur="1" vignette="0.2"/>
+  </visual>
+  <asset>
+    <event name="pickup">
+      <node id="1" type="onGrab" pos="40 40" target="-1"/>
+      <node id="2" type="grabPull" pos="300 40" target="-1" value="1"/>
+      <wire from="1" to="2"/>
+    </event>
+  </asset>
+  <worldbody>
+    <environment hdr="studio.hdr" intensity="30000"/>
+    <ground size="5" visual="4" texture="textures/ground.png" tile="2"
+            rgba="0.8 0.8 0.82 1" roughness="0.7"/>
+    <!-- 水の柱: x -0.6〜-0.2・高さ 0.4 m・奥行き 0.56 m（size は半寸法）。 -->
+    <fluid spacing="0.04" density="1000" viscosity="0" pressure="0.01" max="40000"
+           rgba="0.35 0.65 0.9 1" clarity="0.15" roughness="0.04">
+      <block pos="-0.4 0.2 0" size="0.2 0.2 0.28"/>
+    </fluid>
+
+    <light name="key" type="sun" pos="0 4 0" euler="55 -30 0" diffuse="1 0.97 0.92 1"
+           intensity="90000" castshadow="true"/>
+    <light name="fill" type="sun" pos="0 4 0" euler="25 150 0" diffuse="0.8 0.87 1 1"
+           intensity="25000" castshadow="false"/>
+    <camera name="cam0" target="0 0.15 0" azimuth="25" elevation="50" radius="2.2"/>
+    <camera name="cam1" target="0 0.1 0" azimuth="0" elevation="75" radius="1.8"/>
+
+    <!-- 水槽（内側 x ±0.6・z ±0.3・高さ 0.6 m）。壁は不透明なので、カメラは上から覗く。 -->
+    <body name="tank_l" pos="-0.62 0.3 0" fixed="true">
+      <geom type="box" size="0.02 0.3 0.32" mass="10" rgba="0.85 0.86 0.88 1"/>
+    </body>
+    <body name="tank_r" pos="0.62 0.3 0" fixed="true">
+      <geom type="box" size="0.02 0.3 0.32" mass="10" rgba="0.85 0.86 0.88 1"/>
+    </body>
+    <body name="tank_back" pos="0 0.3 -0.32" fixed="true">
+      <geom type="box" size="0.64 0.3 0.02" mass="10" rgba="0.85 0.86 0.88 1"/>
+    </body>
+    <body name="tank_front" pos="0 0.3 0.32" fixed="true">
+      <geom type="box" size="0.64 0.3 0.02" mass="10" rgba="0.85 0.86 0.88 1"/>
+    </body>
+    <!-- 底の障害物（水がぶつかって跳ねる）。 -->
+    <body name="obstacle" pos="0.15 0.06 0" fixed="true">
+      <geom type="box" size="0.04 0.06 0.12" mass="10" rgba="0.8 0.36 0.18 1"/>
+    </body>
+    <!-- 浮く箱（密度 500）。流れてきた水に押される。 -->
+    <body name="floater" pos="0.4 0.06 -0.1" euler="0 20 0">
+      <geom type="box" size="0.05 0.05 0.05" mass="0.5" rgba="0.95 0.85 0.3 1"/>
+    </body>
+  </worldbody>
+  <events>
+    <event name="pickup"/>
+  </events>
+</wizengine>

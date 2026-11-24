@@ -1,7 +1,9 @@
 // PhysicsWorld の窓口: 構築・1 ステップの順番・全体を起こす・機能の有無・小さな担当の中継。
 
-#include "physics/PhysicsWorldInternal.h"
+#include "physics/PhysicsParts.h"
+#include "physics/ChronoCompat.h"  // physicsFeatures の WIZ_HAVE_*
 #include "physics/ContactReport.h"
+#include "physics/ModalAnalysis.h"
 
 PhysicsFeatures physicsFeatures() {
     PhysicsFeatures f;
@@ -25,26 +27,25 @@ PhysicsFeatures physicsFeatures() {
 #ifdef WIZ_HAVE_MODAL
     f.modal = true;
 #endif
+#ifdef WIZ_USE_MULTICORE
+    f.fluid = true;
+#endif
     return f;
 }
 
 PhysicsWorld::PhysicsWorld(PhysicsBackend backend, ContactMethod contact)
     : p_(std::make_unique<Parts>(backend, contact)) {
-    createSystem();
+    p_->createSystem();
 }
 
-// Parts が完全型のここで定義する。メンバは PhysicsWorld.h の宣言の逆順に壊れる
-// （p_ の持つ系はほかのメンバの後。Parts の中の順は PhysicsParts.h）。
+// Parts が完全型のここで定義する。壊れる順は PhysicsParts.h（Parts の宣言の逆順）。
 PhysicsWorld::~PhysicsWorld() = default;
 
 void PhysicsWorld::wakeAll() {
     p_->sleeping.wakeAll();
     p_->bodies.events().wakeAll();
-    // Waking from outside ManageSleepingBodies() changes how many bodies the
-    // solver has to handle, and Chrono only rebuilds that layout in Setup().
-    // Without this the "woken" bodies can stay out of the solve - i.e. they
-    // would not fall after a reset.
-    p_->system.sys()->Setup();
+    // 起こしたボディをソルバに入れる（理由は PhysicsSystem::setup）。
+    p_->system.setup();
 }
 
 void PhysicsWorld::step(double dt) {
@@ -98,6 +99,69 @@ bool PhysicsWorld::jointReaction(std::size_t joint, double& force, double& torqu
 bool PhysicsWorld::jointBroken(std::size_t joint) const { return p_->joints.broken(joint); }
 
 std::vector<std::size_t> PhysicsWorld::takeBrokenJoints() { return p_->joints.takeBroken(); }
+
+// ---- ケーブル（本体は Cables）-----------------------------------------------
+
+std::size_t PhysicsWorld::addCable(const CableSpec& spec) { return p_->cables.add(spec); }
+
+void PhysicsWorld::removeAllCables() { p_->cables.removeAll(); }
+
+std::size_t PhysicsWorld::cableCount() const { return p_->cables.count(); }
+
+void PhysicsWorld::cableNodePositions(std::size_t cable, std::vector<float>& out) const {
+    p_->cables.nodePositions(cable, out);
+}
+
+double PhysicsWorld::cableTension(std::size_t cable) const { return p_->cables.tension(cable); }
+
+// ---- 流体粒子（本体は FluidParticles）--------------------------------------------
+
+bool PhysicsWorld::addFluid(const FluidSpec& spec, std::string& why) {
+    return p_->fluid.add(spec, why);
+}
+
+bool PhysicsWorld::hasFluid() const { return p_->fluid.active(); }
+
+std::size_t PhysicsWorld::fluidParticleCount() const { return p_->fluid.count(); }
+
+void PhysicsWorld::fluidParticlePositions(std::vector<float>& out) const {
+    p_->fluid.positions(out);
+}
+
+double PhysicsWorld::fluidMaxSpeed() const { return p_->fluid.maxSpeed(); }
+
+bool PhysicsWorld::resetFluid() { return p_->fluid.resetToInitial(); }
+
+// ---- 1D のシャフト網（本体は ShaftNetworks）-------------------------------------
+
+std::size_t PhysicsWorld::addShaftNetwork(const wizengine::physics::ShaftNetworkSpec& spec) {
+    return p_->shafts.add(spec);
+}
+
+void PhysicsWorld::removeAllShaftNetworks() { p_->shafts.removeAll(); }
+
+void PhysicsWorld::setShaftLoads(std::size_t net, const std::vector<double>& torque) {
+    p_->shafts.setLoads(net, torque);
+}
+
+void PhysicsWorld::setShaftClutchLimits(std::size_t net, const std::vector<double>& limit) {
+    p_->shafts.setClutchLimits(net, limit);
+}
+
+void PhysicsWorld::setShaftMotorSpeeds(std::size_t net, const std::vector<double>& w) {
+    p_->shafts.setMotorSpeeds(net, w);
+}
+
+void PhysicsWorld::readShaftNetwork(std::size_t net,
+                                    wizengine::physics::ShaftNetworkState& out) const {
+    p_->shafts.read(net, out);
+}
+
+// ---- モーダル解析（本体は ModalAnalysis）------------------------------------
+
+bool PhysicsWorld::modalFrequencies(int count, std::vector<double>& hz, std::string& why) {
+    return wizengine::physics::modalFrequencies(p_->system, count, hz, why);
+}
 
 // ---- 眠り --------------------------------------------------------------------
 

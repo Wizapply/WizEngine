@@ -1,0 +1,240 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 遊星歯車 1 組（シングルピニオン）。AT のトランスミッションを組むときの 1 段ぶんの部品。
+     歯数は CAD 図どおり: 太陽歯車 A 16・遊星歯車 B 22 × 4・内歯車 C 60・遊星キャリヤ D
+     （モジュール 5 mm・圧力角 20°・歯幅 25 mm、ピッチ円の半径 40 / 55 /
+     150 mm、中心距離 95 mm）。回転軸は +Z。
+     歯車の形（インボリュート歯形）は samples/planetary_gear/gears.py が作る
+     assets/models/planetary/*.glb。寸法の唯一の定義もそこで、このシーンのボディの位置と
+     歯車拘束の比は同じ値から出している。
+     * 太陽歯車 A（sun）  … 入力 1。sun_axle = 速度モータ
+     * 内歯車 C（ring）   … 入力 2。ring_axle = 速度モータ（0 rpm = 止める = ブレーキで固定した状態）
+     * 遊星キャリヤ D（carrier）… 出力。carrier_axle は自由に回る（遊星 4 個のピンを持つ）
+     * かみ合いは Chrono の歯車拘束（ChLinkLockGear）: 太陽 ⇄ 遊星は外歯車どうし、
+       遊星 ⇄ 内歯車は epicyclic="true"（body2 が内歯車）。歯の形は見た目だけで当たり判定は
+       無い（回転の関係は拘束が決める。歯の位相は遊星の位置でかみ合うように合わせてあり、
+       拘束どおりに回る限りずっとかみ合ったまま = gears.py の確認で重なり 0・すき間 約 0.19 mm）。
+     制御器 planetary が回転数を指令し、ウィリスの式の値と並べてスコープに出す:
+       キャリヤ = (Za × 太陽 + Zc × 内歯車) / (Za + Zc)
+       内歯車 0（固定）          → 太陽 : キャリヤ = 1 + Zc / Za = 4.75
+       内歯車 = 太陽             → 直結 1 : 1
+       太陽 0（固定）・内歯車入力 → 内歯車 : キャリヤ = 1 + Za / Zc = 1.267
+       太陽・内歯車を逆向き      → キャリヤが逆転・停止（リバースの形）
+     制御盤（Scene タブの「🎛 制御盤」）のスライダー sun_rpm / ring_rpm で変える。 -->
+<wizengine model="planetary_gear" version="4">
+  <option gravity="0 -9.81 0" rate="120" substeps="4" iterations="100" recovery="1" sleeping="false" solver="bb"/>
+  <visual>
+    <quality shadow="pcss" shadowMap="2048" msaa="4"/>
+    <postprocess ssao="true" bloom="0.04"/>
+  </visual>
+  <asset>
+    <mesh name="pg_sun" file="models/planetary/sun.glb" scale="1"/>
+    <mesh name="pg_planet" file="models/planetary/planet.glb" scale="1"/>
+    <mesh name="pg_ring" file="models/planetary/ring.glb" scale="1"/>
+    <mesh name="pg_carrier" file="models/planetary/carrier.glb" scale="1"/>
+    <prefab name="sun_gear">
+      <part name="gear" type="mesh" mesh="pg_sun" size="1 1 1"/>
+      <part name="mark" type="box" pos="0.023 0 0.0145" size="0.012 0.005 0.004" rgba="0.95 0.25 0.2 1"/>
+    </prefab>
+    <prefab name="planet_gear">
+      <part name="gear" type="mesh" mesh="pg_planet" size="1 1 1"/>
+      <part name="mark" type="box" pos="0.032 0 0.0145" size="0.012 0.005 0.004" rgba="0.95 0.25 0.2 1"/>
+    </prefab>
+    <prefab name="ring_gear">
+      <part name="gear" type="mesh" mesh="pg_ring" size="1 1 1"/>
+      <part name="mark" type="box" pos="0.19125 0 0" size="0.01 0.02 0.025" rgba="0.95 0.25 0.2 1"/>
+    </prefab>
+    <prefab name="carrier_frame">
+      <part name="frame" type="mesh" mesh="pg_carrier" size="1 1 1"/>
+      <part name="mark" type="box" pos="0.05 0 -0.025" size="0.03 0.008 0.004" rgba="0.95 0.25 0.2 1"/>
+    </prefab>
+    <prefab name="stand">
+      <part name="base" type="box" pos="0 0.02 0" size="0.46 0.04 0.62" rgba="0.25 0.27 0.3 1" metallic="1" roughness="0.35"/>
+      <part name="post_front" type="box" pos="0 0.235 0.235" size="0.06 0.39 0.03" rgba="0.25 0.27 0.3 1" metallic="1" roughness="0.35"/>
+      <part name="bearing_front" type="cylinder" pos="0 0.45 0.235" euler="0 -90 0" size="0.034 0.07 0.07" rgba="0.25 0.27 0.3 1" metallic="1" roughness="0.35"/>
+      <part name="post_back" type="box" pos="0 0.235 -0.25" size="0.06 0.39 0.03" rgba="0.25 0.27 0.3 1" metallic="1" roughness="0.35"/>
+      <part name="bearing_back" type="cylinder" pos="0 0.45 -0.25" euler="0 -90 0" size="0.034 0.07 0.07" rgba="0.25 0.27 0.3 1" metallic="1" roughness="0.35"/>
+    </prefab>
+    <formula name="planetary">
+      <source line="# 遊星歯車 1 組の操作と計測。入力は太陽歯車 A と内歯車 C（どちらも速度モータ）、出力は遊星キャリヤ D。"/>
+      <source line="# 歯数 A 16・B 22・C 60。キャリヤの回転はウィリスの式:"/>
+      <source line="#   キャリヤ = (Za × 太陽 + Zc × 内歯車) / (Za + Zc)"/>
+      <source line="#   遊星の自転（キャリヤから見て）= −(太陽 − キャリヤ) × Za / Zb"/>
+      <source line="# 単位: パラメータは rpm、ジョイントの目標値と計測値は rad/s。"/>
+      <source line="Za = 16; Zb = 22; Zc = 60"/>
+      <source line="ns = param:sun_rpm"/>
+      <source line="nr = param:ring_rpm"/>
+      <source line="joint:sun_axle.target = ns * pi / 30      # 速度モータの目標 (rad/s)"/>
+      <source line="joint:ring_axle.target = nr * pi / 30"/>
+      <source line="s = joint:sun_axle.rate * 30 / pi"/>
+      <source line="c = joint:carrier_axle.rate * 30 / pi"/>
+      <source line="scope:sun_rpm = s"/>
+      <source line="scope:ring_rpm = joint:ring_axle.rate * 30 / pi"/>
+      <source line="scope:carrier_rpm = c"/>
+      <source line="scope:carrier_theory_rpm = (Za * ns + Zc * nr) / (Za + Zc)"/>
+      <source line="scope:planet_rpm = joint:planet1_pin.rate * 30 / pi"/>
+      <source line="scope:planet_theory_rpm = -(s - c) * Za / Zb"/>
+      <source line="scope:ratio = select(abs(c) &gt; 0.5, s / c, 0)   # 太陽 / キャリヤ（キャリヤがほぼ止まっていれば 0）"/>
+      <node id="1" type="in" name="param:sun_rpm" pos="40 353"/>
+      <node id="2" type="in" name="param:ring_rpm" pos="40 707"/>
+      <node id="3" type="div" pos="500 276"/>
+      <node id="4" type="mul" pos="270 158"/>
+      <node id="5" type="const" params="3.141592654" pos="40 589"/>
+      <node id="6" type="const" params="30" pos="40 825"/>
+      <node id="7" type="out" name="joint:sun_axle.target" pos="1650 276"/>
+      <node id="8" type="div" pos="500 370"/>
+      <node id="9" type="mul" pos="270 252"/>
+      <node id="10" type="out" name="joint:ring_axle.target" pos="1650 394"/>
+      <node id="11" type="div" pos="500 464"/>
+      <node id="12" type="mul" pos="270 453"/>
+      <node id="13" type="in" name="joint:sun_axle.rate" pos="40 471"/>
+      <node id="14" type="div" pos="500 558"/>
+      <node id="15" type="mul" pos="270 641"/>
+      <node id="16" type="in" name="joint:carrier_axle.rate" pos="40 1061"/>
+      <node id="17" type="out" name="scope:sun_rpm" pos="1650 748"/>
+      <node id="18" type="div" pos="500 652"/>
+      <node id="19" type="mul" pos="270 735"/>
+      <node id="20" type="in" name="joint:ring_axle.rate" pos="40 1179"/>
+      <node id="21" type="out" name="scope:ring_rpm" pos="1650 984"/>
+      <node id="22" type="out" name="scope:carrier_rpm" pos="1650 866"/>
+      <node id="23" type="div" pos="730 899"/>
+      <node id="24" type="add" pos="500 1017"/>
+      <node id="25" type="mul" pos="270 547"/>
+      <node id="26" type="const" params="16" pos="40 943"/>
+      <node id="27" type="mul" pos="270 829"/>
+      <node id="28" type="const" params="60" pos="40 1297"/>
+      <node id="29" type="const" params="76" pos="500 899"/>
+      <node id="30" type="out" name="scope:carrier_theory_rpm" pos="1650 1220"/>
+      <node id="31" type="div" pos="500 746"/>
+      <node id="32" type="mul" pos="270 923"/>
+      <node id="33" type="in" name="joint:planet1_pin.rate" pos="40 1415"/>
+      <node id="34" type="out" name="scope:planet_rpm" pos="1650 1102"/>
+      <node id="35" type="div" pos="1420 432"/>
+      <node id="36" type="mul" pos="1190 731"/>
+      <node id="37" type="neg" pos="960 714"/>
+      <node id="38" type="sub" pos="730 620"/>
+      <node id="39" type="const" params="22" pos="1190 432"/>
+      <node id="40" type="out" name="scope:planet_theory_rpm" pos="1650 512"/>
+      <node id="41" type="select" pos="1190 550"/>
+      <node id="42" type="gt" pos="960 502"/>
+      <node id="43" type="abs" pos="730 808"/>
+      <node id="44" type="const" params="0.5" pos="730 502"/>
+      <node id="45" type="div" pos="730 714"/>
+      <node id="46" type="const" params="0" pos="960 596"/>
+      <node id="47" type="out" name="scope:ratio" pos="1650 630"/>
+      <wire from="5" to="4" port="1"/>
+      <wire from="4" to="3"/>
+      <wire from="6" to="3" port="1"/>
+      <wire from="3" to="7"/>
+      <wire from="5" to="9" port="1"/>
+      <wire from="9" to="8"/>
+      <wire from="6" to="8" port="1"/>
+      <wire from="8" to="10"/>
+      <wire from="13" to="12"/>
+      <wire from="6" to="12" port="1"/>
+      <wire from="12" to="11"/>
+      <wire from="5" to="11" port="1"/>
+      <wire from="16" to="15"/>
+      <wire from="6" to="15" port="1"/>
+      <wire from="15" to="14"/>
+      <wire from="5" to="14" port="1"/>
+      <wire from="20" to="19"/>
+      <wire from="6" to="19" port="1"/>
+      <wire from="19" to="18"/>
+      <wire from="5" to="18" port="1"/>
+      <wire from="18" to="21"/>
+      <wire from="26" to="25"/>
+      <wire from="25" to="24"/>
+      <wire from="28" to="27"/>
+      <wire from="27" to="24" port="1"/>
+      <wire from="24" to="23"/>
+      <wire from="29" to="23" port="1"/>
+      <wire from="23" to="30"/>
+      <wire from="33" to="32"/>
+      <wire from="6" to="32" port="1"/>
+      <wire from="32" to="31"/>
+      <wire from="5" to="31" port="1"/>
+      <wire from="31" to="34"/>
+      <wire from="38" to="37"/>
+      <wire from="37" to="36"/>
+      <wire from="26" to="36" port="1"/>
+      <wire from="36" to="35"/>
+      <wire from="39" to="35" port="1"/>
+      <wire from="35" to="40"/>
+      <wire from="43" to="42"/>
+      <wire from="44" to="42" port="1"/>
+      <wire from="42" to="41"/>
+      <wire from="45" to="41" port="1"/>
+      <wire from="46" to="41" port="2"/>
+      <wire from="41" to="47"/>
+      <wire from="1" to="4"/>
+      <wire from="2" to="9"/>
+      <wire from="11" to="17"/>
+      <wire from="14" to="22"/>
+      <wire from="1" to="25" port="1"/>
+      <wire from="2" to="27" port="1"/>
+      <wire from="11" to="38"/>
+      <wire from="14" to="38" port="1"/>
+      <wire from="14" to="43"/>
+      <wire from="11" to="45"/>
+      <wire from="14" to="45" port="1"/>
+    </formula>
+  </asset>
+  <worldbody>
+    <environment hdr="env/engine_studio.hdr" intensity="30000" skybox="false"/>
+    <ground size="5" visual="3" tile="1" roughness="0.8"/>
+    <light name="key" type="sun" pos="0 4 2" euler="40 -30 0" intensity="80000" castshadow="true"/>
+    <light name="fill" type="point" pos="-0.8 1 1" intensity="20000" falloff="6" castshadow="false"/>
+    <camera name="cam0" target="0 0.45 0" azimuth="20" elevation="15" radius="0.85"/>
+    <camera name="cam1" target="0 0.45 0" azimuth="0" elevation="0" radius="0.7"/>
+    <body name="stand" pos="0 0 0" fixed="true" mass="10">
+      <prefab name="stand"/>
+    </body>
+    <body name="sun" pos="0 0.45 0" mass="1">
+      <prefab name="sun_gear"/>
+    </body>
+    <body name="planet1" pos="0.095 0.45 0" euler="0 0 0" mass="0.4">
+      <prefab name="planet_gear"/>
+    </body>
+    <body name="planet2" pos="0 0.545 0" euler="0 0 90" mass="0.4">
+      <prefab name="planet_gear"/>
+    </body>
+    <body name="planet3" pos="-0.095 0.45 0" euler="0 0 180" mass="0.4">
+      <prefab name="planet_gear"/>
+    </body>
+    <body name="planet4" pos="0 0.355 0" euler="0 0 270" mass="0.4">
+      <prefab name="planet_gear"/>
+    </body>
+    <body name="carrier" pos="0 0.45 0" mass="1.5">
+      <prefab name="carrier_frame"/>
+    </body>
+    <body name="ring" pos="0 0.45 0" mass="2">
+      <prefab name="ring_gear"/>
+    </body>
+  </worldbody>
+  <equality>
+    <joint name="sun_axle" type="hinge" body1="sun" body2="world" anchor="0 0.45 0" axis="0 0 1" motor="speed" target="0"/>
+    <joint name="ring_axle" type="hinge" body1="ring" body2="world" anchor="0 0.45 0" axis="0 0 1" motor="speed" target="0"/>
+    <joint name="carrier_axle" type="hinge" body1="carrier" body2="world" anchor="0 0.45 0" axis="0 0 1"/>
+    <joint name="planet1_pin" type="hinge" body1="planet1" body2="carrier" anchor="0.095 0.45 0" axis="0 0 1"/>
+    <joint name="planet2_pin" type="hinge" body1="planet2" body2="carrier" anchor="0 0.545 0" axis="0 0 1"/>
+    <joint name="planet3_pin" type="hinge" body1="planet3" body2="carrier" anchor="-0.095 0.45 0" axis="0 0 1"/>
+    <joint name="planet4_pin" type="hinge" body1="planet4" body2="carrier" anchor="0 0.355 0" axis="0 0 1"/>
+    <joint name="sun_planet1" type="gear" body1="sun" body2="planet1" anchor="0 0.45 0" axis="0 0 1" ratio="0.72727" anchor2="0.095 0.45 0" axis2="0 0 1"/>
+    <joint name="planet1_ring" type="gear" body1="planet1" body2="ring" anchor="0.095 0.45 0" axis="0 0 1" ratio="0.36667" epicyclic="true" anchor2="0 0.45 0" axis2="0 0 1"/>
+    <joint name="sun_planet2" type="gear" body1="sun" body2="planet2" anchor="0 0.45 0" axis="0 0 1" ratio="0.72727" anchor2="0 0.545 0" axis2="0 0 1"/>
+    <joint name="planet2_ring" type="gear" body1="planet2" body2="ring" anchor="0 0.545 0" axis="0 0 1" ratio="0.36667" epicyclic="true" anchor2="0 0.45 0" axis2="0 0 1"/>
+    <joint name="sun_planet3" type="gear" body1="sun" body2="planet3" anchor="0 0.45 0" axis="0 0 1" ratio="0.72727" anchor2="-0.095 0.45 0" axis2="0 0 1"/>
+    <joint name="planet3_ring" type="gear" body1="planet3" body2="ring" anchor="-0.095 0.45 0" axis="0 0 1" ratio="0.36667" epicyclic="true" anchor2="0 0.45 0" axis2="0 0 1"/>
+    <joint name="sun_planet4" type="gear" body1="sun" body2="planet4" anchor="0 0.45 0" axis="0 0 1" ratio="0.72727" anchor2="0 0.355 0" axis2="0 0 1"/>
+    <joint name="planet4_ring" type="gear" body1="planet4" body2="ring" anchor="0 0.355 0" axis="0 0 1" ratio="0.36667" epicyclic="true" anchor2="0 0.45 0" axis2="0 0 1"/>
+  </equality>
+  <events/>
+  <control>
+    <controller formula="planetary" period="0"/>
+    <param name="sun_rpm" value="60" min="-120" max="120" step="1" label="太陽歯車 A (rpm)"/>
+    <param name="ring_rpm" value="0" min="-120" max="120" step="1" label="内歯車 C (rpm、0 = 固定)"/>
+    <chart title="回転数 (rpm)" signals="planetary/scope:sun_rpm planetary/scope:ring_rpm planetary/scope:carrier_rpm planetary/scope:carrier_theory_rpm" span="20"/>
+    <chart title="遊星歯車の自転 (rpm、キャリヤから見て)" signals="planetary/scope:planet_rpm planetary/scope:planet_theory_rpm" span="20"/>
+    <chart title="変速比（太陽 / キャリヤ）" signals="planetary/scope:ratio" span="20"/>
+  </control>
+</wizengine>

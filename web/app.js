@@ -63,7 +63,7 @@
   function setControlsEnabled(on) {
     document.querySelectorAll(
         '#sidebar button.wide, #sidebar .modeBtn, #paneEditor button, ' +
-        '#secWorld button, #secRender button')
+        '#secWorld button, #secRender button, #secFluid button')
       .forEach((b) => { b.disabled = !on; });
   }
   setControlsEnabled(false);
@@ -1373,6 +1373,9 @@
       { label: o.index === myCameraSelection() ? '選択を解除' : '選択',
         onClick: () => selectObject(index) },
       { label: '⧉ 複製', onClick: () => send('edit.duplicate', { index: index }) },
+      // AI の依頼文にこの物を @名前 で入れて 🤖 を開く（autogen.js）。
+      typeof aiMentionObject === 'function' &&
+        { label: '🤖 AI の依頼で名指し', onClick: () => aiMentionObject(index) },
       { sep: true },
       { label: '🗑 削除', hint: 'Delete', danger: true,
         onClick: () => send('edit.remove', { index: index }) },
@@ -2308,6 +2311,7 @@
       distance: num('jtDistance', 0),
       breakForce: num('jtBreak', 0),
       ratio: num('jtRatio', 1),
+      epicyclic: document.getElementById('jtEpicyclic').checked,
       pitch: num('jtPitch', 0.01),
       rotStiffness: num('jtRotStiff', 0),
       rotDamping: num('jtRotDamp', 0)
@@ -2367,6 +2371,7 @@
     setField('jtDistance', j.distance);
     setField('jtBreak', j.breakForce);
     setField('jtRatio', j.ratio);
+    setField('jtEpicyclic', !!j.epicyclic);
     setField('jtPitch', j.pitch);
     setField('jtRotStiff', j.rotStiffness || 0);
     setField('jtRotDamp', j.rotDamping || 0);
@@ -2409,6 +2414,18 @@
       restitution: num('edRestitution', 0),
       linearDamping: num('edLinDamp', 0.15),
       angularDamping: num('edAngDamp', 0.6),
+      // 空気: チェックを外すと密度 0・気象条件も切る（= 空気抵抗なし）。
+      airDensity: document.getElementById('edAir').checked ? num('edAirDensity', 1.225) : 0,
+      airAtmosphere: document.getElementById('edAir').checked &&
+        document.getElementById('edAirMode').value === 'atmosphere',
+      airTemperature: num('edAirTemp', 15),
+      airHumidity: num('edAirHum', 0),
+      airPressure: num('edAirPres', 1013.25) * 100,  // 欄は hPa、サーバーは Pa
+      airAltitude: num('edAirAlt', 0),
+      wind: { x: num('edWindX', 0), y: num('edWindY', 0), z: num('edWindZ', 0) },
+      airDrag: num('edAirDrag', 1),
+      airLift: num('edAirLift', 1),
+      airMagnus: num('edAirMagnus', 1),
       sleeping: document.getElementById('edSleeping').checked,
       integrator: document.getElementById('edIntegrator').value,
       solver: document.getElementById('edSolver').value,
@@ -2418,6 +2435,20 @@
       poisson: num('edSmcPoisson', 0.3),
       modal: Math.round(num('edModal', 0))
     });
+  }
+  // 空気抵抗の on / off。on は欄の密度（0 なら大気 1.225 kg/m³）、off は密度 0。
+  function toggleAir() {
+    const on = document.getElementById('edAir').checked;
+    const d = document.getElementById('edAirDensity');
+    if (on && !(parseFloat(d.value) > 0)) d.value = 1.225;
+    document.getElementById('edAirRows').hidden = !on;
+    applySim();
+  }
+  // 密度の決め方で見せる欄を切り替える（気象条件の欄は直接入力でも残す = 制御器の
+  // air:temperature などの土台になるので、見えないだけで値は送る）。
+  function showAirMode(mode) {
+    document.getElementById('edRowAirDensity').hidden = mode === 'atmosphere';
+    document.getElementById('edAirCond').hidden = mode !== 'atmosphere';
   }
   function applyCustomRate() {
     const hz = Math.round(num('hzCustom', 60));
@@ -2494,6 +2525,152 @@
   }
   // プリセットは名前だけ送る（中身の定義はサーバーが持つ = UI とずれない）。
   function applyRenderPreset(name) { send('edit.render', { preset: name }); }
+
+  // ---- 流体（World タブの「💧 流体」節。XML の <water> / <fluid>）-----------
+  // 送るのは欄の値をまとめた部分更新（サーバーの waterFromJson / fluidFromJson）。
+  // 節ごと外すのは "present": false。
+  function vec3Of(px, py, pz, fx, fy, fz) {
+    return { x: num(px, fx), y: num(py, fy), z: num(pz, fz) };
+  }
+  function applyWater() {
+    send('edit.water', {
+      pos: vec3Of('wtPX', 'wtPY', 'wtPZ', 0, 0, 0),
+      sizeX: num('wtSX', 10),
+      sizeZ: num('wtSZ', 10),
+      density: num('wtDensity', 1000),
+      drag: num('wtDrag', 1),
+      linearDrag: num('wtLin', 2),
+      angularDrag: num('wtAng', 1),
+      flow: vec3Of('wtFX', 'wtFY', 'wtFZ', 0, 0, 0),
+      wave: num('wtWave', 0),
+      period: num('wtPeriod', 4),
+      heading: num('wtHeading', 0),
+      wind: num('wtWind', 0),
+      spread: num('wtSpread', 45),
+      waves: num('wtWaves', 12),
+      seed: num('wtSeed', 1),
+      choppy: num('wtChoppy', 1),
+      foam: num('wtFoam', 0.4),
+      color: document.getElementById('wtColor').value,
+      roughness: num('wtRough', 0.05),
+      clarity: num('wtClarity', 4),
+      ior: num('wtIor', 1.33),
+      ripple: num('wtRipple', 0.5)
+    });
+  }
+  function toggleWater(on) {
+    send('edit.water', on ? {} : { present: false });
+  }
+  function applyFluid() {
+    const f = sceneData && sceneData.fluid;
+    // 箱は配列ごと送る（1 つ目だけ欄で編集し、2 つ目以降はそのまま返す）。
+    const blocks = (f && f.blocks ? f.blocks.slice() : []);
+    blocks[0] = {
+      pos: vec3Of('flBPX', 'flBPY', 'flBPZ', 0, 0.5, 0),
+      size: vec3Of('flBSX', 'flBSY', 'flBSZ', 0.2, 0.2, 0.2),
+      velocity: vec3Of('flBVX', 'flBVY', 'flBVZ', 0, 0, 0)
+    };
+    send('edit.fluid', {
+      spacing: num('flSpacing', 0.04),
+      density: num('flDensity', 1000),
+      viscosity: num('flVisc', 0),
+      pressure: num('flPressure', 0.01),
+      max: num('flMax', 40000),
+      surface: document.getElementById('flSurface').checked,
+      clarity: num('flClarity', 0.3),
+      ior: num('flIor', 1.33),
+      color: document.getElementById('flColor').value,
+      roughness: num('flRough', 0.15),
+      blocks: blocks
+    });
+  }
+  function toggleFluid(on) {
+    send('edit.fluid', on ? {} : { present: false });
+  }
+  // アセットパネルのタイル: 無ければ置き、あれば World タブの流体節を開く。
+  function addWater() {
+    if (!(sceneData && sceneData.water)) send('edit.water', {});
+    showFluidSection();
+  }
+  function addFluid() {
+    if (!(sceneData && sceneData.fluid)) send('edit.fluid', {});
+    showFluidSection();
+  }
+  function showFluidSection() {
+    showTab('physics');
+    const sec = document.getElementById('secFluid');
+    if (sec) sec.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+  // /scene の water / fluid / fluidStatus を欄へ（フォーカス中の欄は setField が触らない）。
+  function renderFluidSection() {
+    const w = sceneData.water, f = sceneData.fluid;
+    setField('wtPresent', !!w);
+    document.getElementById('wtFields').hidden = !w;
+    if (w) {
+      setField('wtPX', round2(w.pos.x)); setField('wtPY', round2(w.pos.y));
+      setField('wtPZ', round2(w.pos.z));
+      setField('wtSX', round2(w.sizeX)); setField('wtSZ', round2(w.sizeZ));
+      setField('wtDensity', round2(w.density));
+      setField('wtDrag', round2(w.drag));
+      setField('wtLin', round2(w.linearDrag));
+      setField('wtAng', round2(w.angularDrag));
+      setField('wtFX', round2(w.flow.x)); setField('wtFY', round2(w.flow.y));
+      setField('wtFZ', round2(w.flow.z));
+      setField('wtWave', round2(w.wave));
+      setField('wtPeriod', round2(w.period));
+      setField('wtHeading', round2(w.heading));
+      setField('wtWind', round2(w.wind));
+      setField('wtSpread', round2(w.spread));
+      setField('wtWaves', w.waves);
+      setField('wtSeed', w.seed);
+      setField('wtChoppy', round2(w.choppy));
+      setField('wtFoam', round2(w.foam));
+      setField('wtColor', w.color);
+      setField('wtRough', round2(w.roughness));
+      setField('wtClarity', round2(w.clarity));
+      setField('wtIor', round2(w.ior));
+      setField('wtRipple', round2(w.ripple));
+    }
+    setField('flPresent', !!f);
+    document.getElementById('flFields').hidden = !f;
+    if (f) {
+      setField('flSpacing', f.spacing);
+      setField('flDensity', round2(f.density));
+      setField('flVisc', round2(f.viscosity));
+      setField('flPressure', f.pressure);
+      setField('flMax', f.max);
+      setField('flSurface', f.surface !== false);
+      setField('flClarity', round2(f.clarity));
+      setField('flIor', round2(f.ior));
+      setField('flColor', f.color);
+      setField('flRough', round2(f.roughness));
+      const b = (f.blocks && f.blocks[0]) ||
+                { pos: { x: 0, y: 0.5, z: 0 }, size: { x: 0.2, y: 0.2, z: 0.2 },
+                  velocity: { x: 0, y: 0, z: 0 } };
+      setField('flBPX', round2(b.pos.x)); setField('flBPY', round2(b.pos.y));
+      setField('flBPZ', round2(b.pos.z));
+      setField('flBSX', round2(b.size.x)); setField('flBSY', round2(b.size.y));
+      setField('flBSZ', round2(b.size.z));
+      setField('flBVX', round2(b.velocity.x)); setField('flBVY', round2(b.velocity.y));
+      setField('flBVZ', round2(b.velocity.z));
+      const n = (f.blocks || []).length;
+      document.getElementById('flBlockLabel').textContent =
+        '水の箱 1' + (n > 1 ? '（ほかに ' + (n - 1) + ' 個 = 📄 XML で編集）' : '');
+      const st = sceneData.fluidStatus || {};
+      let line = '';
+      if (st.particles > 0) {
+        line = '粒子 ' + st.particles + ' 個で動いています' +
+               (st.truncated ? '（上限で ' + st.requested + ' 個から打ち切り）' : '');
+      } else if (st.error) {
+        line = '作れませんでした: ' + st.error;
+      } else if (!(sceneData.features && sceneData.features.fluid)) {
+        line = 'このビルドには Chrono::Multicore が無いので粒子は作れません（-DWIZ_USE_MULTICORE=ON）';
+      } else {
+        line = 'シミュレート開始で粒子を作ります';
+      }
+      document.getElementById('flStatus').textContent = line;
+    }
+  }
 
   // 保存は今のシーンの名前（新規シーン・読込で決まる）へ。無題ならここで聞く。
   function cleanSceneName(s) {
@@ -2662,6 +2839,7 @@
     // 効かない欄は出さない - Inspector にあった頃と同じ見え方。
     document.getElementById('secWorld').hidden = !editorHere;
     document.getElementById('secRender').hidden = !editorHere;
+    document.getElementById('secFluid').hidden = !editorHere;
 
     // モード切替はどのカメラのページからでもできる（サーバー側も同じ扱い）。
     // Editor Camera は「編集できる」カメラなだけで、モードを握ってはいない。
@@ -2781,6 +2959,8 @@
       setField('rnTemperature', round2(r.temperature));
       setField('rnTint', round2(r.tint));
     }
+    // 水面と流体粒子（secFluid 節）。
+    renderFluidSection();
     // ギズモ設定の節はツールバーの ⚙ で開閉（エディタモード中だけ意味がある）。
     document.getElementById('gzSettings')
             .classList.toggle('on', gizmoSettingsOpen);
@@ -3022,6 +3202,40 @@
       setField('edRestitution', round2(s.restitution));
       setField('edLinDamp', round2(s.linearDamping));
       setField('edAngDamp', round2(s.angularDamping));
+      {
+        const airOn = (s.airDensity || 0) > 0 || !!s.airAtmosphere;
+        setField('edAir', airOn);
+        if ((s.airDensity || 0) > 0) setField('edAirDensity', round2(s.airDensity));
+        const mode = s.airAtmosphere ? 'atmosphere' : 'direct';
+        setField('edAirMode', mode);
+        showAirMode(document.getElementById('edAirMode').value);
+        setField('edAirTemp', round2(s.airTemperature !== undefined ? s.airTemperature : 15));
+        setField('edAirHum', round2(s.airHumidity || 0));
+        setField('edAirPres', round2((s.airPressure !== undefined ? s.airPressure : 101325) / 100));
+        setField('edAirAlt', round2(s.airAltitude || 0));
+        // いまの空気（サーバーが解いた値 = 気象条件から出した密度・スクリプトの上書き込み）。
+        const a = sceneData.air;
+        const info = document.getElementById('edAirInfo');
+        if (a && airOn) {
+          let t = '実際の密度 ' + a.density.toFixed(4) + ' kg/m³';
+          if (a.fromConditions) {
+            t += '（' + round2(a.temperature) + ' ℃・' + round2(a.humidity) + ' %・その場の気圧 ' +
+              (a.localPressure / 100).toFixed(1) + ' hPa）';
+          }
+          if (a.scripted) t += ' ・制御器が上書き中';
+          info.textContent = t;
+        } else {
+          info.textContent = '';
+        }
+        const w = s.wind || {};
+        setField('edWindX', round2(w.x || 0));
+        setField('edWindY', round2(w.y || 0));
+        setField('edWindZ', round2(w.z || 0));
+        setField('edAirDrag', round2(s.airDrag !== undefined ? s.airDrag : 1));
+        setField('edAirLift', round2(s.airLift !== undefined ? s.airLift : 1));
+        setField('edAirMagnus', round2(s.airMagnus !== undefined ? s.airMagnus : 1));
+        document.getElementById('edAirRows').hidden = !airOn;
+      }
       setField('edSleeping', s.sleeping);
       setField('hzCustom', s.hz);
     }
@@ -3114,6 +3328,11 @@
            '▭', 'Ground', 'ground') +
       tile('onclick="newTerrain()"', '新しいテレイン（平ら・既定の大きさ）を作ってシーンに置く。名前を聞きます',
            '⛰&#xFE0E;', 'Terrain', 'new terrain') +
+      // 流体（シーンに 1 つずつ）。無ければ置き、あれば World タブの流体節を開く。
+      tile('onclick="addWater()"', '水面を置く（浮力・抗力・波）。あれば World タブの流体節を開く',
+           '🌊', 'Water', 'water') +
+      tile('onclick="addFluid()"', '流体粒子を置く（Chrono::Multicore が粒子で解く水）。あれば World タブの流体節を開く',
+           '💧', 'Fluid', 'fluid') +
       // UI の Canvas（映像の上に重ねる。中の要素は一覧の右クリックか Inspector で足す）。
       tile('onclick="uiAddCanvas()"', 'UI の Canvas を追加（映像の上に重ねる）。要素は Inspector か右クリックで足します',
            '🖼&#xFE0E;', 'Canvas', 'ui') +

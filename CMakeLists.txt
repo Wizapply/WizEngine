@@ -297,6 +297,7 @@ endif()
 # stb_image: decodes PNG/JPEG/TGA/BMP for the ground texture.
 # stb_perlin: テレインの高さのノイズ（src/terrain/TerrainNoise.cpp）。
 # stb_truetype / stb_rect_pack: UI の字の置き場（src/ui/FontAtlas.cpp）。
+# stb_image_write: AI の見直しのスクリーンショット（src/autogen/ImageEncode.cpp）。
 if(EXISTS "${THIRD_PARTIES_DIR}/stb/stb_image.h")
     list(APPEND WIZ_DEP_INCLUDE_DIRS "${THIRD_PARTIES_DIR}/stb")
     message(STATUS "WizEngine: stb_image -> submodule")
@@ -313,6 +314,10 @@ else()
     wiz_download_header(
         "https://raw.githubusercontent.com/nothings/stb/master/stb_rect_pack.h"
         "${DEPS_INC}/stb_rect_pack.h")
+    # stb_image_write: AI の見直しで送るスクリーンショットの JPEG（src/autogen/ImageEncode.cpp）。
+    wiz_download_header(
+        "https://raw.githubusercontent.com/nothings/stb/master/stb_image_write.h"
+        "${DEPS_INC}/stb_image_write.h")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -330,6 +335,7 @@ endif()
 #   vehicle/    車両モデル（純粋な数値ライブラリ。tests/vehicle が使う）
 #   formula/    ノード式（計算式アセット）の検証・実行（C++ / LuaJIT）・XML・数式テキスト
 #   control/    制御器の信号名とセンサの計算（ノード式をブロック線図として回す。純粋）
+#   transmission/ 遊星歯車式 AT の構造・変速制御・信号・XML（純粋。動力学は Chrono のシャフト）
 #   terrain/    テレインの高さ格子（純粋な計算。tests/terrain が使う）
 #   app/        起動設定（config.json）の読み込み
 #   autogen/    AI によるシーン自動構築（OpenAI 互換 LLM + Meshy 互換 Text to 3D。
@@ -351,21 +357,23 @@ set(WIZ_PHYSICS_SOURCES
     src/physics/BodyLoads.cpp
     src/physics/BodyMotion.cpp
     src/physics/BodyRegistry.cpp
+    src/physics/Cables.cpp
     src/physics/ContactMaterials.cpp
     src/physics/ContactReport.cpp
     src/physics/Diagnostics.cpp
+    src/physics/FluidParticles.cpp
     src/physics/GravityOverride.cpp
     src/physics/Joints.cpp
     src/physics/JointsManual.cpp
     src/physics/MeshCollision.cpp
+    src/physics/ModalAnalysis.cpp
     src/physics/ModelImport.cpp
     src/physics/PhysicsSystem.cpp
     src/physics/PhysicsWorld.cpp
-    src/physics/PhysicsWorldCables.cpp
-    src/physics/PhysicsWorldModal.cpp
     src/physics/PhysicsWorldMotion.cpp
     src/physics/PhysicsWorldRegistry.cpp
     src/physics/PhysicsWorldSystem.cpp
+    src/physics/ShaftNetworks.cpp
     src/physics/Sleeping.cpp
     src/physics/SoftBodies.cpp
     src/physics/StaticPairs.cpp
@@ -383,13 +391,16 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererLines.cpp
     src/render/RendererOverlays.cpp
     src/render/RendererParticles.cpp
+    src/render/RendererLiquid.cpp
+    src/render/RendererWater.cpp
     src/render/RendererGround.cpp
     src/render/RendererTerrain.cpp
     src/render/RendererTerrainSurface.cpp
     src/render/RendererTextures.cpp
     src/render/RendererUiMeshes.cpp
     src/render/RendererUiTextures.cpp
-    src/render/RendererUiViews.cpp)
+    src/render/RendererUiViews.cpp
+    src/render/RendererSnapshot.cpp)
 set(WIZ_STREAMING_SOURCES
     src/streaming/HttpServer.cpp
     src/streaming/VideoStreamer.cpp
@@ -404,6 +415,7 @@ set(WIZ_SCENE_SOURCES
     src/scene/Scene.cpp
     src/scene/SceneEdit.cpp
     src/scene/SceneEvents.cpp
+    src/scene/SceneFluid.cpp
     src/scene/SceneLibrary.cpp
     src/scene/SceneSerialize.cpp
     src/scene/SceneTerrain.cpp
@@ -424,9 +436,11 @@ set(WIZ_SCENE_SOURCES
     src/scene/UiOps.cpp
     src/scene/UiState.cpp)
 set(WIZ_COMPONENT_SOURCES
+    src/components/AtDriveline.cpp
     src/components/AutoGenComponent.cpp
     src/components/EditorComponent.cpp
     src/components/EffectsComponent.cpp
+    src/components/FluidComponent.cpp
     src/components/GizmoComponent.cpp
     src/components/PrefabComponent.cpp
     src/components/ScatterComponent.cpp
@@ -445,6 +459,12 @@ set(WIZ_FORMULA_SOURCES
 set(WIZ_CONTROL_SOURCES
     src/control/ControlSignals.cpp
     src/control/ControlTemplates.cpp)
+set(WIZ_TRANSMISSION_SOURCES
+    src/transmission/AtControl.cpp
+    src/transmission/AtKinematics.cpp
+    src/transmission/AtSignals.cpp
+    src/transmission/AtTypes.cpp
+    src/transmission/AtXml.cpp)
 set(WIZ_VEHICLE_SOURCES
     src/vehicle/Powertrain.cpp
     src/vehicle/SoftTire.cpp
@@ -452,6 +472,11 @@ set(WIZ_VEHICLE_SOURCES
     src/vehicle/VehicleTypes.cpp
     src/vehicle/VehicleXml.cpp
     src/vehicle/WheelController.cpp)
+# 流体（水面の浮力・抗力と流体粒子の配置。純粋な計算 = Chrono も Filament も知らない）。
+set(WIZ_FLUID_SOURCES
+    src/fluid/FluidSeed.cpp
+    src/fluid/FluidSurface.cpp
+    src/fluid/WaterForces.cpp)
 set(WIZ_TERRAIN_SOURCES
     src/terrain/HeightField.cpp
     src/terrain/HeightFieldOps.cpp
@@ -469,6 +494,9 @@ set(WIZ_AUTOGEN_SOURCES
     src/autogen/AiConfig.cpp
     src/autogen/GlbBounds.cpp
     src/autogen/HttpClient.cpp
+    src/autogen/ImageEncode.cpp
+    src/autogen/SceneDigest.cpp
+    src/autogen/SceneHistory.cpp
     src/autogen/ScenePrompt.cpp
     src/autogen/SceneGenerator.cpp
     src/autogen/SceneLayout.cpp)
@@ -496,6 +524,8 @@ add_executable(wizengine
     ${WIZ_SCENE_SOURCES}
     ${WIZ_COMPONENT_SOURCES}
     ${WIZ_VEHICLE_SOURCES}
+    ${WIZ_FLUID_SOURCES}
+    ${WIZ_TRANSMISSION_SOURCES}
     ${WIZ_FORMULA_SOURCES}
     ${WIZ_CONTROL_SOURCES}
     ${WIZ_TERRAIN_SOURCES}
@@ -723,13 +753,91 @@ find_package(Threads REQUIRED)
 target_link_libraries(wizengine PRIVATE Threads::Threads)
 
 # HTTPS（AI のシーン自動構築が OpenAI / Meshy を呼ぶ）。cpp-httplib は
-# OpenSSL 3.x があれば HTTPS クライアントになる。CPPHTTPLIB_OPENSSL_SUPPORT は
+# OpenSSL 3.x 以降（4.x も可）があれば HTTPS クライアントになる。CPPHTTPLIB_OPENSSL_SUPPORT は
 # httplib の class の中身を変えるので、**ターゲット全体に**立てる（TU ごとに
 # 立て分けると ODR 違反）。見つからなければ http:// の接続先（ローカルの
 # Ollama / LM Studio など）だけ使える。Windows は -DOPENSSL_ROOT_DIR=... で
-# OpenSSL（Shining Light の Win64 OpenSSL、vcpkg、GStreamer の同梱品など）を指す。
+# OpenSSL（Shining Light の Win64 OpenSSL、vcpkg など）を指す。指定が無ければ
+# FindOpenSSL 自身が C:/Program Files/OpenSSL-Win64 とレジストリを見る。
 option(WIZ_WITH_OPENSSL "Enable HTTPS for AI scene generation (cpp-httplib + OpenSSL)" ON)
 if(WIZ_WITH_OPENSSL)
+    if(MSVC)
+        # FindOpenSSL（3.28 で確認）が Windows で見落とす配置を、こちらで先に探す。
+        #  - Win64 OpenSSL 3.2 以降 / 4.x（Shining Light）: インポートライブラリが
+        #    lib/VC/x64/MD/libcrypto.lib。FindOpenSSL は lib/VC の下の x64/MD を見ない
+        #  - FireDaemon などの zip: <展開先>/x64/{include,lib,bin}
+        #  - 既定以外の場所に入れて OPENSSL_ROOT_DIR を指定していない（PATH にある
+        #    openssl.exe の親から推す）
+        # 見つけたら OPENSSL_ROOT_DIR と、FindOpenSSL の MSVC 分岐が使うキャッシュ変数
+        # （LIB_EAY_RELEASE / SSL_EAY_RELEASE。見つかっていれば find_library は探し
+        # 直さない）を渡す。OPENSSL_ROOT_DIR があると FindOpenSSL は NO_DEFAULT_PATH で
+        # 探すので、CMAKE_LIBRARY_PATH に足すやり方は効かない。/MD のインポート
+        # ライブラリは DLL 越しなので Debug（/MDd）のビルドからも使える。
+        set(_ossl_cands "")
+        if(OPENSSL_ROOT_DIR)
+            list(APPEND _ossl_cands "${OPENSSL_ROOT_DIR}")
+        endif()
+        if(DEFINED ENV{OPENSSL_ROOT_DIR})
+            list(APPEND _ossl_cands "$ENV{OPENSSL_ROOT_DIR}")
+        endif()
+        find_program(WIZ_OPENSSL_EXE NAMES openssl)
+        if(WIZ_OPENSSL_EXE)
+            get_filename_component(_ossl_exe_dir "${WIZ_OPENSSL_EXE}" DIRECTORY)
+            get_filename_component(_ossl_exe_root "${_ossl_exe_dir}" DIRECTORY)
+            list(APPEND _ossl_cands "${_ossl_exe_root}")
+        endif()
+        file(TO_CMAKE_PATH "$ENV{ProgramFiles}" _ossl_pf)
+        if(NOT _ossl_pf)
+            set(_ossl_pf "C:/Program Files")
+        endif()
+        list(APPEND _ossl_cands "${_ossl_pf}/OpenSSL-Win64" "${_ossl_pf}/OpenSSL"
+             "${_ossl_pf}/FireDaemon OpenSSL 4" "${_ossl_pf}/FireDaemon OpenSSL 3"
+             "C:/OpenSSL-Win64" "C:/OpenSSL")
+        set(_ossl_notes "")
+        set(_ossl_pick "")
+        foreach(_c IN LISTS _ossl_cands)
+            foreach(_r "${_c}" "${_c}/x64")
+                if(NOT EXISTS "${_r}")
+                    continue()
+                endif()
+                if(NOT EXISTS "${_r}/include/openssl/ssl.h")
+                    file(GLOB _ossl_only_dlls "${_r}/bin/libssl-*.dll" "${_r}/libssl-*.dll")
+                    if(_ossl_only_dlls)
+                        list(APPEND _ossl_notes
+                            "${_r}: DLLs only, no include/openssl/ssl.h (the 'Light' installer? install the full one)")
+                    endif()
+                    continue()
+                endif()
+                set(_ossl_libdirs "${_r}/lib/VC/x64/MD" "${_r}/lib/VC/x64/MDd"
+                                  "${_r}/lib/VC" "${_r}/lib" "${_r}/lib64")
+                unset(_ossl_crypto CACHE)
+                unset(_ossl_ssl CACHE)
+                find_library(_ossl_crypto NAMES libcrypto libcrypto64MD libcrypto64MDd
+                    PATHS ${_ossl_libdirs} NO_DEFAULT_PATH NO_CACHE)
+                find_library(_ossl_ssl NAMES libssl libssl64MD libssl64MDd
+                    PATHS ${_ossl_libdirs} NO_DEFAULT_PATH NO_CACHE)
+                if(_ossl_crypto AND _ossl_ssl)
+                    set(_ossl_pick "${_r}")
+                    break()
+                endif()
+                list(APPEND _ossl_notes
+                    "${_r}: has headers but no libcrypto.lib / libssl.lib under lib/VC/x64/MD, lib/VC or lib")
+            endforeach()
+            if(_ossl_pick)
+                break()
+            endif()
+        endforeach()
+        if(_ossl_pick)
+            set(OPENSSL_ROOT_DIR "${_ossl_pick}")
+            if(NOT LIB_EAY_RELEASE)
+                set(LIB_EAY_RELEASE "${_ossl_crypto}" CACHE FILEPATH "OpenSSL libcrypto import library" FORCE)
+            endif()
+            if(NOT SSL_EAY_RELEASE)
+                set(SSL_EAY_RELEASE "${_ossl_ssl}" CACHE FILEPATH "OpenSSL libssl import library" FORCE)
+            endif()
+            message(STATUS "WizEngine: OpenSSL candidate -> ${_ossl_pick}")
+        endif()
+    endif()
     find_package(OpenSSL 3.0 COMPONENTS SSL Crypto)
 endif()
 if(WIZ_WITH_OPENSSL AND OpenSSL_FOUND)
@@ -738,12 +846,49 @@ if(WIZ_WITH_OPENSSL AND OpenSSL_FOUND)
     if(WIN32)
         # httplib が Windows の証明書ストアを読む（CertOpenSystemStore）。
         target_link_libraries(wizengine PRIVATE crypt32)
+        # 実行時に要る DLL を exe の隣へ写す。PATH に頼ると、GStreamer の bin に
+        # 入っている別の版の DLL を先に拾うことがある（exe の隣が最優先）。
+        # DLL 名にはメジャー版が入る（3.x = libssl-3-x64.dll、4.x = libssl-4-x64.dll。
+        # OpenSSL の VERSION.dat の SHLIB_VERSION）ので、見つけた版で探す。
+        get_filename_component(_ossl_found_root "${OPENSSL_INCLUDE_DIR}" DIRECTORY)
+        set(_ossl_major "${OPENSSL_VERSION_MAJOR}")
+        if(NOT _ossl_major)
+            string(REGEX MATCH "^[0-9]+" _ossl_major "${OPENSSL_VERSION}")
+        endif()
+        file(GLOB _ossl_dlls
+            "${_ossl_found_root}/bin/libssl-${_ossl_major}*.dll"
+            "${_ossl_found_root}/bin/libcrypto-${_ossl_major}*.dll"
+            "${_ossl_found_root}/libssl-${_ossl_major}*.dll"
+            "${_ossl_found_root}/libcrypto-${_ossl_major}*.dll")
+        if(_ossl_dlls)
+            add_custom_command(TARGET wizengine POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_ossl_dlls} $<TARGET_FILE_DIR:wizengine>
+                COMMENT "Copying OpenSSL DLLs next to wizengine.exe")
+        else()
+            message(WARNING
+                "WizEngine: OpenSSL DLLs (libssl-${_ossl_major}*.dll / libcrypto-${_ossl_major}*.dll) "
+                "not found under ${_ossl_found_root} - put them next to wizengine.exe or on PATH")
+        endif()
     endif()
-    message(STATUS "WizEngine: HTTPS for AI scene generation -> OpenSSL ${OPENSSL_VERSION}")
+    message(STATUS "WizEngine: HTTPS for AI scene generation -> OpenSSL ${OPENSSL_VERSION} (${OPENSSL_INCLUDE_DIR})")
 else()
     message(STATUS
-        "WizEngine: no OpenSSL 3 - AI scene generation can only reach http:// "
+        "WizEngine: no OpenSSL 3 or later - AI scene generation can only reach http:// "
         "endpoints (set OPENSSL_ROOT_DIR to enable https)")
+    if(WIZ_WITH_OPENSSL AND MSVC)
+        # どこを見て、なぜ使えなかったかを出す（configure の出力だけで切り分けられるように）。
+        if(NOT _ossl_cands)
+            set(_ossl_cands "(none)")
+        endif()
+        string(REPLACE ";" ", " _ossl_cands_text "${_ossl_cands}")
+        message(STATUS "WizEngine:   looked in: ${_ossl_cands_text}")
+        foreach(_n IN LISTS _ossl_notes)
+            message(STATUS "WizEngine:   ${_n}")
+        endforeach()
+        message(STATUS "WizEngine:   OPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR}")
+        message(STATUS "WizEngine:   LIB_EAY_RELEASE=${LIB_EAY_RELEASE} SSL_EAY_RELEASE=${SSL_EAY_RELEASE}")
+        message(STATUS "WizEngine:   pass -DOPENSSL_ROOT_DIR=<folder that has include/openssl/ssl.h>")
+    endif()
 endif()
 
 if(UNIX AND NOT APPLE)

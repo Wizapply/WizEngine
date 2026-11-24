@@ -80,6 +80,14 @@
       "timeoutSec": 900,         // 1 モデルを待つ上限
       "maxDownloadMB": 128
     },
+    "vision": {                  // 適用したシーンを撮って、画像付きで LLM に見直させる
+      "rounds": 1,               // 見直しの往復（0 = しない、最大 3）。画像を受けないモデルは自動で止める
+      "width": 512,              // 1 枚の幅（画素、16:9）。低いほど安い
+      "detail": "low",           // low / high / auto（OpenAI の画像の細かさ。low は 1 枚あたり少ないトークン）
+      "quality": 70              // JPEG の品質
+    },
+    "history": 10,               // LLM に渡す「これまでの流れ」の件数（AI の依頼と、その間にユーザーが
+                                 // 手で変えた所。シーンごとに assets/generated/history/ に保存。0 = 渡さない）
     "maxMeshes": 4,              // 1 回の生成で新しく作るモデルの上限（0〜16）
     "caFile": "",                // HTTPS の検証に使う CA 束（社内プロキシ等）。空 = OS の既定
     "generatedDir": "generated"  // 生成したモデルの置き場（assets/ の中）

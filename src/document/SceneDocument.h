@@ -8,6 +8,8 @@
 
 #include "core/Xml.h"
 #include "document/EditorTypes.h"
+#include "document/FluidTypes.h"
+#include "transmission/AtTypes.h"
 #include "ui/UiTypes.h"
 #include "ui/UiValue.h"  // NodeFieldValues
 
@@ -26,6 +28,12 @@
 //   <wizengine model="名前" version="4">
 //     <option gravity="x y z" integrator solver combine contact young poisson modal .../>
 //                                       ... シミュレート設定（MuJoCo の option）。
+//                                       空気抵抗も MuJoCo と同じ density（kg/m³、0 =
+//                                       無し）/ wind="x y z"（m/s）+ airdrag（Cd の倍率）/
+//                                       airlift（板の揚力の倍率）/ magnus（マグヌスの倍率）。
+//                                       atmosphere="true" なら密度を気象条件 temperature
+//                                       （℃）/ humidity（%）/ pressure（海面気圧 Pa）/
+//                                       altitude（標高 m）から出す（fluid/Atmosphere.h）。
 //                                           integrator = euler / projected /
 //                                           implicit / trapezoidal / hht / newmark、
 //                                           solver = bb / apgd / psor / jacobi /
@@ -111,6 +119,11 @@
 //                                    ... パーティクルのエミッタ（見た目だけ。
 //                                        EditorTypes.h の EmitterDesc）。量は
 //                                        rate か、制御器の emitter:<名前>.rate
+//       <water pos="0 0 0" size="10 10" density="1000" drag="1" wave="0.1" period="4"/>
+//                                    ... 水面（浮力・抗力。単一要素。document/FluidXml.h）
+//       <fluid spacing="0.04" density="1000"> <block pos size velocity/> </fluid>
+//                                    ... 流体粒子（Chrono::Multicore の流体コンテナ。
+//                                        単一要素。文書にあれば Multicore を選ぶ）
 //       <canvas name="hud" mode="overlay|camera|world" cameras="0 1" height="1080"
 //               order distance pos euler size ui="hud">
 //         <image id parent name anchor pivot pos size color file .../>
@@ -125,7 +138,8 @@
 //              motor="speed|position|force" target=".."  ... 駆動（hinge / slide）
 //              stiffness damping         ... ばね・ダンパ（spring / hinge / slide）
 //              breakforce=".."           ... この反力 (N) を超えたら外れる
-//              ratio anchor2 axis2       ... gear、pitch ... screw
+//              ratio anchor2 axis2       ... gear（epicyclic="true" = body2 が内歯車。
+//                                            遊星歯車のリングギヤ）、pitch ... screw
 //              rotstiffness rotdamping   ... bushing の回転剛性・減衰/>
 //                type は weld / hinge / ball / slide / distance に加えて
 //                universal / cylindrical / planar / pointline / pointplane /
@@ -271,6 +285,10 @@ struct SceneDocument {
     // パーティクルのエミッタ（<worldbody> の <emitter>）。body はオブジェクト
     // 番号（-1 = ワールド）。物理には関わらない見た目だけの物。
     std::vector<EmitterDesc> emitters;
+    // 水面（<worldbody> の <water>）と流体粒子（<fluid>）。どちらも単一要素で、
+    // 節が無い = 無い（hasWater / hasFluid が false）。
+    WaterDesc water;
+    FluidDesc fluid;
     // イベントアセット（<asset> の <event>）と、ワールドに付いているぶん
     // （ルートの <events>）。オブジェクトに付いているぶんは BodyDesc::events。
     std::vector<EventAssetDesc> eventAssets;
@@ -287,6 +305,9 @@ struct SceneDocument {
     std::vector<ParamDesc> params;
     // 制御盤のグラフ（<control> の <chart>）。
     std::vector<ChartDesc> charts;
+    // 遊星歯車式 AT（<control> の <transmission>、transmission/AtXml.h）。
+    // シミュレート中に ControlComponent が回し、制御器から trans:<名前>.<量> で読み書きする。
+    std::vector<wizengine::transmission::AtDesc> transmissions;
     // UI（ui/UiTypes.h）: フォントと UI アセット（<asset> の <font> / <ui>）、
     // Canvas（<worldbody> の <canvas>）。節が無ければ空（既定のフォントは読込側）。
     std::vector<ui::FontAssetDesc> fonts;
@@ -301,6 +322,8 @@ struct SceneDocument {
     bool hasEnvironment = false;
     // テレインは「節が無い = 無い」（既定の構成へ戻す意味ではない）。
     bool hasTerrain = false;
+    bool hasWater = false;
+    bool hasFluid = false;
     bool hasLights = false;
     bool hasCameras = false;
     bool hasEvents = false;

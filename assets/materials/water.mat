@@ -1,0 +1,115 @@
+// 水面（<water> の格子）の材質。liquid.mat と同じく Filament の**画面空間の屈折**
+// （refractionMode : screenspace）を使う透過する誘電体に、水面らしさを 3 つ足す:
+//   ・水深で透け方が変わる … 頂点の色の y に水深 (m) が入っている。透過の割合を
+//     exp(−水深 / clarity) にし、残りを deepColor の拡散（水の中で散った光）にする =
+//     浅い所は底が透けて見え、深い所は水の色になる。透けた光は absorption で色付く。
+//   ・さざ波 … 格子では表せない細かい波を、法線だけで足す（風の向き wind のまわりに
+//     8 本の正弦波。速さは深水波の分散関係 ω = √(g k)、遠い所の細かい波はちらつく
+//     ので距離で消す）。ripple が強さ（0 = 鏡のような水面）。
+//   ・白波 … 頂点の色の x に波頭の白さ（0..1、fluid/WaterForces の foamAmount）が
+//     入っている。値ノイズでまだらにして、白く粗く不透明にする。
+//   ・波頭の明るさ … 高い波頭は薄くなって光が抜けるので、水の色を明るくする
+//     （静水面 level からの高さ ÷ crest。本物の表面下散乱の代わりの安い近似）。
+// blending は transparent（不透明度 1 のまま）: opaque にすると画面空間の AO（SSAO）が
+// 水面自身の波に掛かって、斜めから見た水面に細かい縞が出た（実際に描いて確認）。
+// SSAO と画面空間の反射（SSR）は opaque の材質にしか掛からないので、水面には映らない
+// （空と環境マップの映り込みは IBL で出る）。
+// 値はインスタンスごとに必ず入れること（.mat には既定値が書けない。
+// Renderer::setWaterStyle / setWaterTime）。
+material {
+    name : water,
+    shadingModel : lit,
+    refractionMode : screenspace,
+    refractionType : solid,
+    doubleSided : true,
+    blending : transparent,
+    culling : none,
+    specularAntiAliasing : true,
+    requires : [ color ],
+    parameters : [
+        { type : float3, name : deepColor },
+        { type : float3, name : absorption },
+        { type : float,  name : roughness },
+        { type : float,  name : ior },
+        { type : float,  name : clarity },
+        { type : float,  name : ripple },
+        { type : float2, name : wind },
+        { type : float,  name : gravity },
+        { type : float,  name : level },
+        { type : float,  name : crest },
+        { type : float,  name : time }
+    ]
+}
+
+fragment {
+    float waterHash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    }
+
+    float waterNoise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(waterHash(i), waterHash(i + vec2(1.0, 0.0)), f.x),
+                   mix(waterHash(i + vec2(0.0, 1.0)), waterHash(i + vec2(1.0, 1.0)), f.x), f.y);
+    }
+
+    void material(inout MaterialInputs material) {
+        vec4 attr = getColor();
+        float foam = clamp(attr.x, 0.0, 1.0);
+        float depth = max(attr.y, 0.0);
+        highp vec3 wp = getUserWorldPosition();
+        float dist = length(getWorldCameraPosition() - getWorldPosition());
+
+        // ---- さざ波（法線だけ）----
+        // 波長 (m)、風の向きからの角度 (rad)、位相。傾きの振幅は ripple × 0.035 ずつ。
+        const float LAMBDA[8] = float[8](1.6, 1.1, 0.75, 0.52, 0.36, 0.25, 0.17, 0.12);
+        const float ANGLE[8] = float[8](0.0, 0.6, -0.5, 1.1, -1.2, 0.3, -0.8, 1.6);
+        const float PHASE[8] = float[8](0.0, 1.7, 4.1, 2.3, 5.5, 0.9, 3.3, 6.0);
+        vec2 grad = vec2(0.0);
+        float slope = materialParams.ripple * 0.035;
+        if (slope > 0.0) {
+            vec2 w = materialParams.wind;
+            for (int j = 0; j < 8; ++j) {
+                float lambda = LAMBDA[j];
+                float fade = clamp(2.0 - dist / (lambda * 20.0), 0.0, 1.0);
+                if (fade <= 0.0) continue;
+                float ca = cos(ANGLE[j]);
+                float sa = sin(ANGLE[j]);
+                vec2 d = vec2(w.x * ca - w.y * sa, w.x * sa + w.y * ca);
+                float k = 6.2831853 / lambda;
+                float omega = sqrt(materialParams.gravity * k);
+                float th = k * dot(d, wp.xz) - omega * materialParams.time + PHASE[j];
+                grad += (slope * fade * cos(th)) * d;
+            }
+        }
+        // 頂点の法線に傾きを足す（水面の高さ h(x, z) の法線は (−hx, 1, −hz)。裏から
+        // 見ているときは Filament が法線を反転しているので符号を合わせる）。
+        mat3 frame = getWorldTangentFrame();
+        vec3 ng = frame[2];
+        float up = ng.y >= 0.0 ? 1.0 : -1.0;
+        vec3 n = normalize(ng - up * vec3(grad.x, 0.0, grad.y));
+        material.normal = n * frame;  // ワールド → 接空間（frame は正規直交）
+
+        prepareMaterial(material);
+
+        // ---- 白波（値ノイズでまだらに）----
+        float t = materialParams.time;
+        float nz = 0.65 * waterNoise(wp.xz * 2.5 + vec2(0.11 * t, 0.07 * t)) +
+                   0.35 * waterNoise(wp.xz * 7.0 - vec2(0.05 * t, 0.13 * t));
+        float fm = smoothstep(0.2, 0.6, foam * (0.55 + 0.9 * nz));
+        // 波頭の明るさ（高さ 0..1 の 2 乗で、最高 3 倍）。
+        float h = clamp((wp.y - materialParams.level) / max(materialParams.crest, 1e-3), 0.0, 1.0);
+        vec3 water = materialParams.deepColor * (1.0 + 2.0 * h * h);
+
+        // ---- 水深で透け方を決める ----
+        float vis = exp(-depth / max(materialParams.clarity, 0.01));
+        material.baseColor = vec4(mix(water, vec3(0.85), fm), 1.0);
+        material.metallic = 0.0;
+        material.roughness = mix(materialParams.roughness, 0.6, fm);
+        material.ior = materialParams.ior;
+        material.transmission = vis * (1.0 - fm);
+        material.absorption = materialParams.absorption;
+        material.thickness = min(depth, materialParams.clarity);
+    }
+}

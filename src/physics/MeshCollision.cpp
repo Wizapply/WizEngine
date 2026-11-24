@@ -7,15 +7,14 @@
 
 #include <chrono/geometry/ChTriangleMeshConnected.h>
 
-// Filament's gltfio library carries its own cgltf implementation with
-// external linkage, so a plain CGLTF_IMPLEMENTATION here collides with it at
-// link time (LNK2005). An anonymous namespace does not help either: cgltf's
-// declarations sit in an extern "C" block, which keeps C linkage regardless
-// of the namespace. So this copy renames every public cgltf function to a
-// wiz_-prefixed symbol via macros - the macros rewrite the declarations, the
-// implementation AND our call sites below consistently, and the resulting
-// symbols cannot clash with gltfio's. The list is generated from cgltf.h
-// v1.14's declaration section; regenerate it if the pinned version changes.
+// Filament の gltfio ライブラリは外部リンケージの cgltf の実装を自分で持つので、
+// ここで素の CGLTF_IMPLEMENTATION を書くとリンク時にぶつかる（LNK2005）。
+// 無名名前空間も効かない: cgltf の宣言は extern "C" のブロックの中にあり、
+// 名前空間に関係なく C リンケージのまま。そこでこの写しは、公開されている
+// cgltf の関数を全部マクロで wiz_ 付きの名前に変える - マクロは宣言・実装・
+// 下の呼び出し側をそろって書き換えるので、できたシンボルは gltfio のものと
+// ぶつからない。一覧は cgltf.h v1.14 の宣言部から作った。固定している版が
+// 変わったら作り直す。
 #define cgltf_accessor_index wiz_cgltf_accessor_index
 #define cgltf_accessor_read_float wiz_cgltf_accessor_read_float
 #define cgltf_accessor_read_index wiz_cgltf_accessor_read_index
@@ -67,14 +66,14 @@ namespace wizengine {
 
 namespace {
 
-// Applies a cgltf world matrix (column-major float[16]) to a point.
+// cgltf のワールド行列（列優先の float[16]）を点に掛ける。
 ChVector3d transformPoint(const float* m, float x, float y, float z) {
     return ChVector3d(m[0] * x + m[4] * y + m[8] * z + m[12],
                       m[1] * x + m[5] * y + m[9] * z + m[13],
                       m[2] * x + m[6] * y + m[10] * z + m[14]);
 }
 
-// Every triangle of a .glb/.gltf as one connected mesh. いまは凸包
+// .glb/.gltf の全三角形を 1 つのつながったメッシュとして読む。いまは凸包
 // （loadCollisionPoints）の入力にだけ使う内部関数。
 bool loadCollisionMesh(const std::string& name, double scale,
                        ChTriangleMeshConnected& out) {
@@ -87,8 +86,8 @@ bool loadCollisionMesh(const std::string& name, double scale,
         LOGW("collision", "'%s' could not be parsed as glTF/GLB", path.c_str());
         return false;
     }
-    // Loads the binary chunk of a .glb / the external buffers of a .gltf
-    // (relative to the file, like the renderer's loader).
+    // .glb のバイナリチャンク / .gltf の外部バッファを読む
+    // （描画側の読み込みと同じく、ファイルからの相対）。
     if (cgltf_load_buffers(&options, data, path.c_str()) !=
         cgltf_result_success) {
         LOGW("collision", "'%s': mesh buffers could not be loaded",
@@ -166,30 +165,16 @@ bool loadCollisionMesh(const std::string& name, double scale,
 
 }  // namespace
 
-std::vector<ChVector3d> loadCollisionPoints(const std::string& name,
-                                            double scale,
-                                            std::size_t maxPoints) {
-    ChTriangleMeshConnected mesh;
-    if (!loadCollisionMesh(name, scale, mesh)) return {};
-    std::vector<ChVector3d> pts = mesh.GetCoordsVertices();
-
-    // Decimate by snapping points to a grid and keeping one per cell,
-    // halving the grid resolution until the count fits. The hull of the
-    // decimated set is within one cell of the true hull - far below the
-    // collision envelope at these resolutions.
+std::vector<ChVector3d> decimatePoints(std::vector<ChVector3d> pts, std::size_t maxPoints) {
+    if (pts.size() <= maxPoints || pts.empty()) return pts;
     ChVector3d lo = pts[0], hi = pts[0];
     for (const auto& p : pts) {
-        lo = ChVector3d(std::min(lo.x(), p.x()), std::min(lo.y(), p.y()),
-                        std::min(lo.z(), p.z()));
-        hi = ChVector3d(std::max(hi.x(), p.x()), std::max(hi.y(), p.y()),
-                        std::max(hi.z(), p.z()));
+        lo = ChVector3d(std::min(lo.x(), p.x()), std::min(lo.y(), p.y()), std::min(lo.z(), p.z()));
+        hi = ChVector3d(std::max(hi.x(), p.x()), std::max(hi.y(), p.y()), std::max(hi.z(), p.z()));
     }
     const ChVector3d span = hi - lo;
-    const double maxSpan =
-        std::max({span.x(), span.y(), span.z(), 1e-9});
-
-    const std::size_t original = pts.size();
-    for (int res = 64; res >= 4 && pts.size() > maxPoints; res /= 2) {
+    const double maxSpan = std::max({span.x(), span.y(), span.z(), 1e-9});
+    for (int res = 64; res >= 2 && pts.size() > maxPoints; res /= 2) {
         std::unordered_set<std::uint64_t> cells;
         std::vector<ChVector3d> kept;
         kept.reserve(maxPoints);
@@ -198,11 +183,32 @@ std::vector<ChVector3d> loadCollisionPoints(const std::string& name,
             const std::uint64_t cx = std::uint64_t((p.x() - lo.x()) / cell);
             const std::uint64_t cy = std::uint64_t((p.y() - lo.y()) / cell);
             const std::uint64_t cz = std::uint64_t((p.z() - lo.z()) / cell);
-            const std::uint64_t key = (cx << 42) | (cy << 21) | cz;
-            if (cells.insert(key).second) kept.push_back(p);
+            if (cells.insert((cx << 42) | (cy << 21) | cz).second) kept.push_back(p);
         }
         pts = std::move(kept);
     }
+    // 格子 2 でも多い（同じ点が大量など）ときは等間隔に抜く。
+    if (pts.size() > maxPoints) {
+        std::vector<ChVector3d> kept;
+        kept.reserve(maxPoints);
+        const double stride = double(pts.size()) / double(maxPoints);
+        for (std::size_t k = 0; k < maxPoints; ++k) kept.push_back(pts[std::size_t(k * stride)]);
+        pts = std::move(kept);
+    }
+    return pts;
+}
+
+std::vector<ChVector3d> loadCollisionPoints(const std::string& name,
+                                            double scale,
+                                            std::size_t maxPoints) {
+    ChTriangleMeshConnected mesh;
+    if (!loadCollisionMesh(name, scale, mesh)) return {};
+    std::vector<ChVector3d> pts = mesh.GetCoordsVertices();
+
+    // 間引いた点の凸包は本当の凸包から 1 セル以内に収まる - この解像度では
+    // 衝突のエンベロープよりずっと小さい。
+    const std::size_t original = pts.size();
+    pts = decimatePoints(std::move(pts), maxPoints);
 
     LOGI("collision", "%s: hull points %zu (from %zu vertices)", name.c_str(),
          pts.size(), original);

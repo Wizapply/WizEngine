@@ -35,8 +35,45 @@ const char* sourceName(ctl::Source s) {
         case ctl::Source::Param: return "param";
         case ctl::Source::Emitter: return "emitter";
         case ctl::Source::Var: return "var";
+        case ctl::Source::Transmission: return "trans";
+        case ctl::Source::Air: return "air";
     }
     return "?";
+}
+
+// air:<量> の名前 → 上書きの項目（書ける量。ControlSignals の airActuatorNames と同じ）。
+bool airField(const std::string& q, wizengine::fluid::AirOverride::Field& out) {
+    using F = wizengine::fluid::AirOverride;
+    static const std::pair<const char*, F::Field> table[] = {
+        {"density", F::Density},   {"temperature", F::Temperature}, {"humidity", F::Humidity},
+        {"pressure", F::Pressure}, {"altitude", F::Altitude},       {"wind_x", F::WindX},
+        {"wind_y", F::WindY},      {"wind_z", F::WindZ},            {"drag", F::Drag},
+        {"lift", F::Lift},         {"magnus", F::Magnus},
+    };
+    for (const auto& e : table) {
+        if (q == e.first) {
+            out = e.second;
+            return true;
+        }
+    }
+    return false;
+}
+
+// air:<量> の今の値（ControlSignals の airSensorNames と同じ名前）。
+double airQuantity(const wizengine::fluid::AirState& a, const std::string& q) {
+    if (q == "density") return a.density;
+    if (q == "temperature") return a.temperature;
+    if (q == "humidity") return a.humidity;
+    if (q == "pressure") return a.pressure;
+    if (q == "local_pressure") return a.localPressure;
+    if (q == "altitude") return a.altitude;
+    if (q == "wind_x") return a.wind.x;
+    if (q == "wind_y") return a.wind.y;
+    if (q == "wind_z") return a.wind.z;
+    if (q == "drag") return a.drag;
+    if (q == "lift") return a.lift;
+    if (q == "magnus") return a.magnus;
+    return 0.0;
 }
 
 }  // namespace
@@ -60,11 +97,14 @@ ControlComponent::ControlComponent(VehicleComponent* vehicles) : vehicles_(vehic
 ControlComponent::~ControlComponent() = default;
 
 void ControlComponent::onEditorStep(Scene& scene, double dt) {
-    (void)scene;
     (void)dt;
-    if (runtimes_.empty() && joints_.empty()) return;
+    if (runtimes_.empty() && joints_.empty() && trans_.empty()) return;
     runtimes_.clear();
     joints_.clear();
+    // AT の Chrono のシャフト網は止めたら外す（次のシミュレート開始で作り直す）。
+    if (!trans_.empty()) scene.physics().removeAllShaftNetworks();
+    trans_.clear();
+    transVersion_ = ~std::uint64_t(0);
     vars_.clear();
     time_ = 0.0;
     // 次のシミュレート開始で必ず作り直す。
@@ -82,6 +122,8 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
         generation_ = gen;
         runtimes_.clear();
         joints_.clear();
+        trans_.clear();
+        transVersion_ = ~std::uint64_t(0);
         vars_.clear();
         time_ = 0.0;
         controlVersion_ = ~std::uint64_t(0);
@@ -97,6 +139,20 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
         params_.clear();
         for (const auto& p : scene.editor().params()) params_[p.name] = p.value;
     }
+    // AT: 設計値が変わったら作り直す。制御器の結び付き（AT の番号）も変わるので、
+    // 制御器もコンパイルし直す（PID の状態は捨てる。AT の定義を変えたのだから妥当）。
+    // 物理の系の作り直し・つないだ剛体の作り直しでも網は消えるので作り直す。
+    const std::uint64_t tv = scene.editor().transmissionVersion();
+    if (tv != transVersion_ || transmissionsStale(scene)) {
+        transVersion_ = tv;
+        rebuildTransmissions(scene);
+        runtimes_.clear();
+        controlVersion_ = ~std::uint64_t(0);
+    }
+    // 直前の積分の結果を読む（センサ trans:<名前>.<量> はこの値 = 前のステップの結果）。
+    for (auto& t : trans_) {
+        if (t.running) t.driveline->read(scene.physics(), dt);
+    }
     const std::uint64_t cv = scene.editor().controlVersion();
     const std::uint64_t fv = scene.editor().formulaVersion();
     const std::uint64_t ev = scene.editor().emitterVersion();
@@ -107,6 +163,13 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
         rebuild(scene);
     }
     if (runtimes_.empty()) {
+        // 書く制御器が無い = 空気は文書の値（前に書いていた分を消す）。
+        if (airSent_) {
+            airWrites_ = wizengine::fluid::AirOverride{};
+            scene.setAirOverride(airWrites_);
+            airSent_ = false;
+        }
+        applyTransmissions(scene, dt);
         time_ += dt;
         return;
     }
@@ -127,6 +190,8 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
     }
     jointResults_.clear();
     jointStatsFetched_ = false;
+    airFetched_ = false;
+    airWrites_ = wizengine::fluid::AirOverride{};
 
     bool executed = false;
     for (std::size_t r = 0; r < runtimes_.size(); ++r) {
@@ -172,6 +237,13 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
         }
         applyOutputs(scene, rt, dt);
     }
+    // 空気: このステップに書いた値（無ければ空 = 文書の値）。流体・車両の係はこの後に
+    // 回るので、同じステップから効く。
+    scene.setAirOverride(airWrites_);
+    airSent_ = airWrites_.any();
+    // AT: 制御器が今書いた入力で TCU を回し、このステップの荷重とクラッチの容量を与える
+    // （積分はこの後 Chrono が剛体と一緒に）。
+    applyTransmissions(scene, dt);
     // 式が書いたパラメータを EditorState へ（制御盤のスライダー・保存）。版が進むので
     // 次のステップで params_ を写し直す = 範囲で丸めた値がここへ戻る。
     if (!paramWrites_.empty()) {
@@ -181,7 +253,7 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
     time_ += dt;
     // 評価回数・変数の値などの表示は実時間で 0.2 秒に 1 回（物理のレートに
     // よらない。以前の「64 ステップに 1 回」は 30 Hz のシーンで 2 秒おきだった）。
-    if (executed) {
+    if (executed || !trans_.empty()) {
         const auto now = std::chrono::steady_clock::now();
         if (now - lastStatus_ >= std::chrono::milliseconds(200)) {
             lastStatus_ = now;
@@ -341,6 +413,39 @@ void ControlComponent::bind(Scene& scene, Runtime& rt, Binding& b, bool sensor) 
         case ctl::Source::Var:
             b.ok = true;  // 宣言は要らない（最初に書くまでは 0）
             return;
+        case ctl::Source::Air:
+            b.ok = true;  // シーンに 1 つ（量の名前は parse で確かめ済み）
+            return;
+        case ctl::Source::Transmission: {
+            for (std::size_t i = 0; i < trans_.size(); ++i) {
+                if (trans_[i].name != r.target) continue;
+                if (!trans_[i].running) {
+                    rt.warnings.push_back(label + ": the transmission is not running (" +
+                                          trans_[i].error + ") - " +
+                                          (sensor ? "reads 0" : "ignored"));
+                    return;
+                }
+                namespace at = wizengine::transmission;
+                const at::AtDesc& td = trans_[i].driveline->desc();
+                const int q = sensor ? at::atSensorId(td, r.sub) : at::atInputId(r.sub);
+                if (q < 0) {
+                    std::string list;
+                    const auto names = sensor ? at::atSensorNames(td) : at::atInputNames();
+                    for (const auto& n : names) list += (list.empty() ? "" : " ") + n;
+                    rt.warnings.push_back(label + "." + r.sub + ": unknown " +
+                                          (sensor ? "sensor" : "input") + " (" + list + ")");
+                    return;
+                }
+                b.trans = int(i);
+                b.transQty = q;
+                b.ok = true;
+                return;
+            }
+            rt.warnings.push_back(label + ": no transmission with that name - " +
+                                  (sensor ? "reads 0" : "ignored") +
+                                  " (add <transmission name=\"" + r.target + "\"> in <control>)");
+            return;
+        }
         case ctl::Source::Body:
         case ctl::Source::Vehicle: {
             // 物理スレッドはオブジェクト一覧の唯一の書き手なのでロックは要らない。
@@ -466,6 +571,12 @@ double ControlComponent::readSensor(Scene& scene, const Binding& b) {
                 default: return 0.0;
             }
         }
+        case ctl::Source::Transmission:
+            if (std::size_t(b.trans) >= trans_.size() || !trans_[std::size_t(b.trans)].running) {
+                return 0.0;
+            }
+            return wizengine::transmission::atSensor(trans_[std::size_t(b.trans)].driveline->readout(),
+                                                     b.transQty);
         case ctl::Source::Scope: return 0.0;
         case ctl::Source::Emitter: return 0.0;
         case ctl::Source::Param: {
@@ -476,6 +587,13 @@ double ControlComponent::readSensor(Scene& scene, const Binding& b) {
             const auto it = vars_.find(r.target);
             return it == vars_.end() ? 0.0 : it->second;
         }
+        case ctl::Source::Air:
+            // ステップの始めの空気（前のステップに書いた上書き込み）。
+            if (!airFetched_) {
+                airFetched_ = true;
+                airState_ = scene.airNow();
+            }
+            return airQuantity(airState_, r.sub);
     }
     return 0.0;
 }
@@ -535,10 +653,24 @@ void ControlComponent::applyOutputs(Scene& scene, Runtime& rt, double dt) {
                 // 見た目だけ（パーティクルの量）。毎ステップ書く = ゼロ次ホールド。
                 if (effects_) effects_->setRate(b.emitter, v);
                 break;
+            case ctl::Source::Transmission:
+                // 入力は保持（次に書くまで）。AT はこのステップの終わりに進む。
+                if (std::size_t(b.trans) < trans_.size() && trans_[std::size_t(b.trans)].driveline) {
+                    wizengine::transmission::atSetInput(
+                        trans_[std::size_t(b.trans)].driveline->inputs(), b.transQty, v);
+                }
+                break;
             case ctl::Source::Var:
                 // 表へすぐ書く = 後の制御器が同じステップで読む。
                 vars_[b.ref.target] = v;
                 break;
+            case ctl::Source::Air: {
+                // ステップの終わりにまとめて Scene へ（後の制御器が勝つ）。範囲は
+                // resolveAir が丸める。
+                wizengine::fluid::AirOverride::Field f;
+                if (airField(b.ref.sub, f)) airWrites_.set(f, v);
+                break;
+            }
             case ctl::Source::Param:
                 // 値が変わったときだけ書く（同じ値を出し続けている間はスライダーで
                 // 上書きできる）。後の制御器が同じステップで読めるよう写しにも入れる。
@@ -595,6 +727,113 @@ void ControlComponent::applyOutputs(Scene& scene, Runtime& rt, double dt) {
     }
 }
 
+// ---- AT ------------------------------------------------------------------------
+void ControlComponent::rebuildTransmissions(Scene& scene) {
+    namespace at = wizengine::transmission;
+    PhysicsWorld& physics = scene.physics();
+    // 前の網は外す（系を作り直した後なら一覧はもう空 = 何もしない）。
+    physics.removeAllShaftNetworks();
+    trans_.clear();
+    transSerial_ = physics.systemSerial();
+    for (const auto& d : scene.editor().transmissions()) {
+        TransRuntime t;
+        t.name = d.name;
+        t.driveline = std::make_unique<AtDriveline>(d);
+        const at::AtKinematics& kin = t.driveline->kinematics();
+        for (const auto& e : kin.errors()) {
+            LOGW("control", "transmission '%s': %s", d.name.c_str(), e.c_str());
+        }
+        for (const auto& w : kin.warnings()) {
+            LOGI("control", "transmission '%s': %s", d.name.c_str(), w.c_str());
+        }
+        if (!kin.ok()) {
+            t.error = kin.errors().empty() ? "invalid transmission" : kin.errors().front();
+            trans_.push_back(std::move(t));
+            continue;
+        }
+        // input = body: つなぐ剛体（名前で引く）。回転軸はワールドの向きを、今の姿勢で
+        // 剛体のローカルへ直す。エンジン軸の初めの回転は剛体の今の回転。
+        std::size_t bodyPhys = static_cast<std::size_t>(-1);
+        double axisLocal[3] = {0.0, 0.0, 1.0};
+        double w0 = d.engine.idle * 3.14159265358979323846 / 30.0;
+        if (d.input != at::InputMode::Torque) w0 = 0.0;
+        if (d.input == at::InputMode::Body) {
+            for (std::size_t i = 0; i < scene.objectCount(); ++i) {
+                const GameObject& o = scene.object(i);
+                if (!o.alive || o.desc.name != d.engine.body) continue;
+                t.bodyObject = int(i);
+                bodyPhys = o.physId;
+                break;
+            }
+            if (t.bodyObject >= 0 && bodyPhys != GameObject::kInvalidId) {
+                const ctl::BodyState bs = bodyState(scene, t.bodyObject);
+                const ctl::Vec3 a{d.engine.axis[0], d.engine.axis[1], d.engine.axis[2]};
+                const ctl::Vec3 l = ctl::rotate(ctl::conj(bs.q), a);
+                axisLocal[0] = l.x;
+                axisLocal[1] = l.y;
+                axisLocal[2] = l.z;
+                w0 = bs.w.x * a.x + bs.w.y * a.y + bs.w.z * a.z;
+            } else {
+                bodyPhys = static_cast<std::size_t>(-1);
+            }
+        }
+        t.bodyPhys = bodyPhys;
+        std::string err;
+        t.running = t.driveline->build(physics, bodyPhys, axisLocal, w0, err);
+        if (!t.running) {
+            t.error = err;
+            LOGW("control", "transmission '%s': %s", d.name.c_str(), err.c_str());
+        } else {
+            std::string ratios;
+            const auto& gears = kin.gears();
+            for (std::size_t g = 0; g < gears.size(); ++g) {
+                char buf[48];
+                std::snprintf(buf, sizeof(buf), "%s%s %.3f", ratios.empty() ? "" : ", ",
+                              d.gears[g].name.c_str(), gears[g].ratio);
+                ratios += buf;
+            }
+            LOGI("control", "transmission '%s': Chrono shaft network, input=%s load=%s, %zu gears "
+                            "(%s)",
+                 d.name.c_str(), at::inputModeName(d.input), at::loadModeName(d.load),
+                 gears.size(), ratios.c_str());
+            // Chrono のトルコンとねじりばねは陽的な力なので刻みが粗いと発散し、APGD は
+            // シャフトのクラッチ（箱型の拘束）を解けない（AtDriveline の確認で 120 Hz・
+            // APGD とも発散、200 Hz 以上の bb / psor で安定）。
+            const double hz = scene.physicsHz() * std::max(1, scene.substeps());
+            if (hz < 199.0) {
+                LOGW("control", "transmission '%s': the physics runs at %.0f Hz - the shaft "
+                                "network needs 200 Hz or more (raise <option rate> or substeps)",
+                     d.name.c_str(), hz);
+            }
+            const std::string& solver = physics.solverName();
+            if (solver == "apgd" || solver == "jacobi") {
+                LOGW("control", "transmission '%s': solver '%s' does not handle the shaft "
+                                "clutches well - use bb or psor",
+                     d.name.c_str(), solver.c_str());
+            }
+        }
+        trans_.push_back(std::move(t));
+    }
+}
+
+bool ControlComponent::transmissionsStale(Scene& scene) const {
+    if (trans_.empty()) return false;
+    if (scene.physics().systemSerial() != transSerial_) return true;
+    for (const auto& t : trans_) {
+        if (t.bodyObject < 0) continue;
+        if (std::size_t(t.bodyObject) >= scene.objectCount()) return true;
+        const GameObject& o = scene.object(std::size_t(t.bodyObject));
+        if (!o.alive || o.physId != t.bodyPhys) return true;
+    }
+    return false;
+}
+
+void ControlComponent::applyTransmissions(Scene& scene, double dt) {
+    for (auto& t : trans_) {
+        if (t.running) t.driveline->apply(scene.physics(), dt);
+    }
+}
+
 // ---- HTTP ---------------------------------------------------------------------
 void ControlComponent::publishStatus() {
     nlohmann::json list = nlohmann::json::array();
@@ -617,11 +856,32 @@ void ControlComponent::publishStatus() {
     }
     nlohmann::json vars = nlohmann::json::object();
     for (const auto& kv : vars_) vars[kv.first] = std::isfinite(kv.second) ? kv.second : 0.0;
+    nlohmann::json trans = nlohmann::json::array();
+    for (const auto& t : trans_) {
+        nlohmann::json e;
+        e["name"] = t.name;
+        e["ok"] = t.running;
+        e["error"] = t.error;
+        if (t.running) {
+            const auto& tm = t.driveline->readout();
+            auto fin = [](double v) { return std::isfinite(v) ? v : 0.0; };
+            e["gear"] = tm.gear;
+            e["targetGear"] = tm.targetGear;
+            e["shifting"] = tm.shifting;
+            e["engineRpm"] = fin(tm.engineRpm);
+            e["outputRpm"] = fin(tm.outputRpm);
+            e["speedKmh"] = fin(tm.speed * 3.6);
+            e["lockup"] = fin(tm.lockup);
+            e["outputTorque"] = fin(tm.outputTorque);
+        }
+        trans.push_back(std::move(e));
+    }
     std::lock_guard<std::mutex> lk(mutex_);
     status_ = nlohmann::json::object();
     status_["running"] = !runtimes_.empty();
     status_["controllers"] = std::move(list);
     status_["vars"] = std::move(vars);
+    status_["transmissions"] = std::move(trans);
 }
 
 nlohmann::json ControlComponent::statusJson() const {

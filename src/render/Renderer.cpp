@@ -340,6 +340,12 @@ Renderer::~Renderer() {
     }
     particleMeshes_.clear();
     if (particleMaterial_) engine_->destroy(particleMaterial_);
+    for (std::size_t i = 0; i < liquidMeshes_.size(); ++i) removeLiquidMesh(i);
+    liquidMeshes_.clear();
+    if (liquidMaterial_) engine_->destroy(liquidMaterial_);
+    for (std::size_t i = 0; i < waterMeshes_.size(); ++i) removeWaterMesh(i);
+    waterMeshes_.clear();
+    if (waterMaterial_) engine_->destroy(waterMaterial_);
     if (lineMaterial_) engine_->destroy(lineMaterial_);
     for (auto* mi : highlightInstances_) engine_->destroy(mi);
     engine_->destroy(material_);
@@ -358,6 +364,7 @@ Renderer::~Renderer() {
     if (cylinderIb_) engine_->destroy(cylinderIb_);
     // UI（Canvas・テクスチャ・材質・UI のビュー）。ビューより先に壊す。
     destroyUi();
+    destroySnapshot();  // スクリーンショット用のビュー（作っていれば）
     for (auto& slot : views_) {
         engine_->destroyCameraComponent(slot.cameraEntity);
         engine_->destroy(slot.cameraEntity);

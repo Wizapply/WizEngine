@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/logo.png" alt="Charon" width="260">
+  <img src="web/logo.svg" alt="Charon" width="260">
 </p>
 
 # Charon
@@ -16,6 +16,27 @@ Codename "WizEngine". (Docs below are in Japanese.)
 現在の版: **Charon 1.0.0 "WizEngine"**（WizEngine は 1.x のコードネーム。
 名前空間・実行ファイル `wizengine`・シーン文書のルート要素 `<wizengine>` も
 この名前です）。
+
+## スクリーンショット
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/screenshot_v6_editor.webp" alt="V6 エンジンのダイナモ試験をエディタで組む"></td>
+    <td width="50%"><img src="docs/images/screenshot_control_panel.webp" alt="制御盤でエンジンの計測値とグラフを見る"></td>
+  </tr>
+  <tr>
+    <td align="center">エディタ: V6 エンジン（<code>v6_engine.xml</code>）をギズモで編集</td>
+    <td align="center">制御盤: ダイナモ試験の計測値とグラフ</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/screenshot_photoreal.webp" alt="PBR 材質と HDR 環境マップのフォトリアル描画"></td>
+    <td width="50%"><img src="docs/images/screenshot_fluid.webp" alt="流体粒子で水槽のダム崩壊をシミュレート"></td>
+  </tr>
+  <tr>
+    <td align="center">フォトリアル描画: PBR 材質 + HDR 環境マップ（<code>photoreal.xml</code>）</td>
+    <td align="center">流体: 水槽のダム崩壊（<code>fluid.xml</code>）</td>
+  </tr>
+</table>
 
 ## 目次
 
@@ -71,7 +92,7 @@ src/
   scene/          Scene（実体管理）、EditorState、SceneConfig.h（既定値）
   components/     エディタ・ギズモ・物理設定・車両・プレハブ
   vehicle/        車両モデルとノード式（純粋な数値ライブラリ）
-web/              ブラウザ UI（index.html / style.css / app.js / logo.png）
+web/              ブラウザ UI（index.html / style.css / app.js / logo.svg / logo.png）
 assets/           実行時に読むもの（materials / textures / scenes）
 third_parties/    依存ライブラリのサブモジュール
 ```

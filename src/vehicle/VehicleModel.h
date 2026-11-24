@@ -66,6 +66,13 @@ public:
 
     void reset();
     void setInput(const VehicleInput& input) { target_ = input; }
+    // 空気（シーン全体の <option density wind>）。空気抵抗は <vehicle drag> の CdA で
+    // 0.5 ρ CdA |u| u、u = 車体の速度 − 風。シーンの密度が 0（空気抵抗なし）なら
+    // 呼び出し側が従来の値（1.225 kg/m³・無風）を渡す = 古い文書の走りは変わらない。
+    void setAir(double density, const Vec3& wind) {
+        airDensity_ = density;
+        wind_ = wind;
+    }
     const VehicleInput& input() const { return target_; }
 
     // 物理 1 ステップ。返す力は「この dt のあいだ掛け続ける力」。
@@ -100,6 +107,8 @@ private:
     double wheelSteer(const AxleDesc& axle, int side) const;
 
     VehicleDesc desc_;
+    double airDensity_ = 1.225;  // kg/m³（setAir）
+    Vec3 wind_;                  // m/s（setAir）
     Powertrain powertrain_;
     std::vector<Wheel> wheels_;
     std::vector<std::string> diagnostics_;

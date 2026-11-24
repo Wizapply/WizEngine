@@ -545,13 +545,22 @@ void Scene::endPhysicsPass() {
         std::chrono::duration<double>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count();
+    // 流体粒子の位置（描画が補間する 2 フレームと同じ区切りで写す。ロックの外で
+    // Chrono から読む = 物理スレッドなので触ってよい）。
+    std::vector<std::vector<float>> fluidPts;
+    if (fluidLive_ && physics_.hasFluid()) {
+        fluidPts.resize(1);
+        physics_.fluidParticlePositions(fluidPts[0]);
+    }
     {
         std::lock_guard<std::mutex> lk(poseMutex_);
+        latestFluid_.swap(fluidPts);
         // 前回のフレームの入れ物を使い回す（毎パスの確保を避ける）。
         std::swap(framePrev_, frameCur_);
         frameCur_.poses = latestPoses_;
         frameCur_.soft = latestSoft_;
         frameCur_.cables = latestCables_;
+        frameCur_.fluid = latestFluid_;
         frameCur_.simTime = simClock_;
         frameCur_.wallTime = wall;
         frameCur_.timeScale = timeScale_.load();
@@ -601,6 +610,9 @@ void Scene::reset() {
     // イベントの実行状態と、アクションが加えた上書き（色・ライト・固定）も
     // やり直しにする - Reset は「シミュレートを最初から」の意味なので。
     resetGraphRuntime();
+    // 流体粒子も最初の並びへ（設計が変わっていれば系ごと作り直す = 下の置き直し・
+    // wakeAll・snapshot もそこで済んでいる）。
+    if (resetFluid()) return;
     restoreAuthoredPoses();
     physics_.wakeAll();  // last: it also rebuilds the solver layout
     snapshot();
@@ -721,6 +733,12 @@ void Scene::enterMode(ed::AppMode target) {
         // 文書が Core 専用の機能を使っていれば、まず系を切り替える（全部
         // 作り直すので、下の physDirty の反映もそこで済む）。
         syncBackend();
+        // 前の開始で作った流体粒子が系に残っていれば、系ごと作り直す（Multicore の
+        // データマネージャは粒子を外せない = 足すと二重になる。FluidParticles.h）。
+        // モードはまだエディタなので、作り直しはジョイントを張らない。
+        if (physics_.hasFluid()) {
+            rebuildPhysicsWorld(physics_.backend(), physics_.contactMethod());
+        }
         // エディタ中に形や大きさを変えたぶんを、ここでまとめて実体に反映する。
         for (std::size_t i = 0; i < boxes_.size(); ++i) {
             if (boxes_[i].alive && boxes_[i].physDirty) rebuildBody(i);
@@ -734,6 +752,7 @@ void Scene::enterMode(ed::AppMode target) {
         applySimSettings();
         buildJoints();
         buildCables();  // FEA のケーブルもジョイントと同じタイミング
+        buildFluid();   // 流体粒子（Multicore。文書にあるときだけ）
         physics_.wakeAll();
         runModalAnalysis();  // <option modal="N"> のときだけ
     } else {
@@ -743,6 +762,9 @@ void Scene::enterMode(ed::AppMode target) {
         physics_.removeAllJoints();
         jointPhysIds_.clear();
         updateJointStats();  // 計測値も空に（破断表示を消す）
+        // 流体粒子は系に残る（外せない）が、もう写さない = 描画は文書の配置に戻る。
+        // 次の開始で系ごと作り直す。
+        fluidLive_ = false;
         restoreAuthoredPoses();
         std::lock_guard<std::mutex> lk(poseMutex_);
         modalHz_.clear();
@@ -789,6 +811,34 @@ const std::vector<ChVector3d>* Scene::meshHull(int meshIndex) {
         }
     }
     return m.hull.empty() ? nullptr : &m.hull;
+}
+
+// 当たり判定の点の外接箱（空気抵抗用）。凸包と元の三角形の外接箱は同じなので、
+// どちらか読み込み済みの方から 1 回だけ出す（Trimesh なら三角形 = 凸包を読み直さない）。
+bool Scene::meshHalfExtents(int meshIndex, bool trimesh, ed::Vec3d& half) {
+    if (meshIndex < 0 || std::size_t(meshIndex) >= meshes_.size()) return false;
+    MeshAsset& m = meshes_[std::size_t(meshIndex)];
+    if (!m.boundsDone) {
+        m.boundsDone = true;
+        const std::vector<ChVector3d>* pts = nullptr;
+        if (trimesh) {
+            if (const auto* tm = meshTrimesh(meshIndex)) pts = &tm->vertices;
+        }
+        if (!pts || pts->empty()) pts = meshHull(meshIndex);
+        if (pts && !pts->empty()) {
+            ChVector3d lo = pts->front(), hi = pts->front();
+            for (const ChVector3d& p : *pts) {
+                lo = ChVector3d(std::min(lo.x(), p.x()), std::min(lo.y(), p.y()),
+                                std::min(lo.z(), p.z()));
+                hi = ChVector3d(std::max(hi.x(), p.x()), std::max(hi.y(), p.y()),
+                                std::max(hi.z(), p.z()));
+            }
+            m.boundsHalf = ed::Vec3d{0.5 * (hi.x() - lo.x()), 0.5 * (hi.y() - lo.y()),
+                                     0.5 * (hi.z() - lo.z())};
+        }
+    }
+    half = m.boundsHalf;
+    return half.x > 0.0 || half.y > 0.0 || half.z > 0.0;
 }
 
 // メッシュの三角形（collision="trimesh"）。凸包と同じく最初に使うときに読む。
@@ -957,6 +1007,7 @@ void Scene::buildRenderFrame() {
         renderPoses_ = latestPoses_;
         renderSoft_ = latestSoft_;
         renderCables_ = latestCables_;
+        renderFluid_ = latestFluid_;
         renderAlpha_ = -1.0;
         renderSimTime_ = frameCur_.valid ? frameCur_.simTime : 0.0;
         return;
@@ -980,6 +1031,7 @@ void Scene::buildRenderFrame() {
     }
     lerpPoints(framePrev_.soft, frameCur_.soft, alpha, renderSoft_);
     lerpPoints(framePrev_.cables, frameCur_.cables, alpha, renderCables_);
+    lerpPoints(framePrev_.fluid, frameCur_.fluid, alpha, renderFluid_);
 }
 
 void Scene::snapshot(bool cut) {
@@ -1013,10 +1065,25 @@ void Scene::snapshot(bool cut) {
         physics_.cableNodePositions(cablePhysIds_[i], cables[i]);
         tension[i] = physics_.cableTension(cablePhysIds_[i]);
     }
+    std::vector<std::vector<float>> fluidCut;
+    if (fluidLive_ && cut && physics_.hasFluid()) {
+        fluidCut.resize(1);
+        physics_.fluidParticlePositions(fluidCut[0]);
+    }
     std::lock_guard<std::mutex> lk(poseMutex_);
     latestPoses_.swap(poses);
     latestSoft_.swap(soft);
     latestCables_.swap(cables);
+    // 流体粒子は数万個あり、物理は 1 kHz 近くで回るので、毎ステップは写さない
+    // （endPhysicsPass がパスの終わりにだけ写す）。実体が無くなったら空にする
+    // = 描画は文書の配置に戻る。
+    if (!fluidLive_) {
+        latestFluid_.clear();
+    } else if (cut) {
+        // 置き直し（Reset など）の直後: 一時停止中はパスの終わりが来ないので、
+        // ここで写す（数万個でも、つながっていない更新は稀なので構わない）。
+        latestFluid_.swap(fluidCut);
+    }
     cableTension_.swap(tension);
     if (cut) ++poseCut_;
 }
@@ -1072,14 +1139,28 @@ PhysicsBackend Scene::requiredBackend(ContactMethod& contact, std::string& reaso
     if (ed::solverNeedsCore(s.solver)) why.push_back("solver '" + s.solver + "'");
     if (ed::integratorNeedsCore(s.integrator)) why.push_back("integrator '" + s.integrator + "'");
     if (s.modal > 0) why.push_back("modal analysis");
+    // 遊星歯車式 AT（Chrono の 1D シャフト。Multicore のデータマネージャは ChShaft を持たない）。
+    if (!editor_.transmissions().empty()) why.push_back("transmission (Chrono 1D shafts)");
     // テレイン。SceneSystemConfig::terrainForcesCore。当たり判定は自前の接触
     // （CustomCollisionCallback。Multicore では PhysicsWorld が張らない）。
     if (sys_.terrainForcesCore && terrainLoaded()) {
         why.push_back("terrain (custom contact; Multicore untested)");
     }
+    // 流体粒子（<fluid>）は Multicore 専用。Core 専用の機能と同じシーンには置けない
+    // ので、そのときは Core を選び、流体は作らない（buildFluid が理由を出す）。
+    bool wantsFluid = false;
+    if (editor_.hasFluid()) {
+        const ed::FluidDesc f = editor_.fluid();
+        wantsFluid = f.enabled && !f.blocks.empty();
+    }
     if (!why.empty()) {
         for (std::size_t i = 0; i < why.size(); ++i) reason += (i ? ", " : "") + why[i];
+        if (wantsFluid) reason += " - fluid particles are off (they need multicore)";
         return PhysicsBackend::Core;
+    }
+    if (wantsFluid && multicoreAvailable()) {
+        reason = "fluid particles";
+        return PhysicsBackend::Multicore;
     }
 
     // 2. 規模: ソフトボディ（粒子 = 剛体の集まり）か大量の剛体なら Multicore
@@ -1153,6 +1234,7 @@ void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
     removeAllCables();
     physics_.removeAllJoints();
     jointPhysIds_.clear();
+    fluidLive_ = false;  // 流体粒子は古い系と一緒に消える
     physics_.recreate(backend, contact);
     configurePhysicsDefaults();
     applySimSettings();
@@ -1185,6 +1267,7 @@ void Scene::rebuildPhysicsWorld(PhysicsBackend backend, ContactMethod contact) {
         restoreAuthoredPoses();
         buildJoints();
         buildCables();
+        buildFluid();
         physics_.wakeAll();
     } else {
         updateJointStats();
