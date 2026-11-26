@@ -86,11 +86,20 @@ UiState::ContentsInfo infoOf(const UiState::CanvasItem& item,
 
 // from の並びを to へ写す。revision が同じ物は写さない（to は前に同じ持ち主から写した
 // 並び）。版は増える一方なので、同じ番号に別の物が入れば revision は必ず違う。
+// 写し直すか: 版が違う（Canvas は置き場所だけの版も見る）。
+template <class Item>
+bool itemChanged(const Item& a, const Item& b) {
+    return a.revision != b.revision;
+}
+bool itemChanged(const UiState::CanvasItem& a, const UiState::CanvasItem& b) {
+    return a.revision != b.revision || a.placementRevision != b.placementRevision;
+}
+
 template <class Item>
 void copyChangedItems(const std::vector<Item>& from, std::vector<Item>& to) {
     to.resize(from.size());
     for (std::size_t i = 0; i < from.size(); ++i) {
-        if (to[i].revision != from[i].revision) to[i] = from[i];
+        if (itemChanged(to[i], from[i])) to[i] = from[i];
     }
 }
 
@@ -133,6 +142,14 @@ bool UiState::copyCanvas(int index, ui::CanvasDesc& out) const {
     const CanvasItem* item = liveItemAt(canvases_, index);
     if (!item) return false;
     out = item->desc;
+    return true;
+}
+
+bool UiState::copyCanvasAttrs(int index, ui::CanvasDesc& out) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const CanvasItem* item = liveItemAt(canvases_, index);
+    if (!item) return false;
+    ui::copyCanvasAttrs(item->desc, out);
     return true;
 }
 
@@ -344,6 +361,21 @@ bool UiState::replaceCanvas(int index, ui::CanvasDesc desc) {
     return true;
 }
 
+bool UiState::setCanvasPlacement(int index, const Vec3d& pos, const Vec3d& euler) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    CanvasItem* item = liveItemAt(canvases_, index);
+    if (!item) return false;
+    const bool samePos = item->desc.pos.x == pos.x && item->desc.pos.y == pos.y &&
+                         item->desc.pos.z == pos.z;
+    const bool sameRot = item->desc.rot.x == euler.x && item->desc.rot.y == euler.y &&
+                         item->desc.rot.z == euler.z;
+    if (samePos && sameRot) return false;
+    item->desc.pos = pos;
+    item->desc.rot = euler;
+    item->placementRevision = bumpLocked();
+    return true;
+}
+
 bool UiState::copyCanvasContents(int index, ui::CanvasDesc& out, ContentsInfo& info) const {
     std::lock_guard<std::mutex> lk(mutex_);
     const CanvasItem* item = liveItemAt(canvases_, index);
@@ -459,7 +491,7 @@ void UiState::setPaused(bool paused) {
 bool UiState::clickableOnCamera(int camera) const {
     std::lock_guard<std::mutex> lk(mutex_);
     for (const CanvasItem& c : canvases_) {
-        if (!c.alive || !ui::overlayShownOnCamera(c.desc, camera)) continue;
+        if (!c.alive || !ui::canvasShownOnCamera(c.desc, camera)) continue;
         const std::vector<ui::ElementDesc>& elements = elementsIn(c.desc, uiAssets_);
         if (std::any_of(elements.begin(), elements.end(), ui::catchesPointer)) return true;
     }
@@ -559,7 +591,7 @@ bool UiState::clickValidLocked(const PendingClick& c, Click& out) const {
     if (c.generations.pause != pauseGeneration_) return false;  // 一時停止をまたいだ・中の押下
     if (!refValidLocked(c.ref)) return false;  // 消えた・読み直した・入れ替えた
     const ui::CanvasDesc& desc = canvases_[std::size_t(c.ref.canvas)].desc;
-    if (!ui::overlayShownOnCamera(desc, int(c.camera))) return false;  // 他のカメラ向け
+    if (!ui::canvasShownOnCamera(desc, int(c.camera))) return false;  // 他のカメラ向け
     const std::vector<ui::ElementDesc>& elements = elementsIn(desc, uiAssets_);
     const std::size_t at = ui::elementIndex(elements, c.ref.element);
     // 性質はノードの上書きまで重ねた値（描く側・当たりと同じ口 ui::resolveElements）。

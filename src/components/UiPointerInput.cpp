@@ -6,6 +6,7 @@
 #include "scene/Scene.h"
 #include "ui/UiKinds.h"
 #include "ui/UiLayout.h"
+#include "ui/UiPlane.h"
 #include "ui/UiTypes.h"
 
 namespace ui = wizengine::ui;
@@ -36,40 +37,56 @@ bool UiPointerInput::onCommand(Scene& scene, std::size_t camIndex, const std::st
     return hoverOrPick(scene, camIndex, cmd, msg, snap, viewW, viewH, epoch, generations);
 }
 
-UiPointerInput::ButtonHit UiPointerInput::buttonAt(const UiState::Snapshot& snap,
+bool UiPointerInput::buttonOnCanvas(const UiState::Snapshot& snap, int index,
+                                    const ui::Rect& canvas, double px, double py,
+                                    ButtonHit& hit) const {
+    const ui::CanvasDesc& desc = *snap.liveCanvas(index);
+    const std::vector<ui::ElementDesc>& elements = snap.elementsOf(desc);
+    // 性質はノードの上書きまで重ねた値（描く側・クリックの確かめと同じ口）。
+    const std::vector<ui::PropSet> resolved = ui::resolveElements(elements, overrides_.of(index));
+    const std::vector<ui::LayoutNode> nodes = ui::layoutTree(elements, resolved, canvas);
+    // 押下を受け止めるのはボタンだけ（上に重なった字や板はボタンを隠さない）。
+    const int k = ui::hitTest(nodes, px, py, [&elements](int i) {
+        return ui::catchesPointer(elements[std::size_t(i)]);
+    });
+    if (k < 0) return false;
+    const ui::ElementDesc& e = elements[std::size_t(k)];
+    hit.ref = snap.elementRef(index, e.id);
+    hit.accepts = ui::acceptsClick(e, resolved[std::size_t(k)], nodes[std::size_t(k)].visible);
+    return true;
+}
+
+UiPointerInput::ButtonHit UiPointerInput::buttonAt(const Scene& scene,
+                                                   const UiState::Snapshot& snap,
                                                    std::size_t camIndex, double x, double y,
                                                    int viewW, int viewH) const {
     ButtonHit hit;
     if (viewW <= 0 || viewH <= 0) return hit;  // まだビューが無い
-    // このカメラの映像に重なる Canvas を手前から（描く順と同じ規則 ui::canvasBehind の逆）。
-    std::vector<int> order;
+    // このカメラに出ている overlay の Canvas。
+    std::vector<int> overlays;
     for (std::size_t i = 0; i < snap.canvases.size(); ++i) {
         const ui::CanvasDesc* desc = snap.liveCanvas(int(i));
-        if (desc && ui::overlayShownOnCamera(*desc, int(camIndex))) order.push_back(int(i));
+        if (desc && ui::overlayShownOnCamera(*desc, int(camIndex))) overlays.push_back(int(i));
     }
-    std::sort(order.begin(), order.end(), [&snap](int a, int b) {
+    // 1. overlay を手前から（描く順と同じ規則 ui::canvasBehind の逆）。overlay は板より
+    //    必ず手前に描かれるので、先に見る。
+    std::sort(overlays.begin(), overlays.end(), [&snap](int a, int b) {
         return ui::canvasBehind(snap.liveCanvas(b)->order, b, snap.liveCanvas(a)->order, a);
     });
-    for (const int index : order) {
-        const ui::CanvasDesc& desc = *snap.liveCanvas(index);
-        const std::vector<ui::ElementDesc>& elements = snap.elementsOf(desc);
-        const ui::Rect canvas = ui::canvasRect(desc.height, viewW, viewH);
-        // 性質はノードの上書きまで重ねた値（描く側・クリックの確かめと同じ口）。
-        const std::vector<ui::PropSet> resolved =
-            ui::resolveElements(elements, overrides_.of(index));
-        const std::vector<ui::LayoutNode> nodes = ui::layoutTree(elements, resolved, canvas);
+    for (const int index : overlays) {
+        const ui::Rect canvas = ui::canvasRect(snap.liveCanvas(index)->height, viewW, viewH);
         double px = 0.0, py = 0.0;
         ui::ndcToCanvas(canvas, x, y, px, py);
-        // 押下を受け止めるのはボタンだけ（上に重なった字や板はボタンを隠さない）。
-        const int k = ui::hitTest(nodes, px, py, [&elements](int i) {
-            return ui::catchesPointer(elements[std::size_t(i)]);
-        });
-        if (k < 0) continue;
-        const ui::ElementDesc& e = elements[std::size_t(k)];
-        hit.ref = snap.elementRef(index, e.id);
-        hit.accepts = ui::acceptsClick(e, resolved[std::size_t(k)], nodes[std::size_t(k)].visible);
-        return hit;
+        if (buttonOnCanvas(snap, index, canvas, px, py, hit)) return hit;
     }
+    // 2. 板（camera / world）。レイの交点は overlay に当たらなかったときだけ求める。
+    //    カーソルの下でカメラにいちばん近い板だけを見る（Scene::plateUnderCursor = 手前の板は
+    //    そこにボタンが無くても後ろの板をふさぐ）。手前の物に隠れていても当たる（計画の
+    //    「今回やらないこと」= 隠れた板の当たりの判定は持たない）。
+    const Scene::UiPlatePoint plate = scene.plateUnderCursor(snap, camIndex, x, y);
+    if (plate.canvas < 0) return hit;
+    const ui::Rect canvas = ui::plateCanvasRect(*snap.liveCanvas(plate.canvas));
+    buttonOnCanvas(snap, plate.canvas, canvas, plate.x, plate.y, hit);
     return hit;
 }
 
@@ -86,7 +103,7 @@ bool UiPointerInput::hoverOrPick(Scene& scene, std::size_t camIndex, const std::
                                  const nlohmann::json& msg, const UiState::Snapshot& snap,
                                  int viewW, int viewH, std::uint64_t epoch,
                                  const UiState::Generations& generations) {
-    const ButtonHit hit = buttonAt(snap, camIndex, wizengine::jsonNumber(msg, "x", 0.0),
+    const ButtonHit hit = buttonAt(scene, snap, camIndex, wizengine::jsonNumber(msg, "x", 0.0),
                                    wizengine::jsonNumber(msg, "y", 0.0), viewW, viewH);
     const bool pick = cmd == "pick";
     const bool pressed = pick && hit.ref.canvas >= 0;
@@ -134,7 +151,7 @@ void UiPointerInput::pressCommand(Scene& scene, std::size_t camIndex, const std:
     }
     if (!live) return;
     // drag: 押したボタンの上にいる間だけ押下の見た目（外で離せばクリックにならない）。
-    const ButtonHit hit = buttonAt(snap, camIndex, wizengine::jsonNumber(msg, "x", 0.0),
+    const ButtonHit hit = buttonAt(scene, snap, camIndex, wizengine::jsonNumber(msg, "x", 0.0),
                                    wizengine::jsonNumber(msg, "y", 0.0), viewW, viewH);
     cam.pressOver = hit.ref.canvas == cam.press.ref.canvas &&
                     hit.ref.element == cam.press.ref.element;

@@ -2,23 +2,28 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
+#include "components/UiSelectionFrame.h"
 #include "scene/SceneComponent.h"
 #include "scene/UiState.h"
 #include "ui/FontAtlas.h"
 #include "ui/UiMeshFormat.h"  // UiMeshData
+#include "ui/UiPlane.h"       // CanvasPlane
 
 namespace wizengine {
 class Renderer;
 }
 
-// UI（overlay の Canvas）を描画側へ反映する（RENDER スレッドの onRender と
-// onRenderUnlocked）。
+// UI（Canvas）を描画側へ反映する（RENDER スレッドの onRender と onRenderUnlocked）。
+// overlay は映像に重ねる UI のビューに、camera / world は主のシーンの板として描く
+// （板の置き方は ui/UiPlane.h と Scene::canvasPlane。中身は全ビューで 1 つ、姿勢は
+// ビューごとに毎フレーム = camera の板は描くフレームのカメラに付く）。
 //
 // 仕事は 2 つの口に分ける: onRender（オブジェクトのロックの中）はカメラの有効と
 // ビュー番号を写すだけ。重い仕事（フォント・画像の読み込み、字の SDF 化、メッシュの
@@ -34,9 +39,8 @@ class Renderer;
 // カメラごとなので、そのカメラのビューの中身だけが変わる（組み直しの条件にもビューごとに入る）。
 // ノード（SetUiProp）の上書きは「ノード」の段（ui::resolveElements）で、上書きの版が変わった
 // Canvas だけを組み直す。
-// エディタの選択枠（選んでいる要素の枠とつまみ、ui/UiHandles.h の形）も、エディタ
-// カメラのビューにだけ出す専用の Canvas として描く（どの UI よりも手前。後処理なし）。
-// onRender が選択とエディタカメラを写し、組み立ては onRenderUnlocked。
+// エディタの選択枠は UiSelectionFrame（components/UiSelectionFrame.h）が受け持ち、ここは
+// onRender で対象を写させ、onRenderUnlocked で組ませるだけ。
 class UiRenderComponent : public SceneComponent {
 public:
     UiRenderComponent();
@@ -56,13 +60,35 @@ private:
     };
     struct CanvasSlot {
         std::size_t rendererId = 0;
+        // 板（camera / world）として作ったか。overlay ⇄ 板が変わったら作り直す。板の中身は
+        // 全ビューで 1 つ（built には kPlateBuildKey の 1 つだけ）、姿勢はビューごと。
+        bool plate = false;
         std::vector<std::size_t> views;            // setUiCanvasViews に渡した一覧
         int rank = -1;  // setUiCanvasOrder に渡した前後の順位（奥から 0, 1, 2, ...）
         std::map<std::size_t, ViewBuild> built;    // ビュー → 送った条件
     };
 
-    // ロックの外の仕事の全部（onRenderUnlocked が Renderer と UI の状態だけを渡す）。
-    void update(wizengine::Renderer& renderer, const wizengine::UiState& state);
+    // 板の Canvas の、カメラ（スロット番号）から見た板（Scene::canvasPlane を包む）。
+    using PlaneFn = std::function<bool(const wizengine::ui::CanvasDesc&, std::size_t,
+                                       wizengine::ui::CanvasPlane&)>;
+    // 組み直しを決める材料の版（buildPlate へ渡す組）。
+    struct Material {
+        std::uint64_t revision = 0;   // Snapshot::contentsRevision
+        std::uint64_t overrides = 0;  // ノードの上書きの版
+        int generation = 0;           // 字の置き場の世代
+    };
+
+    // ロックの外の仕事の全部（onRenderUnlocked が Renderer と UI の状態と板の出し方だけを
+    // 渡す）。
+    void update(wizengine::Renderer& renderer, const wizengine::UiState& state,
+                const PlaneFn& planeOf);
+    // 板の Canvas を組んで送る（中身は全ビューで 1 つ。材料・ポインタが変わったときだけ）。
+    void buildPlate(wizengine::Renderer& renderer, int index, CanvasSlot& slot,
+                    const Material& material, bool all);
+    // 板の姿勢を出すビューごとに送る（毎フレーム。camera の板はカメラに付く）。
+    void placePlates(wizengine::Renderer& renderer, const PlaneFn& planeOf);
+    // 板の Canvas の見た目に使うポインタ（どれかのビューのカメラが上に居ればそれ）。
+    wizengine::UiState::Pointer plateCanvasPointer(const CanvasSlot& slot, int index) const;
     void ensureAtlas(wizengine::Renderer& renderer);
     // 版が変わったとき: 宣言のフォントを読み（ファイルごとに 1 回）、名前の対応を引き直す。
     // 読めなかったファイルを読み直すのは reloaded（読込の世代が進んだ）か、宣言から
@@ -92,19 +118,6 @@ private:
     // 無し）。
     wizengine::UiState::Pointer pointerOn(std::size_t view, int index) const;
     void uploadAtlas(wizengine::Renderer& renderer);
-    // 選択枠: 出すときは専用の Canvas をエディタカメラのビューに置いてメッシュを送り、
-    // 出さないときはどのビューにも置かない。条件が前回と同じなら何もしない。
-    void updateFrame(wizengine::Renderer& renderer);
-
-    // 選択枠を最後に送った条件（全部同じなら組み直さない。出さないときは既定値のまま）。
-    struct FrameKey {
-        std::uint64_t revision = 0;  // その Canvas の材料の版（Snapshot::contentsRevision）
-        int canvas = -1, element = -1, view = -1, viewWidth = 0, viewHeight = 0;
-        bool operator==(const FrameKey& o) const {
-            return revision == o.revision && canvas == o.canvas && element == o.element &&
-                   view == o.view && viewWidth == o.viewWidth && viewHeight == o.viewHeight;
-        }
-    };
 
     std::uint64_t version_ = 0;         // 最後に写した UiState の版
     std::uint64_t fontsRevision_ = 0;   // 最後に読んだフォントの宣言の版
@@ -115,8 +128,6 @@ private:
     std::map<std::string, int> fontFiles_;        // 正規化したパス → フォントの番号（-1 = 読めない）
     std::map<std::string, int> images_;           // 正規化したパス → テクスチャ（-1 = 読めない）
     std::map<std::size_t, CanvasSlot> canvases_;  // UiState の Canvas 番号 → 入れ物
-    // 描かない mode の警告を出した Canvas → そのときの mode（mode が変わったら出し直す）。
-    std::map<std::size_t, wizengine::ui::CanvasMode> notDrawnWarned_;
     bool anyAlive_ = false;  // 写しに生きている Canvas があるか（UI の無いシーンは何もしない）
     // カメラ（スロット番号）→ ビュー番号（無効・ビュー未定は -1）。onRender が写す。
     std::vector<int> cameraViews_;
@@ -128,12 +139,5 @@ private:
     std::uint64_t pointersVersion_ = 0;
     wizengine::UiState::NodeOverrideSet overrides_;
     std::uint64_t overridesVersion_ = 0;
-    // 選択枠の対象（onRender が写す。-1 = 出さない = 選択が無い・エディタモードでない・
-    // プレハブ編集中）とエディタカメラのスロット番号。
-    int frameCanvas_ = -1, frameElement_ = -1;
-    int frameCamera_ = 0;
-    // 選択枠の Canvas（Renderer の番号。最初に出すときに作る）。
-    bool frameCreated_ = false;
-    std::size_t frameRendererId_ = 0;
-    FrameKey frameSent_;
+    UiSelectionFrame frame_;  // エディタの選択枠
 };

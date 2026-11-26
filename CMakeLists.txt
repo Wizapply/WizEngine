@@ -398,6 +398,7 @@ set(WIZ_RENDER_SOURCES
     src/render/RendererTerrainSurface.cpp
     src/render/RendererTextures.cpp
     src/render/RendererUiMeshes.cpp
+    src/render/RendererUiTextures.cpp
     src/render/RendererUiViews.cpp
     src/render/RendererSnapshot.cpp)
 set(WIZ_STREAMING_SOURCES
@@ -431,6 +432,7 @@ set(WIZ_SCENE_SOURCES
     src/scene/SceneTerrainScatterBody.cpp
     src/scene/SceneTerrainSculpt.cpp
     src/scene/SceneUiEvents.cpp
+    src/scene/SceneUiPlane.cpp
     src/scene/SharedAssetFile.cpp
     src/scene/SoftLattice.cpp
     src/scene/UiFiles.cpp
@@ -452,6 +454,7 @@ set(WIZ_COMPONENT_SOURCES
     src/components/UiInputComponent.cpp
     src/components/UiPointerInput.cpp
     src/components/UiRenderComponent.cpp
+    src/components/UiSelectionFrame.cpp
     src/components/VehicleComponent.cpp)
 set(WIZ_FORMULA_SOURCES
     src/formula/Formula.cpp

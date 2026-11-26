@@ -3352,7 +3352,10 @@
            '💧', 'Fluid', 'fluid') +
       // UI の Canvas（映像の上に重ねる。中の要素は一覧の右クリックか Inspector で足す）。
       tile('onclick="uiAddCanvas()"', 'UI の Canvas を追加（映像の上に重ねる）。要素は Inspector か右クリックで足します',
-           '🖼&#xFE0E;', 'Canvas', 'ui');
+           '🖼&#xFE0E;', 'Canvas', 'ui') +
+      tile('onclick="uiAddCanvas(\'world\')"', 'UI の板を空間に立てる（エディタカメラの注視点に、カメラの方を向けて）。' +
+           '動かす・回すのはギズモ、要素は Inspector か右クリックで足します',
+           '🖼&#xFE0E;', 'World Canvas', 'ui');
 
     // ---- 📍 ローカル（このシーンだけ）----------------------------------------
     let local = '';

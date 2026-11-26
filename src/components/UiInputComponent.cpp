@@ -11,6 +11,7 @@
 #include "scene/UiOps.h"
 #include "ui/UiHandles.h"
 #include "ui/UiLayout.h"
+#include "ui/UiPlane.h"
 #include "ui/UiValue.h"
 
 namespace ui = wizengine::ui;
@@ -40,6 +41,40 @@ std::uint64_t packSize(int w, int h) {
 void unpackSize(std::uint64_t packed, int& w, int& h) {
     w = int(std::uint32_t(packed >> 32));
     h = int(std::uint32_t(packed & 0xffffffffu));
+}
+
+// 映像の位置 (x, y)（NDC）が、選んでいる要素 rect のある Canvas desc（番号 index、全体の矩形
+// canvas）の上のどこか（設計の座標 px, py）と、そこでの「映像の 1 画素 = 設計の何画素」
+// （scale = つまみの当たりの大きさ。描く側 UiSelectionFrame::build と同じ求め方）と、板なら
+// レイの距離 distance（m。overlay は 0）。overlay は映像全体に重なる。板（camera / world）は
+// カーソルのレイと板の面の交点で、板の矩形の外でも面に当たれば true（つまみは縁から
+// はみ出す）。手前の別の板によるふさぎはここでは見ない（呼び手 = 枠の中の移動だけが
+// bodyCovered で見る）。
+bool pointOnCanvas(const Scene& scene, std::size_t camIndex, const ui::CanvasDesc& desc,
+                   const ui::Rect& canvas, const ui::Rect& rect, double x, double y, int viewW,
+                   int viewH, double& px, double& py, double& scale, double& distance) {
+    distance = 0.0;
+    if (!ui::isPlateCanvas(desc)) {
+        ui::ndcToCanvas(canvas, x, y, px, py);
+        scale = ui::designPerScreenPx(canvas.h, viewH);
+        return true;
+    }
+    if (!scene.canvasPointAt(desc, camIndex, x, y, px, py, distance)) return false;
+    return scene.plateDesignPerScreenPx(desc, camIndex, viewW, viewH, rect, scale);
+}
+
+// 板 index（desc）の上の枠の中（移動の当たり）が、カーソルの下の手前の別の板にふさがれて
+// いるか（手前の板の決め方は Scene::plateUnderCursor = ボタンの当たりと同じ）。つまみ（角・
+// 辺）はふさがない: 枠はいちばん手前に描く（UiSelectionFrame）ので見えているつまみは掴める
+// が、枠の中は手前の板の中身が見えている所 = そこを押して奥の要素を動かさない。
+bool bodyCovered(const Scene& scene, const wizengine::UiState::Snapshot& snap,
+                 std::size_t camIndex, const ui::CanvasDesc& desc, int index, double x, double y,
+                 double distance) {
+    if (!ui::isPlateCanvas(desc)) return false;  // overlay の枠は板の手前
+    const Scene::UiPlatePoint front = scene.plateUnderCursor(snap, camIndex, x, y);
+    const bool otherPlate = front.canvas >= 0 && front.canvas != index;
+    const bool inFront = front.distance < distance;
+    return otherPlate && inFront;
 }
 
 }  // namespace
@@ -75,10 +110,11 @@ struct UiInputComponent::Cam {
     wizengine::UiState::ElementRef dragRef;  // 掴んだ要素（開始時の世代。refValid で確かめる）
     int dragParent = -1;
     double dragHeight = 0.0;             // 開始時の Canvas の基準の高さ
+    ui::CanvasMode dragMode = ui::CanvasMode::Overlay;  // 開始時の Canvas の表示方法
     std::uint64_t dragEpoch = 0;           // 掴んだときのモードの世代
     ui::FrameHandle dragHandle = ui::FrameHandle::None;
-    double startX0 = 0.0, startY0 = 0.0;  // 押した位置（NDC。開始時に読んだ値）
-    ui::Rect canvasRect;     // 開始時の Canvas 全体（NDC → 設計の画素の換算）
+    double startPx = 0.0, startPy = 0.0;  // 押した位置（設計の画素。開始時に求めた値）
+    ui::Rect canvasRect;     // 開始時の Canvas 全体（overlay: NDC → 設計の画素の換算）
     ui::Rect parentRect;     // 開始時の親の矩形
     ui::PropSet start;       // 開始時の性質（設計値）
     ui::Placement last;      // 最後に書いた（または開始時の）pos / size
@@ -225,16 +261,17 @@ bool UiInputComponent::pick(Scene& scene, std::size_t camIndex, const nlohmann::
     // して捨てる）。
     const std::uint64_t epoch = scene.editor().modeEpoch();
     if (!scene.editsUiFrom(camIndex)) return false;
-    const EditorState& state = scene.editor();
     // 枠が出るのは要素を選んでいるときだけ（Canvas そのものは映像全体 = 枠を出さない）。
-    if (state.selKind() != EditorState::SelKind::Canvas) return false;
-    const int canvasIndex = state.selIndex();
-    const int elementId = state.selSub();
+    // 選択は組で 1 回だけ読む。
+    const EditorState::Selection sel = scene.editor().selection();
+    if (sel.kind != EditorState::SelKind::Canvas) return false;
+    const int canvasIndex = sel.index;
+    const int elementId = sel.sub;
     if (elementId < 0) return false;
 
     const wizengine::UiState::Snapshot& snap = snapshot(scene);
     const ui::CanvasDesc* desc = snap.liveCanvas(canvasIndex);
-    if (!desc || !ui::overlayShownOnCamera(*desc, int(camIndex))) return false;
+    if (!desc || !ui::canvasShownOnCamera(*desc, int(camIndex))) return false;
     int viewW = 0, viewH = 0;
     unpackSize(cam.view.load(), viewW, viewH);
     if (viewW <= 0 || viewH <= 0) return false;  // まだビューが無い
@@ -242,7 +279,7 @@ bool UiInputComponent::pick(Scene& scene, std::size_t camIndex, const nlohmann::
     const std::vector<ui::ElementDesc>& elements = snap.elementsOf(*desc);
     const std::size_t at = ui::elementIndex(elements, elementId);
     if (at == elements.size()) return false;
-    const ui::Rect canvas = ui::canvasRect(desc->height, viewW, viewH);
+    const ui::Rect canvas = ui::designCanvasRect(*desc, viewW, viewH);
     const std::vector<ui::LayoutNode> nodes = ui::layoutTree(elements, {}, canvas);
     // 編集してよくない中身（読めなかった共用 UI など）・見えない要素は掴まない（押しても
     // 下へ流す。枠は描く側が線だけ出す）。
@@ -251,12 +288,19 @@ bool UiInputComponent::pick(Scene& scene, std::size_t camIndex, const nlohmann::
     if (!ui::frameGrabbable(editable, nodes[at])) return false;
     const double x = wizengine::jsonNumber(msg, "x", 0.0);
     const double y = wizengine::jsonNumber(msg, "y", 0.0);
-    double px = 0.0, py = 0.0;
-    ui::ndcToCanvas(canvas, x, y, px, py);
+    double px = 0.0, py = 0.0, scale = 1.0, distance = 0.0;
+    if (!pointOnCanvas(scene, camIndex, *desc, canvas, nodes[at].rect, x, y, viewW, viewH, px,
+                       py, scale, distance)) {
+        return false;
+    }
     // つまみの当たりの大きさは画面の上で一定（描く四角より大きい。換算は buildFrameMesh と同じ）。
-    const double half = ui::handleHitHalfDesign(ui::designPerScreenPx(canvas.h, viewH));
+    const double half = ui::handleHitHalfDesign(scale);
     const ui::FrameHandle handle = ui::hitHandle(nodes[at].rect, px, py, half);
     if (handle == ui::FrameHandle::None) return false;
+    const bool body = handle == ui::FrameHandle::Body;
+    if (body && bodyCovered(scene, snap, camIndex, *desc, canvasIndex, x, y, distance)) {
+        return false;  // 枠の中は手前の板に任せる（後ろの物・ほかの選択へ流す）
+    }
 
     // 欄を書く間は serial を奇数にする（PHYSICS は奇数の間は読まない）。
     cam.serial.fetch_add(1);
@@ -337,19 +381,28 @@ bool UiInputComponent::beginDrag(Scene& scene, std::size_t camIndex, Cam& cam,
     wizengine::UiState::ContentsInfo info;
     if (!scene.ui().copyCanvasContents(grab.ref.canvas, desc, info)) return false;
     const bool editable = wizengine::uiops::elementsEditable(info);
-    if (!editable || !ui::overlayShownOnCamera(desc, int(camIndex))) return false;
+    if (!editable || !ui::canvasShownOnCamera(desc, int(camIndex))) return false;
     const std::size_t at = ui::elementIndex(desc.elements, grab.ref.element);
     if (at == desc.elements.size()) return false;  // refValid の後なので起きない（念のため）
+    // 開始時の Canvas と親の矩形（以後この値だけを見る = 解像度が途中で変わっても、
+    // 押した位置からの動きの換算は変わらない）。
+    cam.canvasRect = ui::designCanvasRect(desc, grab.viewW, grab.viewH);
+    // 押した位置（設計の画素）。板は今のカメラのレイと今の板の面の交点。
+    if (!ui::isPlateCanvas(desc)) {
+        ui::ndcToCanvas(cam.canvasRect, grab.startX, grab.startY, cam.startPx, cam.startPy);
+    } else {
+        double distance = 0.0;
+        if (!scene.canvasPointAt(desc, camIndex, grab.startX, grab.startY, cam.startPx,
+                                 cam.startPy, distance)) {
+            return false;  // 板が作れない・面と平行（掴んだ後にカメラが回った）
+        }
+    }
     cam.dragRef = grab.ref;
     cam.dragHandle = grab.handle;
     cam.dragParent = desc.elements[at].parent;
     cam.dragHeight = desc.height;
+    cam.dragMode = desc.mode;
     cam.dragEpoch = grab.epoch;
-    cam.startX0 = grab.startX;
-    cam.startY0 = grab.startY;
-    // 開始時の Canvas と親の矩形（以後この値だけを見る = 解像度が途中で変わっても、
-    // 押した位置からの動きの換算は変わらない）。
-    cam.canvasRect = ui::canvasRect(desc.height, grab.viewW, grab.viewH);
     const std::vector<ui::LayoutNode> nodes = ui::layoutTree(desc.elements, {}, cam.canvasRect);
     const int parent = nodes[at].parent;
     cam.parentRect = parent >= 0 ? nodes[std::size_t(parent)].rect : cam.canvasRect;
@@ -371,12 +424,25 @@ bool UiInputComponent::applyDrag(Scene& scene, std::size_t camIndex, Cam& cam,
     // 読んでいる間に次の押下が来た（今の位置が新しい押下のもの）= このパスは当てない
     // （次のパスで新しいドラッグを始める）。
     if (cam.serial.load() != serial) return true;
-    // 押した位置からの動き（設計の画素。y は下向き）。開始時の Canvas で換算する。
-    double sx = 0.0, sy = 0.0, nx = 0.0, ny = 0.0;
-    ui::ndcToCanvas(cam.canvasRect, cam.startX0, cam.startY0, sx, sy);
-    ui::ndcToCanvas(cam.canvasRect, curX, curY, nx, ny);
-    const double dx = nx - sx;
-    const double dy = ny - sy;
+    // 今の位置（設計の画素。y は下向き）。overlay は開始時の Canvas で換算する。板は**今の**
+    // 板の面に当て直す（ドラッグ中に pos / euler / distance / size が変わっても、camera の板が
+    // カメラに付いて動いても、カーソルの下の板の点 = 見えている所に要素が付いてくる。表示
+    // 方法・基準の高さ・縦横比が変わったら下の canvasKept で止める）。面と平行に近くて
+    // 当たらない・Canvas が無いフレームは書かない（前の値のまま）。
+    double nx = 0.0, ny = 0.0;
+    if (!ui::isPlateCanvasMode(cam.dragMode)) {
+        ui::ndcToCanvas(cam.canvasRect, curX, curY, nx, ny);
+    } else {
+        ui::CanvasDesc plate;  // 属性だけ（要素は写さない）
+        double distance = 0.0;
+        const bool exists = scene.ui().copyCanvasAttrs(cam.dragRef.canvas, plate);
+        if (!exists || !scene.canvasPointAt(plate, camIndex, curX, curY, nx, ny, distance)) {
+            return true;
+        }
+    }
+    // 押した位置からの動き。
+    const double dx = nx - cam.startPx;
+    const double dy = ny - cam.startPy;
     // 押しただけ（まだ動かしていない）では書かない（刻みへ寄せて値が変わらないように）。
     // 一度動いた後に押した位置へ戻したときは、戻した値を書く。
     if (!cam.moved && dx == 0.0 && dy == 0.0) return true;
@@ -410,8 +476,14 @@ bool UiInputComponent::applyDrag(Scene& scene, std::size_t camIndex, Cam& cam,
             const bool anchorKept = sameProp(e.props, cam.start, ui::Prop::Anchor);
             const bool pivotKept = sameProp(e.props, cam.start, ui::Prop::Pivot);
             const bool parentKept = e.parent == cam.dragParent;
-            const bool canvasKept = desc.height == cam.dragHeight &&
-                                    ui::overlayShownOnCamera(desc, int(camIndex));
+            // Canvas の基準の高さ・表示方法・出すカメラと、板なら板の縦横比（= Canvas の幅。
+            // overlay の幅はビューの縦横比で決まり、開始時の値で換算し続ける）。
+            const bool heightKept = desc.height == cam.dragHeight;
+            const bool modeKept =
+                desc.mode == cam.dragMode && ui::canvasShownOnCamera(desc, int(camIndex));
+            const bool overlay = !ui::isPlateCanvasMode(cam.dragMode);
+            const bool widthKept = overlay || ui::plateCanvasWidth(desc) == cam.canvasRect.w;
+            const bool canvasKept = heightKept && modeKept && widthKept;
             if (!anchorKept || !pivotKept || !parentKept || !canvasKept) {
                 basisChanged = true;
                 return false;

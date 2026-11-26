@@ -69,6 +69,14 @@ nlohmann::json buildSchema() {
         nlohmann::json j = specJson(a.name, a.spec, a.label);
         // 欄にしてよいか（ui の付け替えは共用にする / やめる操作の仕事）。
         j["editable"] = ui::canvasAttrEditable(a);
+        // 効く表示方法の名前の並び（Inspector は今の表示方法に効く欄だけを出す）。
+        nlohmann::json modes = nlohmann::json::array();
+        for (std::size_t m = 0; ui::kCanvasModeNames[m]; ++m) {
+            if (a.modes & ui::canvasModeBit(ui::CanvasMode(m))) {
+                modes.push_back(ui::kCanvasModeNames[m]);
+            }
+        }
+        j["modes"] = modes;
         canvas.push_back(j);
     }
     return {{"props", props}, {"kinds", kinds}, {"canvas", canvas}};
