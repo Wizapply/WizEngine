@@ -253,6 +253,27 @@ void Scene::destroyObject(std::size_t index) {
         if (changed) editor_.setEmitters(std::move(emitters));
     }
 
+    // この物に付いていた音源は一緒に消す（Unity で GameObject を消すと AudioSource も
+    // 消えるのと同じ。ワールドへ移すと原点で鳴り続けて紛らわしい）。耳が付いていたら
+    // カメラへ戻す。
+    {
+        auto sources = editor_.audioSources();
+        const std::size_t before = sources.size();
+        sources.erase(std::remove_if(sources.begin(), sources.end(),
+                                     [&](const ed::AudioSourceDesc& a) { return a.body == idx; }),
+                      sources.end());
+        if (sources.size() != before) editor_.setAudioSources(std::move(sources));
+        if (editor_.hasAudioListener()) {
+            ed::AudioListenerDesc l = editor_.audioListener();
+            if (l.body == idx) {
+                l.body = -1;
+                l.position = ed::Vec3d{0.0, 0.0, 0.0};
+                l.rotation = ed::Vec3d{0.0, 0.0, 0.0};
+                editor_.setAudioListener(true, l);
+            }
+        }
+    }
+
     // このオブジェクトを見張る / 動かすイベントノードも一緒に掃除する
     // （付いていたアセットは desc ごと残るが、実体の一覧からは外れる）。
     pruneGraphForRemoved(ed::NodeTargetKind::Object, int(index));
@@ -1555,6 +1576,13 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
         return;
     }
 
+    // オーディオ（Inspector の「オーディオソース」節と World タブの「オーディオ」節）。
+    if (op.kind == "audio.add" || op.kind == "audio.set" || op.kind == "audio.remove" ||
+        op.kind == "audiolistener") {
+        applyAudioOp(op.kind, a);
+        return;
+    }
+
     // 水面と流体粒子（World タブの「流体」節とアセットパネルのタイル）。
     if (op.kind == "water") {
         applyWaterOp(a);
@@ -1640,6 +1668,9 @@ void Scene::applyEditorOp(const EditorState::Op& op) {
             std::lock_guard<std::mutex> lk(objectsMutex_);
             meshes_.clear();
         }
+        // オーディオも外す（音源なし・耳はカメラ）。
+        editor_.setAudioSources({});
+        editor_.setAudioListener(false, ed::AudioListenerDesc{});
         // 水面と流体粒子も外す（どちらも「節が無い」が初期状態）。
         editor_.setWater(false, ed::WaterDesc{});
         editor_.setFluid(false, ed::FluidDesc{});

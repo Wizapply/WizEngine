@@ -313,6 +313,21 @@ std::vector<std::string> diffScenes(const ed::SceneDocument& before,
         out.push_back("particle emitters: " + std::to_string(before.emitters.size()) + " -> " +
                       std::to_string(after.emitters.size()));
     }
+    // オーディオ（音源の数と、名前ごとの中身。耳は有無と中身）。
+    if (before.audioSources.size() != after.audioSources.size()) {
+        out.push_back("audio sources: " + std::to_string(before.audioSources.size()) + " -> " +
+                      std::to_string(after.audioSources.size()));
+    } else {
+        for (std::size_t i = 0; i < after.audioSources.size(); ++i) {
+            if (ed::toJson(before.audioSources[i]) != ed::toJson(after.audioSources[i])) {
+                out.push_back("changed the audio source \"" + after.audioSources[i].name + "\"");
+            }
+        }
+    }
+    if (before.hasAudioListener != after.hasAudioListener ||
+        ed::toJson(before.audioListener) != ed::toJson(after.audioListener)) {
+        out.push_back("changed the audio listener");
+    }
     if (before.hasTerrain != after.hasTerrain) {
         out.push_back(after.hasTerrain ? "added a terrain" : "removed the terrain");
     }

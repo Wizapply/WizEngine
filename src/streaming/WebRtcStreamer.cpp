@@ -11,6 +11,7 @@
 #include <gst/webrtc/webrtc.h>
 
 #include <chrono>
+#include <algorithm>
 #include <cstdlib>
 #include <future>
 #include <string>
@@ -151,6 +152,22 @@ PayloadChoice payloadFromOffer(const std::string& sdp, const std::string& codec)
         return {pt, {}};  // non-H264 codecs: first entry is fine
     }
     return fallback;
+}
+
+// 音声: offer の Opus の番号（"a=rtpmap:111 opus/48000/2"）。無ければ -1。
+int opusPayloadFromOffer(const std::string& sdp) {
+    size_t pos = 0;
+    while (pos < sdp.size()) {
+        size_t eol = sdp.find('\n', pos);
+        if (eol == std::string::npos) eol = sdp.size();
+        std::string line = sdp.substr(pos, eol - pos);
+        pos = eol + 1;
+        if (line.rfind("a=rtpmap:", 0) != 0) continue;
+        std::string lower = line;
+        for (auto& c : lower) c = char((c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c);
+        if (lower.find(" opus/48000") != std::string::npos) return std::atoi(line.c_str() + 9);
+    }
+    return -1;
 }
 
 }  // namespace
@@ -317,7 +334,8 @@ static const char* pickAV1Encoder() {
 }
 
 void WebRtcStreamer::buildPipeline(int payloadType,
-                                   const std::string& h264ProfileLevelId) {
+                                   const std::string& h264ProfileLevelId,
+                                   int audioPayloadType) {
     const int pt = (payloadType > 0) ? payloadType : 96;
     // No STUN server: for localhost / same-LAN use, host ICE candidates are
     // enough. (For NAT traversal across networks, add a reachable stun-server.)
@@ -535,10 +553,29 @@ void WebRtcStreamer::buildPipeline(int payloadType,
         LOGI("webrtc", "colour conversion: CPU (videoconvert)");
     }
 
+    // 音声（サーバーで作った音 = audio/AudioOutput）。ブラウザの offer に Opus があり、
+    // opusenc と rtpopuspay があるときだけ。PTS は pushAudio が付ける（do-timestamp は
+    // 使わない = 標本の数で途切れなく進める）。frame-size 10 ms は音声のブロックと同じ。
+    std::string audio;
+    if (audioPayloadType > 0) {
+        if (encoderExists("opusenc") && encoderExists("rtpopuspay")) {
+            const std::string apt = std::to_string(audioPayloadType);
+            audio =
+                " appsrc name=asrc is-live=true format=time do-timestamp=false ! "
+                "audioconvert ! opusenc bitrate=128000 frame-size=10 ! "
+                "rtpopuspay pt=" + apt + " ! "
+                "application/x-rtp,media=audio,encoding-name=OPUS,payload=" + apt +
+                ",clock-rate=48000 ! wb.";
+        } else {
+            LOGW("webrtc", "no audio track: opusenc / rtpopuspay not installed "
+                           "(gst-plugins-base opus + gst-plugins-good)");
+        }
+    }
+
     const std::string desc =
         "appsrc name=src is-live=true format=time do-timestamp=true ! " +
         convert + " ! " + enc +
-        " ! webrtcbin name=wb bundle-policy=max-bundle";
+        " ! webrtcbin name=wb bundle-policy=max-bundle" + audio;
 
     LOGI("webrtc", "pipeline: %s", desc.c_str());
 
@@ -556,6 +593,30 @@ void WebRtcStreamer::buildPipeline(int payloadType,
 
     appsrc_ = gst_bin_get_by_name(GST_BIN(pipeline_), "src");
     webrtc_ = gst_bin_get_by_name(GST_BIN(pipeline_), "wb");
+    audioSrc_ = audio.empty() ? nullptr : gst_bin_get_by_name(GST_BIN(pipeline_), "asrc");
+    if (audioSrc_) {
+        GstCaps* ac = gst_caps_from_string(
+            "audio/x-raw,format=S16LE,channels=2,rate=48000,layout=interleaved");
+        g_object_set(audioSrc_, "caps", ac, nullptr);
+        gst_caps_unref(ac);
+    }
+    audioStarted_ = false;
+    // 映像と音を同じ MediaStream（msid）にする: ブラウザは同じストリームの音と映像を
+    // RTCP の送信者報告で揃えて出す（別のストリームだと揃えない）。sink のパッドの
+    // msid は GStreamer 1.24 から。無い版は既定の名前のまま（ブラウザ側で 1 本に
+    // まとめるが、揃え方はブラウザ任せ）。
+    if (GstIterator* it = gst_element_iterate_sink_pads(webrtc_)) {
+        GValue item = G_VALUE_INIT;
+        while (gst_iterator_next(it, &item) == GST_ITERATOR_OK) {
+            GObject* pad = G_OBJECT(g_value_get_object(&item));
+            if (g_object_class_find_property(G_OBJECT_GET_CLASS(pad), "msid")) {
+                g_object_set(pad, "msid", "charon", nullptr);
+            }
+            g_value_reset(&item);
+        }
+        g_value_unset(&item);
+        gst_iterator_free(it);
+    }
 
     const std::string caps =
         "video/x-raw,format=RGBA,width=" + std::to_string(width_) +
@@ -620,6 +681,11 @@ void WebRtcStreamer::teardownPipeline() {
         gst_object_unref(appsrc_);
         appsrc_ = nullptr;
     }
+    if (audioSrc_) {
+        gst_object_unref(audioSrc_);
+        audioSrc_ = nullptr;
+    }
+    audioStarted_ = false;
     if (webrtc_) {
         gst_object_unref(webrtc_);
         webrtc_ = nullptr;
@@ -665,6 +731,38 @@ void WebRtcStreamer::pushFrame(const uint8_t* rgba, std::size_t size) {
     }
 }
 
+bool WebRtcStreamer::hasAudio() {
+    std::lock_guard<std::mutex> lk(pipelineMutex_);
+    return audioSrc_ != nullptr;
+}
+
+void WebRtcStreamer::pushAudio(const int16_t* pcm, std::size_t frames, double latencySec) {
+    std::lock_guard<std::mutex> lk(pipelineMutex_);
+    if (!audioSrc_ || !pipeline_ || frames == 0) return;
+    GstClock* clock = gst_element_get_clock(pipeline_);
+    if (!clock) return;  // まだ PLAYING になっていない
+    const GstClockTime now = gst_clock_get_time(clock);
+    gst_object_unref(clock);
+    const GstClockTime base = gst_element_get_base_time(pipeline_);
+    if (now < base) return;
+    // 映像の PTS（do-timestamp）と同じ「パイプラインの時計の経過」で数える。
+    const long long running = (long long)(now - base);
+    const long long want =
+        running + (long long)(std::max(0.0, latencySec) * double(GST_SECOND));
+    const long long dur = (long long)(frames) * (long long)GST_SECOND / 48000;
+    if (!audioStarted_ || std::llabs(want - (long long)audioNextPts_) > 40 * (long long)GST_MSECOND) {
+        audioNextPts_ = (unsigned long long)want;
+        audioStarted_ = true;
+    }
+    const std::size_t bytes = frames * 2 * sizeof(int16_t);
+    GstBuffer* buffer = gst_buffer_new_allocate(nullptr, bytes, nullptr);
+    gst_buffer_fill(buffer, 0, pcm, bytes);
+    GST_BUFFER_PTS(buffer) = GstClockTime(audioNextPts_);
+    GST_BUFFER_DURATION(buffer) = GstClockTime(dur);
+    gst_app_src_push_buffer(GST_APP_SRC(audioSrc_), buffer);
+    audioNextPts_ += (unsigned long long)dur;
+}
+
 void WebRtcStreamer::stopSession() {
     std::lock_guard<std::mutex> plk(pipelineMutex_);
     teardownPipeline();
@@ -680,6 +778,12 @@ std::string WebRtcStreamer::handleOffer(const std::string& offerSdp) {
     // to offer one codec at 96 but others under different numbers - answering with a
     // mismatched PT means every packet is silently dropped: black picture.
     const PayloadChoice pc = payloadFromOffer(offerSdp, codecName());
+    // 映像の種類が offer に無いとき（ブラウザが /stats を読む前に別の種類で繋いだ）は
+    // 音声を足さない: 映像の m 行と合わないパッドが残ったまま音声の m 行だけが合うと、
+    // webrtcbin が "assertion failed: (trans->stream)" でプロセスごと落ちる（1.24 で確認）。
+    // 映像だけなら従来どおり（ブラウザは種類を合わせて繋ぎ直す）。
+    const int audioPt = pc.pt > 0 ? opusPayloadFromOffer(offerSdp) : -1;
+    if (audioPt > 0) LOGI("webrtc", "browser offered Opus audio at payload %d", audioPt);
     LOGI("webrtc", "browser offered %s at payload %d%s%s", codecName(), pc.pt,
          pc.profileLevelId.empty() ? "" : ", profile-level-id=",
          pc.profileLevelId.c_str());
@@ -688,7 +792,7 @@ std::string WebRtcStreamer::handleOffer(const std::string& offerSdp) {
     {
         std::lock_guard<std::mutex> plk(pipelineMutex_);
         teardownPipeline();
-        buildPipeline(pc.pt, pc.profileLevelId);
+        buildPipeline(pc.pt, pc.profileLevelId, audioPt);
         webrtc = webrtc_;
     }
     if (!webrtc) return {};

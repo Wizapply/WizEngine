@@ -231,6 +231,21 @@
     border-radius: 5px;
   }
   #vhSidebar:hover { background: #30333a; }
+  /* 音のミュート（audio.js）。鳴っている間は少し明るく。 */
+  #vhAudio {
+    font-size: 14px; padding: 4px 9px; margin: 0; cursor: pointer;
+    background: #24262c; color: #ddd; border: 1px solid #3a3d45;
+    border-radius: 5px;
+  }
+  #vhAudio:hover { background: #30333a; }
+  #vhAudio.on { border-color: #4a70ad; }
+  #vhAudio[hidden] { display: none; }
+  /* オーディオソースのカード（Inspector / World タブ）。 */
+  .auCard { border: 1px solid #33363d; border-radius: 6px; padding: 6px 6px 2px;
+            margin: 0 0 8px; background: #1d1f24; }
+  .auCard .auClip { max-width: 150px; }
+  .auCard button { padding: 2px 7px; }
+  .auBlend { display: inline-block; min-width: 34px; text-align: right; color: #aab; }
   /* プレハブ編集モードの表示（映像ヘッダー）。戻るボタンと名前。 */
   .vhPrefab { display: inline-flex; align-items: center; gap: 8px; margin-left: 10px;
               padding: 2px 8px; border-radius: 6px; background: #2a3550;
@@ -1010,6 +1025,7 @@
   body.popup #sbResize,
   body.popup #assets,
   body.popup #vhSidebar,
+  body.popup #vhAudio,
   body.popup #viewHead .modeBtn { display: none; }
   body.popup #main { padding: 6px 8px 10px; }
 

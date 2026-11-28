@@ -106,6 +106,45 @@ void EditorState::setEmitters(std::vector<wizengine::editor::EmitterDesc> emitte
     emitterVersion_.fetch_add(1);
 }
 
+// ---- オーディオ -------------------------------------------------------------------
+
+std::vector<wizengine::editor::AudioSourceDesc> EditorState::audioSources() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return audioSources_;
+}
+
+void EditorState::setAudioSources(std::vector<wizengine::editor::AudioSourceDesc> sources) {
+    if (sources.size() > wizengine::editor::kMaxAudioSources) {
+        sources.resize(wizengine::editor::kMaxAudioSources);
+    }
+    for (auto& a : sources) a = wizengine::editor::clampAudioSource(std::move(a));
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        audioSources_ = std::move(sources);
+    }
+    audioVersion_.fetch_add(1);
+}
+
+wizengine::editor::AudioListenerDesc EditorState::audioListener() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return audioListener_;
+}
+
+bool EditorState::hasAudioListener() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return hasAudioListener_;
+}
+
+void EditorState::setAudioListener(bool has,
+                                   const wizengine::editor::AudioListenerDesc& listener) {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        hasAudioListener_ = has;
+        audioListener_ = wizengine::editor::clampAudioListener(listener);
+    }
+    audioVersion_.fetch_add(1);
+}
+
 // ---- 水面と流体粒子 -----------------------------------------------------------
 
 wizengine::editor::WaterDesc EditorState::water() const {

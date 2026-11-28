@@ -37,6 +37,7 @@ const char* sourceName(ctl::Source s) {
         case ctl::Source::Var: return "var";
         case ctl::Source::Transmission: return "trans";
         case ctl::Source::Air: return "air";
+        case ctl::Source::Audio: return "audio";
     }
     return "?";
 }
@@ -156,13 +157,19 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
     const std::uint64_t cv = scene.editor().controlVersion();
     const std::uint64_t fv = scene.editor().formulaVersion();
     const std::uint64_t ev = scene.editor().emitterVersion();
-    if (cv != controlVersion_ || fv != formulaVersion_ || ev != emitterVersion_) {
+    const std::uint64_t av = scene.editor().audioVersion();
+    if (cv != controlVersion_ || fv != formulaVersion_ || ev != emitterVersion_ ||
+        av != audioVersion_) {
         controlVersion_ = cv;
         formulaVersion_ = fv;
         emitterVersion_ = ev;
+        audioVersion_ = av;
         rebuild(scene);
     }
     if (runtimes_.empty()) {
+        // 書く制御器が無い = 音源の音量・高さは文書の値（前に書いていた分を消す）。
+        audioWrites_.clear();
+        if (!audioOverridden_.empty()) flushAudioWrites(scene);
         // 書く制御器が無い = 空気は文書の値（前に書いていた分を消す）。
         if (airSent_) {
             airWrites_ = wizengine::fluid::AirOverride{};
@@ -241,6 +248,8 @@ void ControlComponent::onPhysicsStep(Scene& scene, double dt) {
     // 回るので、同じステップから効く。
     scene.setAirOverride(airWrites_);
     airSent_ = airWrites_.any();
+    // 音源の音量・高さ（このステップに書いた分。書くのをやめた音源は文書の値へ戻す）。
+    flushAudioWrites(scene);
     // AT: 制御器が今書いた入力で TCU を回し、このステップの荷重とクラッチの容量を与える
     // （積分はこの後 Chrono が剛体と一緒に）。
     applyTransmissions(scene, dt);
@@ -488,6 +497,18 @@ void ControlComponent::bind(Scene& scene, Runtime& rt, Binding& b, bool sensor) 
                                   "(add <emitter name=\"" + r.target + "\"> in <worldbody>)");
             return;
         }
+        case ctl::Source::Audio: {
+            const auto sources = scene.editor().audioSources();
+            for (std::size_t i = 0; i < sources.size(); ++i) {
+                if (sources[i].name != r.target) continue;
+                b.audio = int(i);
+                b.ok = true;
+                return;
+            }
+            rt.warnings.push_back(label + ": no audio source with that name - ignored "
+                                  "(add <audiosource name=\"" + r.target + "\"> in <worldbody>)");
+            return;
+        }
         case ctl::Source::Joint: {
             const auto joints = scene.editor().joints();
             for (std::size_t j = 0; j < joints.size(); ++j) {
@@ -579,6 +600,7 @@ double ControlComponent::readSensor(Scene& scene, const Binding& b) {
                                                      b.transQty);
         case ctl::Source::Scope: return 0.0;
         case ctl::Source::Emitter: return 0.0;
+        case ctl::Source::Audio: return 0.0;
         case ctl::Source::Param: {
             const auto it = params_.find(r.target);
             return it == params_.end() ? 0.0 : it->second;
@@ -599,6 +621,25 @@ double ControlComponent::readSensor(Scene& scene, const Binding& b) {
 }
 
 // ---- アクチュエータ -----------------------------------------------------------
+// このステップに書いた audio:<名前>.volume / pitch を Scene へ。前のステップまで書いていて
+// 今回書かなかった音源は上書きを消す（= 文書の値）。範囲は Scene が丸めない値をそのまま
+// 渡すので、ここで丸める（音量 0..4、高さ 0.05..4 = AudioTypes.h の clampAudioSource と同じ）。
+void ControlComponent::flushAudioWrites(Scene& scene) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (const int i : audioOverridden_) {
+        if (audioWrites_.find(i) == audioWrites_.end()) scene.setAudioOverride(i, nan, nan);
+    }
+    audioOverridden_.clear();
+    for (const auto& kv : audioWrites_) {
+        double vol = kv.second.volume, pitch = kv.second.pitch;
+        if (std::isfinite(vol)) vol = std::max(0.0, std::min(4.0, vol));
+        if (std::isfinite(pitch)) pitch = std::max(0.05, std::min(4.0, pitch));
+        scene.setAudioOverride(kv.first, vol, pitch);
+        audioOverridden_.insert(kv.first);
+    }
+    audioWrites_.clear();
+}
+
 void ControlComponent::applyOutputs(Scene& scene, Runtime& rt, double dt) {
     PhysicsWorld& physics = scene.physics();
     struct Load {
@@ -652,6 +693,27 @@ void ControlComponent::applyOutputs(Scene& scene, Runtime& rt, double dt) {
             case ctl::Source::Emitter:
                 // 見た目だけ（パーティクルの量）。毎ステップ書く = ゼロ次ホールド。
                 if (effects_) effects_->setRate(b.emitter, v);
+                break;
+            case ctl::Source::Audio:
+                // 音を作るのは音声のスレッド。ここは指示を Scene へ渡すだけ（SceneAudio.cpp）。
+                if (b.ref.quantity == ctl::Quantity::AudioPlay) {
+                    // 0.5 をまたいだときだけ Play / Stop（毎ステップ鳴らし直さない）。
+                    const double prev = b.applied ? b.lastApplied : 0.0;
+                    if (prev <= 0.5 && v > 0.5) scene.audioPlay(b.audio, scene.physicsSimTime());
+                    if (prev > 0.5 && v <= 0.5) scene.audioStop(b.audio);
+                    b.applied = true;
+                    b.lastApplied = v;
+                } else if (b.ref.quantity == ctl::Quantity::AudioTrigger) {
+                    // 立ち上がりで一発（下がっても止めない = PlayOneShot）。
+                    const double prev = b.applied ? b.lastApplied : 0.0;
+                    if (prev <= 0.5 && v > 0.5) scene.audioPlay(b.audio, scene.physicsSimTime());
+                    b.applied = true;
+                    b.lastApplied = v;
+                } else if (b.ref.quantity == ctl::Quantity::AudioVolume) {
+                    audioWrites_[b.audio].volume = v;
+                } else if (b.ref.quantity == ctl::Quantity::AudioPitch) {
+                    audioWrites_[b.audio].pitch = v;
+                }
                 break;
             case ctl::Source::Transmission:
                 // 入力は保持（次に書くまで）。AT はこのステップの終わりに進む。

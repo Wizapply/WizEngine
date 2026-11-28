@@ -25,6 +25,13 @@ std::string mimeForPath(const std::string& path) {
     if (ext == "gif") return "image/gif";
     if (ext == "jpg" || ext == "jpeg") return "image/jpeg";
     if (ext == "ico") return "image/x-icon";
+    if (ext == "wav") return "audio/wav";
+    if (ext == "ogg") return "audio/ogg";
+    if (ext == "mp3") return "audio/mpeg";
+    if (ext == "flac") return "audio/flac";
+    if (ext == "m4a" || ext == "aac") return "audio/mp4";
+    if (ext == "opus") return "audio/ogg";
+    if (ext == "webm") return "audio/webm";
     return "application/octet-stream";
 }
 
@@ -286,6 +293,34 @@ void HttpServer::registerRoutes(httplib::Server& srv,
         res.set_content(csv, "text/csv; charset=utf-8");
     });
 
+    // 音のファイル（assets/ の下だけ。パスの関所は setClipSource の allowed）。
+    srv.Get(prefix + "/clip", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string root;
+        std::function<bool(const std::string&)> allowed;
+        {
+            std::lock_guard<std::mutex> lock(offerMutex_);
+            root = clipRoot_;
+            allowed = clipAllowed_;
+        }
+        const std::string file = req.has_param("file") ? req.get_param_value("file") : "";
+        if (root.empty() || !allowed || file.empty() || !allowed(file)) {
+            res.status = 404;
+            res.set_content("not found", "text/plain");
+            return;
+        }
+        std::ifstream in(root + "/" + file, std::ios::binary);
+        if (!in) {
+            res.status = 404;
+            res.set_content("not found", "text/plain");
+            return;
+        }
+        std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        // 中身はファイルの差し替えで変わりうるので、毎回確かめさせる（ブラウザは復号した
+        // 音を自分で覚えている = 同じクリップを何度も取りには来ない）。
+        res.set_header("Cache-Control", "no-cache");
+        res.set_content(body, mimeForPath(file).c_str());
+    });
+
     // Performance counters for the browser overlay.
     srv.Get(prefix + "/stats", [this](const httplib::Request&, httplib::Response& res) {
         std::function<std::string()> provider;
@@ -373,6 +408,13 @@ void HttpServer::setControlProviders(
     std::lock_guard<std::mutex> lock(offerMutex_);
     controlProvider_ = std::move(samples);
     controlCsvProvider_ = std::move(csv);
+}
+
+void HttpServer::setClipSource(std::string root,
+                               std::function<bool(const std::string&)> allowed) {
+    std::lock_guard<std::mutex> lock(offerMutex_);
+    clipRoot_ = std::move(root);
+    clipAllowed_ = std::move(allowed);
 }
 
 std::vector<std::string> HttpServer::drainCommands() {

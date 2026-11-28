@@ -396,6 +396,9 @@ void Renderer::renderFrame(
     while (!slot.pending.empty()) {
         ViewSlot::Capture& done = slot.captures[slot.pending.front()];
         if (!done.ready->load(std::memory_order_acquire)) break;  // still copying
+        slot.lastLatency = std::chrono::duration<double>(
+                               std::chrono::steady_clock::now() - done.submitted)
+                               .count();
         onFrame(done.pixels.data(), done.pixels.size());
         done.ready->store(false, std::memory_order_release);
         done.inFlight = false;
@@ -463,6 +466,7 @@ void Renderer::renderFrame(
         renderer_->readPixels(0, 0, uint32_t(slot.width),
                               uint32_t(slot.height), std::move(pbd));
         cap.inFlight = true;
+        cap.submitted = std::chrono::steady_clock::now();
         slot.pending.push_back(slot.next);
         slot.next = (slot.next + 1) % ViewSlot::kCaptureBuffers;
     }

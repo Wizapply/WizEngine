@@ -404,7 +404,11 @@ set(WIZ_RENDER_SOURCES
 set(WIZ_STREAMING_SOURCES
     src/streaming/HttpServer.cpp
     src/streaming/VideoStreamer.cpp
-    src/streaming/WebRtcStreamer.cpp)
+    src/streaming/WebRtcStreamer.cpp
+    src/streaming/AudioDecode.cpp
+    src/audio/AudioClip.cpp
+    src/audio/AudioMixer.cpp
+    src/audio/AudioOutput.cpp)
 set(WIZ_DOCUMENT_SOURCES
     src/document/SceneDocument.cpp)
 set(WIZ_SCENE_SOURCES
@@ -416,6 +420,7 @@ set(WIZ_SCENE_SOURCES
     src/scene/SceneEdit.cpp
     src/scene/SceneEvents.cpp
     src/scene/SceneFluid.cpp
+    src/scene/SceneAudio.cpp
     src/scene/SceneLibrary.cpp
     src/scene/SceneSerialize.cpp
     src/scene/SceneTerrain.cpp

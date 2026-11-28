@@ -13,6 +13,7 @@
 
 #include "document/EditorTypes.h"
 #include "document/FluidTypes.h"
+#include "document/AudioTypes.h"
 #include "transmission/AtTypes.h"
 
 // エディタ／シミュレートの切り替えと、まだ適用されていない編集操作を持つ入れ物。
@@ -140,6 +141,18 @@ public:
     std::vector<wizengine::editor::EmitterDesc> emitters() const;
     void setEmitters(std::vector<wizengine::editor::EmitterDesc> emitters);
     std::uint64_t emitterVersion() const { return emitterVersion_.load(); }
+
+    // ---- オーディオ（<worldbody> の <audiosource> / <audiolistener>）-----------
+    // 音源の一覧と耳（Unity の AudioSource / AudioListener）。鳴らすのはブラウザで、
+    // ここは設計値だけ。書き換えるたびに audioVersion が進む（制御器の audio:<名前> の
+    // 結び直しと、ブラウザが音源を組み直す合図）。hasAudioListener = false は
+    // 「各ページのカメラが耳」。
+    std::vector<wizengine::editor::AudioSourceDesc> audioSources() const;
+    void setAudioSources(std::vector<wizengine::editor::AudioSourceDesc> sources);
+    wizengine::editor::AudioListenerDesc audioListener() const;
+    bool hasAudioListener() const;
+    void setAudioListener(bool has, const wizengine::editor::AudioListenerDesc& listener);
+    std::uint64_t audioVersion() const { return audioVersion_.load(); }
 
     // ---- 水面と流体粒子（<worldbody> の <water> / <fluid>）--------------------
     // 文書の単一要素。has = false は「無い」（節を書かない文書）。書き換えるたびに
@@ -422,6 +435,10 @@ private:
     std::vector<wizengine::editor::CableDesc> cables_;  // 同上（mutex_ の下）
     std::vector<wizengine::editor::EmitterDesc> emitters_;  // 同上
     std::atomic<std::uint64_t> emitterVersion_{0};
+    std::vector<wizengine::editor::AudioSourceDesc> audioSources_;  // mutex_ の下
+    wizengine::editor::AudioListenerDesc audioListener_;            // mutex_ の下
+    bool hasAudioListener_ = false;
+    std::atomic<std::uint64_t> audioVersion_{0};
     wizengine::editor::WaterDesc water_;  // mutex_ の下
     bool hasWater_ = false;
     std::atomic<std::uint64_t> waterVersion_{0};

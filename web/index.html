@@ -881,6 +881,18 @@
         </div>
       </section>
 
+      <!-- 選んでいるオブジェクトに付いたオーディオソース（Unity の AudioSource）。
+           中身は audio.js の renderAudioSections が組む。 -->
+      <section class="sbSec" id="secAudioSrc" hidden>
+        <div class="sbSecHead">🔊 オーディオソース</div>
+        <div id="auObjList"></div>
+        <div class="edRow btnRow">
+          <button onclick="audioAddSource(mySelectedDesc() ? mySelectedDesc().index : -1)"
+                  title="この物に音源を付ける（既定は 3D = 距離で減衰・左右に振れる）">＋ オーディオソースを追加</button>
+        </div>
+        <div class="edHint" id="auObjHint"></div>
+      </section>
+
       <!-- ジョイントも「選択しているオブジェクトの内容」として扱う:
            選択が無いときは節ごと隠し、一覧も選択が関わるものだけ。 -->
       <section class="sbSec" id="secJoint" hidden>
@@ -1685,6 +1697,65 @@
           📄 XML の &lt;fluid&gt;&lt;block/&gt; で。</div>
       </section>
 
+      <!-- オーディオ（Unity の AudioListener と、ワールドに付けた 2D の音 = BGM など）。
+           音はサーバーで作り、映像と同じ WebRTC の回線で届く（映像と同期）。耳は既定で各ページのカメラ。
+           送るのは edit.audiolistener / edit.audio.* = エディタカメラのページ専用。 -->
+      <section class="sbSec" id="secAudio" hidden>
+        <div class="sbSecHead">🔊 オーディオ</div>
+        <div class="edLabel">オーディオリスナー（耳）</div>
+        <div class="edRow">
+          <span>付け先</span>
+          <select id="auLisBody" class="strSel"
+                  title="カメラ = 見ているページのカメラの位置で聞く（Unity のカメラに付いた AudioListener）。物を選ぶとその物の位置・向きで聞く（運転席など）"
+                  onchange="applyAudioListener()"></select>
+        </div>
+        <div id="auLisPose">
+          <div class="trRow" title="付け先のローカル (m)">
+            <span class="trName">位置</span>
+            <label class="trCell"><span class="axis axX">X</span>
+              <input id="auLisPX" class="num" type="number" step="0.1" onchange="applyAudioListener()"></label>
+            <label class="trCell"><span class="axis axY">Y</span>
+              <input id="auLisPY" class="num" type="number" step="0.1" onchange="applyAudioListener()"></label>
+            <label class="trCell"><span class="axis axZ">Z</span>
+              <input id="auLisPZ" class="num" type="number" step="0.1" onchange="applyAudioListener()"></label>
+          </div>
+          <div class="trRow" title="付け先に対する向き（度）。前 = ローカル -Z">
+            <span class="trName">回転</span>
+            <label class="trCell"><span class="axis axX">X</span>
+              <input id="auLisRX" class="num" type="number" step="5" onchange="applyAudioListener()"></label>
+            <label class="trCell"><span class="axis axY">Y</span>
+              <input id="auLisRY" class="num" type="number" step="5" onchange="applyAudioListener()"></label>
+            <label class="trCell"><span class="axis axZ">Z</span>
+              <input id="auLisRZ" class="num" type="number" step="5" onchange="applyAudioListener()"></label>
+          </div>
+        </div>
+        <div class="edRow">
+          <span>全体の音量</span>
+          <input id="auLisVol" class="num" type="number" step="0.05" min="0" max="4"
+                 title="AudioListener.volume（全部の音に掛かる）" onchange="applyAudioListener()">
+        </div>
+        <div class="edRow">
+          <span>ドップラー / 音速</span>
+          <span>
+            <input id="auLisDoppler" class="num" type="number" step="0.1" min="0" max="5"
+                   title="ドップラー効果の強さ（全音源。0 = 無し）" onchange="applyAudioListener()">
+            <input id="auLisSpeed" class="num" type="number" step="1" min="1"
+                   title="音速 (m/s)。空気中は 343" onchange="applyAudioListener()">
+          </span>
+        </div>
+        <div class="edLabel">2D の音（ワールドに付いたオーディオソース）</div>
+        <div id="auWorldList"></div>
+        <div class="edHint" id="auWorldNote"></div>
+        <div class="edRow btnRow">
+          <button onclick="audioAddSource(-1)"
+                  title="どこにも付かない音源を足す（BGM・環境音。既定は 2D）">＋ 2D サウンドを追加</button>
+        </div>
+        <div class="edHint">音はサーバーで作り、シミュレート中に映像と一緒に（同期して）届きます（映像ヘッダーの
+          🔊 でミュート）。オブジェクトに付ける 3D の音は、その物を選んで Inspector の
+          「オーディオソース」から。鳴らし方は Play On Awake・イベントの「音を鳴らす /
+          止める」・制御器の audio:&lt;名前&gt;.play / volume / pitch。</div>
+      </section>
+
       <section class="sbSec">
         <div class="sbSecHead">Stream (this camera)</div>
         <div class="tuneRow">
@@ -1742,6 +1813,8 @@
       <span id="vhPrefabName">🧩 プレハブ</span>
     </span>
     <span class="vhSpacer"></span>
+    <button id="vhAudio" onclick="audioToggleMute()"
+            title="クリックで音を出す">🔇</button>
     <button id="vhModeEdit" class="modeBtn" onclick="setMode('editor')"
             title="物理を止めて配置・設計する">✎ エディタ</button>
     <button id="vhModeSim" class="modeBtn" onclick="setMode('simulate')"
@@ -2107,5 +2180,6 @@
 <script src="autogen.js"></script>
 <script src="control.js"></script>
 <script src="panel.js"></script>
+<script src="audio.js"></script>
 </body>
 </html>

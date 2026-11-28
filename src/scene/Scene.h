@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <memory>
@@ -29,6 +30,7 @@
 #include "ui/UiMeshFormat.h"  // plateMeshToOverlay の UiMeshData
 #include "ui/UiPlane.h"     // canvasPlane の CanvasPlane
 #include "document/SceneDocument.h"
+#include "audio/AudioFrame.h"   // buildAudioFrame
 #include "fluid/Atmosphere.h"     // 空気の状態（AirState / AirOverride）
 #include "physics/MeshCollision.h"  // CollisionTriangles
 #include "physics/PhysicsWorld.h"  // for BodyTransform
@@ -420,6 +422,38 @@ public:
     void setAirOverride(const wizengine::fluid::AirOverride& ov);
     // /scene の "air"（いまの空気。シミュレート中はスクリプトの上書き込み）。
     nlohmann::json airJson();
+
+    // ---- オーディオ（scene/SceneAudio.cpp。Unity の AudioSource / AudioListener）------
+    // 音を作るのはサーバー（audio/AudioMixer、音声のスレッド）。ここは「何を・いつ・どこで」を
+    // 持つだけ: 設計値は EditorState（audioSources / audioListener）、実行中の指示
+    // （Play / Stop の回数・制御器の音量と高さの上書き）は audioMutex_ の下の audioRt_。
+    // 指示は世代（runGeneration）ごとで、開始・停止・Reset で全部捨てる。
+    // どれもどのスレッドからでも呼べる（audioMutex_ は末端のロック）。
+    // 音源 source（文書の番号）を鳴らす / 止める。loop の音源は鳴っていれば鳴らし
+    // 直さない（ミキサー = audio/AudioMixer の判断）、loop でない音源は重ねて鳴らす（PlayOneShot）。
+    // simTime = 鳴らした瞬間のシミュレーション時刻（物理の時計 = physicsSimTime）。渡すと
+    // ミキサーが音の頭を出力のサンプル位置へ割り付ける（描画のフレームより細かい間隔で
+    // 鳴らしても並びが崩れない = エンジンの点火）。NaN = 時刻なし（次のフレームですぐ鳴らす）。
+    void audioPlay(int source, double simTime = std::numeric_limits<double>::quiet_NaN());
+    void audioStop(int source);
+    // オブジェクト object に付いている音源（name が空なら全部、あれば名前が一致する物）。
+    // object が -1 なら名前で全部の音源から引く（イベントのノードの playAudio / stopAudio）。
+    void audioPlayOn(int object, const std::string& name, bool play,
+                     double simTime = std::numeric_limits<double>::quiet_NaN());
+    // 制御器の上書き（audio:<名前>.volume / .pitch）。NaN = 上書きしない（設計値）。
+    // そのステップに書いた値だけを毎ステップ渡す。
+    void setAudioOverride(int source, double volume, double pitch);
+    // 名前 → 文書の番号（無ければ -1）。
+    int audioSourceIndex(const std::string& name);
+    // このフレームに描いた状態の音（RENDER スレッド。applyToRenderer とカメラを当てた
+    // 後に、カメラ = ページごとに呼ぶ）: 耳（そのページのカメラか付け先）の姿勢、音源の
+    // ワールド位置（描いた姿勢 = renderPoses_）・設計値と Play / Stop の回数。
+    // audio/AudioOutput がミキサーへ渡す。一時停止は呼び手（main）が足す。
+    void buildAudioFrame(std::size_t cameraIndex, wizengine::audio::AudioFrame& out);
+    // /scene の "audio"（Inspector と World タブの欄・assets/ の音のファイルの一覧）。
+    nlohmann::json audioSceneJson();
+    // edit.audio.add / set / remove・edit.audiolistener。PHYSICS（Op）。
+    void applyAudioOp(const std::string& kind, const nlohmann::json& args);
 
     // ---- プレハブの部品の編集（PHYSICS thread、ギズモから）------------------
     // 対象はプレハブ編集モードのオブジェクト（EditorState::prefabEditObject）
@@ -1433,6 +1467,33 @@ private:
     // カメラを掛かる前の視点へ戻す（Reset・停止・読込）。
     std::uint64_t rigGeneration_ = 0;
 
+    // オーディオの実行中の指示（audioPlay / audioStop / setAudioOverride）。番号は文書の
+    // 音源の番号。世代（runGeneration）が変わったら全部 0 / 上書き無しに戻す
+    // （ミキサーは世代が変わったら回数を 0 から数え直す = 開始直後の onStart → playAudio
+    // も取りこぼさない）。audioMutex_ は末端（中で他のロックを取らない）。
+    struct AudioRuntime {
+        std::uint64_t play = 0;   // Play の回数
+        std::uint64_t stop = 0;   // Stop の回数
+        // 最近の Play の時刻（シミュレーション時刻、古い順、最後 = play 回目）。最大
+        // kAudioPlayTimes 個。時刻の無い Play は NaN。ミキサーが音の頭を割り付ける。
+        std::vector<double> playTimes;
+        double volume = std::numeric_limits<double>::quiet_NaN();  // 制御器の上書き
+        double pitch = std::numeric_limits<double>::quiet_NaN();
+    };
+    static constexpr std::size_t kAudioPlayTimes = 16;
+    // Play を 1 回数える（時刻も覚える。audioMutex_ を持って呼ぶ）。
+    static void audioCountPlayLocked(AudioRuntime& r, double simTime);
+    std::mutex audioMutex_;
+    std::vector<AudioRuntime> audioRt_;
+    std::uint64_t audioRtGeneration_ = ~std::uint64_t(0);
+    // 呼び手が先に取った世代で audioRt_ を合わせる（audioMutex_ を持って呼ぶ）。
+    void audioSyncLocked(std::uint64_t generation, std::size_t count);
+    // assets/ の音のファイルの一覧（数秒ごとに取り直す。/scene のポーリングのたびに
+    // ディスクを歩かない）。audioClipsMutex_ の下。
+    std::mutex audioClipsMutex_;
+    std::vector<std::string> audioClips_;
+    double audioClipsAt_ = -1.0e9;
+
     // 制御器（スクリプト）が書いた空気の値（airNow / setAirOverride）。書いたときの世代と
     // 組で持ち、世代が変わったら使わない。airMutex_ の下（HTTP の /scene も読む）。
     std::mutex airMutex_;
@@ -1460,12 +1521,22 @@ private:
         struct InstanceState {
             // OnTimer の経過秒（ノード id で引く）。
             std::map<int, double> timers;
+            // OnCollision が鳴らし済みの接触（ノード id → 接触の通し番号）。1 回の
+            // 接触（触れてから離れるまで）で 1 回だけ発火させるため。離れた接触は消す。
+            std::map<int, std::set<std::uint64_t>> firedContacts;
         };
         std::map<std::pair<std::string, int>, InstanceState> state;
         bool startFired = false;  // OnSimStart は最初のステップで 1 回だけ
-        // 前サブステップの接触ペア（オブジェクト番号、-1 = 地面）。
-        // 今回あって前回無いペアだけが「新しくぶつかった」。
-        std::set<std::pair<int, int>> prevContacts;
+        // 続いている接触（オブジェクト番号のペア、-1 = 地面）→ 触れてからの秒数と
+        // 接触の通し番号。触れてから kCollisionEnterSeconds の間は「ぶつかった
+        // 瞬間」として OnCollision の候補にする（SceneEvents.cpp の注記）。離れたら消え、
+        // また触れれば新しい通し番号 = 新しい衝突。
+        struct ContactEpisode {
+            double age = 0.0;
+            std::uint64_t id = 0;
+        };
+        std::map<std::pair<int, int>, ContactEpisode> contacts;
+        std::uint64_t contactSerial = 0;
         // 最初の収集パスは「覚えるだけ」（false の間）。開始時点で既に触れて
         // いた接触（置いた箱と地面など）を衝突として発火させないため。
         bool contactsPrimed = false;

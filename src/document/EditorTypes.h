@@ -922,6 +922,11 @@ enum class NodeKind {
     // 要素の性質 prop（名前 = UI の性質の表）を書き換える（実行時のみ）。値は性質の型で
     // 決まる欄に置く（ui::nodeField: value / vec / color / text）。
     SetUiProp,
+    // ---- オーディオ（target = オブジェクト。-1 = 付けた相手 / トリガーが渡した物）。
+    // element = 音源の名前（空 = その物に付いている音源の全部。名前があれば、その名前で
+    // その物かワールドに付いている音源）。音はサーバーで作る（document/AudioTypes.h）。
+    PlayAudio,   // Unity の AudioSource.Play / PlayOneShot（loop でない音源は重ねて鳴る）
+    StopAudio,   // AudioSource.Stop
 };
 
 // カメラのアクションの注文が途切れてから手放すまでの秒数。物理が遅れて
@@ -954,6 +959,8 @@ inline const char* nodeKindName(NodeKind k) {
         case NodeKind::CameraOrbit: return "cameraOrbit";
         case NodeKind::OnUiClick: return "onUiClick";
         case NodeKind::SetUiProp: return "setUiProp";
+        case NodeKind::PlayAudio: return "playAudio";
+        case NodeKind::StopAudio: return "stopAudio";
         case NodeKind::OnCollision: break;
     }
     return "onCollision";
@@ -978,6 +985,8 @@ inline NodeKind nodeKindFromName(const std::string& s, NodeKind fallback) {
     if (s == "cameraOrbit" || s == "orbit") return NodeKind::CameraOrbit;
     if (s == "onUiClick" || s == "uiClick") return NodeKind::OnUiClick;
     if (s == "setUiProp" || s == "uiProp") return NodeKind::SetUiProp;
+    if (s == "playAudio" || s == "playSound" || s == "play") return NodeKind::PlayAudio;
+    if (s == "stopAudio" || s == "stopSound" || s == "stop") return NodeKind::StopAudio;
     return fallback;
 }
 
@@ -1008,7 +1017,9 @@ inline NodeTargetKind nodeTargetKind(NodeKind k) {
         case NodeKind::CameraLookAt:
         case NodeKind::CameraBehind:
         case NodeKind::CameraOrbit: return NodeTargetKind::Camera;
-        case NodeKind::SetVelocity: return NodeTargetKind::Object;
+        case NodeKind::SetVelocity:
+        case NodeKind::PlayAudio:
+        case NodeKind::StopAudio: return NodeTargetKind::Object;
         case NodeKind::OnJointBreak:
         case NodeKind::SetMotor: return NodeTargetKind::Joint;
         case NodeKind::OnUiClick:
@@ -1023,6 +1034,8 @@ inline NodeTargetKind nodeTargetKind(NodeKind k) {
 // UI のノードか（Canvas を番号で指す種類。element / prop / text の欄を使う。XML の読み書きの
 // 分岐はこれで判定する = UI のノードを足しても分岐を直さない）。
 inline bool nodeIsUi(NodeKind k) { return nodeTargetKind(k) == NodeTargetKind::Canvas; }
+// オーディオのノードか（element = 音源の名前を使う）。
+inline bool nodeIsAudio(NodeKind k) { return k == NodeKind::PlayAudio || k == NodeKind::StopAudio; }
 
 // other 欄がオブジェクト番号を指すか（OnCollision の相手フィルタと
 // CameraLookAt / CameraBehind の相手）。削除時の掃除と保存時の詰め替えに使う。

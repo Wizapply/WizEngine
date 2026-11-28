@@ -68,6 +68,11 @@
         if (!m.name) continue;
         for (const k of q.emitter || []) out.push('emitter:' + m.name + '.' + k);
       }
+      // オーディオソース（<worldbody> の <audiosource>。play / volume / pitch）
+      for (const a of (sceneData.audio && sceneData.audio.sources) || []) {
+        if (!a.name) continue;
+        for (const k of q.audio || []) out.push('audio:' + a.name + '.' + k);
+      }
       out.push('scope:');
     }
     return out;

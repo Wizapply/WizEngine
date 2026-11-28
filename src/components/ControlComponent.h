@@ -4,9 +4,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -97,6 +99,7 @@ private:
         int object = -1;  // オブジェクト番号（body / vehicle）
         int joint = -1;   // 文書のジョイント番号
         int emitter = -1; // エミッタの番号（emitter:<名前>）
+        int audio = -1;   // オーディオソースの番号（audio:<名前>）
         int trans = -1;   // AT の番号（trans:<名前>）
         int transQty = -1;  // AT の量の番号（センサ = atSensorId、出力 = atInputId。transmission/AtSignals）
         double lastApplied = 0.0;  // joint target: 前回渡した値（同じなら渡さない）
@@ -132,6 +135,16 @@ private:
     VehicleComponent* vehicles_;
     EffectsComponent* effects_ = nullptr;
     std::uint64_t emitterVersion_ = ~std::uint64_t(0);
+    std::uint64_t audioVersion_ = ~std::uint64_t(0);
+    // このステップに式が書いた audio:<名前>.volume / pitch（音源の番号 → 値。NaN = 書いて
+    // いない）と、前のステップまでに上書きを渡した音源（書くのをやめたら消す）。
+    struct AudioWrite {
+        double volume = std::numeric_limits<double>::quiet_NaN();
+        double pitch = std::numeric_limits<double>::quiet_NaN();
+    };
+    std::map<int, AudioWrite> audioWrites_;
+    std::set<int> audioOverridden_;
+    void flushAudioWrites(Scene& scene);
     std::unique_ptr<wizengine::formula::LuaRuntime> lua_;
 
     // ---- PHYSICS スレッド専用 ----

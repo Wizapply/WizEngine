@@ -663,6 +663,10 @@
   async function connectWebRTC() {
     const pc = new RTCPeerConnection();
     const tx = pc.addTransceiver('video', { direction: 'recvonly' });
+    // 音声: サーバーがシミュレート中の音（オーディオソース）を作り、同じ回線の Opus の
+    // トラックで送る。映像と同じ MediaStream に入るので、ブラウザが RTCP で揃えて出す
+    // （映像と音が同期する）。鳴らすのは映像の要素（audio.js の 🔊 でミュート解除）。
+    pc.addTransceiver('audio', { direction: 'recvonly' });
     // Offer only the codec the server is actually encoding. Leaving the full
     // list in place lets the browser answer with a different payload than
     // webrtcbin is sending, which shows up as a black picture.
@@ -681,7 +685,17 @@
       }
     } catch (e) { /* older browsers: leave the default order */ }
     pc.ontrack = (e) => {
-      videoEl.srcObject = e.streams[0];
+      // 映像と音の 2 本が届く。同じ MediaStream ならそのまま、別なら 1 本にまとめる
+      // （要素に入れるストリームは 1 つ = 音も映像の要素が鳴らす）。
+      const stream = e.streams[0] || new MediaStream([e.track]);
+      // 繋ぎ直した回線の最初のトラックは前の回線のストリームを置き換える。
+      if (!videoEl.srcObject || videoEl.wizPc !== pc) {
+        videoEl.srcObject = stream;
+        videoEl.wizPc = pc;
+      } else if (videoEl.srcObject !== stream &&
+                 !videoEl.srcObject.getTracks().includes(e.track)) {
+        videoEl.srcObject.addTrack(e.track);
+      }
       // autoplay is not guaranteed even when muted (a backgrounded tab, a
       // stricter policy, or a stream attached before the element was ready),
       // and a paused element shows black while the stats happily report a
@@ -1418,6 +1432,7 @@
     document.getElementById('secUi').hidden = true;
     document.getElementById('secJoint').hidden = true;
     document.getElementById('secCable').hidden = true;
+    document.getElementById('secAudioSrc').hidden = true;
     document.getElementById('vhPrefabName').textContent =
       '🧩 ' + pe.name + '（' + (pe.objectName || ('#' + pe.index)) + '）';
     document.getElementById('edPrefabInfo').textContent =
@@ -2961,6 +2976,8 @@
     }
     // 水面と流体粒子（secFluid 節）。
     renderFluidSection();
+    // オーディオ（Inspector の secAudioSrc 節・World タブの secAudio 節。audio.js）。
+    if (typeof renderAudioSections === 'function') renderAudioSections();
     // ギズモ設定の節はツールバーの ⚙ で開閉（エディタモード中だけ意味がある）。
     document.getElementById('gzSettings')
             .classList.toggle('on', gizmoSettingsOpen);
@@ -3707,6 +3724,9 @@
     // UI のノード（本文は ui.js の uiNodeBody）。
     onUiClick:      { icon: '🔘', label: 'ボタンが押されたら', trigger: true, target: 'canvas' },
     setUiProp:      { icon: '🖼', label: 'UI の性質を変える', trigger: false, target: 'canvas' },
+    // オーディオ（Unity の AudioSource.Play / Stop。鳴らすのはブラウザ = audio.js）。
+    playAudio:      { icon: '🔊', label: '音を鳴らす', trigger: false, target: 'object' },
+    stopAudio:      { icon: '🔇', label: '音を止める', trigger: false, target: 'object' },
   };
   let nodeEdOpen = false;
   let ndGraphKey = '';   // 前回組み立てたグラフ+選択肢のキー（変化検知）
@@ -4195,7 +4215,8 @@
                               'onJointBreak', 'onUiClick'];
   const NODE_MENU_ACTIONS = ['setColor', 'impulse', 'setVelocity', 'setFixed', 'grabPull',
                              'setMotor', 'lightColor', 'lightIntensity', 'cameraLookAt',
-                             'cameraBehind', 'cameraOrbit', 'setUiProp'];
+                             'cameraBehind', 'cameraOrbit', 'setUiProp', 'playAudio',
+                             'stopAudio'];
   function nodeMenuItems(x, y) {
     const item = (kind) => {
       const def = NODE_DEF[kind];
@@ -4731,6 +4752,23 @@
                  n.value + '" onchange="ndPatch(' + n.id +
                  ',{value:parseFloat(this.value)||0})">');
     }
+    if (n.kind === 'playAudio' || n.kind === 'stopAudio') {
+      // 音源の名前（空 = 対象に付いている音源の全部。名前を選ぶと、対象かワールドに
+      // 付いたその名前の音源 = 付け先の無いイベントから BGM を鳴らす、など）。
+      const names = [...new Set(((sceneData.audio && sceneData.audio.sources) || [])
+                                  .map((a) => a.name).filter(Boolean))];
+      let o = '<option value=""' + (!n.element ? ' selected' : '') +
+              '>(対象の音源の全部)</option>';
+      for (const nm of names) {
+        o += '<option value="' + ndEsc(nm) + '"' + (n.element === nm ? ' selected' : '') +
+             '>' + ndEsc(nm) + '</option>';
+      }
+      if (n.element && !names.includes(n.element)) {
+        o += '<option value="' + ndEsc(n.element) + '" selected>? ' + ndEsc(n.element) + '</option>';
+      }
+      h += ndRow('音源', '<select class="strSel" title="鳴らす / 止める音源（Inspector の「オーディオソース」）" ' +
+                 'onchange="ndPatch(' + n.id + ',{element:this.value})">' + o + '</select>');
+    }
     if (n.kind === 'grabPull') {
       h += ndRow('強さ倍率', '<input class="num" type="number" step="0.1" ' +
                  'min="0.1" max="10" title="1 = 既定のばね（SceneConfig.h）" ' +
@@ -4808,7 +4846,8 @@
       (sceneData.objects || []).map((o) => o.index + ':' + (o.name || '')).join(',') +
       '|' + (sceneData.lights || []).map((l) => l.index + ':' + (l.name || '')).join(',') +
       '|' + (sceneData.cameras || []).filter((c) => c.active !== false)
-              .map((c) => c.index).join(',') + '|' + uiNodeOptKey();
+              .map((c) => c.index).join(',') + '|' + uiNodeOptKey() + '|' +
+      ((sceneData.audio && sceneData.audio.sources) || []).map((a) => a.name).join(',');
     const key = 'e@' + JSON.stringify(g) + '@' + optKey + '@' +
       eventAssets().map((a) => a.name).join(',') + '@' +
       formulaAssets().map((a) => a.name).join(',');
